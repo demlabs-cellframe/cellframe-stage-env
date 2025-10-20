@@ -161,7 +161,7 @@ RUN set -x && \
 
 # Copy modular configs to disable production networks
 # Using cellframe-node.cfg.d/ approach - proper modular configuration
-COPY configs/templates/cellframe-node.cfg.d/disable-production-networks.cfg \
+COPY config/templates/cellframe-node.cfg.d/disable-production-networks.cfg \
      /opt/cellframe-node/etc/cellframe-node.cfg.d/
 
 # Ensure required runtime directories exist AFTER package installation
@@ -191,28 +191,14 @@ RUN apt-get update && apt-get install -y \
 # Use --break-system-packages for Debian 12+ pip restrictions
 RUN pip3 install --break-system-packages requests pycryptodome
 
-# Install test plugins from DEB package
-# Package will be built by host and mounted at build time
-ARG PLUGIN_PACKAGE_PATH=/tmp/plugin-package.deb
-COPY ${PLUGIN_PACKAGE_PATH} /tmp/cf-plugin.deb
-RUN echo "Installing test plugins package..." && \
-    (dpkg -i /tmp/cf-plugin.deb || (apt-get update && apt-get install -f -y)) && \
-    rm /tmp/cf-plugin.deb && \
-    echo "test plugins installed successfully"
+# Note: Test plugins can be installed dynamically via YAML scenarios using the 'packages' section
+# This allows flexible plugin installation per test scenario
 
-# Copy initialization scripts
-COPY scripts/init-node.sh /usr/local/bin/init-node.sh
-COPY scripts/health-check.sh /usr/local/bin/health-check.sh
-COPY scripts/crash-handler.sh /usr/local/bin/crash-handler.sh
-COPY scripts/node-supervisor.sh /usr/local/bin/node-supervisor.sh
 # Note: Base configs created by package postinst
 # Network-specific configs will be mounted via volumes at runtime
 
 # Create cellframe-node.cfg.d directory for modular configuration
 # Note: cellframe-node.cfg.d/ created by package, we'll add our configs via volumes
-
-RUN chmod +x /usr/local/bin/init-node.sh /usr/local/bin/health-check.sh \
-                 /usr/local/bin/crash-handler.sh /usr/local/bin/node-supervisor.sh
 
 # Note: Base cellframe-node.cfg will be provided by the official Cellframe Node package
 # We only add modular configurations through cellframe-node.cfg.d/ and network/ directories
@@ -226,15 +212,13 @@ ENV CELLFRAME_DEBUG=1
 # Expose ports
 EXPOSE 8545 8546 8547 7007 31337
 
-# Create entry point
-COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-
 # Note: Running as root inside container to avoid permission issues with mounted volumes
 # This is standard practice for Docker containers that need to write to host-mounted volumes
 WORKDIR /opt/cellframe-node
 
-# Entry point - use supervisor for crash handling
-# Empty CMD to trigger standard procedure in docker-entrypoint.sh
-ENTRYPOINT ["/usr/local/bin/node-supervisor.sh"]
-CMD []
+# Copy minimal entrypoint script
+COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Use entrypoint for init, CMD for main process
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
