@@ -385,7 +385,7 @@ class DockerComposeManager:
         last_status_log = 0
         
         while time.time() - start_time < timeout:
-            containers = self.ps(all=True)  # Get all containers including stopped
+            containers = self.ps()  # Get all containers including stopped
             
             if not containers:
                 logger.debug("no_containers_found")
@@ -483,7 +483,7 @@ class DockerComposeManager:
             time.sleep(2)
         
         # Timeout reached
-        containers = self.ps(all=True)
+        containers = self.ps()
         status_info = []
         for container in containers:
             service_name = container.labels.get("com.docker.compose.service", "unknown")
