@@ -6,16 +6,22 @@ Handles generation of:
 - Node certificates
 - Validator certificates  
 - CA certificates
+
+Uses cf-cert-generator utility built in Docker image.
+This utility generates proper binary DAP certificates using DAP SDK crypto.
 """
 
 from pathlib import Path
 from typing import List, Optional
 import json
+import subprocess
+import shutil
+import os
 
 from pydantic import BaseModel
 
 from ..utils.logger import get_logger
-from ..utils.cli import run_command, print_info, print_success
+from ..utils.cli import run_command, print_info, print_success, print_error
 
 logger = get_logger(__name__)
 
@@ -184,7 +190,7 @@ class CertGenerator:
         validator_count: int = 3,
     ) -> dict:
         """
-        Generate all certificates for network.
+        Generate all certificates for network using cf-cert-generator utility.
         
         Args:
             network_name: Network name (e.g., "stagenet")
@@ -199,44 +205,100 @@ class CertGenerator:
                    nodes=node_count,
                    validators=validator_count)
         
-        print_info(f"Generating certificates for {node_count} nodes...")
+        print_info(f"Generating {node_count} node certificates using cf-cert-generator...")
+        
+        # Find cf-cert-generator utility
+        cert_tool_candidates = [
+            self.base_path / "src" / "certs" / "build" / "cf-cert-generator",
+            Path("/usr/local/bin/cf-cert-generator"),
+            shutil.which("cf-cert-generator"),
+        ]
+        
+        cert_tool = None
+        for candidate in cert_tool_candidates:
+            if candidate and Path(candidate).exists():
+                cert_tool = str(candidate)
+                break
+        
+        if not cert_tool:
+            print_error("cf-cert-generator not found. Please build it first.")
+            logger.error("cf_cert_generator_not_found")
+            raise FileNotFoundError(
+                "cf-cert-generator not found. Build it:\n"
+                "  cd tests/stage-env/src/certs && mkdir -p build && cd build\n"
+                "  cmake .. && make"
+            )
+        
+        logger.info("using_cert_tool", tool=cert_tool)
+        
+        # Network ID for stagenet
+        network_id = "0x1234"
+        
+        # Generate certificates using C utility
+        try:
+            logger.info("calling_cert_generator",
+                       tool=cert_tool,
+                       output_dir=str(self.certs_dir),
+                       node_count=node_count,
+                       network_id=network_id)
+            
+            result_proc = subprocess.run(
+                [cert_tool, str(self.certs_dir), str(node_count), network_id],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            
+            logger.info("cert_generator_output", stdout=result_proc.stdout)
+            
+            if result_proc.stderr:
+                logger.warning("cert_generator_stderr", stderr=result_proc.stderr)
+            
+        except subprocess.CalledProcessError as e:
+            print_error(f"Certificate generation failed: {e}")
+            logger.error("cert_generation_failed",
+                        returncode=e.returncode,
+                        stdout=e.stdout,
+                        stderr=e.stderr)
+            raise RuntimeError(f"Certificate generation failed: {e.stderr}")
         
         result = {
             "nodes": [],
             "validators": [],
         }
         
-        # Generate node certificates
+        # Collect generated certificates from node1/, node2/, etc.
         for i in range(1, node_count + 1):
-            cert = self.generate_node_cert(
-                node_id=i,
-                node_name=f"{network_name}-node{i}",
-            )
-            result["nodes"].append(str(cert))
-        
-        # Generate validator certificates
-        validator_prefix = f"{network_name}.master"
-        certs = self.generate_validator_certs(
-            prefix=validator_prefix,
-            count=validator_count,
-        )
-        result["validators"] = [str(c) for c in certs]
+            node_dir = self.certs_dir / f"node{i}"
+            
+            # Main node certificate
+            node_cert = node_dir / "node-addr.dcert"
+            if node_cert.exists():
+                result["nodes"].append(str(node_cert))
+            
+            # ESBOCS validator certificate
+            esbocs_cert = node_dir / "node-addr.esbocs.dcert"
+            if esbocs_cert.exists():
+                result["validators"].append(str(esbocs_cert))
         
         # Save PKI config
         pki_config = {
             "network": network_name,
+            "network_id": network_id,
             "node_count": node_count,
             "validator_count": validator_count,
             "generated_at": self._get_timestamp(),
+            "crypto": "Dilithium (post-quantum)",
         }
         
         pki_config_file = self.certs_dir / "pki-config.json"
         with open(pki_config_file, "w") as f:
             json.dump(pki_config, f, indent=2)
         
-        print_success(f"Generated {node_count} node + {validator_count} validator certificates")
+        print_success(f"Generated {len(result['nodes'])} node + {len(result['validators'])} validator certificates")
         logger.info("all_certificates_generated",
-                   total=node_count + validator_count)
+                   nodes=len(result["nodes"]),
+                   validators=len(result["validators"]))
         
         return result
     
