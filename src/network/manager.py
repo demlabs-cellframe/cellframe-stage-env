@@ -15,6 +15,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel
 
 from ..config.loader import ConfigLoader, NetworkTopology
+from ..config.generator import ConfigGenerator
 from ..docker.compose import DockerComposeManager
 from ..monitoring.health import HealthChecker, HealthStatus
 from ..utils.logger import get_logger
@@ -52,6 +53,9 @@ class NetworkManager:
         # Load configuration
         self.config_loader = ConfigLoader(base_path)
         self.topology = self.config_loader.load_topology(topology_name)
+        
+        # Config generator
+        self.config_generator = ConfigGenerator(base_path)
         
         # Docker compose manager
         self.compose = DockerComposeManager(
@@ -140,7 +144,17 @@ class NetworkManager:
         
         # Generate node configurations
         if not self.nodes:
-            self.generate_node_configs()
+            node_configs = self.generate_node_configs()
+        else:
+            node_configs = list(self.nodes.values())
+        
+        # Generate configuration files and certificates
+        logger.info("generating_configs_and_certs")
+        self.config_generator.generate_all(
+            self.topology,
+            node_configs,
+            force=rebuild
+        )
         
         # Build images if requested
         if rebuild:

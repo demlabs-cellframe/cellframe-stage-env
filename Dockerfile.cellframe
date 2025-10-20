@@ -98,16 +98,34 @@ RUN set -x && \
     CACHE_KEY="${CELLFRAME_VERSION}_${BUILD_TYPE}_${ARCH}" && \
     CACHE_FILE="/var/cache/cellframe-packages/cellframe-node-${CACHE_KEY}.deb" && \
     CACHE_INFO="/var/cache/cellframe-packages/cellframe-node-${CACHE_KEY}.info" && \
+    CACHE_TIMESTAMP="/var/cache/cellframe-packages/cellframe-node-${CACHE_KEY}.timestamp" && \
     echo "Cache key: $CACHE_KEY" && \
     \
-    # Check if we have cached package
+    # For 'latest', always check if newer version available (cache max 1 day)
+    USE_CACHE=false && \
     if [ -f "$CACHE_FILE" ] && [ -f "$CACHE_INFO" ]; then \
+        if [ "$CELLFRAME_VERSION" = "latest" ] && [ -f "$CACHE_TIMESTAMP" ]; then \
+            CACHE_AGE=$(($(date +%s) - $(cat "$CACHE_TIMESTAMP"))) && \
+            if [ $CACHE_AGE -lt 86400 ]; then \
+                echo "Cache is recent (${CACHE_AGE}s old), using cached package" && \
+                USE_CACHE=true; \
+            else \
+                echo "Cache is old (${CACHE_AGE}s), will check for updates" && \
+                USE_CACHE=false; \
+            fi; \
+        else \
+            echo "Using cached package for specific version" && \
+            USE_CACHE=true; \
+        fi; \
+    fi && \
+    \
+    if [ "$USE_CACHE" = "true" ]; then \
         echo "Found cached package: $CACHE_FILE" && \
         CACHED_INFO=$(cat "$CACHE_INFO") && \
         echo "Cached info: $CACHED_INFO" && \
         cp "$CACHE_FILE" /tmp/cellframe-node.deb; \
     else \
-        echo "No cached package found, downloading..." && \
+        echo "Downloading fresh package..." && \
         \
         # Determine download URL based on version and architecture
         if [ "$CELLFRAME_VERSION" = "latest" ]; then \
@@ -151,7 +169,9 @@ RUN set -x && \
         # Cache the downloaded package for future builds
         echo "Caching package for future use..." && \
         cp /tmp/cellframe-node.deb "$CACHE_FILE" && \
-        echo "version=${ACTUAL_VERSION},arch=${ARCH},build_type=${BUILD_TYPE},download_url=${DOWNLOAD_URL}" > "$CACHE_INFO"; \
+        echo "version=${ACTUAL_VERSION},arch=${ARCH},build_type=${BUILD_TYPE},download_url=${DOWNLOAD_URL}" > "$CACHE_INFO" && \
+        date +%s > "$CACHE_TIMESTAMP" && \
+        echo "Cached at: $(date)"; \
     fi && \
     \
     # Install package with dependency resolution
