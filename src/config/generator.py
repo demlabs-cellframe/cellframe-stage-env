@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from ..config.loader import ConfigLoader, NetworkTopology
-from ..certs.generator import CertificateGenerator
+from ..certs.generator import CertGenerator
 from ..network.manager import NodeConfig
 from ..utils.logger import get_logger
 
@@ -31,7 +31,7 @@ class ConfigGenerator:
         """
         self.base_path = base_path
         self.config_loader = ConfigLoader(base_path)
-        self.cert_generator = CertificateGenerator(base_path / "cache" / "certs")
+        self.cert_generator = CertGenerator(base_path)
         
         # Directories
         self.cache_dir = base_path / "cache"
