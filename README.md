@@ -244,39 +244,6 @@ stage-env агностичен к типам тестов - он просто з
 
 ## 🔧 Configuration
 
-### Python Dependencies
-
-Зависимости в `requirements.txt`:
-
-```
-# CLI & Output
-typer>=0.9.0              # Modern CLI framework
-rich>=13.0.0              # Terminal formatting
-
-# Docker Integration
-docker>=7.0.0             # Docker SDK with compose v2
-
-# HTTP & Async
-httpx>=0.25.0             # Modern async HTTP client
-
-# Configuration & Validation
-pydantic>=2.0.0           # Type-safe config models
-pyyaml>=6.0.0             # YAML parsing
-jinja2>=3.0.0             # Template rendering
-
-# Monitoring & Logging
-structlog>=23.2.0         # Structured logging
-psutil>=5.0.0             # System monitoring
-
-# Testing
-pytest>=7.0.0             # Test framework
-pytest-asyncio>=0.21.0    # Async test support
-
-# Development
-ruff>=0.1.0               # Fast linter
-black>=23.0.0             # Code formatter
-mypy>=1.0.0               # Type checker
-```
 
 ### Environment Variables
 
@@ -404,33 +371,6 @@ vim config/topologies/default.json
     }
   }
 }
-```
-
-### Health Monitoring
-
-Мониторинг доступен через Python API:
-
-```python
-from src.monitoring.health import HealthChecker
-
-checker = HealthChecker()
-status = await checker.check_http("http://localhost:8080", "node1")
-
-if status.healthy:
-    print(f"Node healthy, response time: {status.response_time_ms}ms")
-```
-
-### Artifacts Collection API
-
-```python
-from src.monitoring.artifacts import ArtifactsCollector
-
-collector = ArtifactsCollector(base_path)
-artifacts = collector.collect_on_crash(
-    node_id="node1",
-    container_name="cellframe-stage-node1",
-    test_name="test_utxo_blocking"
-)
 ```
 
 ## 🤝 Integration with CI/CD
