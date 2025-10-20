@@ -119,16 +119,37 @@ class ConfigGenerator:
         
         logger.debug("network_config_source", path=str(src_network_cfg))
         
-        # Copy network config to each node's network/<network_name>/ directory
+        # Read template content
+        template_content = src_network_cfg.read_text()
+        
+        # Prepare network-wide variables
+        # Collect seed nodes (root nodes) and permanent nodes (masters)
+        root_nodes = [n for n in nodes if n.role == 'root']
+        master_nodes = [n for n in nodes if n.role == 'master']
+        
+        seed_nodes_hosts = ','.join([n.ip_address for n in root_nodes])
+        permanent_nodes_hosts = ','.join([n.ip_address for n in master_nodes])
+        permanent_nodes_addrs = ','.join([f"{n.ip_address}:{n.p2p_port}" for n in master_nodes])
+        
+        # Generate network config for each node
         for node in nodes:
             node_network_dir = self.configs_cache / f"node{node.node_id}" / "network" / network_name
             node_network_dir.mkdir(parents=True, exist_ok=True)
             
-            dst_file = node_network_dir / f"{network_name}.cfg"
-            shutil.copy2(src_network_cfg, dst_file)
+            # Replace placeholders with node-specific values
+            config_content = template_content
+            config_content = config_content.replace("NODE_ROLE_PLACEHOLDER", node.role)
+            config_content = config_content.replace("SEED_NODES_PLACEHOLDER", seed_nodes_hosts)
+            config_content = config_content.replace("PERMANENT_NODES_HOSTS_PLACEHOLDER", permanent_nodes_hosts)
+            config_content = config_content.replace("PERMANENT_NODES_ADDRS_PLACEHOLDER", permanent_nodes_addrs)
             
-            logger.debug("network_config_copied",
+            # Write processed config
+            dst_file = node_network_dir / f"{network_name}.cfg"
+            dst_file.write_text(config_content)
+            
+            logger.debug("network_config_generated",
                        node_id=node.node_id,
+                       role=node.role,
                        network=network_name,
                        dst=str(dst_file))
     
