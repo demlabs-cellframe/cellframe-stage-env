@@ -247,14 +247,12 @@ node_role={node.role}
 [server]
 # Network ports
 enabled=true
-listen_address=0.0.0.0
-port={node.cf_port}
+listen_address=[0.0.0.0:{node.cf_port}]
 
 [http]
 # HTTP/JSON-RPC interface  
 enabled=true
-listen_address=0.0.0.0
-port={node.http_port}
+listen_address=[0.0.0.0:{node.http_port}]
 
 [dag]
 # DAG settings
