@@ -66,8 +66,8 @@ class ConfigGenerator:
         # Ensure cache directories exist
         self._ensure_directories()
         
-        # Generate network config files
-        self._generate_network_configs(topology)
+        # Generate network config files for all nodes
+        self._generate_network_configs(topology, nodes)
         
         # Generate node-specific configs
         for node in nodes:
@@ -92,18 +92,19 @@ class ConfigGenerator:
         for directory in dirs:
             directory.mkdir(parents=True, exist_ok=True)
     
-    def _generate_network_configs(self, topology: NetworkTopology) -> None:
+    def _generate_network_configs(self, topology: NetworkTopology, nodes: List[NodeConfig]) -> None:
         """
         Generate network configuration files.
         
         Args:
             topology: Network topology
+            nodes: List of nodes to generate configs for
         """
         logger.debug("generating_network_configs", network=topology.network.name)
         
         network_name = topology.network.name
         
-        # Source and destination for network config
+        # Source template for network config
         src_network_cfg = self.templates_dir / f"{network_name}.cfg"
         
         if not src_network_cfg.exists():
@@ -116,8 +117,20 @@ class ConfigGenerator:
                          path=str(src_network_cfg))
             return
         
-        # Network config is shared - copy to each node's network directory
         logger.debug("network_config_source", path=str(src_network_cfg))
+        
+        # Copy network config to each node's network/<network_name>/ directory
+        for node in nodes:
+            node_network_dir = self.configs_cache / f"node{node.node_id}" / "network" / network_name
+            node_network_dir.mkdir(parents=True, exist_ok=True)
+            
+            dst_file = node_network_dir / f"{network_name}.cfg"
+            shutil.copy2(src_network_cfg, dst_file)
+            
+            logger.debug("network_config_copied",
+                       node_id=node.node_id,
+                       network=network_name,
+                       dst=str(dst_file))
     
     def _generate_node_config(
         self,

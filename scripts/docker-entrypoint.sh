@@ -19,6 +19,7 @@ mkdir -p /opt/cellframe-node/var/run
 mkdir -p /opt/cellframe-node/var/lib
 mkdir -p /opt/cellframe-node/var/lib/wallet
 mkdir -p /opt/cellframe-node/var/lib/global_db
+mkdir -p /opt/cellframe-node/var/lib/plugins
 
 # Fix permissions for mounted volumes
 chmod -R 755 /opt/cellframe-node/var 2>/dev/null || true
