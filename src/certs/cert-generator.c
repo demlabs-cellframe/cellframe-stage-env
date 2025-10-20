@@ -275,7 +275,7 @@ static int generate_node_certificate(node_cert_t *node, const char *output_dir, 
                           RET_ERROR);
     
     dap_return_val_if_pass(safe_snprintf(cert_name, sizeof(cert_name), 
-                                          "qevm-stagenet-node%d", node->node_id) != RET_SUCCESS, 
+                                          "stagenet-node%d", node->node_id) != RET_SUCCESS, 
                           RET_ERROR);
     
     /* Create node directory */
@@ -342,9 +342,9 @@ static int generate_node_certificate(node_cert_t *node, const char *output_dir, 
     
     /* Create ESBocs consensus certificate (copy of main certificate) */
     if (safe_snprintf(cert_file_esbocs, sizeof(cert_file_esbocs), 
-                      "%s/qevm.master.pvt.%d.dcert", node_dir, node->node_id - 1) == RET_SUCCESS) {
+                      "%s/stagenet.master.pvt.%d.dcert", node_dir, node->node_id - 1) == RET_SUCCESS) {
         if (copy_file(cert_file_main, cert_file_esbocs) == RET_SUCCESS) {
-            log_it(L_INFO, "ESBocs certificate created: qevm.master.pvt.%d", node->node_id - 1);
+            log_it(L_INFO, "ESBocs certificate created: stagenet.master.pvt.%d", node->node_id - 1);
         }
     }
     
@@ -387,7 +387,7 @@ static int generate_pki_config(const node_cert_t *nodes, int node_count, const c
     /* Write JSON configuration */
     fprintf(fp, "{\n");
     fprintf(fp, "    \"network\": {\n");
-    fprintf(fp, "        \"name\": \"qevm-stagenet\",\n");
+    fprintf(fp, "        \"name\": \"stagenet\",\n");
     fprintf(fp, "        \"chain_id\": \"%s\",\n", CHAIN_ID_HEX);
     fprintf(fp, "        \"consensus\": \"esbocs\"\n");
     fprintf(fp, "    },\n");
@@ -400,9 +400,9 @@ static int generate_pki_config(const node_cert_t *nodes, int node_count, const c
         fprintf(fp, "        \"%s\": {\n", nodes[i].node_name);
         fprintf(fp, "            \"id\": %d,\n", nodes[i].node_id);
         fprintf(fp, "            \"cert_id\": %d,\n", cert_id);
-        fprintf(fp, "            \"dap_cert\": \"/certs/%s/qevm-stagenet-node%d.dcert\",\n",
+        fprintf(fp, "            \"dap_cert\": \"/certs/%s/stagenet-node%d.dcert\",\n",
                 nodes[i].node_name, nodes[i].node_id);
-        fprintf(fp, "            \"esbocs_cert\": \"/certs/%s/qevm.master.pvt.%d.dcert\",\n",
+        fprintf(fp, "            \"esbocs_cert\": \"/certs/%s/stagenet.master.pvt.%d.dcert\",\n",
                 nodes[i].node_name, cert_id);
         fprintf(fp, "            \"validator_addr\": \"%s\",\n", nodes[i].validator_addr);
         fprintf(fp, "            \"ip\": \"172.20.0.%d\"\n", ip_last_octet);

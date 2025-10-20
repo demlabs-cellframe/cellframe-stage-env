@@ -286,7 +286,7 @@ static void s_print_usage(const char *a_prog_name)
     printf("      Output format: 3FDA::0325::3A71::2C74\n");
     printf("\n");
     printf("Examples:\n");
-    printf("  %s create qevm.master.pvt.0 /certs/cert.dcert dilithium 0x1234\n", a_prog_name);
+    printf("  %s create stagenet.master.pvt.0 /certs/cert.dcert dilithium 0x1234\n", a_prog_name);
     printf("  %s info /certs/cert.dcert\n", a_prog_name);
     printf("  %s addr /certs/cert.dcert 0x1234\n", a_prog_name);
     printf("  %s node-addr /certs/node-addr.dcert\n", a_prog_name);
