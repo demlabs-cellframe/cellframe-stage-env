@@ -132,8 +132,12 @@ class ConfigGenerator:
         permanent_nodes_addrs = ','.join([f"{n.ip_address}:{n.p2p_port}" for n in master_nodes])
         
         # Generate network config for each node
+        # Cellframe Node expects:
+        # 1. /etc/network/{network_name}.cfg - main network config file
+        # 2. /etc/network/{network_name}/ - directory for chain configs
         for node in nodes:
-            node_network_dir = self.configs_cache / f"node{node.node_id}" / "network" / network_name
+            node_network_base = self.configs_cache / f"node{node.node_id}" / "network"
+            node_network_dir = node_network_base / network_name
             node_network_dir.mkdir(parents=True, exist_ok=True)
             
             # Replace placeholders with node-specific values
@@ -143,8 +147,8 @@ class ConfigGenerator:
             config_content = config_content.replace("PERMANENT_NODES_HOSTS_PLACEHOLDER", permanent_nodes_hosts)
             config_content = config_content.replace("PERMANENT_NODES_ADDRS_PLACEHOLDER", permanent_nodes_addrs)
             
-            # Write processed config
-            dst_file = node_network_dir / f"{network_name}.cfg"
+            # Write network config to /etc/network/{network_name}.cfg (Cellframe expects this!)
+            dst_file = node_network_base / f"{network_name}.cfg"
             dst_file.write_text(config_content)
             
             logger.debug("network_config_generated",
