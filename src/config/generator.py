@@ -197,26 +197,21 @@ class ConfigGenerator:
     
     def _copy_base_configs(self, dest_dir: Path) -> None:
         """
-        Copy base configuration snippets.
+        Copy all base configuration snippets from templates.
         
         Args:
             dest_dir: Destination directory for configs
         """
-        # Copy disable-production-networks.cfg
-        src = self.templates_dir / "cellframe-node.cfg.d" / "disable-production-networks.cfg"
-        if src.exists():
-            dst = dest_dir / "disable-production-networks.cfg"
-            if not dst.exists():
-                shutil.copy2(src, dst)
-                logger.debug("copied_config", src=src.name, dst=str(dst))
-        
-        # Copy enable-stagenet.cfg or appropriate network config
-        src = self.templates_dir / "cellframe-node.cfg.d" / "enable-stagenet.cfg"
-        if src.exists():
-            dst = dest_dir / "enable-stagenet.cfg"
-            if not dst.exists():
-                shutil.copy2(src, dst)
-                logger.debug("copied_config", src=src.name, dst=str(dst))
+        # Copy all .cfg files from cellframe-node.cfg.d directory
+        src_dir = self.templates_dir / "cellframe-node.cfg.d"
+        if src_dir.exists():
+            for cfg_file in src_dir.glob("*.cfg"):
+                dst = dest_dir / cfg_file.name
+                if not dst.exists():
+                    shutil.copy2(cfg_file, dst)
+                    logger.debug("copied_config", src=cfg_file.name, dst=str(dst))
+        else:
+            logger.warning("base_configs_dir_not_found", dir=str(src_dir))
     
     def _generate_node_snippet(
         self,
@@ -273,7 +268,7 @@ events_sign_cert=node-{node.node_id}-cert
         force: bool = False
     ) -> None:
         """
-        Generate certificates for all nodes.
+        Generate certificates for all nodes using cf-cert-generator utility.
         
         Args:
             nodes: List of node configurations
@@ -284,34 +279,60 @@ events_sign_cert=node-{node.node_id}-cert
                    count=len(nodes),
                    force=force)
         
-        for node in nodes:
-            node_cert_dir = self.certs_cache / f"node{node.node_id}"
-            node_cert_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Also create in data/lib/ca for direct mount
-            node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
+        network_name = topology.network.name
+        node_count = len(nodes)
+        
+        # Check if certificates already exist (using standard node-addr name)
+        first_node_cert = self.data_cache / "node1" / "lib" / "ca" / "node-addr.dcert"
+        
+        if not force and first_node_cert.exists():
+            logger.info("certificates_already_exist", count=node_count)
+            return
+        
+        # Generate all certificates using cf-cert-generator
+        # This creates files in temporary certs_dir: nodeX/{network}-nodeX.dcert
+        result = self.cert_generator.generate_all(
+            network_name=network_name,
+            node_count=node_count,
+            validator_count=min(3, node_count)  # Use min 3 validators
+        )
+        
+        # Copy generated certificates to data/lib/ca directories for each node
+        import shutil
+        for node_idx in range(1, node_count + 1):
+            node_data_cert_dir = self.data_cache / f"node{node_idx}" / "lib" / "ca"
             node_data_cert_dir.mkdir(parents=True, exist_ok=True)
             
-            # Generate node-addr certificate
-            cert_name = f"node-{node.node_id}"
+            # Copy main node certificate (standard name: node-addr.dcert)
+            src_node_cert = self.certs_cache / f"node{node_idx}" / "node-addr.dcert"
+            dst_node_cert = node_data_cert_dir / "node-addr.dcert"
             
-            if force or not (node_data_cert_dir / "node-addr.dcert").exists():
-                logger.debug("generating_certificate",
-                           node_id=node.node_id,
-                           cert=cert_name)
-                
-                # Generate using Python generator
-                self.cert_generator.generate_node_cert(
-                    node_id=node.node_id,
-                    node_name=cert_name,
-                    output_dir=node_data_cert_dir
-                )
+            if src_node_cert.exists():
+                shutil.copy2(src_node_cert, dst_node_cert)
+                logger.debug("copied_node_cert",
+                           node_id=node_idx,
+                           src=str(src_node_cert),
+                           dst=str(dst_node_cert))
             else:
-                logger.debug("certificate_exists",
-                           node_id=node.node_id,
-                           cert=cert_name)
+                logger.warning("node_cert_not_found",
+                             node_id=node_idx,
+                             expected=str(src_node_cert))
+            
+            # Copy validator certificate if exists (ESBocs consensus)
+            # ESBOCS expects certificates named: {network}.master.{index}
+            # Example: stagenet.master.0, stagenet.master.1, etc.
+            validator_idx = node_idx - 1
+            src_validator_cert = self.certs_cache / f"node{node_idx}" / f"{network_name}.master.{validator_idx}.dcert"
+            if src_validator_cert.exists():
+                dst_validator_cert = node_data_cert_dir / f"{network_name}.master.{validator_idx}.dcert"
+                shutil.copy2(src_validator_cert, dst_validator_cert)
+                logger.debug("copied_validator_cert",
+                           node_id=node_idx,
+                           validator_idx=validator_idx,
+                           src=str(src_validator_cert),
+                           dst=str(dst_validator_cert))
         
-        logger.info("certificates_generated", count=len(nodes))
+        logger.info("certificates_generated", count=node_count)
     
     def clean(self, clean_certs: bool = False) -> None:
         """
