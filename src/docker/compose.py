@@ -72,6 +72,65 @@ class DockerComposeManager:
         run_command(cmd, cwd=self.project_dir)
         logger.info("build_completed")
     
+    def cleanup_stale_resources(self) -> None:
+        """
+        Clean up stale containers and networks from previous runs.
+        
+        This prevents "network overlap" and "container name conflict" errors.
+        """
+        logger.info("cleanup_stale_resources", project=self.project_name)
+        
+        # Find and remove stale containers with this project name
+        try:
+            stale_containers = self.client.containers.list(
+                all=True,
+                filters={"label": f"com.docker.compose.project={self.project_name}"}
+            )
+            
+            if stale_containers:
+                logger.info("removing_stale_containers", count=len(stale_containers))
+                for container in stale_containers:
+                    try:
+                        logger.debug("removing_container", 
+                                   name=container.name,
+                                   id=container.short_id)
+                        container.remove(force=True)
+                    except Exception as e:
+                        logger.warning("failed_to_remove_container",
+                                     name=container.name,
+                                     error=str(e))
+            else:
+                logger.debug("no_stale_containers")
+        except Exception as e:
+            logger.warning("failed_to_list_containers", error=str(e))
+        
+        # Find and remove stale networks with this project name
+        try:
+            all_networks = self.client.networks.list()
+            stale_networks = [
+                net for net in all_networks
+                if self.project_name in net.name
+            ]
+            
+            if stale_networks:
+                logger.info("removing_stale_networks", count=len(stale_networks))
+                for network in stale_networks:
+                    try:
+                        logger.debug("removing_network",
+                                   name=network.name,
+                                   id=network.short_id)
+                        network.remove()
+                    except Exception as e:
+                        logger.warning("failed_to_remove_network",
+                                     name=network.name,
+                                     error=str(e))
+            else:
+                logger.debug("no_stale_networks")
+        except Exception as e:
+            logger.warning("failed_to_list_networks", error=str(e))
+        
+        logger.info("cleanup_completed")
+    
     def up(
         self,
         services: Optional[List[str]] = None,

@@ -142,6 +142,10 @@ class NetworkManager:
             force=rebuild
         )
         
+        # Clean up stale Docker resources before starting
+        logger.info("cleaning_up_stale_resources")
+        self.compose.cleanup_stale_resources()
+        
         # Build images if requested
         if rebuild:
             logger.info("rebuilding_images")
