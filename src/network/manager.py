@@ -12,28 +12,14 @@ import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel
-
 from ..config.loader import ConfigLoader, NetworkTopology
 from ..config.generator import ConfigGenerator
 from ..docker.compose import DockerComposeManager
 from ..monitoring.health import HealthChecker, HealthStatus
 from ..utils.logger import get_logger
+from .models import NodeConfig
 
 logger = get_logger(__name__)
-
-
-class NodeConfig(BaseModel):
-    """Configuration for a single node."""
-    
-    node_id: int
-    role: str  # root, master, full, validator
-    node_type: str  # for grouping
-    rpc_port: int
-    p2p_port: int
-    cf_port: int
-    http_port: int
-    ip_address: str
 
 
 class NetworkManager:

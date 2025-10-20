@@ -13,7 +13,7 @@ from typing import Dict, List
 
 from ..config.loader import ConfigLoader, NetworkTopology
 from ..certs.generator import CertGenerator
-from ..network.manager import NodeConfig
+from ..network.models import NodeConfig
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
