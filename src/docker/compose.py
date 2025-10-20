@@ -306,9 +306,33 @@ class DockerComposeManager:
             logger.warning("failed_to_check_logs", container=container.name, error=str(e))
             return None
     
+    def _check_network_status(self, container: Container) -> Optional[str]:
+        """
+        Check network status in Cellframe node logs.
+        
+        Returns network state: "SYNC", "OFFLINE", "ONLINE", or None if unknown
+        """
+        try:
+            logs = container.logs(tail=200).decode("utf-8", errors="ignore")
+            
+            # Check for network states (most recent first)
+            if "NET_STATE_ONLINE" in logs or "state ONLINE" in logs:
+                return "ONLINE"
+            elif "NET_STATE_SYNC_CHAINS" in logs or "Synchronizing" in logs:
+                return "SYNC"
+            elif "NET_STATE_OFFLINE" in logs or "state OFFLINE" in logs:
+                return "OFFLINE"
+            
+            return None
+        except Exception as e:
+            logger.warning("failed_to_check_network_status",
+                         container=container.name,
+                         error=str(e))
+            return None
+    
     def _check_node_online_status(self, container: Container) -> bool:
         """
-        Check if Cellframe node is actually ONLINE by examining logs.
+        Check if Cellframe node is actually ONLINE by examining logs and network state.
         
         Args:
             container: Container to check
@@ -318,14 +342,43 @@ class DockerComposeManager:
         """
         try:
             # Get recent logs
-            logs = container.logs(tail=100).decode("utf-8", errors="ignore")
+            logs = container.logs(tail=200).decode("utf-8", errors="ignore")
+            
+            # Check for critical network initialization
+            if "No networks initialized!" in logs:
+                logger.warning("no_networks_initialized",
+                             container=container.name)
+                return False
+            
+            if "Can't find any nets" in logs:
+                logger.warning("no_nets_found",
+                             container=container.name)
+                return False
+            
+            # Check network status
+            net_status = self._check_network_status(container)
+            if net_status == "ONLINE":
+                logger.debug("network_online",
+                           container=container.name,
+                           status=net_status)
+                return True
+            elif net_status == "SYNC":
+                logger.debug("network_syncing",
+                           container=container.name,
+                           status=net_status)
+                # SYNC is acceptable - node is operational
+                return True
+            elif net_status == "OFFLINE":
+                logger.debug("network_offline",
+                           container=container.name,
+                           status=net_status)
+                return False
             
             # Look for positive indicators
             online_indicators = [
                 "Node started successfully",
                 "Network initialized",
                 "Ready to accept connections",
-                "Node is ONLINE",
                 "Listening on",
             ]
             
@@ -333,7 +386,7 @@ class DockerComposeManager:
                 if indicator in logs:
                     return True
             
-            # If container has been running for more than 10 seconds and no crashes, assume online
+            # If container has been running for more than 15 seconds and no crashes, assume online
             if container.attrs.get("State", {}).get("Running"):
                 started_at = container.attrs.get("State", {}).get("StartedAt", "")
                 if started_at:
@@ -343,8 +396,8 @@ class DockerComposeManager:
                         now = datetime.now(timezone.utc)
                         uptime = (now - start_time).total_seconds()
                         
-                        # If running for > 10s without crashes, assume online
-                        if uptime > 10:
+                        # If running for > 15s without crashes and no critical errors, assume online
+                        if uptime > 15:
                             logger.debug("node_assumed_online",
                                        container=container.name,
                                        uptime=uptime)
