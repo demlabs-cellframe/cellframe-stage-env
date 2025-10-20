@@ -1,93 +1,466 @@
-# cellframe-stage-env
+# Stage Environment - Portable Testing Infrastructure
 
+**Самодостаточный модуль для E2E тестирования блокчейн приложений**
 
+Stage Environment - это портативная инфраструктура для запуска и тестирования Cellframe Node в изолированной Docker среде. Модуль полностью автономен и может быть перенесён в любой проект.
 
-## Getting started
+## 🎯 Ключевые особенности
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+- ✅ **Полностью автономен** - управляет своим venv, зависимостями, Docker
+- ✅ **Портативен** - скопируйте в любой проект и всё заработает
+- ✅ **Универсален** - не привязан к конкретным типам тестов
+- ✅ **Современный стек** - Python 3, Typer, Docker SDK, async/await
+- ✅ **Artifacts collection** - автоматический сбор core dumps, логов, метрик
+- ✅ **Rich UI** - красивый terminal output с таблицами и цветами
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+## 🏗️ Архитектура
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.demlabs.net/cellframe/cellframe-stage-env.git
-git branch -M main
-git push -uf origin main
+stage-env/
+├── stage-env              # Bash wrapper (auto venv, dependencies)
+├── stage_env.py           # Python CLI (typer)
+├── src/                   # Python modules
+│   ├── utils/             # Logging, CLI helpers
+│   ├── config/            # Configuration loading (Pydantic)
+│   ├── docker/            # Docker Compose management
+│   ├── monitoring/        # Health checks, artifacts collection
+│   ├── network/           # Network topology management
+│   ├── build/             # Build management
+│   └── certs/             # Certificate generation
+├── config/                # Configuration files
+│   ├── topologies/        # Network topologies (JSON)
+│   └── templates/         # Config templates (Jinja2)
+├── tests/base/            # Base self-check tests
+├── cache/                 # All temporary files
+│   ├── build/             # Build artifacts
+│   ├── certs/             # Generated certificates
+│   ├── logs/              # Application logs
+│   ├── crash-artifacts/   # Core dumps, backtraces
+│   └── monitoring/        # Metrics
+└── requirements.txt       # Python dependencies
 ```
 
-## Integrate with your tools
+## 🚀 Quick Start
 
-- [ ] [Set up project integrations](https://gitlab.demlabs.net/cellframe/cellframe-stage-env/-/settings/integrations)
+### Установка
 
-## Collaborate with your team
+```bash
+# Просто скопируйте stage-env в ваш проект
+cp -r tests/stage-env /your/project/
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+# Или используйте напрямую
+cd tests/stage-env
+```
 
-## Test and Deploy
+### Использование
 
-Use the built-in continuous integration in GitLab.
+```bash
+# stage-env автоматически создаст venv и установит зависимости при первом запуске
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+# Сборка артефактов
+./stage-env build
 
-***
+# Генерация сертификатов
+./stage-env certs --network stagenet --nodes 4 --validators 3
 
-# Editing this README
+# Запуск тестовой сети
+./stage-env start --topology default --wait
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+# Проверка статуса
+./stage-env status
 
-## Suggestions for a good README
+# Просмотр логов
+./stage-env logs node1 --tail 100
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+# Выполнение команды в ноде
+./stage-env exec node1 "cellframe-node-cli net list"
 
-## Name
-Choose a self-explaining name for your project.
+# Запуск тестов
+./stage-env run-tests tests/functional tests/scenarios
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+# Очистка
+./stage-env clean --all
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+# Остановка
+./stage-env stop
+```
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+## 📊 Команды CLI
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+### Build Management
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+```bash
+# Сборка
+./stage-env build                    # Debug build
+./stage-env build --release          # Release build
+./stage-env build --clean            # Clean build
+./stage-env build --jobs 8           # Parallel jobs
+```
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+### Certificate Management
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+```bash
+# Генерация сертификатов
+./stage-env certs                              # Default (4 nodes, 3 validators)
+./stage-env certs --nodes 10 --validators 5   # Custom
+./stage-env certs --force                      # Regenerate
+```
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+### Network Management
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+```bash
+# Запуск
+./stage-env start                           # Start with default topology
+./stage-env start --topology minimal        # Use minimal topology
+./stage-env start --rebuild                 # Rebuild before start
+./stage-env start --clean                   # Clean everything before start
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+# Управление
+./stage-env stop                            # Stop network
+./stage-env restart                         # Restart all
+./stage-env restart node1                   # Restart specific node
+./stage-env status                          # Show network status
+```
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+### Monitoring & Debugging
 
-## License
-For open source projects, say how it is licensed.
+```bash
+# Логи
+./stage-env logs node1                      # Show logs
+./stage-env logs node1 --follow             # Follow logs
+./stage-env logs node1 --tail 500           # Last 500 lines
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+# Выполнение команд
+./stage-env exec node1 "cellframe-node-cli version"
+./stage-env exec node1 "ps aux"
+```
+
+### Testing
+
+```bash
+# Запуск тестов
+./stage-env run-tests tests/functional             # Functional tests
+./stage-env run-tests tests/scenarios              # E2E scenarios
+./stage-env run-tests tests/custom                 # Custom tests
+./stage-env run-tests dir1 dir2 dir3               # Multiple directories
+
+# С фильтрацией
+./stage-env run-tests tests/functional -k "test_utxo"    # Filter by pattern
+./stage-env run-tests tests/functional -p                # Parallel execution
+```
+
+### Cleanup
+
+```bash
+./stage-env clean --build                   # Clean build artifacts
+./stage-env clean --certs                   # Clean certificates
+./stage-env clean --all                     # Clean everything
+```
+
+## 🌐 Network Topologies
+
+Топологии определяются в `config/topologies/*.json`:
+
+```json
+{
+  "network": {
+    "name": "stagenet",
+    "network_id": "0x1",
+    "consensus": "esbocs"
+  },
+  "topology": {
+    "root": {
+      "count": 1,
+      "role": "root",
+      "consensus_participation": true,
+      "description": "Root validator node"
+    },
+    "master": {
+      "count": 2,
+      "role": "master",
+      "consensus_participation": true,
+      "description": "Master validator nodes"
+    },
+    "full": {
+      "count": 1,
+      "role": "full",
+      "consensus_participation": false,
+      "description": "Full node"
+    }
+  },
+  "network_settings": {
+    "base_rpc_port": 8545,
+    "base_p2p_port": 30303,
+    "base_cf_port": 8079,
+    "base_http_port": 8080,
+    "base_ip": "172.20.0.10",
+    "subnet": "172.20.0.0/16"
+  }
+}
+```
+
+### Создание своей топологии
+
+```bash
+# Скопируйте шаблон
+cp config/topologies/default.json config/topologies/my-topology.json
+
+# Отредактируйте параметры
+vim config/topologies/my-topology.json
+
+# Используйте
+./stage-env start --topology my-topology
+```
+
+## 🧪 Testing
+
+### Базовые тесты
+
+```bash
+# Запуск базовых тестов (самопроверка stage-env)
+./stage-env run-tests tests/base
+```
+
+Базовые тесты проверяют:
+- CLI доступность
+- Импорт Python модулей
+- Наличие requirements.txt
+- Корректность структуры
+
+### Интеграция с вашими тестами
+
+stage-env агностичен к типам тестов - он просто запускает pytest для указанных директорий.
+
+```bash
+# Ваши функциональные тесты
+./stage-env run-tests /path/to/your/functional/tests
+
+# Ваши E2E сценарии
+./stage-env run-tests /path/to/your/e2e/scenarios
+
+# Несколько директорий
+./stage-env run-tests /path1 /path2 /path3
+```
+
+## 🔧 Configuration
+
+### Python Dependencies
+
+Зависимости в `requirements.txt`:
+
+```
+# CLI & Output
+typer>=0.9.0              # Modern CLI framework
+rich>=13.0.0              # Terminal formatting
+
+# Docker Integration
+docker>=7.0.0             # Docker SDK with compose v2
+
+# HTTP & Async
+httpx>=0.25.0             # Modern async HTTP client
+
+# Configuration & Validation
+pydantic>=2.0.0           # Type-safe config models
+pyyaml>=6.0.0             # YAML parsing
+jinja2>=3.0.0             # Template rendering
+
+# Monitoring & Logging
+structlog>=23.2.0         # Structured logging
+psutil>=5.0.0             # System monitoring
+
+# Testing
+pytest>=7.0.0             # Test framework
+pytest-asyncio>=0.21.0    # Async test support
+
+# Development
+ruff>=0.1.0               # Fast linter
+black>=23.0.0             # Code formatter
+mypy>=1.0.0               # Type checker
+```
+
+### Environment Variables
+
+```bash
+# Docker
+export DOCKER_BUILDKIT=1           # Enable BuildKit
+export COMPOSE_DOCKER_CLI_BUILD=1  # Use Docker CLI for builds
+
+# Logging
+export STAGE_ENV_LOG_LEVEL=DEBUG   # Verbose logging
+export STAGE_ENV_LOG_JSON=1        # JSON logging for CI/CD
+```
+
+## 🐛 Artifacts Collection
+
+При падении ноды автоматически собираются артефакты в `cache/crash-artifacts/<node>_<timestamp>/`:
+
+- **Core dumps** - сжатые coredump файлы
+- **Application logs** - логи из контейнера
+- **Stack traces** - backtrace (если доступен gdb)
+- **System info** - состояние системы на момент падения
+- **Monitoring metrics** - метрики производительности
+- **SUMMARY.json** - полный отчёт
+
+```bash
+# Просмотр артефактов
+ls -lh cache/crash-artifacts/
+
+# Анализ последнего падения
+cd cache/crash-artifacts/node1_20251019_210000/
+cat SUMMARY.json
+```
+
+## 📦 Портативность
+
+### Перенос в другой проект
+
+```bash
+# 1. Скопируйте stage-env
+cp -r tests/stage-env /new/project/testing/
+
+# 2. Запустите (venv создастся автоматически)
+cd /new/project/testing/stage-env
+./stage-env --help
+
+# 3. Настройте топологии под ваш проект
+vim config/topologies/my-network.json
+
+# 4. Готово!
+./stage-env start --topology my-network
+```
+
+### Требования
+
+- Python 3.8+
+- Docker 20.10+
+- Bash (для wrapper скрипта)
+
+## 🔍 Troubleshooting
+
+### venv не создаётся
+
+```bash
+# Проверьте Python
+python3 --version
+
+# Установите venv
+sudo apt install python3-venv  # Debian/Ubuntu
+sudo dnf install python3-virtualenv  # Fedora/RHEL
+```
+
+### Docker не доступен
+
+```bash
+# Проверьте Docker
+docker --version
+docker ps
+
+# Добавьте пользователя в группу docker
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+### Зависимости не устанавливаются
+
+```bash
+# Принудительное переустановление
+rm -rf .venv
+./stage-env --help  # Пересоздаст venv
+```
+
+### Порты заняты
+
+```bash
+# Измените базовые порты в топологии
+vim config/topologies/default.json
+
+# Или используйте другую топологию
+./stage-env start --topology minimal
+```
+
+## 📚 Advanced Usage
+
+### Custom Topologies
+
+Создайте сложные топологии с произвольными параметрами:
+
+```json
+{
+  "topology": {
+    "validators": {
+      "count": 10,
+      "role": "validator",
+      "consensus_participation": true
+    },
+    "observers": {
+      "count": 5,
+      "role": "observer",
+      "consensus_participation": false
+    },
+    "bridges": {
+      "count": 2,
+      "role": "bridge",
+      "consensus_participation": false
+    }
+  }
+}
+```
+
+### Health Monitoring
+
+Мониторинг доступен через Python API:
+
+```python
+from src.monitoring.health import HealthChecker
+
+checker = HealthChecker()
+status = await checker.check_http("http://localhost:8080", "node1")
+
+if status.healthy:
+    print(f"Node healthy, response time: {status.response_time_ms}ms")
+```
+
+### Artifacts Collection API
+
+```python
+from src.monitoring.artifacts import ArtifactsCollector
+
+collector = ArtifactsCollector(base_path)
+artifacts = collector.collect_on_crash(
+    node_id="node1",
+    container_name="cellframe-stage-node1",
+    test_name="test_utxo_blocking"
+)
+```
+
+## 🤝 Integration with CI/CD
+
+```yaml
+# .github/workflows/e2e-tests.yml
+name: E2E Tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Run E2E tests
+        run: |
+          cd tests/stage-env
+          ./stage-env start --wait
+          ./stage-env run-tests tests/scenarios
+          ./stage-env stop
+```
+
+## 📝 License
+
+See project root LICENSE file.
+
+## 🔗 Links
+
+- [Cellframe Node](https://github.com/demlabs-cellframe/cellframe-node)
+- [DAP SDK](https://github.com/demlabs-cellframe/dap-sdk)
+- [Python Cellframe](https://github.com/demlabs-cellframe/python-cellframe)
