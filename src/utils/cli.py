@@ -71,7 +71,10 @@ def print_success(message: str) -> None:
 
 def print_error(message: str) -> None:
     """Print error message with red X."""
-    console.print(f"[red]✗[/red] {message}", stderr=True)
+    import sys
+    console.file = sys.stderr
+    console.print(f"[red]✗[/red] {message}")
+    console.file = sys.stdout
 
 
 def print_warning(message: str) -> None:
