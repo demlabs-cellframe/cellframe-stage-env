@@ -151,6 +151,16 @@ class ConfigGenerator:
             dst_file = node_network_base / f"{network_name}.cfg"
             dst_file.write_text(config_content)
             
+            # Copy chain configs to /etc/network/{network_name}/ directory
+            chains_template_dir = self.templates_dir / "chains"
+            if chains_template_dir.exists():
+                for chain_cfg in chains_template_dir.glob("*.cfg"):
+                    dst_chain_cfg = node_network_dir / chain_cfg.name
+                    shutil.copy2(chain_cfg, dst_chain_cfg)
+                    logger.debug("chain_config_copied",
+                               node_id=node.node_id,
+                               chain=chain_cfg.name)
+            
             logger.debug("network_config_generated",
                        node_id=node.node_id,
                        role=node.role,
