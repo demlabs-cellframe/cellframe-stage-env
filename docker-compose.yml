@@ -46,10 +46,9 @@ x-cf-node-template: &cf-node-template
     - ./cache/configs/node${NODE_ID:-1}/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
     - ./cache/configs/node${NODE_ID:-1}/network:/opt/cellframe-node/etc/network
     - ./cache/data/node${NODE_ID:-1}:/opt/cellframe-node/var
-    - ./cache/logs/node${NODE_ID:-1}:/opt/cellframe-node/var/log
-    - ./cache/certs/node${NODE_ID:-1}:/opt/cellframe-node/var/lib/ca:ro
     - ./cache/crash-artifacts/node${NODE_ID:-1}:/crash-artifacts/node-${NODE_ID:-1}
     - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    # Note: certs are now inside ./cache/data/node${NODE_ID}/lib/ca (part of /var mount)
   # Core dump configuration - allows crash-handler to collect core dumps
   ulimits:
     core: -1

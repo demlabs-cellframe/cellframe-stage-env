@@ -13,9 +13,15 @@ echo "Node ID: $NODE_ID"
 echo "Node Role: $NODE_ROLE"
 echo "Network: $NETWORK_NAME"
 
-# Ensure directories exist
+# Ensure all required directories exist
 mkdir -p /opt/cellframe-node/var/log
 mkdir -p /opt/cellframe-node/var/run
+mkdir -p /opt/cellframe-node/var/lib
+mkdir -p /opt/cellframe-node/var/lib/wallet
+mkdir -p /opt/cellframe-node/var/lib/global_db
+
+# Fix permissions for mounted volumes
+chmod -R 755 /opt/cellframe-node/var 2>/dev/null || true
 
 # Start cellframe-node
 echo "Starting cellframe-node..."
