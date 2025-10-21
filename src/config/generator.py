@@ -66,15 +66,15 @@ class ConfigGenerator:
         # Ensure cache directories exist
         self._ensure_directories()
         
-        # Generate network config files for all nodes
-        self._generate_network_configs(topology, nodes)
-        
-        # Generate node-specific configs
+        # Generate node-specific configs first (basic configs without chain configs)
         for node in nodes:
             self._generate_node_config(node, topology, force)
         
-        # Generate certificates
+        # Generate certificates (creates validator_addr.txt files)
         self._generate_certificates(nodes, topology, force)
+        
+        # Generate network config files for all nodes (requires validator addresses)
+        self._generate_network_configs(topology, nodes)
         
         logger.info("configurations_generated",
                    network=topology.network.name,
