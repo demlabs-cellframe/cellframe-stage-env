@@ -24,7 +24,7 @@ mkdir -p /opt/cellframe-node/var/lib/ca
 # Fix permissions for mounted volumes
 chmod -R 755 /opt/cellframe-node/var 2>/dev/null || true
 
-# Start cellframe-node
+# Start cellframe-node with maximum debug level
 echo "Starting cellframe-node..."
-exec /opt/cellframe-node/bin/cellframe-node -D 4
+exec /opt/cellframe-node/bin/cellframe-node -D 5
 
