@@ -188,13 +188,13 @@ class ConfigGenerator:
             config_content = config_content.replace("SEED_NODES_PLACEHOLDER", seed_nodes_hosts)
             config_content = config_content.replace("PERMANENT_NODES_HOSTS_PLACEHOLDER", permanent_nodes_hosts)
             
-            # Add blocks-sign-cert to network config (only for root/seed nodes)
-            if node.is_seed_node and node.node_id <= len(nodes):
+            # Add blocks-sign-cert to network config (for all validators: root + master nodes)
+            if node.consensus_participation:
                 validator_idx = node.node_id - 1
                 blocks_sign_cert = f"blocks-sign-cert={network_name}.master.{validator_idx}"
                 config_content = config_content.replace("BLOCKS_SIGN_CERT_PLACEHOLDER", blocks_sign_cert)
             else:
-                # Remove placeholder line for non-validators
+                # Remove placeholder line for non-validators (full nodes)
                 lines = config_content.split('\n')
                 filtered_lines = [line for line in lines if "BLOCKS_SIGN_CERT_PLACEHOLDER" not in line]
                 config_content = '\n'.join(filtered_lines)
@@ -271,7 +271,9 @@ class ConfigGenerator:
         network_name: str
     ) -> str:
         """
-        Collect validator addresses from generated certificates (only for root/seed nodes).
+        Collect validator addresses from generated certificates.
+        
+        ESBocs validators are nodes with consensus_participation=true (master nodes).
         
         Args:
             nodes: List of node configurations
@@ -282,11 +284,11 @@ class ConfigGenerator:
         """
         validator_addrs = []
         
-        # Only collect addresses for root (seed) nodes - they are the validators
-        root_nodes = [n for n in nodes if n.is_seed_node]
+        # Collect addresses for nodes participating in ESBocs consensus (master nodes)
+        validator_nodes = [n for n in nodes if n.consensus_participation]
         
-        for node in root_nodes:
-            # Root nodes use validator_addr.txt for ESBocs consensus
+        for node in validator_nodes:
+            # Validator nodes use validator_addr.txt for ESBocs consensus
             addr_file = self.certs_cache / f"node{node.node_id}" / "validator_addr.txt"
             
             if addr_file.exists():
@@ -538,11 +540,14 @@ events_sign_cert=node-{node.node_id}-cert
                            validator_idx=validator_idx,
                            dst=str(dst_cert))
         
-        # Copy ONLY OWN validator certificate to each ROOT node's /var/lib/ca (with private key)
-        # Only root/seed nodes are validators and need their validator certificates
-        # Other nodes will load validator certs from /share/ca (for verification only)
-        root_nodes = [n for n in nodes if n.is_seed_node]
-        for node in root_nodes:
+        # Copy validator certificates to /var/lib/ca for nodes that participate in consensus
+        # This includes:
+        # - Root nodes (DAG-PoA for zerochain)
+        # - Master nodes (ESBocs for main chain)
+        # Each node gets ONLY its OWN validator certificate (with private key)
+        # Other validator certs are available in /share/ca (for verification only)
+        validator_nodes = [n for n in nodes if n.is_seed_node or n.consensus_participation]
+        for node in validator_nodes:
             node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
             node_data_cert_dir.mkdir(parents=True, exist_ok=True)
             
@@ -555,6 +560,8 @@ events_sign_cert=node-{node.node_id}-cert
                 logger.debug("copied_own_validator_cert",
                            node_id=node.node_id,
                            validator_idx=validator_idx,
+                           is_seed=node.is_seed_node,
+                           is_consensus=node.consensus_participation,
                            dst=str(dst_cert))
         
         logger.info("certificates_generated", count=node_count)
