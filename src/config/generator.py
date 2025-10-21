@@ -206,18 +206,47 @@ class ConfigGenerator:
             # Copy chain configs to /etc/network/{network_name}/ directory
             chains_template_dir = self.templates_dir / "chains"
             if chains_template_dir.exists():
-                # Collect validator addresses from certificates
+                # Collect validator addresses from certificates (for ESBocs consensus)
                 validator_addrs = self._collect_validator_addresses(nodes, network_name)
+                
+                # Collect root node addresses from certificates (for zerochain authorized_nodes_addrs)
+                root_nodes_addrs = self._collect_root_node_addresses(nodes, network_name)
+                
+                # Calculate auth_certs_number for dag-poa consensus
+                root_nodes_count = len([n for n in nodes if n.is_seed_node])
+                auth_certs_number = root_nodes_count
+                auth_certs_number_verify = max(1, root_nodes_count // 2 + 1)  # N/2 + 1
                 
                 for chain_cfg in chains_template_dir.glob("*.cfg"):
                     # Read template
                     chain_content = chain_cfg.read_text()
                     
-                    # Replace VALIDATORS_ADDRS_PLACEHOLDER if present
+                    # Replace VALIDATORS_ADDRS_PLACEHOLDER if present (for ESBocs consensus)
                     if "VALIDATORS_ADDRS_PLACEHOLDER" in chain_content:
                         chain_content = chain_content.replace(
                             "VALIDATORS_ADDRS_PLACEHOLDER",
                             validator_addrs
+                        )
+                    
+                    # Replace AUTHORIZED_NODES_ADDRS_PLACEHOLDER if present (for zerochain DAG-PoA)
+                    if "AUTHORIZED_NODES_ADDRS_PLACEHOLDER" in chain_content:
+                        chain_content = chain_content.replace(
+                            "AUTHORIZED_NODES_ADDRS_PLACEHOLDER",
+                            root_nodes_addrs
+                        )
+                    
+                    # Replace AUTH_CERTS_NUMBER_PLACEHOLDER (for dag-poa)
+                    if "AUTH_CERTS_NUMBER_PLACEHOLDER" in chain_content:
+                        chain_content = chain_content.replace(
+                            "AUTH_CERTS_NUMBER_PLACEHOLDER",
+                            str(auth_certs_number)
+                        )
+                    
+                    # Replace AUTH_CERTS_NUMBER_VERIFY_PLACEHOLDER (for dag-poa)
+                    if "AUTH_CERTS_NUMBER_VERIFY_PLACEHOLDER" in chain_content:
+                        chain_content = chain_content.replace(
+                            "AUTH_CERTS_NUMBER_VERIFY_PLACEHOLDER",
+                            str(auth_certs_number_verify)
                         )
                     
                     # Write processed chain config
@@ -227,7 +256,8 @@ class ConfigGenerator:
                     logger.debug("chain_config_copied",
                                node_id=node.node_id,
                                chain=chain_cfg.name,
-                               validators=validator_addrs if "VALIDATORS_ADDRS_PLACEHOLDER" in chain_cfg.read_text() else "N/A")
+                               validators=validator_addrs if "VALIDATORS_ADDRS_PLACEHOLDER" in chain_cfg.read_text() else "N/A",
+                               root_nodes=root_nodes_addrs if "AUTHORIZED_NODES_ADDRS_PLACEHOLDER" in chain_cfg.read_text() else "N/A")
             
             logger.debug("network_config_generated",
                        node_id=node.node_id,
@@ -272,6 +302,50 @@ class ConfigGenerator:
         result = f"[{','.join(validator_addrs)}]"
         logger.info("validator_addresses_collected",
                    count=len(validator_addrs),
+                   addresses=result[:50] + "..." if len(result) > 50 else result)
+        
+        return result
+    
+    def _collect_root_node_addresses(
+        self,
+        nodes: List[NodeConfig],
+        network_name: str
+    ) -> str:
+        """
+        Collect root node addresses from generated certificates for zerochain authorized_nodes_addrs.
+        
+        Args:
+            nodes: List of node configurations
+            network_name: Network name
+            
+        Returns:
+            Comma-separated list of root node addresses (for zerochain authorized nodes)
+        """
+        root_addrs = []
+        
+        # Only collect addresses for root (seed) nodes
+        root_nodes = [n for n in nodes if n.is_seed_node]
+        
+        for node in root_nodes:
+            # Root nodes use node_addr.txt (not validator_addr.txt)
+            addr_file = self.certs_cache / f"node{node.node_id}" / "node_addr.txt"
+            
+            if addr_file.exists():
+                try:
+                    addr = addr_file.read_text().strip()
+                    if addr:
+                        root_addrs.append(addr)
+                        logger.debug("collected_root_node_addr",
+                                   node_id=node.node_id,
+                                   address=addr)
+                except Exception as e:
+                    logger.warning("failed_to_read_root_node_addr",
+                                 node_id=node.node_id,
+                                 error=str(e))
+        
+        result = f"[{','.join(root_addrs)}]"
+        logger.info("root_node_addresses_collected",
+                   count=len(root_addrs),
                    addresses=result[:50] + "..." if len(result) > 50 else result)
         
         return result
