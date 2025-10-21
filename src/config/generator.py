@@ -217,7 +217,7 @@ class ConfigGenerator:
                                  node_id=node_idx,
                                  error=str(e))
         
-        result = ','.join(validator_addrs)
+        result = f"[{','.join(validator_addrs)}]"
         logger.info("validator_addresses_collected",
                    count=len(validator_addrs),
                    addresses=result[:50] + "..." if len(result) > 50 else result)
