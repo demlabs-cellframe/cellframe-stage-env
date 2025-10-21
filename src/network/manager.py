@@ -18,6 +18,7 @@ from ..docker.compose import DockerComposeManager
 from ..monitoring.health import HealthChecker, HealthStatus
 from ..utils.logger import get_logger
 from .models import NodeConfig
+from .genesis import GenesisInitializer
 
 logger = get_logger(__name__)
 
@@ -51,6 +52,12 @@ class NetworkManager:
         
         # Health checker
         self.health_checker = HealthChecker()
+        
+        # Genesis initializer
+        self.genesis = GenesisInitializer(
+            base_path,
+            network_name=self.topology.network.name
+        )
         
         # Node configurations
         self.nodes: Dict[str, NodeConfig] = {}
@@ -173,6 +180,16 @@ class NetworkManager:
         # Wait for nodes to be ready
         if wait_ready:
             await self._wait_for_network_ready()
+        
+        # Initialize genesis state (create validator orders, register node aliases)
+        logger.info("initializing_genesis_state")
+        try:
+            await self.genesis.initialize(node_configs)
+            await self.genesis.register_node_aliases(node_configs)
+        except Exception as e:
+            logger.error("genesis_initialization_failed", error=str(e))
+            # Don't fail the whole start process, just log the error
+            # Validator orders might already exist in a restarted network
         
         logger.info("network_started",
                    nodes=len(self.nodes),

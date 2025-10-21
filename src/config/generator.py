@@ -406,6 +406,7 @@ events_sign_cert=node-{node.node_id}-cert
         
         # Generate all certificates using cf-cert-generator
         # This creates files in temporary certs_dir: nodeX/{network}-nodeX.dcert
+        # Note: force flag handled by ConfigGenerator level, cert_generator always regenerates
         result = self.cert_generator.generate_all(
             network_name=network_name,
             node_count=node_count,
