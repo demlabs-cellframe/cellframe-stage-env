@@ -154,18 +154,75 @@ class ConfigGenerator:
             # Copy chain configs to /etc/network/{network_name}/ directory
             chains_template_dir = self.templates_dir / "chains"
             if chains_template_dir.exists():
+                # Collect validator addresses from certificates
+                validator_addrs = self._collect_validator_addresses(nodes, network_name)
+                
                 for chain_cfg in chains_template_dir.glob("*.cfg"):
+                    # Read template
+                    chain_content = chain_cfg.read_text()
+                    
+                    # Replace VALIDATORS_ADDRS_PLACEHOLDER if present
+                    if "VALIDATORS_ADDRS_PLACEHOLDER" in chain_content:
+                        chain_content = chain_content.replace(
+                            "VALIDATORS_ADDRS_PLACEHOLDER",
+                            validator_addrs
+                        )
+                    
+                    # Write processed chain config
                     dst_chain_cfg = node_network_dir / chain_cfg.name
-                    shutil.copy2(chain_cfg, dst_chain_cfg)
+                    dst_chain_cfg.write_text(chain_content)
+                    
                     logger.debug("chain_config_copied",
                                node_id=node.node_id,
-                               chain=chain_cfg.name)
+                               chain=chain_cfg.name,
+                               validators=validator_addrs if "VALIDATORS_ADDRS_PLACEHOLDER" in chain_cfg.read_text() else "N/A")
             
             logger.debug("network_config_generated",
                        node_id=node.node_id,
                        role=node.role,
                        network=network_name,
                        dst=str(dst_file))
+    
+    def _collect_validator_addresses(
+        self,
+        nodes: List[NodeConfig],
+        network_name: str
+    ) -> str:
+        """
+        Collect validator addresses from generated certificates.
+        
+        Args:
+            nodes: List of node configurations
+            network_name: Network name
+            
+        Returns:
+            Comma-separated list of validator addresses
+        """
+        validator_addrs = []
+        
+        # For each node, try to read validator_addr.txt
+        for node_idx in range(1, len(nodes) + 1):
+            addr_file = self.certs_cache / f"node{node_idx}" / "validator_addr.txt"
+            
+            if addr_file.exists():
+                try:
+                    addr = addr_file.read_text().strip()
+                    if addr:
+                        validator_addrs.append(addr)
+                        logger.debug("collected_validator_addr",
+                                   node_id=node_idx,
+                                   address=addr)
+                except Exception as e:
+                    logger.warning("failed_to_read_validator_addr",
+                                 node_id=node_idx,
+                                 error=str(e))
+        
+        result = ','.join(validator_addrs)
+        logger.info("validator_addresses_collected",
+                   count=len(validator_addrs),
+                   addresses=result[:50] + "..." if len(result) > 50 else result)
+        
+        return result
     
     def _generate_node_config(
         self,
