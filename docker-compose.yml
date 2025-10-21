@@ -38,17 +38,18 @@ x-cf-node-template: &cf-node-template
     stagenet:
       ipv4_address: ${NODE_IP:-172.20.0.10}
   ports:
-    - "${RPC_PORT:-8545}:8545"
-    - "${P2P_PORT:-31337}:31337"  
-    - "${CF_PORT:-7007}:7007"
+    - "${HTTP_PORT:-8079}:8079"  # Cellframe HTTP/JSON-RPC/P2P port
   volumes:
+    # Mount main config file (generated per node with HTTP settings, etc)
+    - ./cache/configs/node${NODE_ID:-1}/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
     # Mount cellframe-node.cfg.d as rw so init-node.sh can create node-specific config
     - ./cache/configs/node${NODE_ID:-1}/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
     - ./cache/configs/node${NODE_ID:-1}/network:/opt/cellframe-node/etc/network
     - ./cache/data/node${NODE_ID:-1}:/opt/cellframe-node/var
+    - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./cache/crash-artifacts/node${NODE_ID:-1}:/crash-artifacts/node-${NODE_ID:-1}
     - ./cache/cellframe-packages:/var/cache/cellframe-packages
-    # Note: certs are now inside ./cache/data/node${NODE_ID}/lib/ca (part of /var mount)
+    # Note: private certs copied to /var/lib/ca at init, shared public certs mounted to /share/ca
   # Core dump configuration - allows crash-handler to collect core dumps
   ulimits:
     core: -1

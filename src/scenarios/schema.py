@@ -37,6 +37,7 @@ class NodeConfig(BaseModel):
     name: str = Field(..., description="Unique node identifier")
     role: NodeRole = Field(NodeRole.FULL, description="Node role in network")
     ip: Optional[str] = Field(None, description="Optional static IP")
+    port: Optional[int] = Field(None, ge=1024, le=65535, description="Optional custom node port (default: 8079)")
     validator: bool = Field(False, description="Is validator node")
     
     class Config:

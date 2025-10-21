@@ -76,6 +76,11 @@ class NetworkManager:
         
         for node_type, node_spec in self.topology.topology.items():
             for i in range(node_spec.count):
+                # Determine if seed node and balancer based on topology spec
+                is_seed = getattr(node_spec, 'is_seed_node', node_spec.role == 'root')
+                balancer_enabled = getattr(node_spec, 'balancer_enabled', node_spec.role == 'root')
+                consensus_participation = getattr(node_spec, 'consensus_participation', False)
+                
                 config = NodeConfig(
                     node_id=node_counter,
                     role=node_spec.role,
@@ -88,13 +93,19 @@ class NetworkManager:
                         settings.base_ip,
                         node_counter
                     ),
+                    is_seed_node=is_seed,
+                    balancer_enabled=balancer_enabled,
+                    consensus_participation=consensus_participation
                 )
                 
                 configs.append(config)
                 self.nodes[f"node{node_counter}"] = config
                 node_counter += 1
         
-        logger.info("node_configs_generated", count=len(configs))
+        logger.info("node_configs_generated",
+                   count=len(configs),
+                   seed_nodes=sum(1 for c in configs if c.is_seed_node),
+                   validators=sum(1 for c in configs if c.consensus_participation))
         return configs
     
     def _calculate_ip(self, base_ip: str, node_id: int) -> str:
@@ -145,6 +156,10 @@ class NetworkManager:
         # Clean up stale Docker resources before starting
         logger.info("cleaning_up_stale_resources")
         self.compose.cleanup_stale_resources()
+        
+        # Generate dynamic docker-compose.yml for all nodes
+        logger.info("generating_docker_compose")
+        self.compose.generate_compose_for_nodes(node_configs)
         
         # Build images if requested
         if rebuild:

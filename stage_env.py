@@ -222,10 +222,10 @@ def _show_status(network_mgr: NetworkManager):
     
     # Print summary
     print_panel(
-        text=f"Network: {status_data['network_name']}\n"
-             f"Topology: {status_data['topology']}\n"
-             f"Total Nodes: {status_data['total_nodes']}",
         title="📊 Network Status",
+        content=f"Network: {status_data['network_name']}\n"
+                f"Topology: {status_data['topology']}\n"
+                f"Total Nodes: {status_data['total_nodes']}",
         style="blue",
     )
     

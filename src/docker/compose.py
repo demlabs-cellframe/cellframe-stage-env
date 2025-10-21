@@ -6,6 +6,7 @@ Uses docker SDK 7.0+ with native compose v2 support.
 """
 
 import time
+import yaml
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -14,6 +15,7 @@ from docker.errors import DockerException, NotFound
 from docker.models.containers import Container
 
 from ..utils.logger import get_logger
+from ..network.models import NodeConfig
 
 logger = get_logger(__name__)
 
@@ -130,6 +132,109 @@ class DockerComposeManager:
             logger.warning("failed_to_list_networks", error=str(e))
         
         logger.info("cleanup_completed")
+    
+    def generate_compose_for_nodes(
+        self,
+        nodes: List[NodeConfig],
+        build_type: str = "debug",
+        cellframe_version: str = "latest"
+    ) -> None:
+        """
+        Generate docker-compose.yml dynamically for given nodes.
+        
+        Args:
+            nodes: List of node configurations
+            build_type: Build type (debug/release)
+            cellframe_version: Cellframe version tag
+        """
+        logger.info("generating_compose_file",
+                   node_count=len(nodes),
+                   build_type=build_type)
+        
+        # Read base template
+        template_file = self.project_dir / "docker-compose.yml"
+        
+        if not template_file.exists():
+            raise FileNotFoundError(f"Template not found: {template_file}")
+        
+        # Load base compose configuration
+        with open(template_file, 'r') as f:
+            compose_data = yaml.safe_load(f)
+        
+        # Extract template from x-cf-node-template
+        node_template = compose_data.get('x-cf-node-template')
+        if not node_template:
+            raise ValueError("No x-cf-node-template found in docker-compose.yml")
+        
+        # Clear existing node services (keep monitoring/test services)
+        services_to_keep = {}
+        for svc_name, svc_config in compose_data.get('services', {}).items():
+            if svc_name not in ['cf-node']:
+                services_to_keep[svc_name] = svc_config
+        
+        compose_data['services'] = services_to_keep
+        
+        # Generate service for each node
+        for node in nodes:
+            service_name = f"node-{node.node_id}"
+            
+            # Deep copy template
+            node_service = yaml.safe_load(yaml.dump(node_template))
+            
+            # Update service configuration
+            node_service['container_name'] = f"{self.project_name}-node-{node.node_id}"
+            node_service['hostname'] = f"{self.project_name}-node-{node.node_id}"
+            
+            # Set network IP
+            node_service['networks'] = {
+                'stagenet': {
+                    'ipv4_address': node.ip_address
+                }
+            }
+            
+            # Set ports - Cellframe uses 8079 for HTTP/JSON-RPC/P2P
+            node_service['ports'] = [
+                f"{node.http_port}:8079",  # Cellframe HTTP/JSON-RPC/P2P
+            ]
+            
+            # Set volumes with node-specific paths
+            node_service['volumes'] = [
+                # Main config file (generated per node with HTTP settings)
+                f"./cache/configs/node{node.node_id}/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg",
+                f"./cache/configs/node{node.node_id}/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d",
+                f"./cache/configs/node{node.node_id}/network:/opt/cellframe-node/etc/network",
+                f"./cache/data/node{node.node_id}:/opt/cellframe-node/var",
+                "./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro",
+                f"./cache/crash-artifacts/node{node.node_id}:/crash-artifacts/node-{node.node_id}",
+                "./cache/cellframe-packages:/var/cache/cellframe-packages"
+            ]
+            
+            # Set environment variables
+            node_service['environment'] = {
+                'NODE_ID': str(node.node_id),
+                'NODE_ROLE': node.role,
+                'NODE_TYPE': node.node_type,
+                'NODE_IP': node.ip_address,
+                'NETWORK_NAME': 'stagenet',
+                'DAP_DEBUG': '1',
+                'CELLFRAME_DEBUG': '1'
+            }
+            
+            # Add to services
+            compose_data['services'][service_name] = node_service
+        
+        # Write generated compose file
+        generated_file = self.project_dir / "docker-compose.generated.yml"
+        
+        with open(generated_file, 'w') as f:
+            yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
+        
+        # Update compose_file to use generated file
+        self.compose_file = generated_file
+        
+        logger.info("compose_file_generated",
+                   path=str(generated_file),
+                   services=len(nodes))
     
     def up(
         self,

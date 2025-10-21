@@ -1,13 +1,13 @@
 """
 Certificate generator for test network.
 
-Python wrapper around C certificate generator utility.
+Python wrapper around C certificate generator utility running in Docker.
 Handles generation of:
 - Node certificates
 - Validator certificates  
 - CA certificates
 
-Uses cf-cert-generator utility built in Docker image.
+Uses cf-cert-generator utility in Docker container for cross-platform compatibility.
 This utility generates proper binary DAP certificates using DAP SDK crypto.
 """
 
@@ -24,6 +24,9 @@ from ..utils.logger import get_logger
 from ..utils.cli import run_command, print_info, print_success, print_error
 
 logger = get_logger(__name__)
+
+# Docker image name for certificate generator
+CERT_GENERATOR_IMAGE = "cf-cert-generator:latest"
 
 
 class CertConfig(BaseModel):
@@ -46,55 +49,69 @@ class CertGenerator:
         """
         self.base_path = base_path
         self.certs_dir = base_path / "cache" / "certs"
-        self.cert_tool = base_path / "src" / "certs" / "cert-generator"
+        self.dockerfile = base_path / "Dockerfile.cert-generator"
         
         self.certs_dir.mkdir(parents=True, exist_ok=True)
         
         logger.info("cert_generator_initialized",
-                   certs_dir=str(self.certs_dir))
+                   certs_dir=str(self.certs_dir),
+                   docker_mode=True)
     
-    def build_cert_tool(self) -> bool:
+    def build_docker_image(self) -> bool:
         """
-        Build certificate generator C utility if needed.
+        Build Docker image for certificate generator if needed.
         
         Returns:
-            True if tool is ready
+            True if image is ready
         """
-        if self.cert_tool.exists():
-            logger.debug("cert_tool_exists")
-            return True
+        # Check if image exists
+        try:
+            result = subprocess.run(
+                ["docker", "images", "-q", CERT_GENERATOR_IMAGE],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            if result.stdout.strip():
+                logger.debug("cert_generator_image_exists")
+                return True
+        except subprocess.CalledProcessError:
+            pass
         
-        logger.info("building_cert_tool")
-        print_info("Building certificate generator...")
+        logger.info("building_cert_generator_image")
+        print_info("Building certificate generator Docker image...")
         
         try:
-            # Build with CMake
-            build_dir = self.base_path / "src" / "certs" / "build"
-            build_dir.mkdir(parents=True, exist_ok=True)
+            # Build Docker image from project root
+            project_root = self.base_path.parent.parent  # Go up from stage-env to project root
             
-            run_command(
-                ["cmake", ".."],
-                cwd=build_dir,
+            result = subprocess.run(
+                [
+                    "docker", "build",
+                    "-f", str(self.dockerfile),
+                    "-t", CERT_GENERATOR_IMAGE,
+                    str(project_root)
+                ],
+                capture_output=True,
+                text=True,
+                cwd=project_root
             )
             
-            run_command(
-                ["cmake", "--build", "."],
-                cwd=build_dir,
-            )
+            if result.returncode != 0:
+                logger.error("image_build_failed", 
+                           stderr=result.stderr,
+                           stdout=result.stdout)
+                print_error(f"Failed to build image: {result.stderr}")
+                return False
             
-            # Copy to src/certs/
-            import shutil
-            cert_gen = build_dir / "cert-generator"
-            if cert_gen.exists():
-                shutil.copy(cert_gen, self.cert_tool)
-                self.cert_tool.chmod(0o755)
-            
-            print_success("Certificate tool built")
-            logger.info("cert_tool_built")
+            print_success("Certificate generator image built")
+            logger.info("cert_generator_image_built")
             return True
             
         except Exception as e:
-            logger.error("cert_tool_build_failed", error=str(e))
+            logger.error("image_build_exception", error=str(e))
+            print_error(f"Exception building image: {e}")
             return False
     
     def generate_node_cert(
@@ -190,7 +207,7 @@ class CertGenerator:
         validator_count: int = 3,
     ) -> dict:
         """
-        Generate all certificates for network using cf-cert-generator utility.
+        Generate all certificates for network using Docker-based cf-cert-generator.
         
         Args:
             network_name: Network name (e.g., "stagenet")
@@ -203,60 +220,57 @@ class CertGenerator:
         logger.info("generating_all_certificates",
                    network=network_name,
                    nodes=node_count,
-                   validators=validator_count)
+                   validators=validator_count,
+                   method="docker")
         
-        print_info(f"Generating {node_count} node certificates using cf-cert-generator...")
+        print_info(f"Generating {node_count} node certificates using Docker...")
         
-        # Find cf-cert-generator utility
-        cert_tool_candidates = [
-            self.base_path / "src" / "certs" / "build" / "cf-cert-generator",
-            Path("/usr/local/bin/cf-cert-generator"),
-            shutil.which("cf-cert-generator"),
-        ]
-        
-        cert_tool = None
-        for candidate in cert_tool_candidates:
-            if candidate and Path(candidate).exists():
-                cert_tool = str(candidate)
-                break
-        
-        if not cert_tool:
-            print_error("cf-cert-generator not found. Please build it first.")
-            logger.error("cf_cert_generator_not_found")
-            raise FileNotFoundError(
-                "cf-cert-generator not found. Build it:\n"
-                "  cd tests/stage-env/src/certs && mkdir -p build && cd build\n"
-                "  cmake .. && make"
-            )
-        
-        logger.info("using_cert_tool", tool=cert_tool)
+        # Ensure Docker image is built
+        if not self.build_docker_image():
+            raise RuntimeError("Failed to build certificate generator Docker image")
         
         # Network ID for stagenet
         network_id = "0x1234"
         
-        # Generate certificates using C utility
+        # Prepare output directory with correct permissions
+        self.certs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Run certificate generator in Docker
+        # Mount certs directory as /output in container
         try:
-            logger.info("calling_cert_generator",
-                       tool=cert_tool,
+            logger.info("calling_docker_cert_generator",
+                       image=CERT_GENERATOR_IMAGE,
                        output_dir=str(self.certs_dir),
                        node_count=node_count,
+                       network_name=network_name,
                        network_id=network_id)
             
+            # Docker command: docker run --rm -v <host_path>:/output <image> /output <count> <network> <id>
             result_proc = subprocess.run(
-                [cert_tool, str(self.certs_dir), str(node_count), network_id],
+                [
+                    "docker", "run",
+                    "--rm",  # Remove container after execution
+                    "-v", f"{self.certs_dir.absolute()}:/output",  # Mount certs directory
+                    "-u", f"{os.getuid()}:{os.getgid()}",  # Run as current user to avoid permission issues
+                    CERT_GENERATOR_IMAGE,
+                    "/output",  # output directory inside container
+                    str(node_count),  # number of nodes
+                    network_name,  # network name
+                    network_id  # network ID
+                ],
                 capture_output=True,
                 text=True,
                 check=True,
             )
             
-            logger.info("cert_generator_output", stdout=result_proc.stdout)
+            logger.info("cert_generator_docker_output", stdout=result_proc.stdout)
             
             if result_proc.stderr:
-                logger.warning("cert_generator_stderr", stderr=result_proc.stderr)
+                logger.warning("cert_generator_docker_stderr", stderr=result_proc.stderr)
             
         except subprocess.CalledProcessError as e:
             print_error(f"Certificate generation failed: {e}")
-            logger.error("cert_generation_failed",
+            logger.error("cert_generation_docker_failed",
                         returncode=e.returncode,
                         stdout=e.stdout,
                         stderr=e.stderr)

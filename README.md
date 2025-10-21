@@ -244,6 +244,99 @@ stage-env агностичен к типам тестов - он просто з
 
 ## 🔧 Configuration
 
+### Stage Environment Config
+
+Stage-env использует централизованную конфигурацию в `config/stage-env.cfg` с дефолтными значениями для всех параметров.
+
+При первом запуске автоматически создаётся из `config/stage-env.cfg.default`:
+
+```bash
+# Автоматически создаётся при первом запуске
+./stage-env start
+```
+
+**Структура конфига:**
+
+```ini
+# config/stage-env.cfg
+[network]
+name = stagenet
+network_id = 0x1234
+consensus_type = esbocs
+
+[topology]
+root_nodes_count = 3
+master_nodes_count = 3
+full_nodes_count = 1
+
+[network_settings]
+node_port = 8079          # Стандартный порт Cellframe Node
+base_ip = 172.20.0.10
+subnet = 172.20.0.0/16
+
+[consensus]
+min_validators = 2
+new_round_delay = 45
+auth_certs_prefix = stagenet.master
+
+[features]
+crash_artifacts = true
+```
+
+**Переопределение параметров:**
+
+1. В конфиге (для глобальных изменений):
+```bash
+vim config/stage-env.cfg
+# Измените node_port = 9000
+```
+
+2. В шаблоне топологии (для конкретной топологии):
+```jinja2
+{
+  "network_settings": {
+    "node_port": {{ node_port | default(8079) }}
+  }
+}
+```
+
+3. В сценарии (для конкретной ноды):
+```yaml
+network:
+  nodes:
+    - name: node1
+      role: root
+      port: 9000  # Переопределение порта для этой ноды
+```
+
+**Топологии как шаблоны:**
+
+Топологии теперь являются Jinja2 шаблонами (`config/topologies/*.json.tpl`):
+
+```bash
+# Создание новой топологии
+cp config/topologies/default.json.tpl config/topologies/custom.json.tpl
+vim config/topologies/custom.json.tpl
+```
+
+Шаблон автоматически подставляет значения из `stage-env.cfg`:
+
+```json
+{
+  "network": {
+    "name": "{{ name | default('stagenet') }}",
+    "network_id": "{{ network_id | default('0x1234') }}"
+  },
+  "topology": {
+    "root_nodes": {
+      "count": {{ root_nodes_count | default(3) }}
+    }
+  },
+  "network_settings": {
+    "node_port": {{ node_port | default(8079) }}
+  }
+}
+```
 
 ### Environment Variables
 

@@ -17,5 +17,9 @@ class NodeConfig(BaseModel):
     p2p_port: int
     cf_port: int
     http_port: int
+    node_port: int = 8079  # Standard Cellframe node port for P2P/HTTP communications
     ip_address: str
+    is_seed_node: bool = False  # Whether this node acts as a seed node
+    balancer_enabled: bool = False  # Whether HTTP balancer is enabled
+    consensus_participation: bool = False  # Whether participates in consensus
 

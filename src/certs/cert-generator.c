@@ -26,6 +26,7 @@
 #include "dap_sign.h"
 #include "dap_hash.h"
 #include "dap_chain_common.h"
+#include "dap_stream.h"
 
 /* === Constants === */
 #define LOG_TAG "cf-cert-generator"
@@ -168,35 +169,34 @@ static int s_create_directory(const char *a_path) {
 static int s_validator_address_generate(dap_cert_t *a_cert, char *a_addr_out, size_t a_addr_size, uint64_t a_network_id) {
     dap_return_val_if_pass(!a_cert || !a_cert->enc_key || !a_addr_out || a_addr_size < DAP_CERT_GEN_MAX_VALIDATOR_ADDR_LEN, DAP_CERT_GEN_RET_ERROR);
     
-    debug_if(s_debug_more, L_DEBUG, "Generating validator address for cert=%p, network_id=0x%llX", 
+    debug_if(s_debug_more, L_DEBUG, "Generating validator node address for cert=%p, network_id=0x%llX", 
              (void*)a_cert, (unsigned long long)a_network_id);
     
-    /* Create address from certificate key using DAP SDK function */
-    dap_chain_addr_t l_addr;
-    memset(&l_addr, 0, sizeof(l_addr));
+    /* Generate node address from certificate (NOT wallet address!) */
+    /* cellframe network node addresses in format: 1234::5678::9ABC::DEF0 */
+    dap_stream_node_addr_t l_node_addr = dap_stream_node_addr_from_cert(a_cert);
     
-    /* Use provided network ID */
-    dap_chain_net_id_t l_net_id = { .uint64 = a_network_id };
-    
-    int l_fill_result = dap_chain_addr_fill_from_key(&l_addr, a_cert->enc_key, l_net_id);
-    if (l_fill_result != 0) {
-        log_it(L_ERROR, "Failed to generate address from certificate key");
+    if (l_node_addr.uint64 == 0) {
+        log_it(L_ERROR, "Failed to generate node address from certificate");
         return DAP_CERT_GEN_RET_ERROR;
     }
     
-    debug_if(s_debug_more, L_DEBUG, "Address structure filled, converting to string");
+    debug_if(s_debug_more, L_DEBUG, "Node address structure generated, converting to string");
     
-    /* Convert address to string */
-    const char *l_addr_str = dap_chain_addr_to_str(&l_addr);
+    /* Convert node address to hex string format: 1234::5678::9ABC::DEF0 */
+    char *l_addr_str = dap_stream_node_addr_to_str(l_node_addr, false);
     if (!l_addr_str) {
-        log_it(L_ERROR, "Failed to convert address to string");
+        log_it(L_ERROR, "Failed to convert node address to string");
         return DAP_CERT_GEN_RET_ERROR;
     }
     
     /* Copy to output buffer with safety check */
-    dap_return_val_if_pass(s_safe_strncpy(a_addr_out, a_addr_size, l_addr_str) != DAP_CERT_GEN_RET_SUCCESS, DAP_CERT_GEN_RET_ERROR);
+    int l_result = s_safe_strncpy(a_addr_out, a_addr_size, l_addr_str);
+    DAP_DELETE(l_addr_str);
     
-    debug_if(s_debug_more, L_DEBUG, "Validator address generated successfully: %s", a_addr_out);
+    dap_return_val_if_pass(l_result != DAP_CERT_GEN_RET_SUCCESS, DAP_CERT_GEN_RET_ERROR);
+    
+    debug_if(s_debug_more, L_DEBUG, "Validator node address generated successfully: %s", a_addr_out);
     return DAP_CERT_GEN_RET_SUCCESS;
 }
 
@@ -351,14 +351,72 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     debug_if(s_debug_more, L_DEBUG, "Certificate saved to %s", cert_file_main);
     log_it(L_INFO, "Certificate file saved: %s", cert_file_main);
     
-    /* Create ESBocs consensus certificate (copy of main certificate with network-specific name) */
-    /* ESBOCS expects certificates named as: {network}.{role}.{index} */
-    /* Example: stagenet.master.0, stagenet.master.1, etc. */
+    /* Create ESBocs consensus certificates (both private and public) */
+    /* ESBOCS expects certificates named as: {network}.master.{index} (auth_certs_prefix in chain config) */
+    /* Private cert: pvt.stagenet.master.0.dcert (with private key, only for this node) */
+    /* Public cert: stagenet.master.0.dcert (without private key, for all nodes) */
+    /* Note: Only root/seed nodes (first N nodes) get validator certificates */
+    
+    /* Save private certificate with pvt. prefix */
     if (s_safe_snprintf(cert_file_esbocs, sizeof(cert_file_esbocs), 
-                      "%s/%s.master.%d.dcert", node_dir, network_name, node->node_id - 1) == DAP_CERT_GEN_RET_SUCCESS) {
+                      "%s/pvt.%s.master.%d.dcert", node_dir, network_name, node->node_id - 1) == DAP_CERT_GEN_RET_SUCCESS) {
         if (s_copy_file(cert_file_main, cert_file_esbocs) == DAP_CERT_GEN_RET_SUCCESS) {
-            log_it(L_INFO, "ESBocs validator certificate created: %s.master.%d", network_name, node->node_id - 1);
+            log_it(L_INFO, "ESBocs private validator certificate: pvt.%s.master.%d", network_name, node->node_id - 1);
         }
+    }
+    
+    /* Create public-only certificate using DAP SDK functions */
+    /* Extract public key from the certificate */
+    dap_pkey_t *l_pkey = dap_cert_to_pkey(node->cert);
+    if (!l_pkey) {
+        log_it(L_ERROR, "Failed to extract public key from certificate");
+    } else {
+        /* Create new certificate with only public key */
+        char l_pub_cert_name[DAP_CERT_GEN_MAX_CERT_NAME_LEN];
+        snprintf(l_pub_cert_name, sizeof(l_pub_cert_name), "%s.master.%d", network_name, node->node_id - 1);
+        
+        /* Create encryption key from public key only */
+        dap_enc_key_t *l_pub_key = dap_enc_key_new(node->cert->enc_key->type);
+        if (l_pub_key) {
+            /* Serialize public key */
+            size_t l_pub_key_size = 0;
+            uint8_t *l_pub_key_data = dap_enc_key_serialize_pub_key(node->cert->enc_key, &l_pub_key_size);
+            
+            if (l_pub_key_data && l_pub_key_size > 0) {
+                /* Deserialize into new key (without private part) */
+                if (dap_enc_key_deserialize_pub_key(l_pub_key, l_pub_key_data, l_pub_key_size) == 0) {
+                    /* Create certificate with public key only */
+                    dap_cert_t *l_pub_cert = DAP_NEW_Z(dap_cert_t);
+                    if (l_pub_cert) {
+                        snprintf(l_pub_cert->name, sizeof(l_pub_cert->name), "%s", l_pub_cert_name);
+                        l_pub_cert->enc_key = l_pub_key;
+                        
+                        /* Save public certificate */
+                        if (s_safe_snprintf(cert_file_esbocs, sizeof(cert_file_esbocs), 
+                                          "%s/%s.dcert", node_dir, l_pub_cert_name) == DAP_CERT_GEN_RET_SUCCESS) {
+                            if (dap_cert_file_save(l_pub_cert, cert_file_esbocs) == 0) {
+                                log_it(L_INFO, "ESBocs public validator certificate: %s", l_pub_cert_name);
+                            } else {
+                                log_it(L_ERROR, "Failed to save public certificate");
+                            }
+                        }
+                        
+                        /* Cleanup: set enc_key to NULL before delete to avoid double-free */
+                        l_pub_cert->enc_key = NULL;
+                        dap_cert_delete(l_pub_cert);
+                    }
+                    dap_enc_key_delete(l_pub_key);
+                } else {
+                    log_it(L_ERROR, "Failed to deserialize public key");
+                    dap_enc_key_delete(l_pub_key);
+                }
+                DAP_DELETE(l_pub_key_data);
+            } else {
+                log_it(L_ERROR, "Failed to serialize public key");
+                dap_enc_key_delete(l_pub_key);
+            }
+        }
+        DAP_DELETE(l_pkey);
     }
     
     log_it(L_INFO, "Certificate generated for %s: %s", node->node_name, node->validator_addr);

@@ -2,12 +2,13 @@
 Configuration loader for stage environment.
 
 Handles loading and validation of:
-- Network topologies (JSON)
+- Stage environment config (stage-env.cfg)
+- Network topologies (JSON templates)
 - Template configurations (Jinja2)
-- Environment settings (YAML)
 """
 
 import json
+import configparser
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -31,8 +32,10 @@ class NetworkTopology(BaseModel):
     class TopologyNode(BaseModel):
         count: int = Field(ge=0)
         role: str
-        consensus_participation: bool
-        description: str
+        consensus_participation: bool = False
+        is_seed_node: bool = False
+        balancer_enabled: bool = False
+        description: str = ""
     
     class Consensus(BaseModel):
         type: str
@@ -41,11 +44,19 @@ class NetworkTopology(BaseModel):
         collecting_level: float = Field(ge=0.0, le=100.0)
         auth_certs_prefix: str
     
+    class Balancer(BaseModel):
+        enabled: bool = False
+        type: str = "http"  # http or dns
+        uri: str = "f0intlt4eyl03htogu"
+        max_links_response: int = 10
+        request_delay: int = 20
+    
     class NetworkSettings(BaseModel):
         base_rpc_port: int = Field(ge=1024, le=65535)
         base_p2p_port: int = Field(ge=1024, le=65535)
         base_cf_port: int = Field(ge=1024, le=65535)
         base_http_port: int = Field(ge=1024, le=65535)
+        node_port: int = Field(8079, ge=1024, le=65535, description="Standard Cellframe node port for P2P/HTTP")
         base_ip: str
         subnet: str
     
@@ -56,6 +67,7 @@ class NetworkTopology(BaseModel):
     network: Network
     topology: Dict[str, TopologyNode]
     consensus: Consensus
+    balancer: Balancer = Balancer()
     network_settings: NetworkSettings
     build: Build
     features: Dict[str, bool] = {}
@@ -92,30 +104,87 @@ class ConfigLoader:
         
         logger.debug("config_loader_initialized", base_path=str(base_path))
     
-    def load_topology(self, name: str = "default") -> NetworkTopology:
+    def load_stage_config(self) -> Dict[str, Any]:
         """
-        Load network topology configuration.
+        Load stage-env configuration file.
+        Creates from .default if not exists.
+        
+        Returns:
+            Configuration dictionary with all default values
+        """
+        config_file = self.config_dir / "stage-env.cfg"
+        default_file = self.config_dir / "stage-env.cfg.default"
+        
+        # Create from default if doesn't exist
+        if not config_file.exists() and default_file.exists():
+            logger.info("creating_config_from_default")
+            import shutil
+            shutil.copy2(default_file, config_file)
+        
+        # Load config
+        if not config_file.exists():
+            logger.error("config_not_found", path=str(config_file))
+            raise FileNotFoundError(f"Configuration file not found: {config_file}")
+        
+        config = configparser.ConfigParser()
+        config.read(config_file)
+        
+        # Convert to flat dictionary for Jinja2
+        result = {}
+        for section in config.sections():
+            for key, value in config.items(section):
+                # Try to parse as int/float/bool
+                if value.lower() in ('true', 'false'):
+                    result[key] = value.lower() == 'true'
+                elif value.replace('.', '', 1).isdigit():
+                    result[key] = float(value) if '.' in value else int(value)
+                else:
+                    result[key] = value
+        
+        logger.debug("config_loaded", keys=len(result))
+        return result
+    
+    def load_topology(self, name: str = "default", context: Dict[str, Any] = None) -> NetworkTopology:
+        """
+        Load network topology configuration from Jinja2 template.
         
         Args:
-            name: Topology name (without .json extension)
+            name: Topology name (without extension)
+            context: Template context variables (merged with stage-env.cfg)
             
         Returns:
             Validated NetworkTopology object
             
         Raises:
-            FileNotFoundError: If topology file doesn't exist
+            FileNotFoundError: If topology template doesn't exist
             ValueError: If topology is invalid
         """
-        topology_file = self.topologies_dir / f"{name}.json"
+        template_file = self.topologies_dir / f"{name}.json.tpl"
         
-        if not topology_file.exists():
-            logger.error("topology_not_found", topology=name, path=str(topology_file))
-            raise FileNotFoundError(f"Topology '{name}' not found at {topology_file}")
+        if not template_file.exists():
+            logger.error("topology_template_not_found", topology=name, 
+                        path=str(template_file))
+            raise FileNotFoundError(
+                f"Topology template '{name}.json.tpl' not found at {template_file}"
+            )
         
-        logger.info("loading_topology", topology=name)
+        logger.info("loading_topology_from_template", topology=name)
         
-        with open(topology_file) as f:
-            data = json.load(f)
+        # Load stage-env.cfg defaults
+        config_context = self.load_stage_config()
+        
+        # Merge with provided context (provided context takes precedence)
+        if context:
+            config_context.update(context)
+        
+        # Render template
+        with open(template_file) as f:
+            template_content = f.read()
+        
+        from jinja2 import Template
+        template = Template(template_content)
+        rendered = template.render(**config_context)
+        data = json.loads(rendered)
         
         topology = NetworkTopology(**data)
         logger.debug("topology_loaded", 

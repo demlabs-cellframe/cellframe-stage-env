@@ -104,6 +104,34 @@ class ConfigGenerator:
         
         network_name = topology.network.name
         
+        # Generate base cellframe-node.cfg for each node first
+        base_cfg_template = self.templates_dir / "base" / "cellframe-node.cfg.template"
+        if base_cfg_template.exists():
+            base_cfg_content = base_cfg_template.read_text()
+            # Enable HTTP server by default for testing (TODO: make configurable via topology/scenario)
+            http_enabled = "true"
+            base_cfg_content = base_cfg_content.replace("HTTP_SERVER_ENABLED_PLACEHOLDER", http_enabled)
+            
+            for node in nodes:
+                node_etc_base = self.configs_cache / f"node{node.node_id}"
+                node_etc_base.mkdir(parents=True, exist_ok=True)
+                base_cfg_path = node_etc_base / "cellframe-node.cfg"
+                base_cfg_path.write_text(base_cfg_content)
+                logger.debug("base_config_generated", node_id=node.node_id)
+                
+                # Copy config snippets from cellframe-node.cfg.d templates
+                cfg_d_template_dir = self.templates_dir / "cellframe-node.cfg.d"
+                if cfg_d_template_dir.exists():
+                    node_cfg_d = node_etc_base / "cellframe-node.cfg.d"
+                    node_cfg_d.mkdir(parents=True, exist_ok=True)
+                    
+                    for cfg_snippet in cfg_d_template_dir.glob("*.cfg"):
+                        dst_snippet = node_cfg_d / cfg_snippet.name
+                        shutil.copy2(cfg_snippet, dst_snippet)
+                        logger.debug("config_snippet_copied",
+                                   node_id=node.node_id,
+                                   snippet=cfg_snippet.name)
+        
         # Source template for network config
         src_network_cfg = self.templates_dir / f"{network_name}.cfg"
         
@@ -127,16 +155,30 @@ class ConfigGenerator:
         root_nodes = [n for n in nodes if n.role == 'root']
         master_nodes = [n for n in nodes if n.role == 'master']
         
-        seed_nodes_hosts = ','.join([n.ip_address for n in root_nodes])
-        permanent_nodes_hosts = ','.join([n.ip_address for n in master_nodes])
-        permanent_nodes_addrs = ','.join([f"{n.ip_address}:{n.p2p_port}" for n in master_nodes])
+        # Format as arrays in DAP config format: param=[value1,value2,value3]
+        # Based on dap_config.c:237 - dap_strsplit(l_val, ",", -1)
+        # Array must be ONE line starting with [ and ending with ]
+        # Format: IP:PORT where PORT is configurable via topology (default 8079)
+        if root_nodes:
+            hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in root_nodes])
+            seed_nodes_hosts = f"[{hosts_list}]"
+        else:
+            seed_nodes_hosts = "[]"
+            
+        if master_nodes:
+            hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in master_nodes])
+            permanent_nodes_hosts = f"[{hosts_list}]"
+        else:
+            permanent_nodes_hosts = "[]"
         
         # Generate network config for each node
         # Cellframe Node expects:
-        # 1. /etc/network/{network_name}.cfg - main network config file
-        # 2. /etc/network/{network_name}/ - directory for chain configs
+        # 1. /etc/{cellframe-node,network}.cfg - main configs  
+        # 2. /etc/network/{network_name}.cfg - network config file
+        # 3. /etc/network/{network_name}/ - directory for chain configs
         for node in nodes:
-            node_network_base = self.configs_cache / f"node{node.node_id}" / "network"
+            node_etc_base = self.configs_cache / f"node{node.node_id}"
+            node_network_base = node_etc_base / "network"
             node_network_dir = node_network_base / network_name
             node_network_dir.mkdir(parents=True, exist_ok=True)
             
@@ -145,7 +187,17 @@ class ConfigGenerator:
             config_content = config_content.replace("NODE_ROLE_PLACEHOLDER", node.role)
             config_content = config_content.replace("SEED_NODES_PLACEHOLDER", seed_nodes_hosts)
             config_content = config_content.replace("PERMANENT_NODES_HOSTS_PLACEHOLDER", permanent_nodes_hosts)
-            config_content = config_content.replace("PERMANENT_NODES_ADDRS_PLACEHOLDER", permanent_nodes_addrs)
+            
+            # Add blocks-sign-cert to network config (only for root/seed nodes)
+            if node.is_seed_node and node.node_id <= len(nodes):
+                validator_idx = node.node_id - 1
+                blocks_sign_cert = f"blocks-sign-cert={network_name}.master.{validator_idx}"
+                config_content = config_content.replace("BLOCKS_SIGN_CERT_PLACEHOLDER", blocks_sign_cert)
+            else:
+                # Remove placeholder line for non-validators
+                lines = config_content.split('\n')
+                filtered_lines = [line for line in lines if "BLOCKS_SIGN_CERT_PLACEHOLDER" not in line]
+                config_content = '\n'.join(filtered_lines)
             
             # Write network config to /etc/network/{network_name}.cfg (Cellframe expects this!)
             dst_file = node_network_base / f"{network_name}.cfg"
@@ -301,6 +353,8 @@ class ConfigGenerator:
         snippet_path = config_dir / f"node{node.node_id}.cfg"
         
         # Generate config content
+        # Note: [server] section removed - port configuration handled by enable-server.cfg
+        # to avoid conflicts and use single port 8079 for all communications
         config_content = f"""# Node {node.node_id} configuration
 # Role: {node.role}
 # Type: {node.node_type}
@@ -309,16 +363,6 @@ class ConfigGenerator:
 # Node identification
 node_id={node.node_id}
 node_role={node.role}
-
-[server]
-# Network ports
-enabled=true
-listen_address=[0.0.0.0:{node.cf_port}]
-
-[http]
-# HTTP/JSON-RPC interface  
-enabled=true
-listen_address=[0.0.0.0:{node.http_port}]
 
 [dag]
 # DAG settings
@@ -389,19 +433,48 @@ events_sign_cert=node-{node.node_id}-cert
                              node_id=node_idx,
                              expected=str(src_node_cert))
             
-            # Copy validator certificate if exists (ESBocs consensus)
-            # ESBOCS expects certificates named: {network}.master.{index}
-            # Example: stagenet.master.0, stagenet.master.1, etc.
+        # Organize validator certificates according to ESBocs requirements:
+        # 1. Public certificates (stagenet.master.N) → /opt/cellframe-node/share/ca (mounted, shared for all)
+        # 2. Private certificates (pvt.stagenet.master.N) → copied to /opt/cellframe-node/var/lib/ca at runtime
+        # Note: ESBocs uses auth_certs_prefix=stagenet.master in chain config
+        logger.info("organizing_validator_certificates")
+        
+        # Create shared public certificates directory (will be mounted to all containers)
+        shared_certs_dir = self.configs_cache / "shared" / "ca"
+        shared_certs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Copy validator certificates (FULL, with private keys) to shared directory
+        # All nodes need to see all validator certs for consensus
+        # Each node will also have its OWN cert in /var/lib/ca which takes priority
+        for val_node_idx in range(1, node_count + 1):
+            validator_idx = val_node_idx - 1
+            # Use PRIVATE cert (full version with private key) as source
+            src_private_cert = self.certs_cache / f"node{val_node_idx}" / f"pvt.{network_name}.master.{validator_idx}.dcert"
+            
+            if src_private_cert.exists():
+                dst_cert = shared_certs_dir / f"{network_name}.master.{validator_idx}.dcert"
+                # Copy full cert to shared directory
+                shutil.copy2(src_private_cert, dst_cert)
+                logger.debug("copied_validator_cert_to_shared",
+                           validator_idx=validator_idx,
+                           dst=str(dst_cert))
+        
+        # Copy ONLY OWN validator certificate to each node's /var/lib/ca (with private key)
+        # Other nodes' certs will be loaded from /share/ca (public keys only needed for verification)
+        for node_idx in range(1, node_count + 1):
+            node_data_cert_dir = self.data_cache / f"node{node_idx}" / "lib" / "ca"
+            node_data_cert_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy only this node's own validator certificate (full version with private key)
             validator_idx = node_idx - 1
-            src_validator_cert = self.certs_cache / f"node{node_idx}" / f"{network_name}.master.{validator_idx}.dcert"
-            if src_validator_cert.exists():
-                dst_validator_cert = node_data_cert_dir / f"{network_name}.master.{validator_idx}.dcert"
-                shutil.copy2(src_validator_cert, dst_validator_cert)
-                logger.debug("copied_validator_cert",
+            src_cert = self.certs_cache / f"node{node_idx}" / f"pvt.{network_name}.master.{validator_idx}.dcert"
+            if src_cert.exists():
+                dst_cert = node_data_cert_dir / f"{network_name}.master.{validator_idx}.dcert"
+                shutil.copy2(src_cert, dst_cert)
+                logger.debug("copied_own_validator_cert",
                            node_id=node_idx,
                            validator_idx=validator_idx,
-                           src=str(src_validator_cert),
-                           dst=str(dst_validator_cert))
+                           dst=str(dst_cert))
         
         logger.info("certificates_generated", count=node_count)
     
