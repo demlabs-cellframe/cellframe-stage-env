@@ -70,8 +70,10 @@ class GenesisInitializer:
         logger.info("waiting_for_node_initialization")
         await asyncio.sleep(5)
         
-        # Add root nodes to each other's nodelists first
-        await self._setup_root_nodelists(validator_nodes)
+        # Root nodes will connect to each other via seed_nodes_hosts configuration
+        # No need to manually add them to nodelist - standard bootstrap mechanism will handle it
+        logger.info("root_nodes_will_connect_via_seed_nodes_hosts",
+                   seed_nodes=len(validator_nodes))
         
         # Create validator orders for each validator node
         for node in validator_nodes:
