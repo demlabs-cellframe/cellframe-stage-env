@@ -271,20 +271,23 @@ class ConfigGenerator:
         network_name: str
     ) -> str:
         """
-        Collect validator addresses from generated certificates.
+        Collect validator addresses from generated certificates (only for root/seed nodes).
         
         Args:
             nodes: List of node configurations
             network_name: Network name
             
         Returns:
-            Comma-separated list of validator addresses
+            Comma-separated list of validator addresses (for ESBocs consensus)
         """
         validator_addrs = []
         
-        # For each node, try to read validator_addr.txt
-        for node_idx in range(1, len(nodes) + 1):
-            addr_file = self.certs_cache / f"node{node_idx}" / "validator_addr.txt"
+        # Only collect addresses for root (seed) nodes - they are the validators
+        root_nodes = [n for n in nodes if n.is_seed_node]
+        
+        for node in root_nodes:
+            # Root nodes use validator_addr.txt for ESBocs consensus
+            addr_file = self.certs_cache / f"node{node.node_id}" / "validator_addr.txt"
             
             if addr_file.exists():
                 try:
@@ -292,11 +295,11 @@ class ConfigGenerator:
                     if addr:
                         validator_addrs.append(addr)
                         logger.debug("collected_validator_addr",
-                                   node_id=node_idx,
+                                   node_id=node.node_id,
                                    address=addr)
                 except Exception as e:
                     logger.warning("failed_to_read_validator_addr",
-                                 node_id=node_idx,
+                                 node_id=node.node_id,
                                  error=str(e))
         
         result = f"[{','.join(validator_addrs)}]"
@@ -473,8 +476,9 @@ events_sign_cert=node-{node.node_id}-cert
         
         # Check if certificates already exist (using standard node-addr name)
         first_node_cert = self.data_cache / "node1" / "lib" / "ca" / "node-addr.dcert"
+        first_node_addr = self.certs_cache / "node1" / "node_addr.txt"
         
-        if not force and first_node_cert.exists():
+        if not force and first_node_cert.exists() and first_node_addr.exists():
             logger.info("certificates_already_exist", count=node_count)
             return
         
@@ -534,20 +538,22 @@ events_sign_cert=node-{node.node_id}-cert
                            validator_idx=validator_idx,
                            dst=str(dst_cert))
         
-        # Copy ONLY OWN validator certificate to each node's /var/lib/ca (with private key)
-        # Other nodes' certs will be loaded from /share/ca (public keys only needed for verification)
-        for node_idx in range(1, node_count + 1):
-            node_data_cert_dir = self.data_cache / f"node{node_idx}" / "lib" / "ca"
+        # Copy ONLY OWN validator certificate to each ROOT node's /var/lib/ca (with private key)
+        # Only root/seed nodes are validators and need their validator certificates
+        # Other nodes will load validator certs from /share/ca (for verification only)
+        root_nodes = [n for n in nodes if n.is_seed_node]
+        for node in root_nodes:
+            node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
             node_data_cert_dir.mkdir(parents=True, exist_ok=True)
             
             # Copy only this node's own validator certificate (full version with private key)
-            validator_idx = node_idx - 1
-            src_cert = self.certs_cache / f"node{node_idx}" / f"pvt.{network_name}.master.{validator_idx}.dcert"
+            validator_idx = node.node_id - 1
+            src_cert = self.certs_cache / f"node{node.node_id}" / f"pvt.{network_name}.master.{validator_idx}.dcert"
             if src_cert.exists():
                 dst_cert = node_data_cert_dir / f"{network_name}.master.{validator_idx}.dcert"
                 shutil.copy2(src_cert, dst_cert)
                 logger.debug("copied_own_validator_cert",
-                           node_id=node_idx,
+                           node_id=node.node_id,
                            validator_idx=validator_idx,
                            dst=str(dst_cert))
         
