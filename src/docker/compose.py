@@ -712,12 +712,18 @@ class DockerComposeManager:
                 # Reload container info to get fresh network settings
                 container.reload()
                 
-                # Get container IP address
-                container_ip = container.attrs['NetworkSettings']['Networks'].get('cellframe-stage_default', {}).get('IPAddress', '')
+                # Get container IP address from any connected network
+                networks = container.attrs['NetworkSettings']['Networks']
+                container_ip = None
+                for net_name, net_settings in networks.items():
+                    if net_settings.get('IPAddress'):
+                        container_ip = net_settings['IPAddress']
+                        break
+                
                 if not container_ip:
                     logger.warning("failed_to_get_container_ip",
                                  node=service_name,
-                                 networks=list(container.attrs['NetworkSettings']['Networks'].keys()))
+                                 networks=list(networks.keys()))
                     continue
                 
                 # Now add this node to the list using its address and IP
