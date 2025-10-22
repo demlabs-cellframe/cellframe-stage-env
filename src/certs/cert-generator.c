@@ -372,23 +372,22 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     log_it(L_INFO, "  l_validator_cert pointer: %p", (void*)l_validator_cert);
     log_it(L_INFO, "  Are they the same? %s", (node->cert == l_validator_cert) ? "YES - BUG!" : "NO - OK");
     
-    /* Generate VALIDATOR address from validator certificate (for authorized_nodes_addrs) */
-    if (s_validator_address_generate(l_validator_cert, node->validator_addr, 
-                                   sizeof(node->validator_addr), network_id) != DAP_CERT_GEN_RET_SUCCESS) {
-        log_it(L_ERROR, "Failed to generate validator address");
+    /* Validator address = node address (they must be the same!) */
+    /* Validator cert is ONLY for signing blocks/events, NOT for address generation */
+    if (s_safe_strncpy(node->validator_addr, sizeof(node->validator_addr), 
+                      node_addr_str) != DAP_CERT_GEN_RET_SUCCESS) {
+        log_it(L_ERROR, "Failed to copy node address to validator address");
         dap_cert_delete(l_validator_cert);
-        dap_cert_delete(node->cert);
-        node->cert = NULL;
         return DAP_CERT_GEN_RET_ERROR;
     }
     
-    debug_if(s_debug_more, L_DEBUG, "Validator address generated: %s", node->validator_addr);
+    debug_if(s_debug_more, L_DEBUG, "Validator address = node address: %s", node->validator_addr);
     
-    /* Save VALIDATOR address (this will be used for authorized_nodes_addrs) */
+    /* Save VALIDATOR address (same as node address) */
     if (s_safe_snprintf(addr_file, sizeof(addr_file), 
                       "%s/validator_addr.txt", node_dir) == DAP_CERT_GEN_RET_SUCCESS) {
         s_save_to_file(addr_file, node->validator_addr);
-        log_it(L_INFO, "Validator address saved: %s", node->validator_addr);
+        log_it(L_INFO, "Validator address (= node address) saved: %s", node->validator_addr);
     }
     
     log_it(L_INFO, "About to save l_validator_cert to: %s (cert pointer=%p)", cert_file_esbocs, (void*)l_validator_cert);

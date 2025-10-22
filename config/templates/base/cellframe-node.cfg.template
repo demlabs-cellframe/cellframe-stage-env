@@ -11,7 +11,7 @@ debug_dump_stream_headers=false
 # debug-config=false
 
 # seed mode. WARNING. Used true only when you start the new network
-seed_mode=true
+seed_mode=false
 
 # Auto bring up links and sync everything over them
 auto_online=true
