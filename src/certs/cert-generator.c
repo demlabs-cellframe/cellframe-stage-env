@@ -310,29 +310,7 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     debug_if(s_debug_more, L_DEBUG, "Certificate generated in memory, saving to files");
     log_it(L_INFO, "Certificate generated successfully with Dilithium key");
     
-    /* Generate validator address from certificate public key */
-    if (s_validator_address_generate(node->cert, node->validator_addr, 
-                                   sizeof(node->validator_addr), network_id) != DAP_CERT_GEN_RET_SUCCESS) {
-        log_it(L_ERROR, "Failed to generate validator address");
-        dap_cert_delete(node->cert);
-        node->cert = NULL;
-        return DAP_CERT_GEN_RET_ERROR;
-    }
-    
-    debug_if(s_debug_more, L_DEBUG, "Validator address generated: %s", node->validator_addr);
-    
-    /* Save validator address */
-    if (s_safe_snprintf(addr_file, sizeof(addr_file), 
-                      "%s/validator_addr.txt", node_dir) == DAP_CERT_GEN_RET_SUCCESS) {
-        s_save_to_file(addr_file, node->validator_addr);
-    }
-    
-    if (s_safe_snprintf(addr_file, sizeof(addr_file), 
-                      "%s/node_addr.txt", node_dir) == DAP_CERT_GEN_RET_SUCCESS) {
-        s_save_to_file(addr_file, node->validator_addr);
-    }
-    
-    /* Save certificate to files */
+    /* Save certificate to files FIRST (before extracting address) */
     if (s_safe_snprintf(cert_file_main, sizeof(cert_file_main), 
                       "%s/%s.dcert", node_dir, cert_name) != DAP_CERT_GEN_RET_SUCCESS) {
         dap_cert_delete(node->cert);
@@ -350,6 +328,41 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     
     debug_if(s_debug_more, L_DEBUG, "Certificate saved to %s", cert_file_main);
     log_it(L_INFO, "Certificate file saved: %s", cert_file_main);
+    
+    /* Now load certificate from file and generate address (same way as node does at runtime) */
+    /* This ensures the address matches what the node will have after loading from file */
+    dap_cert_t *l_cert_from_file = dap_cert_file_load(cert_file_main);
+    if (!l_cert_from_file) {
+        log_it(L_ERROR, "Failed to load certificate from file for address generation");
+        dap_cert_delete(node->cert);
+        node->cert = NULL;
+        return DAP_CERT_GEN_RET_ERROR;
+    }
+    
+    /* Generate validator address from loaded certificate (matches runtime behavior) */
+    if (s_validator_address_generate(l_cert_from_file, node->validator_addr, 
+                                   sizeof(node->validator_addr), network_id) != DAP_CERT_GEN_RET_SUCCESS) {
+        log_it(L_ERROR, "Failed to generate validator address from loaded cert");
+        dap_cert_delete(l_cert_from_file);
+        dap_cert_delete(node->cert);
+        node->cert = NULL;
+        return DAP_CERT_GEN_RET_ERROR;
+    }
+    
+    dap_cert_delete(l_cert_from_file);  // Don't need the loaded copy anymore
+    
+    debug_if(s_debug_more, L_DEBUG, "Validator address generated from file: %s", node->validator_addr);
+    
+    /* Save validator address */
+    if (s_safe_snprintf(addr_file, sizeof(addr_file), 
+                      "%s/validator_addr.txt", node_dir) == DAP_CERT_GEN_RET_SUCCESS) {
+        s_save_to_file(addr_file, node->validator_addr);
+    }
+    
+    if (s_safe_snprintf(addr_file, sizeof(addr_file), 
+                      "%s/node_addr.txt", node_dir) == DAP_CERT_GEN_RET_SUCCESS) {
+        s_save_to_file(addr_file, node->validator_addr);
+    }
     
     /* Create ESBocs consensus certificates (both private and public) */
     /* ESBOCS expects certificates named as: {network}.master.{index} (auth_certs_prefix in chain config) */
