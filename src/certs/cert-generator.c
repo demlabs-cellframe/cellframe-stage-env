@@ -329,71 +329,86 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     debug_if(s_debug_more, L_DEBUG, "Certificate saved to %s", cert_file_main);
     log_it(L_INFO, "Certificate file saved: %s", cert_file_main);
     
-    /* Now load certificate from file and generate address (same way as node does at runtime) */
-    /* This ensures the address matches what the node will have after loading from file */
-    dap_cert_t *l_cert_from_file = dap_cert_file_load(cert_file_main);
-    if (!l_cert_from_file) {
-        log_it(L_ERROR, "Failed to load certificate from file for address generation");
+    /* Generate NODE address from node-addr.dcert (for node_addr.txt) */
+    char node_addr_str[DAP_CERT_GEN_MAX_VALIDATOR_ADDR_LEN];
+    if (s_validator_address_generate(node->cert, node_addr_str, 
+                                   sizeof(node_addr_str), network_id) != DAP_CERT_GEN_RET_SUCCESS) {
+        log_it(L_ERROR, "Failed to generate node address");
         dap_cert_delete(node->cert);
         node->cert = NULL;
         return DAP_CERT_GEN_RET_ERROR;
     }
     
-    /* Generate validator address from loaded certificate (matches runtime behavior) */
-    if (s_validator_address_generate(l_cert_from_file, node->validator_addr, 
-                                   sizeof(node->validator_addr), network_id) != DAP_CERT_GEN_RET_SUCCESS) {
-        log_it(L_ERROR, "Failed to generate validator address from loaded cert");
-        dap_cert_delete(l_cert_from_file);
-        dap_cert_delete(node->cert);
-        node->cert = NULL;
-        return DAP_CERT_GEN_RET_ERROR;
-    }
+    debug_if(s_debug_more, L_DEBUG, "Node address generated from node-addr.dcert: %s", node_addr_str);
     
-    dap_cert_delete(l_cert_from_file);  // Don't need the loaded copy anymore
-    
-    debug_if(s_debug_more, L_DEBUG, "Validator address generated from file: %s", node->validator_addr);
-    
-    /* Save validator address */
-    if (s_safe_snprintf(addr_file, sizeof(addr_file), 
-                      "%s/validator_addr.txt", node_dir) == DAP_CERT_GEN_RET_SUCCESS) {
-        s_save_to_file(addr_file, node->validator_addr);
-    }
-    
+    /* Save NODE address (this is for general node identification) */
     if (s_safe_snprintf(addr_file, sizeof(addr_file), 
                       "%s/node_addr.txt", node_dir) == DAP_CERT_GEN_RET_SUCCESS) {
-        s_save_to_file(addr_file, node->validator_addr);
+        s_save_to_file(addr_file, node_addr_str);
+        log_it(L_INFO, "Node address saved: %s", node_addr_str);
     }
     
-    /* Create ESBocs consensus certificates (both private and public) */
+    /* Create SEPARATE VALIDATOR certificate for ESBocs (not related to node-addr!) */
     /* ESBOCS expects certificates named as: {network}.master.{index} (auth_certs_prefix in chain config) */
     /* Private cert: pvt.stagenet.master.0.dcert (with private key, only for this node) */
     /* Public cert: stagenet.master.0.dcert (without private key, for all nodes) */
     /* Note: Only root/seed nodes (first N nodes) get validator certificates */
     
-    /* Save private certificate with pvt. prefix */
+    log_it(L_INFO, "Generating SEPARATE validator certificate for %s", node->node_name);
+    
+    /* Generate NEW certificate for validator (separate from node-addr!) */
+    dap_cert_t *l_validator_cert = dap_cert_generate_mem("validator-temp", DAP_ENC_KEY_TYPE_SIG_DILITHIUM);
+    if (!l_validator_cert) {
+        log_it(L_ERROR, "Failed to generate validator certificate");
+        dap_cert_delete(node->cert);
+        node->cert = NULL;
+        return DAP_CERT_GEN_RET_ERROR;
+    }
+    
+    /* Generate VALIDATOR address from validator certificate (for authorized_nodes_addrs) */
+    if (s_validator_address_generate(l_validator_cert, node->validator_addr, 
+                                   sizeof(node->validator_addr), network_id) != DAP_CERT_GEN_RET_SUCCESS) {
+        log_it(L_ERROR, "Failed to generate validator address");
+        dap_cert_delete(l_validator_cert);
+        dap_cert_delete(node->cert);
+        node->cert = NULL;
+        return DAP_CERT_GEN_RET_ERROR;
+    }
+    
+    debug_if(s_debug_more, L_DEBUG, "Validator address generated: %s", node->validator_addr);
+    
+    /* Save VALIDATOR address (this will be used for authorized_nodes_addrs) */
+    if (s_safe_snprintf(addr_file, sizeof(addr_file), 
+                      "%s/validator_addr.txt", node_dir) == DAP_CERT_GEN_RET_SUCCESS) {
+        s_save_to_file(addr_file, node->validator_addr);
+        log_it(L_INFO, "Validator address saved: %s", node->validator_addr);
+    }
+    
+    /* Save private validator certificate with pvt. prefix */
     if (s_safe_snprintf(cert_file_esbocs, sizeof(cert_file_esbocs), 
                       "%s/pvt.%s.master.%d.dcert", node_dir, network_name, node->node_id - 1) == DAP_CERT_GEN_RET_SUCCESS) {
-        if (s_copy_file(cert_file_main, cert_file_esbocs) == DAP_CERT_GEN_RET_SUCCESS) {
-            log_it(L_INFO, "ESBocs private validator certificate: pvt.%s.master.%d", network_name, node->node_id - 1);
+        if (dap_cert_file_save(l_validator_cert, cert_file_esbocs) == 0) {
+            log_it(L_INFO, "ESBocs private validator certificate saved: pvt.%s.master.%d", network_name, node->node_id - 1);
         }
     }
     
     /* Create public-only certificate using DAP SDK functions */
-    /* Extract public key from the certificate */
-    dap_pkey_t *l_pkey = dap_cert_to_pkey(node->cert);
+    /* Extract public key from the VALIDATOR certificate */
+    dap_pkey_t *l_pkey = dap_cert_to_pkey(l_validator_cert);
     if (!l_pkey) {
-        log_it(L_ERROR, "Failed to extract public key from certificate");
+        log_it(L_ERROR, "Failed to extract public key from validator certificate");
+        dap_cert_delete(l_validator_cert);
     } else {
         /* Create new certificate with only public key */
         char l_pub_cert_name[DAP_CERT_GEN_MAX_CERT_NAME_LEN];
         snprintf(l_pub_cert_name, sizeof(l_pub_cert_name), "%s.master.%d", network_name, node->node_id - 1);
         
         /* Create encryption key from public key only */
-        dap_enc_key_t *l_pub_key = dap_enc_key_new(node->cert->enc_key->type);
+        dap_enc_key_t *l_pub_key = dap_enc_key_new(l_validator_cert->enc_key->type);
         if (l_pub_key) {
             /* Serialize public key */
             size_t l_pub_key_size = 0;
-            uint8_t *l_pub_key_data = dap_enc_key_serialize_pub_key(node->cert->enc_key, &l_pub_key_size);
+            uint8_t *l_pub_key_data = dap_enc_key_serialize_pub_key(l_validator_cert->enc_key, &l_pub_key_size);
             
             if (l_pub_key_data && l_pub_key_size > 0) {
                 /* Deserialize into new key (without private part) */
@@ -430,9 +445,12 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
             }
         }
         DAP_DELETE(l_pkey);
+        dap_cert_delete(l_validator_cert);
     }
     
-    log_it(L_INFO, "Certificate generated for %s: %s", node->node_name, node->validator_addr);
+    log_it(L_INFO, "Certificates generated for %s", node->node_name);
+    log_it(L_INFO, "  Node address (from node-addr.dcert): %s", node_addr_str);
+    log_it(L_INFO, "  Validator address (from pvt.stagenet.master.N.dcert): %s", node->validator_addr);
     
     return DAP_CERT_GEN_RET_SUCCESS;
 }
