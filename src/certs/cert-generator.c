@@ -308,8 +308,7 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     }
     
     debug_if(s_debug_more, L_DEBUG, "Certificate generated in memory, saving to files");
-    log_it(L_INFO, "Certificate generated successfully with Dilithium key");
-    log_it(L_INFO, "  node->cert pointer: %p", (void*)node->cert);
+    log_it(L_INFO, "Certificate generated successfully with Falcon key");
     
     /* Save certificate to files FIRST (before extracting address) */
     if (s_safe_snprintf(cert_file_main, sizeof(cert_file_main), 
@@ -319,7 +318,6 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
         return DAP_CERT_GEN_RET_ERROR;
     }
     
-    log_it(L_INFO, "About to save node->cert to: %s (cert pointer=%p)", cert_file_main, (void*)node->cert);
     /* Save certificate to file using DAP SDK function */
     if (dap_cert_file_save(node->cert, cert_file_main) != 0) {
         log_it(L_ERROR, "Failed to save certificate to file: %s", cert_file_main);
@@ -365,12 +363,8 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     dap_cert_t *l_validator_cert = dap_cert_generate_mem("pvt.stagenet.master", DAP_ENC_KEY_TYPE_SIG_DILITHIUM);
     if (!l_validator_cert) {
         log_it(L_ERROR, "Failed to generate validator certificate");
-        dap_cert_delete(node->cert);
-        node->cert = NULL;
         return DAP_CERT_GEN_RET_ERROR;
     }
-    log_it(L_INFO, "  l_validator_cert pointer: %p", (void*)l_validator_cert);
-    log_it(L_INFO, "  Are they the same? %s", (node->cert == l_validator_cert) ? "YES - BUG!" : "NO - OK");
     
     /* Validator address = node address (they must be the same!) */
     /* Validator cert is ONLY for signing blocks/events, NOT for address generation */
@@ -390,7 +384,6 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
         log_it(L_INFO, "Validator address (= node address) saved: %s", node->validator_addr);
     }
     
-    log_it(L_INFO, "About to save l_validator_cert to: %s (cert pointer=%p)", cert_file_esbocs, (void*)l_validator_cert);
     /* Save private validator certificate with pvt. prefix */
     if (s_safe_snprintf(cert_file_esbocs, sizeof(cert_file_esbocs), 
                       "%s/pvt.%s.master.%d.dcert", node_dir, network_name, node->node_id - 1) == DAP_CERT_GEN_RET_SUCCESS) {
