@@ -602,6 +602,23 @@ events_sign_cert=node-{node.node_id}-cert
                            is_consensus=node.consensus_participation,
                            dst=str(dst_cert))
         
+        # Copy ALL PUBLIC validator certificates to EVERY node's /var/lib/ca
+        # ESBocs consensus requires ALL validator certs in /var/lib/ca
+        for node in nodes:
+            node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
+            node_data_cert_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy all public validator certs (stagenet.master.N.dcert)
+            for val_idx in range(len(validator_nodes)):
+                src_pub_cert = self.certs_cache / f"node{val_idx + 1}" / f"{network_name}.master.{val_idx}.dcert"
+                if src_pub_cert.exists():
+                    dst_pub_cert = node_data_cert_dir / f"{network_name}.master.{val_idx}.dcert"
+                    shutil.copy2(src_pub_cert, dst_pub_cert)
+                    logger.debug("copied_public_validator_cert_to_node",
+                               node_id=node.node_id,
+                               validator_idx=val_idx,
+                               dst=str(dst_pub_cert))
+        
         logger.info("certificates_generated", count=node_count)
     
     def clean(self, clean_certs: bool = False) -> None:
