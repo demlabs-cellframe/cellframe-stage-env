@@ -27,6 +27,7 @@ bugreport_url_enabled=false
 # Listen on all interfaces (0.0.0.0) to accept connections from other Docker containers
 listen-address=[0.0.0.0:8079]
 # External port for node registration in Global DB (required for announce)
+ext_port=8079
 # External IPv4 address (node IP in Docker network)
 ext_address=NODE_IP_PLACEHOLDER
 
