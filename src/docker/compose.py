@@ -709,10 +709,17 @@ class DockerComposeManager:
                 
                 node_addr = match.group(1)
                 
-                # Now add this node to the list using its address
-                # This bypasses the HTTP request and adds directly to GDB
+                # Get container IP address
+                container_ip = container.attrs['NetworkSettings']['Networks'].get('cellframe-stage_default', {}).get('IPAddress', '')
+                if not container_ip:
+                    logger.warning("failed_to_get_container_ip",
+                                 node=service_name)
+                    continue
+                
+                # Now add this node to the list using its address and IP
+                # With -host parameter, this adds directly to GDB without HTTP request
                 exec_result = container.exec_run(
-                    f"/opt/cellframe-node/bin/cellframe-node-cli node add -net stagenet -addr {node_addr} -port 8079",
+                    f"/opt/cellframe-node/bin/cellframe-node-cli node add -net stagenet -addr {node_addr} -host {container_ip} -port 8079",
                     demux=True
                 )
                 
