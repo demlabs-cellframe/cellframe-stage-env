@@ -657,6 +657,55 @@ class DockerComposeManager:
                          error=str(e))
             return False
     
+    def _register_root_nodes(self, containers: List[Container]) -> None:
+        """
+        Register root nodes in node list using CLI command.
+        
+        Root nodes need to register themselves in the node list to act as balancers
+        for other nodes (master and full nodes).
+        
+        Args:
+            containers: List of containers to check and register
+        """
+        for container in containers:
+            service_name = container.labels.get("com.docker.compose.service", "unknown")
+            
+            # Check if this is a root node (node-1, node-2, node-3 based on topology)
+            if not service_name.startswith("node-"):
+                continue
+            
+            # Extract node number
+            try:
+                node_num = int(service_name.split("-")[1])
+            except (IndexError, ValueError):
+                continue
+            
+            # Only register first 3 nodes (root nodes in default topology)
+            if node_num > 3:
+                continue
+            
+            try:
+                # Execute node add command
+                exec_result = container.exec_run(
+                    "/opt/cellframe-node/bin/cellframe-node-cli node add -net stagenet -port 8079",
+                    demux=True
+                )
+                
+                if exec_result.exit_code == 0:
+                    logger.info("root_node_registered",
+                              node=service_name,
+                              output=exec_result.output[0].decode('utf-8').strip() if exec_result.output[0] else "")
+                else:
+                    error_msg = exec_result.output[1].decode('utf-8').strip() if exec_result.output[1] else "Unknown error"
+                    logger.warning("root_node_registration_failed",
+                                 node=service_name,
+                                 exit_code=exec_result.exit_code,
+                                 error=error_msg)
+            except Exception as e:
+                logger.error("failed_to_register_root_node",
+                           node=service_name,
+                           error=str(e))
+    
     def wait_for_services(
         self,
         services: Optional[List[str]] = None,
@@ -790,6 +839,8 @@ class DockerComposeManager:
             
             if all_healthy and containers:
                 logger.info("services_ready", elapsed=f"{int(time.time() - start_time)}s")
+                # Register root nodes in node list
+                self._register_root_nodes(containers)
                 return
             
             time.sleep(2)
