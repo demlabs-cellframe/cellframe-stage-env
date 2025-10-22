@@ -664,28 +664,31 @@ class DockerComposeManager:
         Root nodes need to register themselves in the node list to act as balancers
         for other nodes (master and full nodes).
         
+        Similar to tests-in-docker-example: one root node (node-1) registers all root nodes.
+        
         Args:
             containers: List of containers to check and register
         """
+        import re
+        
+        # Collect info about all root nodes (first 3 nodes)
+        root_nodes = []
         for container in containers:
             service_name = container.labels.get("com.docker.compose.service", "unknown")
             
-            # Check if this is a root node (node-1, node-2, node-3 based on topology)
             if not service_name.startswith("node-"):
                 continue
             
-            # Extract node number
             try:
                 node_num = int(service_name.split("-")[1])
             except (IndexError, ValueError):
                 continue
             
-            # Only register first 3 nodes (root nodes in default topology)
             if node_num > 3:
                 continue
             
             try:
-                # First, get the node's own address
+                # Get node address
                 dump_result = container.exec_run(
                     "/opt/cellframe-node/bin/cellframe-node-cli node dump -net stagenet",
                     demux=True
@@ -693,26 +696,18 @@ class DockerComposeManager:
                 
                 if dump_result.exit_code != 0:
                     logger.warning("failed_to_get_node_address",
-                                 node=service_name,
-                                 error="node dump command failed")
+                                 node=service_name)
                     continue
                 
-                # Parse node address from output
-                import re
                 output = dump_result.output[0].decode('utf-8') if dump_result.output[0] else ""
                 match = re.search(r'Node addr:\s*([0-9A-F:]+)', output)
                 if not match:
-                    logger.warning("failed_to_parse_node_address",
-                                 node=service_name,
-                                 output=output[:200])
                     continue
                 
                 node_addr = match.group(1)
                 
-                # Reload container info to get fresh network settings
+                # Get container IP
                 container.reload()
-                
-                # Get container IP address from any connected network
                 networks = container.attrs['NetworkSettings']['Networks']
                 container_ip = None
                 for net_name, net_settings in networks.items():
@@ -721,33 +716,57 @@ class DockerComposeManager:
                         break
                 
                 if not container_ip:
-                    logger.warning("failed_to_get_container_ip",
-                                 node=service_name,
-                                 networks=list(networks.keys()))
                     continue
                 
-                # Now add this node to the list using its address and IP
-                # With -host parameter, this adds directly to GDB without HTTP request
-                exec_result = container.exec_run(
-                    f"/opt/cellframe-node/bin/cellframe-node-cli node add -net stagenet -addr {node_addr} -host {container_ip} -port 8079",
+                root_nodes.append({
+                    'container': container,
+                    'service_name': service_name,
+                    'node_num': node_num,
+                    'addr': node_addr,
+                    'ip': container_ip
+                })
+            except Exception as e:
+                logger.error("failed_to_collect_root_node_info",
+                           node=service_name,
+                           error=str(e))
+        
+        if not root_nodes:
+            logger.warning("no_root_nodes_found")
+            return
+        
+        # Use node-1 to register all root nodes (like tests-in-docker-example uses ROOT[0])
+        node1 = next((n for n in root_nodes if n['node_num'] == 1), None)
+        if not node1:
+            logger.warning("node_1_not_found_for_registration")
+            return
+        
+        # Register all root nodes via node-1
+        for node_info in root_nodes:
+            try:
+                exec_result = node1['container'].exec_run(
+                    f"/opt/cellframe-node/bin/cellframe-node-cli node add -net stagenet -addr {node_info['addr']} -host {node_info['ip']} -port 8079",
                     demux=True
                 )
                 
                 if exec_result.exit_code == 0:
+                    output = exec_result.output[0].decode('utf-8').strip() if exec_result.output[0] else ""
                     logger.info("root_node_registered",
-                              node=service_name,
-                              addr=node_addr,
-                              output=exec_result.output[0].decode('utf-8').strip() if exec_result.output[0] else "")
+                              registered_by="node-1",
+                              target_node=node_info['service_name'],
+                              addr=node_info['addr'],
+                              ip=node_info['ip'],
+                              output=output)
                 else:
                     error_msg = exec_result.output[1].decode('utf-8').strip() if exec_result.output[1] else "Unknown error"
                     logger.warning("root_node_registration_failed",
-                                 node=service_name,
-                                 addr=node_addr,
-                                 exit_code=exec_result.exit_code,
+                                 registered_by="node-1",
+                                 target_node=node_info['service_name'],
+                                 addr=node_info['addr'],
                                  error=error_msg)
             except Exception as e:
                 logger.error("failed_to_register_root_node",
-                           node=service_name,
+                           registered_by="node-1",
+                           target_node=node_info['service_name'],
                            error=str(e))
     
     def wait_for_services(
