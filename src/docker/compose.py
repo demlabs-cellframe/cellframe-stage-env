@@ -685,20 +685,47 @@ class DockerComposeManager:
                 continue
             
             try:
-                # Execute node add command
+                # First, get the node's own address
+                dump_result = container.exec_run(
+                    "/opt/cellframe-node/bin/cellframe-node-cli node dump -net stagenet",
+                    demux=True
+                )
+                
+                if dump_result.exit_code != 0:
+                    logger.warning("failed_to_get_node_address",
+                                 node=service_name,
+                                 error="node dump command failed")
+                    continue
+                
+                # Parse node address from output
+                import re
+                output = dump_result.output[0].decode('utf-8') if dump_result.output[0] else ""
+                match = re.search(r'Node addr:\s*([0-9A-F:]+)', output)
+                if not match:
+                    logger.warning("failed_to_parse_node_address",
+                                 node=service_name,
+                                 output=output[:200])
+                    continue
+                
+                node_addr = match.group(1)
+                
+                # Now add this node to the list using its address
+                # This bypasses the HTTP request and adds directly to GDB
                 exec_result = container.exec_run(
-                    "/opt/cellframe-node/bin/cellframe-node-cli node add -net stagenet -port 8079",
+                    f"/opt/cellframe-node/bin/cellframe-node-cli node add -net stagenet -addr {node_addr} -port 8079",
                     demux=True
                 )
                 
                 if exec_result.exit_code == 0:
                     logger.info("root_node_registered",
                               node=service_name,
+                              addr=node_addr,
                               output=exec_result.output[0].decode('utf-8').strip() if exec_result.output[0] else "")
                 else:
                     error_msg = exec_result.output[1].decode('utf-8').strip() if exec_result.output[1] else "Unknown error"
                     logger.warning("root_node_registration_failed",
                                  node=service_name,
+                                 addr=node_addr,
                                  exit_code=exec_result.exit_code,
                                  error=error_msg)
             except Exception as e:
@@ -746,6 +773,8 @@ class DockerComposeManager:
                     raise RuntimeError(f"Early diagnostics failed:\n{diagnostic_error}")
                 else:
                     logger.info("early_diagnostics_passed")
+                # Wait a bit more for nodes to fully initialize server components
+                time.sleep(10)
                 # Register root nodes immediately after diagnostics pass
                 # This breaks the circular dependency: nodes need registered root nodes to go ONLINE
                 self._register_root_nodes(containers)
