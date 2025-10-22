@@ -108,15 +108,15 @@ class ConfigGenerator:
         base_cfg_template = self.templates_dir / "base" / "cellframe-node.cfg.template"
         if base_cfg_template.exists():
             base_cfg_content = base_cfg_template.read_text()
-            # Enable HTTP server by default for testing (TODO: make configurable via topology/scenario)
-            http_enabled = "true"
-            base_cfg_content = base_cfg_content.replace("HTTP_SERVER_ENABLED_PLACEHOLDER", http_enabled)
             
             for node in nodes:
+                # Replace placeholders with node-specific values
+                node_cfg_content = base_cfg_content.replace("NODE_IP_PLACEHOLDER", node.ip_address)
+                
                 node_etc_base = self.configs_cache / f"node{node.node_id}"
                 node_etc_base.mkdir(parents=True, exist_ok=True)
                 base_cfg_path = node_etc_base / "cellframe-node.cfg"
-                base_cfg_path.write_text(base_cfg_content)
+                base_cfg_path.write_text(node_cfg_content)
                 logger.debug("base_config_generated", node_id=node.node_id)
                 
                 # Copy config snippets from cellframe-node.cfg.d templates
@@ -171,6 +171,11 @@ class ConfigGenerator:
         else:
             permanent_nodes_hosts = "[]"
         
+        # Build mapping: node_id -> validator_idx (sequential: 0, 1, 2, ...)
+        # Validator certificates are indexed sequentially, not by node_id!
+        validator_nodes = [n for n in nodes if n.is_seed_node or n.consensus_participation]
+        node_id_to_validator_idx = {n.node_id: idx for idx, n in enumerate(validator_nodes)}
+        
         # Generate network config for each node
         # Cellframe Node expects:
         # 1. /etc/{cellframe-node,network}.cfg - main configs  
@@ -184,13 +189,17 @@ class ConfigGenerator:
             
             # Replace placeholders with node-specific values
             config_content = template_content
-            config_content = config_content.replace("NODE_ROLE_PLACEHOLDER", node.role)
+            # Root nodes should be root_master for automatic GDB registration
+            # NODE_ROLE_ROOT (0x01) < NODE_ROLE_MASTER (0x20), so dap_chain_net_announce_addr skips them
+            node_role = "root_master" if node.role == "root" else node.role
+            config_content = config_content.replace("NODE_ROLE_PLACEHOLDER", node_role)
             config_content = config_content.replace("SEED_NODES_PLACEHOLDER", seed_nodes_hosts)
             config_content = config_content.replace("PERMANENT_NODES_HOSTS_PLACEHOLDER", permanent_nodes_hosts)
             
             # Add blocks-sign-cert to network config (for all validators: root + master nodes)
             if node.consensus_participation:
-                validator_idx = node.node_id - 1
+                # Use sequential validator index, not node_id - 1
+                validator_idx = node_id_to_validator_idx[node.node_id]
                 blocks_sign_cert = f"blocks-sign-cert={network_name}.master.{validator_idx}"
                 config_content = config_content.replace("BLOCKS_SIGN_CERT_PLACEHOLDER", blocks_sign_cert)
             else:
@@ -248,6 +257,19 @@ class ConfigGenerator:
                             "AUTH_CERTS_NUMBER_VERIFY_PLACEHOLDER",
                             str(auth_certs_number_verify)
                         )
+                    
+                    # Replace EVENTS_SIGN_CERT_PLACEHOLDER (for dag-poa, only for root nodes)
+                    if "EVENTS_SIGN_CERT_PLACEHOLDER" in chain_content:
+                        if node.is_seed_node and node.node_id in node_id_to_validator_idx:
+                            # Root nodes use their private certificate (with pvt. prefix)
+                            validator_idx = node_id_to_validator_idx[node.node_id]
+                            events_sign_cert = f"events-sign-cert=pvt.{network_name}.master.{validator_idx}"
+                            chain_content = chain_content.replace("EVENTS_SIGN_CERT_PLACEHOLDER", events_sign_cert)
+                        else:
+                            # Remove placeholder line for non-root nodes
+                            lines = chain_content.split('\n')
+                            filtered_lines = [line for line in lines if "EVENTS_SIGN_CERT_PLACEHOLDER" not in line]
+                            chain_content = '\n'.join(filtered_lines)
                     
                     # Write processed chain config
                     dst_chain_cfg = node_network_dir / chain_cfg.name
@@ -540,25 +562,26 @@ events_sign_cert=node-{node.node_id}-cert
                            validator_idx=validator_idx,
                            dst=str(dst_cert))
         
-        # Copy validator certificates to /var/lib/ca for nodes that participate in consensus
-        # This includes:
-        # - Root nodes (DAG-PoA for zerochain)
-        # - Master nodes (ESBocs for main chain)
-        # Each node gets ONLY its OWN validator certificate (with private key)
-        # Other validator certs are available in /share/ca (for verification only)
+        # Copy PRIVATE validator certificates to /var/lib/ca for validator nodes
+        # Each node gets ONLY its OWN PRIVATE certificate (with pvt. prefix)
+        # This certificate is used for signing (blocks/events)
+        # Public certificates (without pvt.) are in /share/ca for verification
         validator_nodes = [n for n in nodes if n.is_seed_node or n.consensus_participation]
-        for node in validator_nodes:
+        # Validator index is sequential: 0, 1, 2, ... NOT node_id - 1!
+        for validator_seq_idx, node in enumerate(validator_nodes):
             node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
             node_data_cert_dir.mkdir(parents=True, exist_ok=True)
             
-            # Copy only this node's own validator certificate (full version with private key)
-            validator_idx = node.node_id - 1
+            # Copy PRIVATE certificate (keeps pvt. prefix for signing operations)
+            validator_idx = validator_seq_idx
             src_cert = self.certs_cache / f"node{node.node_id}" / f"pvt.{network_name}.master.{validator_idx}.dcert"
             if src_cert.exists():
-                dst_cert = node_data_cert_dir / f"{network_name}.master.{validator_idx}.dcert"
+                # Keep pvt. prefix in destination name!
+                dst_cert = node_data_cert_dir / f"pvt.{network_name}.master.{validator_idx}.dcert"
                 shutil.copy2(src_cert, dst_cert)
-                logger.debug("copied_own_validator_cert",
+                logger.debug("copied_private_validator_cert",
                            node_id=node.node_id,
+                           validator_seq_idx=validator_seq_idx,
                            validator_idx=validator_idx,
                            is_seed=node.is_seed_node,
                            is_consensus=node.consensus_participation,

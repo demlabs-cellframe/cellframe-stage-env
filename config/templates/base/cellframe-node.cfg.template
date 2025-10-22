@@ -20,30 +20,27 @@ auto_online=true
 [server]
 #   By default you don't need to open you to the world
 # Enabled for stagenet testing and health checks
-enabled=HTTP_SERVER_ENABLED_PLACEHOLDER
+enabled=true
 news_url_enabled=false
 bugreport_url_enabled=false
 # Standard Cellframe port 8079 for all communications
-listen_address=[0.0.0.0:8079]
-# listen-port-tcp=
-# External IPv4 address
-#ext_address=8.9.10.11
+# Listen on all interfaces (0.0.0.0) to accept connections from other Docker containers
+listen-address=[0.0.0.0:8079]
+# External port for node registration in Global DB (required for announce)
+ext_port=8079
+# External IPv4 address (node IP in Docker network)
+ext_address=NODE_IP_PLACEHOLDER
+
 # External IPv6 address
 #ext_address6=aaaa:bbbb:deee:96ff:feee:3fff
-#
-# If not set - used listen_port_tcp for node table auto fill
-#ext_port_tcp=8089
 #exec_cmd=[]
 
-[server_options]
-# proxy_enable=false
-# proxy_enable2=false
 
 [notify_server]
-# Listening path have priority above listening address examples to use
+# Notify server is internal only, no external listen needed
 # listen_path=[listen/path1,listen/path2,...]
 # listen_address=[listen_address1:port1,port2,listen_address2:port3,...]
-listen_address=[127.0.0.1:8080]
+#listen_address=[127.0.0.1:8080]
 
 [stream]
 # For now its IAES but thats depricated

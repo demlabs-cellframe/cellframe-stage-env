@@ -391,8 +391,16 @@ class DockerComposeManager:
                 "Cannot allocate memory",
                 "Address already in use",
                 "Permission denied",
-                "No such file or directory" if "/opt/cellframe-node" in logs else None,
             ]
+            
+            # Check "No such file or directory" only for non-cert files
+            # SDK tries /var/lib/ca first, then /share/ca - ERR is expected and not critical
+            if "No such file or directory" in logs and "/opt/cellframe-node" in logs:
+                # Exclude cert file errors if followed by successful "Initialized auth cert"
+                if "/ca/" in logs and "Initialized auth cert" in logs:
+                    pass  # Not critical - cert loaded from alternative path
+                else:
+                    critical_patterns.append("No such file or directory")
             
             for pattern in critical_patterns:
                 if pattern and pattern in logs:
@@ -434,6 +442,138 @@ class DockerComposeManager:
                          container=container.name,
                          error=str(e))
             return None
+    
+    def _check_port_listening(self, container: Container, port: int = 8079) -> bool:
+        """
+        Check if node is listening on specified port.
+        
+        Args:
+            container: Container to check
+            port: Port number to check
+            
+        Returns:
+            True if port is listening, False otherwise
+        """
+        try:
+            # Check if port is listening using netstat or ss
+            result = container.exec_run(
+                f"sh -c 'netstat -tuln 2>/dev/null | grep :{port} || ss -tuln 2>/dev/null | grep :{port}'",
+                demux=False
+            )
+            
+            if result.exit_code == 0 and result.output:
+                output = result.output.decode("utf-8", errors="ignore")
+                # Check if listening on 0.0.0.0 or specific IP
+                if f":{port}" in output and ("LISTEN" in output or "0.0.0.0" in output):
+                    logger.debug("port_listening",
+                               container=container.name,
+                               port=port)
+                    return True
+            
+            logger.warning("port_not_listening",
+                         container=container.name,
+                         port=port)
+            return False
+        except Exception as e:
+            logger.warning("failed_to_check_port",
+                         container=container.name,
+                         port=port,
+                         error=str(e))
+            return False
+    
+    def _check_peer_connectivity(self, container: Container) -> Dict[str, bool]:
+        """
+        Check if node can connect to its configured peers.
+        
+        Args:
+            container: Container to check
+            
+        Returns:
+            Dict mapping peer addresses to connectivity status
+        """
+        try:
+            # Get logs to find seed nodes and check connection attempts
+            logs = container.logs(tail=100).decode("utf-8", errors="ignore")
+            
+            connectivity = {}
+            
+            # Look for connection refused errors
+            connection_errors = []
+            for line in logs.split('\n'):
+                if "Connection refused" in line or "errno 111" in line:
+                    # Extract peer address from error message
+                    import re
+                    match = re.search(r'(\d+\.\d+\.\d+\.\d+):(\d+)', line)
+                    if match:
+                        peer = f"{match.group(1)}:{match.group(2)}"
+                        connection_errors.append(peer)
+                        connectivity[peer] = False
+            
+            if connection_errors:
+                logger.warning("peer_connection_failures",
+                             container=container.name,
+                             failed_peers=connection_errors)
+                return connectivity
+            
+            # If no errors found, assume connectivity is OK
+            return connectivity
+        except Exception as e:
+            logger.warning("failed_to_check_peer_connectivity",
+                         container=container.name,
+                         error=str(e))
+            return {}
+    
+    def _perform_early_diagnostics(self, containers: List[Container]) -> Optional[str]:
+        """
+        Perform early diagnostics to catch common issues quickly.
+        
+        This runs after a short grace period (15-20s) to detect:
+        - Ports not listening
+        - Connection refused errors between nodes
+        - Missing configuration
+        
+        Args:
+            containers: List of containers to check
+            
+        Returns:
+            Error message if critical issue found, None otherwise
+        """
+        issues = []
+        
+        for container in containers:
+            service_name = container.labels.get("com.docker.compose.service", "unknown")
+            container.reload()
+            
+            if container.status != "running":
+                continue
+            
+            # Check if port 8079 is listening
+            if not self._check_port_listening(container, 8079):
+                issues.append(
+                    f"{service_name}: Port 8079 not listening (check listen_address/listen_port_tcp in config)"
+                )
+            
+            # Check peer connectivity
+            peer_issues = self._check_peer_connectivity(container)
+            if peer_issues:
+                failed_peers = [peer for peer, status in peer_issues.items() if not status]
+                if failed_peers:
+                    issues.append(
+                        f"{service_name}: Cannot connect to peers: {', '.join(failed_peers)}"
+                    )
+        
+        if issues:
+            error_msg = (
+                "Early diagnostics detected critical issues:\n" +
+                "\n".join(f"  • {issue}" for issue in issues) +
+                "\n\nCommon fixes:\n" +
+                "  1. Check listen_address=[0.0.0.0:8079] in cellframe-node.cfg\n" +
+                "  2. Ensure all nodes have correct seed_nodes_hosts configuration\n" +
+                "  3. Verify Docker network connectivity between containers"
+            )
+            return error_msg
+        
+        return None
     
     def _check_node_online_status(self, container: Container) -> bool:
         """
@@ -531,6 +671,7 @@ class DockerComposeManager:
         2. No critical errors in logs
         3. Node has transitioned to ONLINE state
         4. Immediate failure detection
+        5. Early diagnostics after 15-20s (port listening, peer connectivity)
         
         Args:
             services: List of service names (None = all)
@@ -541,9 +682,22 @@ class DockerComposeManager:
         
         start_time = time.time()
         last_status_log = 0
+        early_diagnostics_run = False
         
         while time.time() - start_time < timeout:
             containers = self.ps()  # Get all containers including stopped
+            
+            # Run early diagnostics after 15-20 seconds to catch configuration issues early
+            current_time = time.time()
+            if not early_diagnostics_run and (current_time - start_time) >= 15:
+                logger.info("running_early_diagnostics", elapsed=f"{int(current_time - start_time)}s")
+                diagnostic_error = self._perform_early_diagnostics(containers)
+                if diagnostic_error:
+                    logger.error("early_diagnostics_failed", error=diagnostic_error)
+                    raise RuntimeError(f"Early diagnostics failed:\n{diagnostic_error}")
+                else:
+                    logger.info("early_diagnostics_passed")
+                early_diagnostics_run = True
             
             if not containers:
                 logger.debug("no_containers_found")
