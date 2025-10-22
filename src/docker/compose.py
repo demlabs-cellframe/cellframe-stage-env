@@ -609,24 +609,44 @@ class DockerComposeManager:
                              container=container.name)
                 return False
             
-            # Check network status
+            # Use JSON-RPC API for CURRENT state (more reliable than logs)
+            api_result = container.exec_run(
+                'curl -X POST -s -H "Content-Type: application/json" '
+                '-d \'{"method":"net", "params":["net;get;status;-net;stagenet"], "id":"1"}\' '
+                'http://127.0.0.1:12345 2>/dev/null',
+                demux=False
+            )
+            
+            if api_result.exit_code == 0:
+                try:
+                    import json
+                    api_response = json.loads(api_result.output.decode("utf-8"))
+                    if api_response.get("type") == 2 and "result" in api_response:
+                        current_state = api_response["result"][0]["status"]["states"]["current"]
+                        if current_state in ["NET_STATE_ONLINE", "NET_STATE_SYNC_CHAINS"]:
+                            logger.debug("network_ready_via_api",
+                                       container=container.name,
+                                       state=current_state)
+                            return True
+                        logger.debug("network_not_ready_via_api",
+                                   container=container.name,
+                                   state=current_state)
+                        return False
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    pass  # Fallback to logs
+            
+            # Fallback: Check network status via logs
             net_status = self._check_network_status(container)
-            if net_status == "ONLINE":
-                logger.debug("network_online",
+            if net_status in ["ONLINE", "SYNC"]:
+                logger.debug("network_ready_via_logs",
                            container=container.name,
                            status=net_status)
                 return True
-            elif net_status == "SYNC":
-                logger.debug("network_syncing",
-                           container=container.name,
-                           status=net_status)
-                # SYNC is acceptable - node is operational
-                return True
-            elif net_status == "OFFLINE":
-                logger.debug("network_offline",
-                           container=container.name,
-                           status=net_status)
-                return False
+            
+            logger.debug("network_not_ready",
+                       container=container.name,
+                       status=net_status or "UNKNOWN")
+            return False
             
             # Look for positive indicators
             online_indicators = [
