@@ -358,7 +358,7 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     log_it(L_INFO, "Generating SEPARATE validator certificate for %s", node->node_name);
     
     /* Generate NEW certificate for validator (separate from node-addr!) */
-    dap_cert_t *l_validator_cert = dap_cert_generate_mem("validator-temp", DAP_ENC_KEY_TYPE_SIG_DILITHIUM);
+    dap_cert_t *l_validator_cert = dap_cert_generate_mem("pvt.stagenet.master", DAP_ENC_KEY_TYPE_SIG_DILITHIUM);
     if (!l_validator_cert) {
         log_it(L_ERROR, "Failed to generate validator certificate");
         dap_cert_delete(node->cert);
