@@ -319,6 +319,7 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
         return DAP_CERT_GEN_RET_ERROR;
     }
     
+    log_it(L_INFO, "About to save node->cert to: %s (cert pointer=%p)", cert_file_main, (void*)node->cert);
     /* Save certificate to file using DAP SDK function */
     if (dap_cert_file_save(node->cert, cert_file_main) != 0) {
         log_it(L_ERROR, "Failed to save certificate to file: %s", cert_file_main);
@@ -390,6 +391,7 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
         log_it(L_INFO, "Validator address saved: %s", node->validator_addr);
     }
     
+    log_it(L_INFO, "About to save l_validator_cert to: %s (cert pointer=%p)", cert_file_esbocs, (void*)l_validator_cert);
     /* Save private validator certificate with pvt. prefix */
     if (s_safe_snprintf(cert_file_esbocs, sizeof(cert_file_esbocs), 
                       "%s/pvt.%s.master.%d.dcert", node_dir, network_name, node->node_id - 1) == DAP_CERT_GEN_RET_SUCCESS) {
