@@ -562,6 +562,21 @@ events_sign_cert=node-{node.node_id}-cert
                            validator_idx=validator_idx,
                            dst=str(dst_cert))
         
+        # Copy node-addr.dcert to ALL nodes FIRST (CRITICAL - must exist before node starts!)
+        # This certificate is used for node identification and MUST match authorized_nodes_addrs
+        for node in nodes:
+            node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
+            node_data_cert_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy node-addr.dcert (node identification certificate)
+            src_node_cert = self.certs_cache / f"node{node.node_id}" / "node-addr.dcert"
+            if src_node_cert.exists():
+                dst_node_cert = node_data_cert_dir / "node-addr.dcert"
+                shutil.copy2(src_node_cert, dst_node_cert)
+                logger.debug("copied_node_addr_cert",
+                           node_id=node.node_id,
+                           dst=str(dst_node_cert))
+        
         # Copy PRIVATE validator certificates to /var/lib/ca for validator nodes
         # Each node gets ONLY its OWN PRIVATE certificate (with pvt. prefix)
         # This certificate is used for signing (blocks/events)
