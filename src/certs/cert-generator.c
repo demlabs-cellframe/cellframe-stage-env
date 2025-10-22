@@ -348,6 +348,9 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
         s_save_to_file(addr_file, node_addr_str);
         log_it(L_INFO, "Node address saved: %s", node_addr_str);
     }
+    /* Delete node->cert to ensure it does not interfere with validator cert */
+    dap_cert_delete(node->cert);
+    node->cert = NULL;
     
     /* Create SEPARATE VALIDATOR certificate for ESBocs (not related to node-addr!) */
     /* ESBOCS expects certificates named as: {network}.master.{index} (auth_certs_prefix in chain config) */
