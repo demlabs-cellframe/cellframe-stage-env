@@ -309,6 +309,7 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     
     debug_if(s_debug_more, L_DEBUG, "Certificate generated in memory, saving to files");
     log_it(L_INFO, "Certificate generated successfully with Dilithium key");
+    log_it(L_INFO, "  node->cert pointer: %p", (void*)node->cert);
     
     /* Save certificate to files FIRST (before extracting address) */
     if (s_safe_snprintf(cert_file_main, sizeof(cert_file_main), 
@@ -364,6 +365,8 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
         node->cert = NULL;
         return DAP_CERT_GEN_RET_ERROR;
     }
+    log_it(L_INFO, "  l_validator_cert pointer: %p", (void*)l_validator_cert);
+    log_it(L_INFO, "  Are they the same? %s", (node->cert == l_validator_cert) ? "YES - BUG!" : "NO - OK");
     
     /* Generate VALIDATOR address from validator certificate (for authorized_nodes_addrs) */
     if (s_validator_address_generate(l_validator_cert, node->validator_addr, 
