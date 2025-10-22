@@ -301,7 +301,7 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     debug_if(s_debug_more, L_DEBUG, "Calling dap_cert_generate_mem for %s", cert_name);
     
     /* Generate DAP certificate in memory with Dilithium signature */
-    node->cert = dap_cert_generate_mem(cert_name, DAP_ENC_KEY_TYPE_SIG_DILITHIUM);
+    node->cert = dap_cert_generate_mem(cert_name, DAP_ENC_KEY_TYPE_SIG_FALCON);
     if (!node->cert) {
         log_it(L_ERROR, "Failed to generate DAP certificate for %s", node->node_name);
         return DAP_CERT_GEN_RET_ERROR;
