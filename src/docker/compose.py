@@ -746,6 +746,9 @@ class DockerComposeManager:
                     raise RuntimeError(f"Early diagnostics failed:\n{diagnostic_error}")
                 else:
                     logger.info("early_diagnostics_passed")
+                # Register root nodes immediately after diagnostics pass
+                # This breaks the circular dependency: nodes need registered root nodes to go ONLINE
+                self._register_root_nodes(containers)
                 early_diagnostics_run = True
             
             if not containers:
@@ -839,8 +842,6 @@ class DockerComposeManager:
             
             if all_healthy and containers:
                 logger.info("services_ready", elapsed=f"{int(time.time() - start_time)}s")
-                # Register root nodes in node list
-                self._register_root_nodes(containers)
                 return
             
             time.sleep(2)
