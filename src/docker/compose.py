@@ -647,44 +647,6 @@ class DockerComposeManager:
                        container=container.name,
                        status=net_status or "UNKNOWN")
             return False
-            
-            # Look for positive indicators
-            online_indicators = [
-                "Node started successfully",
-                "Network initialized",
-                "Ready to accept connections",
-                "Listening on",
-            ]
-            
-            for indicator in online_indicators:
-                if indicator in logs:
-                    return True
-            
-            # If container has been running for more than 15 seconds and no crashes, assume online
-            if container.attrs.get("State", {}).get("Running"):
-                started_at = container.attrs.get("State", {}).get("StartedAt", "")
-                if started_at:
-                    from datetime import datetime, timezone
-                    try:
-                        start_time = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
-                        now = datetime.now(timezone.utc)
-                        uptime = (now - start_time).total_seconds()
-                        
-                        # If running for > 15s without crashes and no critical errors, assume online
-                        if uptime > 15:
-                            logger.debug("node_assumed_online",
-                                       container=container.name,
-                                       uptime=uptime)
-                            return True
-                    except Exception:
-                        pass
-            
-            return False
-        except Exception as e:
-            logger.warning("failed_to_check_online_status",
-                         container=container.name,
-                         error=str(e))
-            return False
     
     def _register_root_nodes(self, containers: List[Container]) -> None:
         """
