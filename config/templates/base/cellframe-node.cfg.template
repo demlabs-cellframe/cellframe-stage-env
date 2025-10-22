@@ -163,15 +163,13 @@ network_mask=255.255.255.0
 enabled=true
 # debug_more=false
 # debug-cli=false
-#unix-only
-#listen-path=[../var/run/node_cli]
-#listen-address=[127.0.0.1:12345]
 version=1
-
+# Allow node command for manual node list management  
+allowed_cmd=[node, ledger, wallet, mempool, srv_stake, poll, net_srv, net]
 listen-path=[../var/run/node_cli]
-
-
 listen-address=[127.0.0.1:12345]
+# IMPORTANT! Its accessible for all the users in system!
+listen_unix_socket_permissions=777
 
 
 # Application Resources
