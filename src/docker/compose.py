@@ -647,6 +647,12 @@ class DockerComposeManager:
                        container=container.name,
                        status=net_status or "UNKNOWN")
             return False
+            
+        except Exception as e:
+            logger.warning("failed_to_check_node_status",
+                         container=container.name,
+                         error=str(e))
+            return False
     
     def _register_root_nodes(self, containers: List[Container]) -> None:
         """
