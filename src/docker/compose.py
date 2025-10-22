@@ -428,13 +428,22 @@ class DockerComposeManager:
         try:
             logs = container.logs(tail=200).decode("utf-8", errors="ignore")
             
-            # Check for network states (most recent first)
-            if "NET_STATE_ONLINE" in logs or "state ONLINE" in logs:
-                return "ONLINE"
-            elif "NET_STATE_SYNC_CHAINS" in logs or "Synchronizing" in logs:
-                return "SYNC"
-            elif "NET_STATE_OFFLINE" in logs or "state OFFLINE" in logs:
-                return "OFFLINE"
+            # Find LAST occurrence of state (most recent state wins)
+            last_online_pos = max(logs.rfind("NET_STATE_ONLINE"), logs.rfind("state ONLINE"))
+            last_sync_pos = max(logs.rfind("NET_STATE_SYNC_CHAINS"), logs.rfind("Synchronizing"))
+            last_offline_pos = max(logs.rfind("NET_STATE_OFFLINE"), logs.rfind("state OFFLINE"))
+            
+            # Determine which state appeared last in logs
+            positions = {
+                "ONLINE": last_online_pos,
+                "SYNC": last_sync_pos,
+                "OFFLINE": last_offline_pos
+            }
+            
+            # Filter out -1 (not found) and get max position
+            valid_positions = {state: pos for state, pos in positions.items() if pos >= 0}
+            if valid_positions:
+                return max(valid_positions, key=valid_positions.get)
             
             return None
         except Exception as e:
