@@ -266,7 +266,13 @@ class NetworkManager:
         health_status = {}
         for node_name, config in self.nodes.items():
             try:
-                container = self.compose.client.containers.get(f"cellframe-stage-{node_name}")
+                # Convert node_name to container name (node1 -> node-1)
+                if node_name.startswith('node'):
+                    container_name = f"cellframe-stage-node-{node_name[4:]}"
+                else:
+                    container_name = f"cellframe-stage-{node_name}"
+                
+                container = self.compose.client.containers.get(container_name)
                 cli_result = container.exec_run(
                     'cellframe-node-cli net get status -net stagenet',
                     demux=False

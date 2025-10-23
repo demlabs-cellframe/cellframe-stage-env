@@ -6,6 +6,9 @@ description: Verify basic wallet creation and info retrieval
 tags: [e2e, basic, wallet, fast]
 version: "1.0"
 
+network:
+  topology: default
+
 setup:
   # Create test wallet
   - cli: wallet new -w test_wallet

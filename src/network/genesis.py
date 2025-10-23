@@ -103,25 +103,37 @@ class GenesisInitializer:
         """
         logger.info("setting_up_root_nodelists", count=len(root_nodes))
         
-        # Read all root node addresses first
+        # Read all root node addresses first (from containers, not host)
         root_node_data = []
         for node in root_nodes:
-            validator_addr_file = self.certs_cache / f"node{node.node_id}" / "validator_addr.txt"
-            node_addr_file = self.certs_cache / f"node{node.node_id}" / "node_addr.txt"
+            container_name = f"cellframe-stage-node-{node.node_id}"
             
-            if not validator_addr_file.exists() or not node_addr_file.exists():
-                logger.warning("node_addr_files_not_found",
-                              node_id=node.node_id)
-                continue
-            
-            validator_addr = validator_addr_file.read_text().strip()
-            node_addr = node_addr_file.read_text().strip()
-            
-            root_node_data.append({
-                'node': node,
-                'validator_addr': validator_addr,
-                'node_addr': node_addr
-            })
+            try:
+                container = self.docker_client.containers.get(container_name)
+                
+                # Read validator_addr from inside container
+                validator_result = container.exec_run(
+                    f"cat /opt/cellframe-node/var/lib/node_addr.txt",
+                    demux=False
+                )
+                
+                if validator_result.exit_code == 0:
+                    validator_addr = validator_result.output.decode('utf-8').strip()
+                    node_addr = validator_addr  # Same as validator_addr for now
+                    
+                    root_node_data.append({
+                        'node': node,
+                        'validator_addr': validator_addr,
+                        'node_addr': node_addr
+                    })
+                else:
+                    logger.warning("failed_to_read_node_addr",
+                                  node_id=node.node_id,
+                                  container=container_name)
+            except Exception as e:
+                logger.warning("failed_to_get_node_addr",
+                              node_id=node.node_id,
+                              error=str(e))
         
         # For each root node, add all other root nodes to its nodelist
         for current in root_node_data:
@@ -244,18 +256,30 @@ class GenesisInitializer:
         validator_idx = node.node_id - 1
         cert_name = f"pvt.{self.network_name}.master.{validator_idx}"
         
-        # Read node address from certs cache
-        node_addr_file = self.certs_cache / f"node{node.node_id}" / "validator_addr.txt"
-        if not node_addr_file.exists():
-            logger.error("node_addr_file_not_found",
+        # Read node address from inside the node's container
+        node_container_name = f"cellframe-stage-node-{node.node_id}"
+        try:
+            node_container = self.docker_client.containers.get(node_container_name)
+            addr_result = node_container.exec_run(
+                "cat /opt/cellframe-node/var/lib/node_addr.txt",
+                demux=False
+            )
+            
+            if addr_result.exit_code != 0:
+                logger.error("failed_to_read_node_addr_from_container",
+                            node_id=node.node_id,
+                            container=node_container_name)
+                return
+            
+            node_addr = addr_result.output.decode('utf-8').strip()
+            logger.info("read_node_address",
+                       node_id=node.node_id,
+                       node_addr=node_addr)
+        except Exception as e:
+            logger.error("failed_to_get_node_address",
                         node_id=node.node_id,
-                        file=str(node_addr_file))
-            raise FileNotFoundError(f"Node address file not found: {node_addr_file}")
-        
-        node_addr = node_addr_file.read_text().strip()
-        logger.info("read_node_address",
-                   node_id=node.node_id,
-                   node_addr=node_addr)
+                        error=str(e))
+            return
         
         # Order parameters
         # value_min and value_max in datoshi (1 token = 10^18 datoshi)
@@ -333,14 +357,26 @@ class GenesisInitializer:
         
         # Register each node
         for node in nodes:
-            # Read node address
-            node_addr_file = self.certs_cache / f"node{node.node_id}" / "validator_addr.txt"
-            if not node_addr_file.exists():
-                logger.warning("node_addr_file_not_found",
-                              node_id=node.node_id)
+            # Read node address from inside the node's container
+            node_container_name = f"cellframe-stage-node-{node.node_id}"
+            try:
+                node_container = self.docker_client.containers.get(node_container_name)
+                addr_result = node_container.exec_run(
+                    "cat /opt/cellframe-node/var/lib/node_addr.txt",
+                    demux=False
+                )
+                
+                if addr_result.exit_code != 0:
+                    logger.warning("failed_to_read_node_addr",
+                                  node_id=node.node_id)
+                    continue
+                
+                node_addr = addr_result.output.decode('utf-8').strip()
+            except Exception as e:
+                logger.warning("failed_to_get_node_address",
+                              node_id=node.node_id,
+                              error=str(e))
                 continue
-            
-            node_addr = node_addr_file.read_text().strip()
             
             # GDB command to register node_alias
             # Format: global_db set -net <net> node_alias.<node_addr> <ip:port>
