@@ -619,21 +619,26 @@ class DockerComposeManager:
                     pass
             
             # Fallback to log parsing
-            logs = container.logs(tail=100).decode("utf-8", errors="ignore")
+            logs = container.logs(tail=200).decode("utf-8", errors="ignore")
             
-            # Check for initialization phases
+            # Check for CURRENT state first (most recent messages)
+            # Split by lines and check from bottom to top
+            lines = logs.split('\n')
+            for line in reversed(lines[-50:]):  # Check last 50 lines
+                if "NET_STATE_ONLINE" in line and "target:" not in line.lower():
+                    return "NET_STATE_ONLINE"
+                if "NET_STATE_SYNC_CHAINS" in line and "target:" not in line.lower():
+                    return "Syncing chains"
+                if "NET_STATE_LINKS_CONNECTING" in line and "target:" not in line.lower():
+                    return "Connecting to peers"
+                if "NET_STATE_OFFLINE" in line and "target:" not in line.lower():
+                    return "NET_STATE_OFFLINE"
+            
+            # Check for initialization phases (only if no state found above)
             if "Initializing consensus" in logs or "consensus.state: SYNC" in logs:
                 return "Initializing consensus"
             if "Loading chain" in logs or "Loaded chain files" in logs:
                 return "Loading chains"
-            if "Connecting to" in logs or "NET_STATE_LINKS_CONNECTING" in logs:
-                return "Connecting to peers"
-            if "NET_STATE_SYNC_CHAINS" in logs:
-                return "Syncing chains"
-            if "NET_STATE_ONLINE" in logs:
-                return "NET_STATE_ONLINE"
-            if "NET_STATE_OFFLINE" in logs:
-                return "NET_STATE_OFFLINE"
             
             return "Starting"
             
