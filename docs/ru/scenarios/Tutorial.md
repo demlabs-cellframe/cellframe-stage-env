@@ -208,7 +208,7 @@ variables:
   initial_supply: 1000000
 
 test:
-  - cli: token_decl -token {{token_name}} -total {{initial_supply}}
+  - cli: token_decl -token {{token_name}} -total_supply {{initial_supply}} -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
 ```
 
 ### ✅ Упражнение 2
@@ -351,7 +351,7 @@ network:
       role: root
 
 setup:
-  - cli: token_decl -token TEST -total 1000000
+  - cli: token_decl -token TEST -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     save: token_hash
     wait: 3s
 
@@ -467,7 +467,7 @@ includes:
   - common/wallet_setup.yml
 
 setup:
-  - cli: token_decl -token EXERCISE4 -total 1000000
+  - cli: token_decl -token EXERCISE4 -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     wait: 3s
 
 check:
@@ -511,12 +511,12 @@ setup:
 
 test:
   # Шаг 2: Декларируем токен
-  - cli: token_decl -token LESSON5 -total 1000000
+  - cli: token_decl -token LESSON5 -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     save: token_hash
     wait: 3s
   
   # Шаг 3: Эмитируем токены на первый кошелёк
-  - cli: token_emit -token LESSON5 -value 100000 -addr {{wallet_addr}}
+  - cli: token_emit -token LESSON5 -emission_value 100000 -addr {{wallet_addr}} -net stagenet -certs owner
     save: emission_tx
     wait: 3s
   
@@ -539,7 +539,7 @@ check:
 #### Wait после изменений
 
 ```yaml
-- cli: token_emit -value 1000
+- cli: token_emit -token TEST -emission_value 1000 -addr {{addr}} -net stagenet -certs owner
   wait: 3s  # ← ОБЯЗАТЕЛЬНО! Даём время на обработку
 ```
 
@@ -548,7 +548,7 @@ check:
 #### Сохранение хэшей
 
 ```yaml
-- cli: token_decl -token TEST -total 1000000
+- cli: token_decl -token TEST -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
   save: token_hash  # Сохраняем хэш для использования
 ```
 
@@ -582,10 +582,10 @@ setup:
     save: addr3
     wait: 1s
   
-  - cli: token_decl -token EX5TOKEN -total 1000000
+  - cli: token_decl -token EX5TOKEN -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     wait: 3s
   
-  - cli: token_emit -token EX5TOKEN -value 90000 -addr {{addr1}}
+  - cli: token_emit -token EX5TOKEN -emission_value 90000 -addr {{addr1}} -net stagenet -certs owner
     wait: 3s
 
 test:
@@ -692,10 +692,10 @@ setup:
         save: addr{{iteration}}
         wait: 500ms
   
-  - cli: token_decl -token LOOP_TOKEN -total 1000000
+  - cli: token_decl -token LOOP_TOKEN -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     wait: 3s
   
-  - cli: token_emit -token LOOP_TOKEN -value 50000 -addr {{addr1}}
+  - cli: token_emit -token LOOP_TOKEN -emission_value 50000 -addr {{addr1}} -net stagenet -certs owner
     wait: 3s
 
 test:
@@ -749,13 +749,13 @@ setup:
         wait: 200ms
   
   # Создать токен
-  - cli: token_decl -token {{token_name}} -total {{total_supply}}
+  - cli: token_decl -token {{token_name}} -total_supply {{total_supply}} -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     node: node-1
     save: token_hash
     wait: 3s
   
   # Эмитировать на первый кошелёк
-  - cli: token_emit -token {{token_name}} -value {{total_supply}} -addr {{stress_addr1}}
+  - cli: token_emit -token {{token_name}} -emission_value {{total_supply}} -addr {{stress_addr1}} -net stagenet -certs owner
     node: node-1
     wait: 3s
 
@@ -847,7 +847,7 @@ name: Token Transfer Between Wallets Test
 ```yaml
 test:
   # === PHASE 1: Token Creation ===
-  - cli: token_decl -token TEST -total 1000000
+  - cli: token_decl -token TEST -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     save: token_hash
     wait: 3s
   

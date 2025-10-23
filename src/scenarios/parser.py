@@ -40,14 +40,16 @@ class ScenarioParseError(Exception):
 class ScenarioParser:
     """Parse and validate YAML test scenarios."""
     
-    def __init__(self, scenarios_root: Path):
+    def __init__(self, scenarios_root: Path, common_root: Optional[Path] = None):
         """
         Initialize parser.
         
         Args:
             scenarios_root: Root directory for scenario files
+            common_root: Optional root directory for common includes (defaults to scenarios_root)
         """
         self.scenarios_root = Path(scenarios_root)
+        self.common_root = Path(common_root) if common_root else self.scenarios_root
         self._loaded_files: Dict[Path, Dict[str, Any]] = {}
         self._variable_pattern = re.compile(r'\{\{(\w+)\}\}')
     
@@ -157,12 +159,27 @@ class ScenarioParser:
         # Load all included files
         included_data: List[Dict[str, Any]] = []
         for include_path in includes:
-            include_full = (base_dir / include_path).resolve()
+            # Try multiple search paths:
+            # 1. Relative to scenario file directory
+            # 2. Relative to scenarios_root
+            # 3. Relative to common_root (for common includes)
+            search_paths = [
+                (base_dir / include_path).resolve(),
+                (self.scenarios_root / include_path).resolve(),
+                (self.common_root / include_path).resolve(),
+            ]
             
-            if not include_full.exists():
+            include_full = None
+            for path in search_paths:
+                if path.exists():
+                    include_full = path
+                    break
+            
+            if include_full is None:
                 raise ScenarioParseError(
-                    f"Included file not found: {include_path}",
-                    file_path=include_full
+                    f"Included file not found: {include_path}\nSearched in:\n" +
+                    "\n".join(f"  - {p}" for p in search_paths),
+                    file_path=search_paths[0]
                 )
             
             included = self._load_yaml_file(include_full)

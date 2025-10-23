@@ -126,7 +126,7 @@ check:
 ### Рецепт 6: Создать простой токен
 
 ```yaml
-- cli: token_decl -token MYTOKEN -total 1000000
+- cli: token_decl -token MYTOKEN -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
   save: token_hash
   wait: 3s
 ```
@@ -144,7 +144,7 @@ check:
 ### Рецепт 7: Создать токен с флагами
 
 ```yaml
-- cli: token_decl -token BLOCK_TOKEN -total 1000000 -flags UTXO_BLOCKING_ENABLED
+- cli: token_decl -token BLOCK_TOKEN -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain -flags UTXO_BLOCKING_ENABLED
   save: token_hash
   wait: 3s
 ```
@@ -156,7 +156,7 @@ check:
 
 **Комбинация флагов:**
 ```yaml
-- cli: token_decl -token FROZEN -total 1000000 -flags "ALL_SENDER_FROZEN,ALL_RECEIVER_FROZEN"
+- cli: token_decl -token FROZEN -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain -flags "ALL_SENDER_FROZEN,ALL_RECEIVER_FROZEN"
 ```
 
 ---
@@ -355,7 +355,7 @@ test:
 ```yaml
 setup:
   # Создать токен с блокировкой
-  - cli: token_decl -token BLOCK -total 1000000 -flags UTXO_BLOCKING_ENABLED
+  - cli: token_decl -token BLOCK -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain -flags UTXO_BLOCKING_ENABLED
     wait: 3s
   
   # Эмитировать
@@ -399,7 +399,7 @@ check:
 
 ```yaml
 setup:
-  - cli: token_decl -token ARB -total 1000000 -flags UTXO_BLOCKING_ENABLED
+  - cli: token_decl -token ARB -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain -flags UTXO_BLOCKING_ENABLED
     wait: 3s
   - cli: token_emit -token ARB -value 10000 -addr {{wallet_addr}}
     save: emission
@@ -564,7 +564,7 @@ check:
 
 ```yaml
 setup:
-  - cli: token_decl -token STRESS -total 100000000
+  - cli: token_decl -token STRESS -total_supply 100000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     wait: 3s
   - cli: token_emit -token STRESS -value 100000000 -addr {{sender}}
     wait: 3s
@@ -603,7 +603,7 @@ test:
   # Node 2: token operations
   - loop: {{operations_per_node}}
     steps:
-      - cli: token_decl -token N2_T{{iteration}} -total 1000000
+      - cli: token_decl -token N2_T{{iteration}} -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
         node: node-2
         wait: 2s
   
@@ -684,7 +684,7 @@ test:
 
 ```yaml
 setup:
-  - cli: token_decl -token FROZEN -total 1000000 -flags ALL_SENDER_FROZEN
+  - cli: token_decl -token FROZEN -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain -flags ALL_SENDER_FROZEN
     wait: 3s
   - cli: token_emit -token FROZEN -value 10000 -addr {{sender}}
     wait: 3s
@@ -777,7 +777,7 @@ setup:
     node: node-2
     save: receiver_addr
   
-  - cli: token_decl -token CROSS -total 1000000
+  - cli: token_decl -token CROSS -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     node: node-1
     wait: 3s
   
@@ -813,7 +813,7 @@ includes:
 
 test:
   # Create token on node-1
-  - cli: token_decl -token REPL -total 1000000
+  - cli: token_decl -token REPL -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     node: node-1
     save: token_hash
     wait: 5s
@@ -869,7 +869,7 @@ name: Prepare-Act-Assert Pattern Example
 setup:
   - cli: wallet new -w test_wallet
     save: wallet_addr
-  - cli: token_decl -token TEST -total 1000000
+  - cli: token_decl -token TEST -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     wait: 3s
   - cli: token_emit -token TEST -value 10000 -addr {{wallet_addr}}
     wait: 3s
@@ -902,7 +902,7 @@ test:
     wait: 1s
   
   # Step 2: Use base to create derived
-  - cli: token_decl -token DERIVED -total 1000000 -owner {{base_addr}}
+  - cli: token_decl -token DERIVED -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain -owner {{base_addr}}
     save: derived_token
     wait: 3s
   
@@ -936,7 +936,7 @@ setup:
 test:
   # Perform operations
   - cli: wallet new -w temp
-  - cli: token_decl -token TEMP -total 1000
+  - cli: token_decl -token TEMP -total_supply 1000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
 
 check:
   # Compare with snapshot
@@ -966,7 +966,7 @@ setup:
         wait: 500ms
 
 test:
-  - cli: token_decl -token {{token_prefix}}_TOKEN -total 1000000
+  - cli: token_decl -token {{token_prefix}}_TOKEN -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     wait: 3s
   
   - loop: {{iterations}}
@@ -1049,7 +1049,7 @@ includes:
 
 # Level 2: Token setup
 setup:
-  - cli: token_decl -token HIER -total 1000000
+  - cli: token_decl -token HIER -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     wait: 3s
   - cli: token_emit -token HIER -value 100000 -addr {{wallet_addr}}
     wait: 3s
@@ -1129,7 +1129,7 @@ setup:
         save: addr{{iteration}}
   
   # Рецепт 6: Создать токен
-  - cli: token_decl -token COMBO -total 1000000
+  - cli: token_decl -token COMBO -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     wait: 3s
   
   # Рецепт 8: Эмитировать

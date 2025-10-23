@@ -21,23 +21,28 @@ logger = get_logger(__name__)
 class GenesisInitializer:
     """Initialize genesis state for stagenet."""
     
-    def __init__(self, base_path: Path, network_name: str = "stagenet"):
+    def __init__(self, base_path: Path, network_name: str = "stagenet", config_path: Path = None):
         """
         Initialize genesis initializer.
         
         Args:
             base_path: Base path to stage-env directory
             network_name: Network name (default: stagenet)
+            config_path: Optional path to config file
         """
         self.base_path = base_path
         self.network_name = network_name
         self.docker_client = docker.from_env()
         # Load cache dir from config
         from ..config.loader import ConfigLoader
-        config_loader = ConfigLoader(base_path)
+        config_loader = ConfigLoader(base_path, config_path)
         paths_config = config_loader.get_paths_config()
         cache_dir_relative = paths_config.get('cache_dir', 'cache')
-        self.certs_cache = (base_path / cache_dir_relative / "certs").resolve()
+        # Resolve cache dir relative to config file location (not base_path)
+        if config_path:
+            self.certs_cache = (config_path.parent / cache_dir_relative / "certs").resolve()
+        else:
+            self.certs_cache = (base_path / cache_dir_relative / "certs").resolve()
         
         logger.info("genesis_initializer_created", network=network_name)
     

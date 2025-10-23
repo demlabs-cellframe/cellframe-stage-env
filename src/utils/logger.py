@@ -10,6 +10,7 @@ Provides consistent logging across all stage environment modules with:
 
 import logging
 import sys
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -21,6 +22,32 @@ console = Console()
 
 # Global file handler reference
 _file_handler: Optional[logging.FileHandler] = None
+
+# ANSI color code pattern for stripping
+_ANSI_PATTERN = re.compile(r'\x1b\[[0-9;]*m')
+
+# Public exports
+__all__ = [
+    'setup_logging',
+    'get_logger',
+    'get_log_file',
+    'strip_ansi_codes',
+    'LogContext',
+    'console',
+]
+
+
+def strip_ansi_codes(text: str) -> str:
+    """Remove ANSI color codes from text."""
+    return _ANSI_PATTERN.sub('', text)
+
+
+class StripAnsiFormatter(logging.Formatter):
+    """Formatter that strips ANSI color codes from log messages."""
+    
+    def format(self, record):
+        message = super().format(record)
+        return strip_ansi_codes(message)
 
 
 def setup_logging(verbose: bool = False, json_output: bool = False, log_file: Optional[Path] = None) -> None:
@@ -43,18 +70,19 @@ def setup_logging(verbose: bool = False, json_output: bool = False, log_file: Op
     # Clear existing handlers
     root_logger.handlers.clear()
     
-    # Add stdout handler
+    # Add stdout handler (with colors)
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setLevel(log_level)
     stdout_handler.setFormatter(logging.Formatter("%(message)s"))
     root_logger.addHandler(stdout_handler)
     
-    # Add file handler if log_file specified
+    # Add file handler if log_file specified (WITHOUT colors)
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         _file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
         _file_handler.setLevel(log_level)
-        _file_handler.setFormatter(logging.Formatter("%(message)s"))
+        # Use formatter that strips ANSI codes
+        _file_handler.setFormatter(StripAnsiFormatter("%(message)s"))
         root_logger.addHandler(_file_handler)
     
     # Processors for structlog
@@ -72,7 +100,7 @@ def setup_logging(verbose: bool = False, json_output: bool = False, log_file: Op
             structlog.processors.JSONRenderer(),
         ])
     else:
-        # Human-readable colored output
+        # Human-readable colored output (colors will be stripped for file)
         processors.extend([
             structlog.processors.format_exc_info,
             structlog.dev.ConsoleRenderer(

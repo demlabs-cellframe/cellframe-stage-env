@@ -377,9 +377,21 @@ class ScenarioExecutor:
         self, command: str, node: str, timeout: Optional[int] = 30
     ) -> Dict[str, Any]:
         """Run CLI command via docker exec."""
+        # Convert node ID to container name
+        # node1 -> cellframe-stage-node-1
+        if not node.startswith("cellframe-stage-"):
+            # Extract number from node ID (node1 -> 1, node2 -> 2, etc.)
+            if node.startswith("node"):
+                node_num = node[4:]  # Remove "node" prefix
+                container_name = f"cellframe-stage-node-{node_num}"
+            else:
+                container_name = f"cellframe-stage-{node}"
+        else:
+            container_name = node
+        
         # Build docker exec command
         full_cmd = [
-            "docker", "exec", node,
+            "docker", "exec", container_name,
             self.node_cli_path, *command.split()
         ]
         

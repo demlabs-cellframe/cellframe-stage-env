@@ -451,7 +451,7 @@ variables:
 
 test:
   # В CLI командах
-  - cli: token_decl -token {{token}} -total {{amount}}
+  - cli: token_decl -token {{token}} -total_supply {{amount}} -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
   
   # В проверках
   - cli: token info -token {{token}}
@@ -480,7 +480,7 @@ test:
 - cli: balance -addr {{wallet_addr}}
 
 # Сохранить хэш токена
-- cli: token_decl -token TEST -total 1000000
+- cli: token_decl -token TEST -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
   save: token_hash
 
 # Сохранить хэш транзакции
@@ -720,7 +720,7 @@ setup:
   - cli: wallet new -w test_wallet
     save: wallet_addr
   
-  - cli: token_decl -token TEST -total 1000000
+  - cli: token_decl -token TEST -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs owner -net stagenet -chain zerochain
     save: token_hash
     wait: 3s
   
@@ -1056,16 +1056,32 @@ steps:
 
 **Синтаксис:**
 ```yaml
-- cli: wallet new -w <name>
+- cli: wallet new -w <wallet_name> [-sign <sign_type>] [-restore <hex_value>] 
+        [-restore_legacy <restore_string>] [-net <net_name>] [-force] [-password <password>]
 ```
 
-**Параметры:**
-- `-w <name>` - имя кошелька (обязательно)
+**Обязательные параметры:**
+- `-w <name>` - имя кошелька
 
-**Пример:**
+**Опциональные параметры:**
+- `-sign <sign_type>` - тип подписи (по умолчанию: sig_dil)
+- `-restore <hex_value>` - восстановить из hex значения приватного ключа
+- `-restore_legacy <restore_string>` - восстановить из legacy формата
+- `-net <net_name>` - привязать к конкретной сети
+- `-force` - перезаписать существующий кошелёк
+- `-password <password>` - установить пароль для кошелька
+
+**Примеры:**
 ```yaml
+# Простое создание
 - cli: wallet new -w my_wallet
   save: wallet_addr
+
+# С паролем
+- cli: wallet new -w secure_wallet -password mypass123
+
+# Восстановление из hex
+- cli: wallet new -w restored -restore {{private_key_hex}}
 ```
 
 ---
@@ -1087,70 +1103,26 @@ steps:
 ---
 
 #### `wallet info`
-Информация о кошельке.
+Информация о кошельке или адресе.
 
 **Синтаксис:**
 ```yaml
-- cli: wallet info -w <name>
+- cli: wallet info {-addr <addr> | -w <wallet_name>} -net <net_name>
 ```
 
 **Параметры:**
-- `-w <name>` - имя кошелька (обязательно)
+- `-w <name>` - имя кошелька (один из: -w или -addr)
+- `-addr <address>` - адрес кошелька (один из: -w или -addr)
+- `-net <network>` - имя сети (обязательно)
 
-**Пример:**
+**Примеры:**
 ```yaml
-- cli: wallet info -w my_wallet
+# По имени кошелька
+- cli: wallet info -w my_wallet -net stagenet
   save: wallet_details
-```
 
----
-
-#### `wallet export`
-Экспортировать приватный ключ.
-
-**Синтаксис:**
-```yaml
-- cli: wallet export -w <name>
-```
-
-**Пример:**
-```yaml
-- cli: wallet export -w my_wallet
-  save: private_key
-```
-
----
-
-#### `wallet import`
-Импортировать кошелёк из приватного ключа.
-
-**Синтаксис:**
-```yaml
-- cli: wallet import -w <name> -key <key>
-```
-
-**Параметры:**
-- `-w <name>` - имя нового кошелька
-- `-key <key>` - приватный ключ
-
-**Пример:**
-```yaml
-- cli: wallet import -w imported -key {{private_key}}
-```
-
----
-
-#### `wallet delete`
-Удалить кошелёк.
-
-**Синтаксис:**
-```yaml
-- cli: wallet delete -w <name>
-```
-
-**Пример:**
-```yaml
-- cli: wallet delete -w temp_wallet
+# По адресу
+- cli: wallet info -addr {{wallet_addr}} -net stagenet
 ```
 
 ---
@@ -1162,30 +1134,51 @@ steps:
 
 **Синтаксис:**
 ```yaml
-- cli: token_decl -token <name> -total <supply> [-flags <flags>] [-net <network>]
+- cli: token_decl -token <ticker> -total_supply <amount> -decimals <value> 
+        -signs_total <count> -signs_emission <count> -certs <cert_list> 
+        -net <network> -chain <chain> [-flags <flags>] [-H <hex|base58>]
 ```
 
-**Параметры:**
-- `-token <name>` - имя токена (обязательно)
-- `-total <supply>` - максимальный supply (обязательно)
-- `-flags <flags>` - флаги токена (опционально)
-- `-net <network>` - сеть (опционально, default: stagenet)
+**Обязательные параметры:**
+- `-token <ticker>` - тикер токена
+- `-total_supply <amount>` - максимальная эмиссия (256-bit число)
+- `-decimals <value>` - знаков после запятой (должно быть 18)
+- `-signs_total <count>` - общее количество подписей
+- `-signs_emission <count>` - минимум подписей для эмиссии
+- `-certs <cert_list>` - список сертификатов (через запятую)
+- `-net <network>` - имя сети
+- `-chain <chain>` - имя цепочки
+
+**Опциональные параметры:**
+- `-H <hex|base58>` - формат вывода хэша (default: hex)
+- `-type <private|native>` - тип токена (default: native)
+- `-flags <flags>` - флаги токена (через запятую)
 
 **Флаги:**
 - `UTXO_BLOCKING_ENABLED` - включить блокировку UTXO
 - `ALL_SENDER_FROZEN` - заморозить всех отправителей
 - `ALL_RECEIVER_FROZEN` - заморозить всех получателей
+- `ALL_SENDER_ALLOWED` - разрешить всем отправителям
+- `ALL_RECEIVER_ALLOWED` - разрешить всем получателям
 
 **Примеры:**
 ```yaml
 # Простой токен
-- cli: token_decl -token SIMPLE -total 1000000
+- cli: token_decl -token SIMPLE -total_supply 1000000 -decimals 18 
+        -signs_total 1 -signs_emission 1 -certs owner 
+        -net stagenet -chain zerochain
 
 # С флагами
-- cli: token_decl -token BLOCK -total 1000000 -flags UTXO_BLOCKING_ENABLED
+- cli: token_decl -token BLOCK -total_supply 1000000 -decimals 18 
+        -signs_total 1 -signs_emission 1 -certs owner 
+        -net stagenet -chain zerochain 
+        -flags UTXO_BLOCKING_ENABLED
 
 # Несколько флагов
-- cli: token_decl -token FROZEN -total 1000000 -flags "ALL_SENDER_FROZEN,ALL_RECEIVER_FROZEN"
+- cli: token_decl -token FROZEN -total_supply 1000000 -decimals 18 
+        -signs_total 1 -signs_emission 1 -certs owner 
+        -net stagenet -chain zerochain 
+        -flags "ALL_SENDER_FROZEN,ALL_RECEIVER_FROZEN"
 ```
 
 ---
@@ -1195,19 +1188,39 @@ steps:
 
 **Синтаксис:**
 ```yaml
-- cli: token_emit -token <name> -value <amount> -addr <address>
+# Создание новой эмиссии
+- cli: token_emit -token <mempool_token_ticker> -emission_value <value> -addr <addr> 
+        -net <net_name> -certs <cert_list> [-chain_emission <chain_name>]
+
+# Подпись существующей эмиссии
+- cli: token_emit sign -emission <hash> -net <net_name> -certs <cert_list>
 ```
 
-**Параметры:**
-- `-token <name>` - имя токена (обязательно)
-- `-value <amount>` - количество (обязательно)
+**Параметры (создание эмиссии):**
+- `-token <ticker>` - тикер токена в mempool (обязательно)
+- `-emission_value <amount>` - количество токенов для эмиссии (обязательно)
 - `-addr <address>` - адрес получателя (обязательно)
+- `-net <network>` - имя сети (обязательно)
+- `-certs <cert_list>` - список сертификатов для подписи (обязательно)
+- `-chain_emission <chain>` - цепочка для эмиссии (опционально)
 
-**Пример:**
+**Параметры (подпись эмиссии):**
+- `sign` - режим подписи существующей эмиссии
+- `-emission <hash>` - хэш эмиссии для подписи (обязательно)
+- `-net <network>` - имя сети (обязательно)
+- `-certs <cert_list>` - список сертификатов для подписи (обязательно)
+
+**Примеры:**
 ```yaml
-- cli: token_emit -token TEST -value 100000 -addr {{wallet_addr}}
+# Создание эмиссии
+- cli: token_emit -token TEST -emission_value 100000 -addr {{wallet_addr}} 
+        -net stagenet -certs owner
   save: emission_tx
   wait: 3s
+
+# Подпись эмиссии
+- cli: token_emit sign -emission {{emission_hash}} -net stagenet -certs validator
+  wait: 2s
 ```
 
 ---
@@ -1278,55 +1291,50 @@ steps:
 
 ### Transaction команды
 
-#### `transfer`
-Перевести токены.
-
-**Синтаксис:**
-```yaml
-- cli: transfer -token <name> -to <address> -value <amount> [-from <address>]
-```
-
-**Параметры:**
-- `-token <name>` - имя токена (обязательно)
-- `-to <address>` - адрес получателя (обязательно)
-- `-value <amount>` - количество (обязательно)
-- `-from <address>` - адрес отправителя (опционально)
-
-**Примеры:**
-```yaml
-# Простой трансфер
-- cli: transfer -token TEST -to {{recipient}} -value 1000
-
-# С указанием отправителя
-- cli: transfer -token TEST -from {{sender}} -to {{recipient}} -value 1000
-```
-
----
-
 #### `tx_create`
-Создать транзакцию.
+Создать транзакцию (перевод токенов).
 
 **Синтаксис:**
 ```yaml
-- cli: tx_create -token <name> -value <amount> [-from_emission <tx>] [-arbitrage]
+- cli: tx_create -net <net_name> -token <token_ticker> -value <amount> 
+        -to_addr <addr> -from_wallet <wallet_name> -fee <fee_value>
+        [-chain <chain_name>] [-lock_before <unlock_time>] [-arbitrage]
 ```
 
-**Параметры:**
-- `-token <name>` - имя токена (обязательно)
-- `-value <amount>` - количество (обязательно)
-- `-from_emission <tx>` - создать из эмиссии (опционально)
-- `-arbitrage` - арбитражная транзакция (опционально)
+**Обязательные параметры:**
+- `-net <net_name>` - имя сети
+- `-token <token_ticker>` - тикер токена
+- `-value <amount>` - количество токенов
+- `-to_addr <addr>` - адрес получателя
+- `-from_wallet <wallet_name>` - кошелёк отправителя (или -from_emission)
+- `-fee <fee_value>` - комиссия транзакции
+
+**Опциональные параметры:**
+- `-chain <chain_name>` - имя цепочки (по умолчанию: main)
+- `-lock_before <unlock_time>` - заблокировать до времени (формат: RFC822 или YYMMDD)
+- `-arbitrage` - арбитражная транзакция (требует подписи владельца токена, обходит UTXO блокировку)
+- `-from_emission <emission_hash>` - создать из эмиссии (альтернатива -from_wallet)
 
 **Примеры:**
 ```yaml
-# Простая транзакция
-- cli: tx_create -token TEST -value 1000
+# Простая транзакция (перевод токенов)
+- cli: tx_create -net stagenet -token TEST -value 1000 
+        -to_addr {{recipient_addr}} -from_wallet my_wallet -fee 0.01
+
+# Транзакция с блокировкой по времени
+- cli: tx_create -net stagenet -token TEST -value 5000 
+        -to_addr {{recipient}} -from_wallet sender -fee 0.01 
+        -lock_before "2025-12-31"
+
+# Арбитражная транзакция (обход UTXO блокировки)
+- cli: tx_create -net stagenet -token BLOCK -value 1000 
+        -to_addr {{arbitrage_addr}} -from_wallet owner -fee 0.01 
+        -arbitrage
 
 # Из эмиссии
-- cli: tx_create -token TEST -from_emission {{emission_tx}} -value 1000
-
-# Арбитражная
-- cli: tx_create -token TEST -value 1000 -arbitrage
+- cli: tx_create -net stagenet -token TEST -value 10000 
+        -to_addr {{first_recipient}} -from_emission {{emission_hash}} 
+        -cert owner -fee 0.01
 ```
 
 ---

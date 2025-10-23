@@ -38,6 +38,7 @@ class NetworkManager:
         """
         self.base_path = base_path
         self.topology_name = topology_name
+        self.config_path = config_path
         
         # Load configuration
         self.config_loader = ConfigLoader(base_path, config_path)
@@ -58,7 +59,8 @@ class NetworkManager:
         # Genesis initializer
         self.genesis = GenesisInitializer(
             base_path,
-            network_name=self.topology.network.name
+            network_name=self.topology.network.name,
+            config_path=config_path
         )
         
         # Node configurations

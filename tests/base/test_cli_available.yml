@@ -1,0 +1,38 @@
+# Stage Environment - CLI Availability Test
+# Проверка доступности CLI команд на нодах
+
+name: CLI Availability Test
+description: Verify that cellframe-node-cli is available and working on all nodes
+tags: [e2e, basic, cli, fast]
+version: "1.0"
+
+setup:
+  # Wait for nodes to be fully ready
+  - wait: 5s
+
+test:
+  # Test CLI on node1 (validator)
+  - cli: version
+    node: node1
+    expect: success
+    description: "Check CLI works on validator node1"
+  
+  # Test CLI on node4 (regular node)
+  - cli: version
+    node: node4
+    expect: success
+    description: "Check CLI works on regular node4"
+  
+  # Test help command
+  - cli: help
+    node: node1
+    expect: success
+    description: "Check help command works"
+
+check:
+  # Verify version output contains expected info
+  - cli: version
+    node: node1
+    contains: "cellframe"
+    description: "Version output contains 'cellframe'"
+

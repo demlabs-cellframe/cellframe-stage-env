@@ -390,48 +390,204 @@ def clean(
 @app.command()
 def run_tests(
     test_dirs: list[str] = typer.Argument(..., help="Test scenario directories to run"),
-    parallel: bool = typer.Option(False, "--parallel", "-p", help="Run tests in parallel"),
+    parallel: bool = typer.Option(False, "--parallel", "-p", help="Run tests in parallel (not yet implemented)"),
     filter: Optional[str] = typer.Option(None, "--filter", "-k", help="Filter tests by pattern"),
+    start_network: bool = typer.Option(True, "--start-network/--no-start-network", help="Start network before tests"),
+    stop_after: bool = typer.Option(True, "--stop-after/--keep-running", help="Stop network after tests"),
 ):
-    """🧪 Run test scenarios from specified directories."""
+    """🧪 Run YAML test scenarios from specified directories."""
     
-    import subprocess
+    import asyncio
     from pathlib import Path
+    from src.scenarios.parser import ScenarioParser
+    from src.scenarios.executor import ScenarioExecutor, ScenarioExecutionError
     
     print_info(f"Running tests from {len(test_dirs)} director{'y' if len(test_dirs) == 1 else 'ies'}:")
     for test_dir in test_dirs:
         print_info(f"  • {test_dir}")
     
-    all_passed = True
-    
-    for test_dir in test_dirs:
-        test_path = Path(test_dir).resolve()
+    # Start network if requested
+    network_mgr = None
+    if start_network:
+        print_info("\n🚀 Starting test network...")
+        network_mgr = NetworkManager(BASE_PATH, topology_name="default", config_path=CONFIG_PATH)
         
-        if not test_path.exists():
-            print_warning(f"Directory not found: {test_path}")
-            continue
-        
-        print_info(f"Running tests from {test_path.name}...")
-        
-        # Run pytest for the directory
-        cmd = ["pytest", "-v", str(test_path)]
-        
-        if filter:
-            cmd.extend(["-k", filter])
-        
-        if parallel:
-            cmd.extend(["-n", "auto"])
+        async def _start_network():
+            await network_mgr.start(rebuild=False, wait_ready=True)
         
         try:
-            result = subprocess.run(cmd)
-            if result.returncode != 0:
-                all_passed = False
-                print_error(f"Tests from {test_path.name} failed")
-            else:
-                print_success(f"Tests from {test_path.name} passed")
-        except FileNotFoundError:
-            print_error("pytest not found. Install with: pip install pytest pytest-asyncio")
+            asyncio.run(_start_network())
+            print_success("Network started successfully")
+        except Exception as e:
+            print_error(f"Failed to start network: {e}")
             raise typer.Exit(1)
+    
+    all_passed = True
+    total_scenarios = 0
+    passed_scenarios = 0
+    failed_scenarios = 0
+    
+    # Path to CLI binary inside containers
+    cli_path = "cellframe-node-cli"
+    
+    try:
+        for test_dir in test_dirs:
+            test_path = Path(test_dir).resolve()
+            
+            if not test_path.exists():
+                print_warning(f"Directory not found: {test_path}")
+                continue
+            
+            # Find all YAML scenario files
+            yml_files = list(test_path.glob("**/*.yml")) + list(test_path.glob("**/*.yaml"))
+            
+            if not yml_files:
+                print_warning(f"No YAML scenario files found in {test_path.name}")
+                continue
+            
+            # Filter scenarios if needed
+            if filter:
+                yml_files = [f for f in yml_files if filter.lower() in f.name.lower()]
+                if not yml_files:
+                    print_warning(f"No scenarios match filter '{filter}'")
+                    continue
+            
+            print_info(f"\n🧪 Running {len(yml_files)} scenario(s) from {test_path.name}...")
+            
+            # Parse and execute each scenario
+            # Common includes are in stage-env/tests/common
+            common_root = BASE_PATH / "tests"
+            parser = ScenarioParser(scenarios_root=test_path, common_root=common_root)
+            
+            for scenario_file in yml_files:
+                total_scenarios += 1
+                print_info(f"\n{'─' * 60}")
+                print_info(f"▶ Running scenario: {scenario_file.name}")
+                
+                # Create scenario-specific log file
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                scenario_name_clean = scenario_file.stem.replace(' ', '_')
+                scenario_log_name = f"scenario_{scenario_name_clean}_{timestamp}.log"
+                
+                # Get artifacts directory
+                config_loader = ConfigLoader(BASE_PATH, CONFIG_PATH)
+                artifacts_config = config_loader.get_artifacts_config()
+                artifacts_dir = (BASE_PATH / artifacts_config.get('artifacts_dir', '../testing/artifacts')).resolve()
+                scenario_logs_dir = artifacts_dir / "scenario-logs"
+                scenario_logs_dir.mkdir(parents=True, exist_ok=True)
+                scenario_log_file = scenario_logs_dir / scenario_log_name
+                
+                try:
+                    # Parse scenario
+                    # Convert absolute path to relative path from scenarios_root
+                    relative_path = scenario_file.relative_to(test_path)
+                    scenario = parser.load_scenario(str(relative_path))
+                    print_info(f"  📋 Name: {scenario.name}")
+                    if scenario.description:
+                        print_info(f"  📝 Description: {scenario.description}")
+                    if scenario.tags:
+                        print_info(f"  🏷️  Tags: {', '.join(scenario.tags)}")
+                    
+                    print_info(f"  📊 Steps: setup={len(scenario.setup)}, test={len(scenario.test)}, check={len(scenario.check)}")
+                    print_info(f"  📄 Log: {scenario_log_file.name}")
+                    
+                    # Setup scenario logging
+                    with open(scenario_log_file, 'w', encoding='utf-8') as log_f:
+                        log_f.write(f"=== Scenario: {scenario.name} ===\n")
+                        log_f.write(f"File: {scenario_file}\n")
+                        log_f.write(f"Description: {scenario.description or 'N/A'}\n")
+                        log_f.write(f"Tags: {', '.join(scenario.tags) if scenario.tags else 'N/A'}\n")
+                        log_f.write(f"Started: {timestamp}\n")
+                        log_f.write(f"{'=' * 60}\n\n")
+                    
+                    # Execute scenario
+                    executor = ScenarioExecutor(node_cli_path=cli_path)
+                    
+                    async def _execute():
+                        return await executor.execute_scenario(scenario)
+                    
+                    print_info("  ▶️  Executing...")
+                    ctx = asyncio.run(_execute())
+                    
+                    # Get summary
+                    summary = ctx.get_summary()
+                    
+                    # Write results to scenario log
+                    with open(scenario_log_file, 'a', encoding='utf-8') as log_f:
+                        log_f.write(f"\n{'=' * 60}\n")
+                        log_f.write(f"=== Results ===\n")
+                        log_f.write(f"Status: PASSED\n")
+                        log_f.write(f"Steps: {summary['passed']}/{summary['total_steps']} passed\n")
+                        if summary.get('variables'):
+                            log_f.write(f"Variables saved: {len(summary['variables'])}\n")
+                            for var_name, var_value in summary.get('variables', {}).items():
+                                log_f.write(f"  {var_name} = {var_value}\n")
+                    
+                    print_success(f"  ✅ Scenario passed!")
+                    print_info(f"     Steps: {summary['passed']}/{summary['total_steps']} passed")
+                    if summary.get('variables'):
+                        print_info(f"     Variables: {len(summary['variables'])} saved")
+                    
+                    passed_scenarios += 1
+                    
+                except ScenarioExecutionError as e:
+                    failed_scenarios += 1
+                    all_passed = False
+                    
+                    # Write error to scenario log
+                    with open(scenario_log_file, 'a', encoding='utf-8') as log_f:
+                        log_f.write(f"\n{'=' * 60}\n")
+                        log_f.write(f"=== Results ===\n")
+                        log_f.write(f"Status: FAILED\n")
+                        log_f.write(f"Error: {str(e)}\n")
+                    
+                    print_error(f"  ❌ Scenario failed: {str(e)}")
+                    logger.error("scenario_execution_failed", 
+                               scenario=str(scenario_file),
+                               error=str(e))
+                    
+                except Exception as e:
+                    failed_scenarios += 1
+                    all_passed = False
+                    
+                    # Write error to scenario log
+                    with open(scenario_log_file, 'a', encoding='utf-8') as log_f:
+                        log_f.write(f"\n{'=' * 60}\n")
+                        log_f.write(f"=== Results ===\n")
+                        log_f.write(f"Status: ERROR\n")
+                        log_f.write(f"Exception: {str(e)}\n")
+                        import traceback
+                        log_f.write(f"Traceback:\n{traceback.format_exc()}\n")
+                    
+                    print_error(f"  ❌ Unexpected error: {str(e)}")
+                    logger.exception("scenario_unexpected_error", 
+                                   scenario=str(scenario_file))
+        
+        # Print summary
+        print_info(f"\n{'═' * 60}")
+        print_info(f"📊 Scenario Test Summary")
+        print_info(f"{'═' * 60}")
+        print_info(f"Total scenarios: {total_scenarios}")
+        if passed_scenarios > 0:
+            print_success(f"✅ Passed: {passed_scenarios}")
+        if failed_scenarios > 0:
+            print_error(f"❌ Failed: {failed_scenarios}")
+        print_info(f"{'═' * 60}")
+        
+    finally:
+        # Stop network if requested
+        if stop_after and network_mgr:
+            print_info("\n🛑 Stopping test network...")
+            
+            async def _stop_network():
+                await network_mgr.stop(remove_volumes=False)
+            
+            try:
+                asyncio.run(_stop_network())
+                print_success("Network stopped")
+            except Exception as e:
+                print_warning(f"Failed to stop network cleanly: {e}")
     
     if not all_passed:
         raise typer.Exit(1)
@@ -569,7 +725,7 @@ def snapshots_info(
         print_error("Failed to get snapshot info")
         raise typer.Exit(1)
     
-    print_panel(f"📦 Snapshot: {info['topology_hash'][:16]}...", "Snapshot Information")
+    print_panel(title="Snapshot Information", content=f"📦 Snapshot: {info['topology_hash'][:16]}...")
     print_info(f"Path: {info['path']}")
     print_info(f"Size: {info['size']}")
     print_info(f"Nodes: {info['node_count']}")
@@ -741,10 +897,10 @@ def collect_artifacts(
     artifacts_manager.cleanup_old_artifacts()
     
     print_panel(
-        f"✅ Artifacts collected: [cyan]{run_dir}[/cyan]\n\n"
+        title="Artifacts Collection Complete",
+        content=f"✅ Artifacts collected: [cyan]{run_dir}[/cyan]\n\n"
         f"📊 Reports:\n"
-        + "\n".join([f"  • {t}: {p.relative_to(run_dir)}" for t, p in reports.items()]),
-        title="Artifacts Collection Complete"
+        + "\n".join([f"  • {t}: {p.relative_to(run_dir)}" for t, p in reports.items()])
     )
 
 

@@ -10,16 +10,59 @@ Provides common CLI functionality like:
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, TextIO
+from io import StringIO
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from .logger import get_logger
+from .logger import get_logger, get_log_file, strip_ansi_codes
 
 logger = get_logger(__name__)
-console = Console()
+
+
+class DualOutputConsole:
+    """Console wrapper that outputs to both terminal and log file (without colors)."""
+    
+    def __init__(self):
+        self.console = Console()
+        self._log_file = None
+    
+    def _write_to_log(self, text: str):
+        """Write text to log file without ANSI codes."""
+        log_file_path = get_log_file()
+        if log_file_path:
+            try:
+                with open(log_file_path, 'a', encoding='utf-8') as f:
+                    # Strip ANSI codes before writing
+                    clean_text = strip_ansi_codes(text)
+                    f.write(clean_text)
+                    if not clean_text.endswith('\n'):
+                        f.write('\n')
+            except Exception:
+                pass  # Don't break if logging fails
+    
+    def print(self, *args, **kwargs):
+        """Print to console and log."""
+        # Capture output to string
+        string_io = StringIO()
+        temp_console = Console(file=string_io, force_terminal=False)
+        temp_console.print(*args, **kwargs)
+        output = string_io.getvalue()
+        
+        # Write to log file
+        self._write_to_log(output)
+        
+        # Print to actual console
+        self.console.print(*args, **kwargs)
+    
+    def __getattr__(self, name):
+        """Delegate all other attributes to underlying console."""
+        return getattr(self.console, name)
+
+
+console = DualOutputConsole()
 
 
 def run_command(
@@ -71,10 +114,8 @@ def print_success(message: str) -> None:
 
 def print_error(message: str) -> None:
     """Print error message with red X."""
-    import sys
-    console.file = sys.stderr
+    # Note: DualOutputConsole doesn't support changing file attribute
     console.print(f"[red]✗[/red] {message}")
-    console.file = sys.stdout
 
 
 def print_warning(message: str) -> None:
