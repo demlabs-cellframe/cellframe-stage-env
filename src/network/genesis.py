@@ -230,9 +230,9 @@ class GenesisInitializer:
             container: Docker container to execute commands in
             node: Node configuration
         """
-        # Certificate name for this validator
+        # Certificate name for this validator (use private key)
         validator_idx = node.node_id - 1
-        cert_name = f"{self.network_name}.master.{validator_idx}"
+        cert_name = f"pvt.{self.network_name}.master.{validator_idx}"
         
         # Read node address from certs cache
         node_addr_file = self.certs_cache / f"node{node.node_id}" / "validator_addr.txt"
