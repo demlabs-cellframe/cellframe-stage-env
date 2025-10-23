@@ -430,7 +430,7 @@ class NetworkManager:
             "health": {s.node_id: s.dict() for s in health_statuses},
         }
     
-    async def _wait_for_network_ready(self, timeout: float = 300.0) -> None:
+    async def _wait_for_network_ready(self, timeout: float = 600.0) -> None:
         """
         Wait for all nodes to be ready.
         
