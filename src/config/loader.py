@@ -64,6 +64,12 @@ class NetworkTopology(BaseModel):
         type: str = "debug"
         cellframe_version: str = "latest"
     
+    class Timeouts(BaseModel):
+        """Timeout configurations in seconds."""
+        startup: int = Field(300, ge=30, description="Node startup timeout")
+        health_check: int = Field(300, ge=30, description="Health check timeout")
+        command: int = Field(30, ge=5, description="CLI command execution timeout")
+    
     network: Network
     topology: Dict[str, TopologyNode]
     consensus: Consensus
@@ -71,6 +77,7 @@ class NetworkTopology(BaseModel):
     network_settings: NetworkSettings
     build: Build
     features: Dict[str, bool] = {}
+    timeouts: Timeouts = Timeouts()
     
     @field_validator("topology")
     @classmethod
@@ -279,4 +286,53 @@ class ConfigLoader:
         return [
             f.stem for f in self.topologies_dir.glob("*.json")
         ]
+    
+    def get_timeouts(self) -> Dict[str, int]:
+        """
+        Load timeout configuration from stage-env.cfg.
+        
+        Returns:
+            Dictionary with timeout values in seconds:
+            - startup: Node startup timeout (default: 300s)
+            - health_check: Health check timeout (default: 300s)
+            - command: CLI command timeout (default: 30s)
+        """
+        # Use custom config path if provided, otherwise use default
+        if self.custom_config_path:
+            config_file = self.custom_config_path
+        else:
+            config_file = self.config_dir / "stage-env.cfg"
+        
+        # Default timeouts
+        timeouts = {
+            'startup': 300,
+            'health_check': 300,
+            'command': 30,
+        }
+        
+        if not config_file.exists():
+            logger.warning("config_not_found_using_defaults", path=str(config_file))
+            return timeouts
+        
+        # Load config
+        config = configparser.ConfigParser()
+        config.read(config_file)
+        
+        # Read timeouts section if exists
+        if config.has_section('timeouts'):
+            for key in timeouts.keys():
+                if config.has_option('timeouts', key):
+                    try:
+                        value = config.getint('timeouts', key)
+                        if value >= 5:  # Minimum timeout
+                            timeouts[key] = value
+                        else:
+                            logger.warning("timeout_too_small", key=key, value=value, 
+                                         minimum=5, using_default=timeouts[key])
+                    except ValueError as e:
+                        logger.warning("invalid_timeout_value", key=key, error=str(e),
+                                      using_default=timeouts[key])
+        
+        logger.debug("timeouts_loaded", **timeouts)
+        return timeouts
 

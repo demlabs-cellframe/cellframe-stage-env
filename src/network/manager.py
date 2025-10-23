@@ -19,8 +19,6 @@ from ..monitoring.health import HealthChecker, HealthStatus
 from ..utils.logger import get_logger
 from .models import NodeConfig
 from .genesis import GenesisInitializer
-from ..snapshots import TopologySnapshotManager, FastStartManager
-from ..snapshots.utils import calculate_topology_hash
 
 logger = get_logger(__name__)
 
@@ -62,21 +60,16 @@ class NetworkManager:
             network_name=self.topology.network.name
         )
         
-        # Snapshot managers
-        cache_dir = base_path / "cache"
-        self.snapshot_manager = TopologySnapshotManager(cache_dir)
-        self.fast_start = None  # Initialized on fast start
-        
         # Node configurations
         self.nodes: Dict[str, NodeConfig] = {}
         
-        # Snapshot settings
-        self._use_snapshots = True  # Enable snapshots by default
-        self._rebuild_snapshot = False
+        # Load timeouts from config
+        self.timeouts = self.config_loader.get_timeouts()
         
         logger.info("network_manager_initialized",
                    topology=topology_name,
-                   network=self.topology.network.name)
+                   network=self.topology.network.name,
+                   timeouts=self.timeouts)
     
     def generate_node_configs(self) -> List[NodeConfig]:
         """
@@ -146,8 +139,6 @@ class NetworkManager:
         self,
         rebuild: bool = False,
         wait_ready: bool = True,
-        use_snapshot: bool = True,
-        rebuild_snapshot: bool = False,
     ) -> None:
         """
         Start the test network.
@@ -155,13 +146,10 @@ class NetworkManager:
         Args:
             rebuild: Rebuild Docker images before starting
             wait_ready: Wait for all nodes to be ready
-            use_snapshot: Use snapshot for fast start if available
-            rebuild_snapshot: Force snapshot rebuild even if exists
         """
         logger.info("starting_network",
                    topology=self.topology_name,
-                   rebuild=rebuild,
-                   use_snapshot=use_snapshot)
+                   rebuild=rebuild)
         
         # Generate node configurations
         if not self.nodes:
@@ -169,50 +157,6 @@ class NetworkManager:
         else:
             node_configs = list(self.nodes.values())
         
-        # Calculate topology hash for snapshot
-        topology_config = self._get_topology_config_for_hash()
-        topology_hash = calculate_topology_hash(topology_config)
-        
-        # Check if valid snapshot exists
-        snapshot_available = (
-            use_snapshot and 
-            not rebuild and 
-            not rebuild_snapshot and
-            self.snapshot_manager.is_valid(topology_hash)
-        )
-        
-        if snapshot_available:
-            logger.info("snapshot_available", topology_hash=topology_hash[:16])
-            await self._start_from_snapshot(topology_hash, wait_ready)
-        else:
-            logger.info("normal_start", 
-                       reason="no_snapshot" if not self.snapshot_manager.exists(topology_hash) else "rebuild_requested")
-            await self._start_normal(node_configs, rebuild, wait_ready)
-            
-            # Create snapshot after successful start
-            if use_snapshot and wait_ready:
-                logger.info("creating_snapshot_after_start")
-                await self._create_snapshot_from_active(topology_config, topology_hash)
-        
-        logger.info("network_started",
-                   nodes=len(self.nodes),
-                   topology=self.topology.network.name,
-                   fast_start=snapshot_available)
-    
-    async def _start_normal(
-        self,
-        node_configs: List[NodeConfig],
-        rebuild: bool,
-        wait_ready: bool,
-    ) -> None:
-        """
-        Normal start workflow (without snapshot).
-        
-        Args:
-            node_configs: List of node configurations
-            rebuild: Rebuild Docker images
-            wait_ready: Wait for nodes to be ready
-        """
         # Generate configuration files and certificates
         logger.info("generating_configs_and_certs")
         self.config_generator.generate_all(
@@ -251,108 +195,10 @@ class NetworkManager:
             logger.error("genesis_initialization_failed", error=str(e))
             # Don't fail the whole start process, just log the error
             # Validator orders might already exist in a restarted network
-    
-    async def _start_from_snapshot(
-        self,
-        topology_hash: str,
-        wait_ready: bool = True,
-    ) -> None:
-        """
-        Fast start from snapshot using OverlayFS.
         
-        Args:
-            topology_hash: Topology hash for snapshot lookup
-            wait_ready: Wait for nodes to be ready
-        """
-        snapshot_path = self.snapshot_manager.get_snapshot_path(topology_hash)
-        
-        logger.info("fast_start_from_snapshot",
-                   snapshot=snapshot_path.name,
-                   topology_hash=topology_hash[:16])
-        
-        # Initialize FastStartManager
-        self.fast_start = FastStartManager(self.base_path / "cache")
-        
-        # Mount snapshot with OverlayFS
-        logger.info("mounting_snapshot_overlay")
-        self.fast_start.start_from_snapshot(snapshot_path)
-        
-        # Generate docker-compose (binds to cache/active/)
-        node_configs = list(self.nodes.values())
-        logger.info("generating_docker_compose")
-        self.compose.generate_compose_for_nodes(node_configs)
-        
-        # Start services (nodes will use snapshot data)
-        logger.info("starting_docker_services_from_snapshot")
-        self.compose.up(detach=True, wait=False)
-        
-        # Minimal wait - nodes should start quickly from snapshot
-        if wait_ready:
-            logger.info("waiting_for_nodes_minimal")
-            # Shorter timeout since nodes start from ready state
-            self.compose.wait_for_services(timeout=60)
-        
-        logger.info("fast_start_complete")
-    
-    async def _create_snapshot_from_active(
-        self,
-        topology_config: Dict[str, any],
-        topology_hash: str,
-    ) -> None:
-        """
-        Create snapshot from current active state.
-        
-        Args:
-            topology_config: Topology configuration for metadata
-            topology_hash: Calculated topology hash
-        """
-        try:
-            active_dir = self.base_path / "cache" / "active"
-            
-            if not active_dir.exists():
-                logger.warning("active_dir_not_found", path=active_dir)
-                return
-            
-            logger.info("creating_snapshot",
-                       topology_hash=topology_hash[:16],
-                       source=active_dir)
-            
-            # Create snapshot
-            self.snapshot_manager.create(
-                topology_config=topology_config,
-                source_dir=active_dir,
-                compression_level=15,  # Balanced compression
-                force=False
-            )
-            
-            logger.info("snapshot_created_successfully",
-                       topology_hash=topology_hash[:16])
-            
-        except Exception as e:
-            logger.error("snapshot_creation_failed",
-                        error=str(e),
-                        topology_hash=topology_hash[:16])
-            # Don't fail the start process, just log the error
-    
-    def _get_topology_config_for_hash(self) -> Dict[str, any]:
-        """
-        Get topology configuration for hash calculation.
-        
-        Returns:
-            Normalized topology configuration dictionary
-        """
-        return {
-            'node_count': len(self.nodes),
-            'nodes': [
-                {
-                    'role': config.role,
-                    'consensus': getattr(self.topology.network, 'consensus_type', 'unknown'),
-                }
-                for config in self.nodes.values()
-            ],
-            'network_type': self.topology.network.name,
-            'chain_type': getattr(self.topology.network, 'chain_type', 'dag'),
-        }
+        logger.info("network_started",
+                   nodes=len(self.nodes),
+                   topology=self.topology.network.name)
     
     async def stop(self, remove_volumes: bool = False) -> None:
         """
@@ -365,11 +211,6 @@ class NetworkManager:
         
         # Stop Docker services
         self.compose.down(volumes=remove_volumes)
-        
-        # Cleanup FastStart overlay if used
-        if self.fast_start and self.fast_start._is_mounted:
-            logger.info("cleaning_up_snapshot_overlay")
-            self.fast_start.cleanup()
         
         logger.info("network_stopped")
     
@@ -430,13 +271,13 @@ class NetworkManager:
             "health": {s.node_id: s.dict() for s in health_statuses},
         }
     
-    async def _wait_for_network_ready(self, timeout: float = 600.0) -> None:
+    async def _wait_for_network_ready(self) -> None:
         """
         Wait for all nodes to be ready.
         
-        Args:
-            timeout: Maximum wait time in seconds
+        Uses timeout from config [timeouts] section.
         """
+        timeout = self.timeouts.get('health_check', 300)
         logger.info("waiting_for_network_ready", timeout=timeout)
         
         # First wait for Docker containers
