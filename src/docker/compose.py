@@ -620,19 +620,23 @@ class DockerComposeManager:
             if api_result.exit_code == 0:
                 try:
                     import json
-                    api_response = json.loads(api_result.output.decode("utf-8"))
+                    output_str = api_result.output.decode("utf-8")
+                    logger.debug("api_raw_output", container=container.name, output=output_str[:200])
+                    api_response = json.loads(output_str)
                     if api_response.get("type") == 2 and "result" in api_response:
                         current_state = api_response["result"][0]["status"]["states"]["current"]
+                        logger.info("api_state_check", container=container.name, state=current_state)
                         if current_state in ["NET_STATE_ONLINE", "NET_STATE_SYNC_CHAINS"]:
-                            logger.debug("network_ready_via_api",
+                            logger.info("network_ready_via_api",
                                        container=container.name,
                                        state=current_state)
                             return True
-                        logger.debug("network_not_ready_via_api",
+                        logger.warning("network_not_ready_via_api",
                                    container=container.name,
                                    state=current_state)
                         return False
-                except (json.JSONDecodeError, KeyError, IndexError):
+                except (json.JSONDecodeError, KeyError, IndexError) as e:
+                    logger.warning("api_parse_error", container=container.name, error=str(e))
                     pass  # Fallback to logs
             
             # Fallback: Check network status via logs
