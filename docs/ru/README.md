@@ -91,6 +91,7 @@ stage-env start                    # Запустить сеть
 stage-env start --no-wait          # Запуск без ожидания ONLINE
 stage-env start --topology default # Запуск с конкретной топологией
 stage-env start --clean            # Очистить данные перед запуском
+stage-env start --rebuild          # Пересобрать Docker образы перед запуском
 stage-env stop                     # Остановить сеть
 stage-env stop --volumes           # Остановить и удалить volumes
 stage-env restart                  # Перезапустить всю сеть
@@ -121,9 +122,10 @@ stage-env build --clean         # Чистая сборка (удалить buil
 stage-env build --jobs 8        # Параллельная сборка (8 потоков)
 
 # === Сертификаты ===
-stage-env certs                           # Сгенерировать сертификаты (default: 4 ноды, 3 валидатора)
-stage-env certs --nodes 7 --validators 5  # Для 7 нод с 5 валидаторами
-stage-env certs --force                   # Пересоздать существующие
+stage-env certs                                    # Сгенерировать сертификаты (default: 4 ноды, 3 валидатора)
+stage-env certs --nodes 7 --validators 5           # Для 7 нод с 5 валидаторами
+stage-env certs --network stagenet                 # Для конкретной сети
+stage-env certs --force                            # Пересоздать существующие
 
 # === Очистка ===
 stage-env clean --all          # Очистить всё (build + certs + cache)
@@ -168,9 +170,10 @@ check:
 
 ### Готовые шаблоны
 
-- `common/network_minimal.yml` - 1 нода
-- `common/network_full.yml` - 7 нод (валидаторы + full node)
-- `common/wallet_setup.yml` - Готовый кошелёк
+- `common/network_minimal.yml` - 1 нода (root validator)
+- `common/network_full.yml` - 4 ноды (3 validators + 1 full node)
+- `common/wallet_setup.yml` - Готовый кошелёк с адресом
+- `common/network_dynamic_addition.yml` - Динамическое добавление нод
 
 ## 🔧 Конфигурация
 
@@ -208,6 +211,20 @@ min_validators = 2                 # Минимум валидаторов
 new_round_delay = 45               # Задержка между раундами
 collecting_level = 10.0            # Уровень сбора голосов
 auth_certs_prefix = stagenet.master # Префикс сертификатов
+
+# === Балансировщик ===
+[balancer]
+enabled = true                     # Включить балансировщик
+type = http                        # Тип балансировщика (http)
+uri = f0intlt4eyl03htogu           # URI балансировщика
+max_links_response = 10            # Макс. количество ссылок в ответе
+request_delay = 20                 # Задержка между запросами
+
+# === Функции ===
+[features]
+monitoring = false                 # Мониторинг
+tests = false                      # Тестовый режим
+crash_artifacts = true             # Сбор артефактов при крашах
 
 # === Пути ===
 [paths]
@@ -283,9 +300,11 @@ full_nodes_count = 1     # Full ноды (без валидации)
 Или используйте готовые топологии:
 
 ```bash
-./stage-env start --topology default  # 7 нод (3 root + 3 master + 1 full)
-./stage-env start --topology minimal  # 1 root нода
+./stage-env start --topology default  # По умолчанию (из конфига: 3 root + 3 master + 1 full = 7 нод)
+./stage-env start --topology minimal  # 1 root нода для быстрых тестов
 ```
+
+**Примечание:** Фактическое количество нод зависит от конфигурации в `[topology]` секции `stage-env.cfg`.
 
 ## 📊 Артефакты и отчеты
 
