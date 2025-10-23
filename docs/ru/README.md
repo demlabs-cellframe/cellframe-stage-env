@@ -46,15 +46,9 @@ cd tests
 
 ### Для QA инженеров
 
-- **[Scenarios Tutorial](docs/scenarios/Tutorial.md)** - Пошаговое обучение языку сценариев
-- **[Scenarios Cookbook](docs/scenarios/Cookbook.md)** - Готовые рецепты для типовых задач
-- **[Scenarios Glossary](docs/scenarios/Glossary.md)** - Полный справочник языка
-
-### Для разработчиков
-
-- **[Architecture](docs/Architecture.md)** - Архитектура системы
-- **[Integration](docs/Integration.md)** - Интеграция в проект
-- **[CI/CD](docs/CICD.md)** - Настройка CI/CD
+- **[Tutorial](scenarios/Tutorial.md)** - Пошаговое обучение языку сценариев (8 уроков)
+- **[Cookbook](scenarios/Cookbook.md)** - Готовые рецепты для типовых задач (50 рецептов)
+- **[Glossary](scenarios/Glossary.md)** - Полный справочник языка (все команды и параметры)
 
 ## 📁 Структура проекта
 
@@ -70,53 +64,76 @@ stage-env/
 │   ├── network/             # Топологии и сеть
 │   ├── build/               # Сборка артефактов
 │   ├── certs/               # Генерация сертификатов
+│   ├── scenarios/           # Парсинг и выполнение сценариев
 │   └── utils/               # Логирование, отчеты, артефакты
 │
 ├── config/                  # Конфигурационные файлы
 │   ├── topologies/          # Шаблоны сетевых топологий
 │   └── templates/           # Jinja2 шаблоны конфигов
+│       ├── base/            # Базовые конфиги нод
+│       └── chains/          # Конфиги блокчейнов
 │
 ├── scenarios/               # YAML тест-сценарии
 │   ├── common/              # Переиспользуемые шаблоны
-│   └── features/            # Feature-specific тесты
+│   ├── features/            # Feature-specific тесты
+│   └── suites/              # Тестовые сьюты
 │
 └── docs/                    # Документация
-    ├── scenarios/           # Документация по сценариям
-    └── ...                  # Прочая документация
+    ├── en/                  # English documentation
+    └── ru/                  # Русская документация
 ```
 
 ## 🎨 Основные команды
 
 ```bash
 # === Управление сетью ===
-stage-env start              # Запустить сеть
-stage-env start --no-wait    # Запуск без ожидания ONLINE
-stage-env stop               # Остановить сеть
-stage-env restart            # Перезапустить
-stage-env status             # Показать статус нод
+stage-env start                    # Запустить сеть
+stage-env start --no-wait          # Запуск без ожидания ONLINE
+stage-env start --topology default # Запуск с конкретной топологией
+stage-env start --clean            # Очистить данные перед запуском
+stage-env stop                     # Остановить сеть
+stage-env stop --volumes           # Остановить и удалить volumes
+stage-env restart                  # Перезапустить всю сеть
+stage-env restart node-1           # Перезапустить конкретную ноду
+stage-env status                   # Показать статус всех нод
 
 # === Тестирование ===
-stage-env run-tests <dir>    # Запустить тесты из директории
-stage-env run-tests test.yml # Запустить конкретный сценарий
+stage-env run-tests scenarios/                    # Запустить тесты из директории
+stage-env run-tests scenarios/test.yml            # Запустить конкретный сценарий
+stage-env run-tests scenarios/ --filter token     # Фильтр по названию
+stage-env run-tests scenarios/ --no-start-network # Не запускать сеть
+stage-env run-tests scenarios/ --keep-running     # Не останавливать после тестов
 
 # === Мониторинг ===
-stage-env logs node-1        # Показать логи ноды
-stage-env logs node-1 -f     # Follow логи
-stage-env exec node-1 "cmd"  # Выполнить команду в ноде
+stage-env logs node-1               # Показать логи ноды (последние 100 строк)
+stage-env logs node-1 --tail 500    # Показать последние 500 строк
+stage-env logs node-1 --follow      # Follow логи в реальном времени
+stage-env exec node-1 "ls -la"      # Выполнить команду в контейнере ноды
 
 # === Артефакты и отчеты ===
-stage-env collect-artifacts e2e --exit-code=0
+stage-env collect-artifacts e2e --exit-code=0         # Собрать артефакты E2E тестов
+stage-env collect-artifacts functional --exit-code=1  # Собрать артефакты функциональных тестов
 
 # === Сборка ===
-stage-env build              # Собрать Cellframe Node
-stage-env build --clean      # Чистая сборка
+stage-env build                 # Собрать Cellframe Node (Debug)
+stage-env build --release       # Собрать Release версию
+stage-env build --clean         # Чистая сборка (удалить build/)
+stage-env build --jobs 8        # Параллельная сборка (8 потоков)
 
 # === Сертификаты ===
-stage-env certs --nodes 7    # Сгенерировать сертификаты
+stage-env certs                           # Сгенерировать сертификаты (default: 4 ноды, 3 валидатора)
+stage-env certs --nodes 7 --validators 5  # Для 7 нод с 5 валидаторами
+stage-env certs --force                   # Пересоздать существующие
 
 # === Очистка ===
-stage-env clean --all        # Очистить всё
-stage-env stop --volumes     # Остановить и удалить volumes
+stage-env clean --all          # Очистить всё (build + certs + cache)
+stage-env clean --build        # Очистить только build артефакты
+stage-env clean --certs        # Очистить только сертификаты
+
+# === Глобальные опции ===
+stage-env --verbose start      # Детальные логи
+stage-env --json start         # JSON вывод логов
+stage-env --config path.cfg start  # Использовать другой конфиг
 ```
 
 ## 📝 Написание тестов
@@ -160,24 +177,69 @@ check:
 Основная конфигурация находится в `tests/stage-env.cfg`:
 
 ```ini
+# === Сеть ===
 [network]
-name = stagenet
-network_id = 0x1234
+name = stagenet                    # Имя сети
+network_id = 0x1234                # Network ID
+consensus_type = esbocs            # Тип консенсуса (esbocs/pos/poa)
 
+# === Топология ===
+[topology]
+root_nodes_count = 3               # Количество root нод
+master_nodes_count = 3             # Количество master нод
+full_nodes_count = 1               # Количество full нод
+
+# === Сборка ===
+[build]
+build_type = debug                 # debug или release
+cellframe_version = latest         # Версия Cellframe Node
+
+# === Сетевые настройки ===
+[network_settings]
+base_rpc_port = 8545               # Базовый порт RPC
+base_p2p_port = 31337              # Базовый порт P2P
+base_http_port = 8079              # Базовый порт HTTP
+node_port = 8079                   # Порт для внешних подключений
+subnet = 172.20.0.0/16             # Docker subnet
+
+# === Консенсус ===
+[consensus]
+min_validators = 2                 # Минимум валидаторов
+new_round_delay = 45               # Задержка между раундами
+collecting_level = 10.0            # Уровень сбора голосов
+auth_certs_prefix = stagenet.master # Префикс сертификатов
+
+# === Пути ===
 [paths]
-cache_dir = ../testing/cache
-artifacts_dir = ../testing/artifacts
+cache_dir = ../testing/cache       # Директория кэша
+artifacts_dir = ../testing/artifacts # Директория артефактов
 
+# === Логирование ===
+[logging]
+log_dir = ../testing/logs          # Директория логов
+log_level = info                   # Уровень логирования (debug/info/warning/error)
+scenario_logs = true               # Логировать выполнение сценариев
+retain_days = 7                    # Хранить логи N дней
+
+# === Артефакты ===
 [artifacts]
-collect_node_logs = true
-collect_health_logs = true
-collect_crash_dumps = true
-retain_days = 30
+collect_node_logs = true           # Собирать логи нод
+collect_health_logs = true         # Собирать health check логи
+collect_crash_dumps = true         # Собирать core dumps
+retain_days = 30                   # Хранить артефакты N дней
 
+# === Таймауты (в секундах) ===
 [timeouts]
-startup = 600
-health_check = 600
-command = 30
+startup = 600                      # Таймаут запуска сети
+health_check = 600                 # Таймаут health check
+command = 30                       # Таймаут выполнения команд
+
+# === Источник ноды ===
+[node_source]
+type = local                       # local/url/repository
+local_path = ../test_build/cellframe-node.deb  # Путь к локальному .deb
+# url = https://...                # URL для загрузки
+# repository_url = https://...     # Git репозиторий для сборки
 ```
 
 ## 🎯 Интеграция в свой проект
@@ -209,33 +271,20 @@ STAGE_ENV_CONFIG="./stage-env.cfg"
 
 ### Настройка топологии
 
-Создайте `config/topologies/my-network.json`:
+Топология сети настраивается через секцию `[topology]` в `stage-env.cfg`:
 
-```json
-{
-  "network": {
-    "name": "mynet",
-    "network_id": "0x5678"
-  },
-  "topology": {
-    "validators": {
-      "count": 5,
-      "role": "validator",
-      "consensus_participation": true
-    },
-    "full_nodes": {
-      "count": 2,
-      "role": "full",
-      "consensus_participation": false
-    }
-  }
-}
+```ini
+[topology]
+root_nodes_count = 3     # Root ноды (seed nodes, bootstrap)
+master_nodes_count = 3   # Master ноды (validators)
+full_nodes_count = 1     # Full ноды (без валидации)
 ```
 
-Запустите:
+Или используйте готовые топологии:
 
 ```bash
-./stage-env start --topology my-network
+./stage-env start --topology default  # 7 нод (3 root + 3 master + 1 full)
+./stage-env start --topology minimal  # 1 root нода
 ```
 
 ## 📊 Артефакты и отчеты
@@ -300,9 +349,17 @@ rm -rf .venv
 
 ## 📚 Подробная документация
 
-- **[Tutorial](docs/scenarios/Tutorial.md)** - Пошаговое руководство для QA
-- **[Cookbook](docs/scenarios/Cookbook.md)** - Рецепты для типовых задач
-- **[Glossary](docs/scenarios/Glossary.md)** - Полный справочник языка сценариев
+### Для QA инженеров
+
+- **[Tutorial](scenarios/Tutorial.md)** - 8 уроков с упражнениями для изучения языка сценариев
+- **[Cookbook](scenarios/Cookbook.md)** - 50 готовых рецептов для типовых задач
+- **[Glossary](scenarios/Glossary.md)** - Полный справочник: все команды, параметры, примеры
+
+### Готовые примеры
+
+- `scenarios/common/` - Переиспользуемые шаблоны (network_minimal.yml, network_full.yml)
+- `scenarios/features/` - Реальные тесты функциональности
+- `scenarios/suites/` - Наборы тестов для комплексной проверки
 
 ## 🤝 Участие в разработке
 
