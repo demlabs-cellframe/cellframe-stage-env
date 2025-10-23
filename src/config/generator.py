@@ -9,7 +9,7 @@ Generates:
 
 import shutil
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from ..config.loader import ConfigLoader, NetworkTopology
 from ..certs.generator import CertGenerator
