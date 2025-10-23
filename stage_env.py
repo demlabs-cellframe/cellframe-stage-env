@@ -587,6 +587,144 @@ def snapshots_clean(
         print_info("No expired snapshots found")
 
 
+@app.command("collect-artifacts")
+def collect_artifacts(
+    ctx: typer.Context,
+    test_type: str = typer.Argument(..., help="Test type: e2e, functional, or all"),
+    exit_code: int = typer.Option(0, help="Test exit code"),
+):
+    """📦 Collect artifacts and generate reports after test run."""
+    import docker
+    from datetime import datetime
+    from src.utils.artifacts import ArtifactsManager
+    from src.utils.report_generator import ReportGenerator
+    
+    print_info(f"Collecting artifacts for {test_type} tests (exit code: {exit_code})")
+    
+    # Load configuration
+    config_loader = ConfigLoader(BASE_PATH, CONFIG_PATH)
+    artifacts_config = config_loader.get_artifacts_config()
+    
+    # Initialize artifacts manager
+    artifacts_manager = ArtifactsManager(BASE_PATH, artifacts_config)
+    
+    # Create run directory
+    run_id = f"{test_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir = artifacts_manager.create_run_directory(run_id)
+    
+    print_info(f"Created run directory: {run_dir.name}")
+    
+    # Collect stage-env log
+    log_dir = BASE_PATH.parent / "logs"
+    if log_dir.exists():
+        log_files = sorted(log_dir.glob("stage-env_*.log"), 
+                          key=lambda p: p.stat().st_mtime, 
+                          reverse=True)
+        if log_files:
+            artifacts_manager.collect_stage_env_log(run_dir, log_files[0])
+            print_success(f"Collected stage-env log: {log_files[0].name}")
+    
+    # Collect node logs from Docker containers
+    try:
+        client = docker.from_env()
+        project_name = "cellframe-stage"
+        
+        containers = client.containers.list(
+            all=True,
+            filters={"label": f"com.docker.compose.project={project_name}"}
+        )
+        
+        node_logs_dir = run_dir / "node-logs"
+        core_dumps_dir = run_dir / "core-dumps"
+        
+        collected_logs = 0
+        collected_dumps = 0
+        
+        for container in containers:
+            try:
+                container_name = container.name
+                if "node-" in container_name:
+                    node_name = container_name.split("node-", 1)[1]
+                    node_id = f"node-{node_name}"
+                    
+                    # Collect logs
+                    logs = container.logs(tail=10000).decode('utf-8', errors='ignore')
+                    log_file = node_logs_dir / f"{node_id}.log"
+                    log_file.write_text(logs)
+                    collected_logs += 1
+                    
+                    # Check for core dumps
+                    crash_dir = f"/crash-artifacts/{node_id}"
+                    result = container.exec_run(f"ls {crash_dir}", demux=False)
+                    if result.exit_code == 0 and result.output:
+                        files = result.output.decode('utf-8').strip().split('\n')
+                        for file in files:
+                            if file and file != '.':
+                                dump_result = container.exec_run(
+                                    f"cat {crash_dir}/{file}",
+                                    demux=False
+                                )
+                                if dump_result.exit_code == 0:
+                                    dump_file = core_dumps_dir / f"{node_id}_{file}"
+                                    dump_file.write_bytes(dump_result.output)
+                                    collected_dumps += 1
+            except Exception as e:
+                logger.warning("failed_to_collect_container_artifacts",
+                             container=container.name,
+                             error=str(e))
+        
+        print_success(f"Collected {collected_logs} node logs")
+        if collected_dumps > 0:
+            print_warning(f"Collected {collected_dumps} core dumps ⚠️")
+        
+    except Exception as e:
+        print_error(f"Failed to collect Docker artifacts: {e}")
+    
+    # Collect health logs
+    artifacts_manager.collect_health_logs(run_dir)
+    
+    # Build summary data
+    summary_data = {
+        'run_id': run_id,
+        'test_type': test_type,
+        'exit_code': exit_code,
+        'status': 'passed' if exit_code == 0 else 'failed',
+        'timestamp': datetime.now().isoformat(),
+        'topology': 'default',
+        'network': 'stagenet',
+        'total_nodes': 7,
+        'artifacts': {
+            'node_logs': [str(p.name) for p in (run_dir / "node-logs").glob("*.log")],
+            'stage_env_logs': [str(p.name) for p in (run_dir / "stage-env-logs").glob("*.log")],
+            'core_dumps': [str(p.name) for p in (run_dir / "core-dumps").glob("*")],
+            'stack_traces': [str(p.name) for p in (run_dir / "stack-traces").glob("*")],
+        }
+    }
+    
+    # Create summary file
+    artifacts_manager.create_run_summary(run_dir, summary_data)
+    print_success("Created summary.json")
+    
+    # Generate reports
+    print_info("Generating reports...")
+    report_generator = ReportGenerator(run_dir)
+    reports = report_generator.generate_full_report(summary_data)
+    
+    for report_type, report_path in reports.items():
+        print_success(f"Generated {report_type} report: {report_path.name}")
+    
+    # Cleanup old artifacts
+    print_info("Cleaning up old artifacts...")
+    artifacts_manager.cleanup_old_artifacts()
+    
+    print_panel(
+        f"✅ Artifacts collected: [cyan]{run_dir}[/cyan]\n\n"
+        f"📊 Reports:\n"
+        + "\n".join([f"  • {t}: {p.relative_to(run_dir)}" for t, p in reports.items()]),
+        title="Artifacts Collection Complete"
+    )
+
+
 if __name__ == "__main__":
     app()
 
