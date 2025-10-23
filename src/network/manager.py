@@ -250,25 +250,52 @@ class NetworkManager:
         # Get container status
         service_status = self.compose.get_service_status()
         
-        # Get health status
-        node_urls = {
-            name: f"http://localhost:{config.http_port}"
-            for name, config in self.nodes.items()
-        }
-        
-        health_checks = [
-            (url, node_id, "http")
-            for node_id, url in node_urls.items()
-        ]
-        
-        health_statuses = await self.health_checker.check_multiple(health_checks)
+        # Get health status via JSON-RPC (CLI)
+        health_status = {}
+        for node_name, config in self.nodes.items():
+            try:
+                container = self.compose.docker_client.containers.get(f"cellframe-stage-{node_name}")
+                cli_result = container.exec_run(
+                    'cellframe-node-cli net get status -net stagenet',
+                    demux=False
+                )
+                
+                if cli_result.exit_code == 0:
+                    output = cli_result.output.decode("utf-8")
+                    # Parse state
+                    current_state = "unknown"
+                    for line in output.split('\n'):
+                        if 'current:' in line and 'NET_STATE_' in line:
+                            parts = line.split(':', 1)
+                            if len(parts) == 2:
+                                current_state = parts[1].strip()
+                                break
+                    
+                    health_status[node_name] = {
+                        "healthy": current_state == "NET_STATE_ONLINE",
+                        "state": current_state,
+                        "response_time_ms": 0,  # Not applicable for CLI
+                    }
+                else:
+                    health_status[node_name] = {
+                        "healthy": False,
+                        "state": "unavailable",
+                        "response_time_ms": 0,
+                    }
+            except Exception as e:
+                logger.warning("failed_to_get_node_health", node=node_name, error=str(e))
+                health_status[node_name] = {
+                    "healthy": False,
+                    "state": "error",
+                    "response_time_ms": 0,
+                }
         
         return {
             "topology": self.topology_name,
             "network_name": self.topology.network.name,
             "total_nodes": len(self.nodes),
             "containers": service_status,
-            "health": {s.node_id: s.dict() for s in health_statuses},
+            "health": health_status,
         }
     
     async def _wait_for_network_ready(self) -> None:
@@ -280,38 +307,10 @@ class NetworkManager:
         timeout = self.timeouts.get('health_check', 300)
         logger.info("waiting_for_network_ready", timeout=timeout)
         
-        # First wait for Docker containers
+        # Wait for Docker containers and nodes to reach ONLINE state
+        # This is now handled entirely by compose.wait_for_services()
+        # which uses CLI to check node state
         self.compose.wait_for_services(timeout=int(timeout))
-        
-        # Then wait for HTTP endpoints
-        node_urls = {
-            name: f"http://localhost:{config.http_port}"
-            for name, config in self.nodes.items()
-        }
-        
-        tasks = [
-            self.health_checker.wait_for_healthy(
-                url,
-                node_id,
-                check_type="http",
-                timeout=timeout,
-            )
-            for node_id, url in node_urls.items()
-        ]
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Check results
-        failed_nodes = []
-        for node_id, result in zip(node_urls.keys(), results):
-            if isinstance(result, Exception) or not result:
-                failed_nodes.append(node_id)
-        
-        if failed_nodes:
-            logger.error("nodes_not_ready",
-                        failed=failed_nodes,
-                        count=len(failed_nodes))
-            raise TimeoutError(f"Nodes not ready: {', '.join(failed_nodes)}")
         
         logger.info("network_ready", nodes=len(self.nodes))
     
