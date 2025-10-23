@@ -35,10 +35,10 @@ class ArtifactsManager:
         artifacts_dir = config.get('artifacts_dir', '../testing/artifacts')
         self.artifacts_root = (base_path / artifacts_dir).resolve()
         
-        # Collection flags
-        self.collect_node_logs = config.get('collect_node_logs', True)
-        self.collect_health_logs = config.get('collect_health_logs', True)
-        self.collect_crash_dumps = config.get('collect_crash_dumps', True)
+        # Collection flags (use different names to avoid conflict with methods)
+        self.should_collect_node_logs = config.get('collect_node_logs', True)
+        self.should_collect_health_logs = config.get('collect_health_logs', True)
+        self.should_collect_crash_dumps = config.get('collect_crash_dumps', True)
         self.retain_days = config.get('retain_days', 30)
         
         # Create base structure
@@ -46,9 +46,9 @@ class ArtifactsManager:
         
         logger.info("artifacts_manager_initialized",
                    artifacts_dir=str(self.artifacts_root),
-                   collect_node_logs=self.collect_node_logs,
-                   collect_health_logs=self.collect_health_logs,
-                   collect_crash_dumps=self.collect_crash_dumps)
+                   collect_node_logs=self.should_collect_node_logs,
+                   collect_health_logs=self.should_collect_health_logs,
+                   collect_crash_dumps=self.should_collect_crash_dumps)
     
     def _create_base_structure(self):
         """Create base artifacts directory structure."""
@@ -129,7 +129,7 @@ class ArtifactsManager:
             docker_client: Docker client instance
             node_names: List of node names to collect logs from
         """
-        if not self.collect_node_logs:
+        if not self.should_collect_node_logs:
             logger.debug("node_logs_collection_disabled")
             return
         
@@ -165,7 +165,7 @@ class ArtifactsManager:
             docker_client: Docker client instance
             node_names: List of node names
         """
-        if not self.collect_crash_dumps:
+        if not self.should_collect_crash_dumps:
             logger.debug("crash_dumps_collection_disabled")
             return
         
@@ -271,7 +271,7 @@ class ArtifactsManager:
         Args:
             run_dir: Run directory
         """
-        if not self.collect_health_logs:
+        if not self.should_collect_health_logs:
             logger.debug("health_logs_collection_disabled")
             return
         

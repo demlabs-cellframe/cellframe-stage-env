@@ -1,498 +1,322 @@
-# Stage Environment - Portable Testing Infrastructure
+# Stage Environment - Cellframe Node Testing Infrastructure
 
-**Самодостаточный модуль для E2E тестирования блокчейн приложений**
+**Автономная система для E2E тестирования блокчейн приложений**
 
-Stage Environment - это портативная инфраструктура для запуска и тестирования Cellframe Node в изолированной Docker среде. Модуль полностью автономен и может быть перенесён в любой проект.
+Stage Environment - это полнофункциональная инфраструктура для запуска и тестирования Cellframe Node в изолированной Docker среде. Система полностью автономна, легко портируется и не требует глубоких знаний программирования для написания тестов.
 
-## 🎯 Ключевые особенности
+## 🎯 Возможности
 
-- ✅ **Полностью автономен** - управляет своим venv, зависимостями, Docker
-- ✅ **Портативен** - скопируйте в любой проект и всё заработает
-- ✅ **Универсален** - не привязан к конкретным типам тестов
-- ✅ **Современный стек** - Python 3, Typer, Docker SDK, async/await
-- ✅ **Artifacts collection** - автоматический сбор core dumps, логов, метрик
-- ✅ **Rich UI** - красивый terminal output с таблицами и цветами
+- ✅ **YAML-сценарии** - пишите тесты на декларативном языке без программирования
+- ✅ **Автоматизация** - сборка, запуск, тестирование, сбор артефактов
+- ✅ **Docker-изоляция** - каждый тест в чистом окружении
+- ✅ **Гибкие топологии** - от 1 ноды до сложных сетей
+- ✅ **Artifacts & Reports** - автоматический сбор логов, core dumps, генерация PDF отчетов
+- ✅ **Rich CLI** - красивый интерфейс с цветным выводом и progress bars
 
-## 🏗️ Архитектура
+## 🚀 Быстрый старт
+
+### Минимальный пример
+
+```bash
+# 1. Запуск тестовой сети (автоматически установит зависимости)
+cd tests
+./stage-env/stage-env start
+
+# 2. Проверка статуса
+./stage-env/stage-env status
+
+# 3. Запуск тестов
+./stage-env/stage-env run-tests scenarios/
+
+# 4. Остановка
+./stage-env/stage-env stop
+```
+
+### Запуск через run.sh
+
+```bash
+# Полный цикл: сборка + тесты + отчеты
+cd tests
+./run.sh --e2e
+
+# Результаты в testing/artifacts/e2e_*/reports/
+```
+
+## 📖 Документация
+
+### Для QA инженеров
+
+- **[Scenarios Tutorial](docs/scenarios/Tutorial.md)** - Пошаговое обучение языку сценариев
+- **[Scenarios Cookbook](docs/scenarios/Cookbook.md)** - Готовые рецепты для типовых задач
+- **[Scenarios Glossary](docs/scenarios/Glossary.md)** - Полный справочник языка
+
+### Для разработчиков
+
+- **[Architecture](docs/Architecture.md)** - Архитектура системы
+- **[Integration](docs/Integration.md)** - Интеграция в проект
+- **[CI/CD](docs/CICD.md)** - Настройка CI/CD
+
+## 📁 Структура проекта
 
 ```
 stage-env/
-├── stage-env              # Bash wrapper (auto venv, dependencies)
-├── stage_env.py           # Python CLI (typer)
-├── src/                   # Python modules
-│   ├── utils/             # Logging, CLI helpers
-│   ├── config/            # Configuration loading (Pydantic)
-│   ├── docker/            # Docker Compose management
-│   ├── monitoring/        # Health checks, artifacts collection
-│   ├── network/           # Network topology management
-│   ├── build/             # Build management
-│   └── certs/             # Certificate generation
-├── config/                # Configuration files
-│   ├── topologies/        # Network topologies (JSON)
-│   └── templates/         # Config templates (Jinja2)
-├── tests/base/            # Base self-check tests
-├── cache/                 # All temporary files
-│   ├── build/             # Build artifacts
-│   ├── certs/             # Generated certificates
-│   ├── logs/              # Application logs
-│   ├── crash-artifacts/   # Core dumps, backtraces
-│   └── monitoring/        # Metrics
-└── requirements.txt       # Python dependencies
+├── stage-env                # Bash wrapper (точка входа)
+├── stage_env.py             # Python CLI (Typer)
+├── stage-env.cfg            # Конфигурация (в tests/)
+│
+├── src/                     # Python модули
+│   ├── config/              # Управление конфигурацией
+│   ├── docker/              # Docker Compose интеграция
+│   ├── network/             # Топологии и сеть
+│   ├── build/               # Сборка артефактов
+│   ├── certs/               # Генерация сертификатов
+│   └── utils/               # Логирование, отчеты, артефакты
+│
+├── config/                  # Конфигурационные файлы
+│   ├── topologies/          # Шаблоны сетевых топологий
+│   └── templates/           # Jinja2 шаблоны конфигов
+│
+├── scenarios/               # YAML тест-сценарии
+│   ├── common/              # Переиспользуемые шаблоны
+│   └── features/            # Feature-specific тесты
+│
+└── docs/                    # Документация
+    ├── scenarios/           # Документация по сценариям
+    └── ...                  # Прочая документация
 ```
 
-## 🚀 Quick Start
-
-### Установка
+## 🎨 Основные команды
 
 ```bash
-# Просто скопируйте stage-env в ваш проект
-cp -r tests/stage-env /your/project/
+# === Управление сетью ===
+stage-env start              # Запустить сеть
+stage-env start --no-wait    # Запуск без ожидания ONLINE
+stage-env stop               # Остановить сеть
+stage-env restart            # Перезапустить
+stage-env status             # Показать статус нод
 
-# Или используйте напрямую
-cd tests/stage-env
+# === Тестирование ===
+stage-env run-tests <dir>    # Запустить тесты из директории
+stage-env run-tests test.yml # Запустить конкретный сценарий
+
+# === Мониторинг ===
+stage-env logs node-1        # Показать логи ноды
+stage-env logs node-1 -f     # Follow логи
+stage-env exec node-1 "cmd"  # Выполнить команду в ноде
+
+# === Артефакты и отчеты ===
+stage-env collect-artifacts e2e --exit-code=0
+
+# === Сборка ===
+stage-env build              # Собрать Cellframe Node
+stage-env build --clean      # Чистая сборка
+
+# === Сертификаты ===
+stage-env certs --nodes 7    # Сгенерировать сертификаты
+
+# === Очистка ===
+stage-env clean --all        # Очистить всё
+stage-env stop --volumes     # Остановить и удалить volumes
 ```
 
-### Использование
+## 📝 Написание тестов
+
+### Простой тест
+
+```yaml
+# scenarios/my_test.yml
+name: My First Test
+description: Check wallet creation
+
+includes:
+  - common/network_minimal.yml
+
+test:
+  - cli: wallet new -w test_wallet
+    save: wallet_addr
+  
+  - cli: wallet list
+    contains: test_wallet
+
+check:
+  - cli: wallet info -w test_wallet
+    contains: {{wallet_addr}}
+```
+
+### Запуск теста
 
 ```bash
-# stage-env автоматически создаст venv и установит зависимости при первом запуске
-
-# Сборка артефактов
-./stage-env build
-
-# Генерация сертификатов
-./stage-env certs --network stagenet --nodes 4 --validators 3
-
-# Запуск тестовой сети
-./stage-env start --topology default --wait
-
-# Проверка статуса
-./stage-env status
-
-# Просмотр логов
-./stage-env logs node1 --tail 100
-
-# Выполнение команды в ноде
-./stage-env exec node1 "cellframe-node-cli net list"
-
-# Запуск тестов
-./stage-env run-tests tests/functional tests/scenarios
-
-# Очистка
-./stage-env clean --all
-
-# Остановка
-./stage-env stop
+./stage-env/stage-env run-tests scenarios/my_test.yml
 ```
 
-## 📊 Команды CLI
+### Готовые шаблоны
 
-### Build Management
+- `common/network_minimal.yml` - 1 нода
+- `common/network_full.yml` - 7 нод (валидаторы + full node)
+- `common/wallet_setup.yml` - Готовый кошелёк
 
-```bash
-# Сборка
-./stage-env build                    # Debug build
-./stage-env build --release          # Release build
-./stage-env build --clean            # Clean build
-./stage-env build --jobs 8           # Parallel jobs
-```
+## 🔧 Конфигурация
 
-### Certificate Management
-
-```bash
-# Генерация сертификатов
-./stage-env certs                              # Default (4 nodes, 3 validators)
-./stage-env certs --nodes 10 --validators 5   # Custom
-./stage-env certs --force                      # Regenerate
-```
-
-### Network Management
-
-```bash
-# Запуск
-./stage-env start                           # Start with default topology
-./stage-env start --topology minimal        # Use minimal topology
-./stage-env start --rebuild                 # Rebuild before start
-./stage-env start --clean                   # Clean everything before start
-
-# Управление
-./stage-env stop                            # Stop network
-./stage-env restart                         # Restart all
-./stage-env restart node1                   # Restart specific node
-./stage-env status                          # Show network status
-```
-
-### Monitoring & Debugging
-
-```bash
-# Логи
-./stage-env logs node1                      # Show logs
-./stage-env logs node1 --follow             # Follow logs
-./stage-env logs node1 --tail 500           # Last 500 lines
-
-# Выполнение команд
-./stage-env exec node1 "cellframe-node-cli version"
-./stage-env exec node1 "ps aux"
-```
-
-### Testing
-
-```bash
-# Запуск тестов
-./stage-env run-tests tests/functional             # Functional tests
-./stage-env run-tests tests/scenarios              # E2E scenarios
-./stage-env run-tests tests/custom                 # Custom tests
-./stage-env run-tests dir1 dir2 dir3               # Multiple directories
-
-# С фильтрацией
-./stage-env run-tests tests/functional -k "test_utxo"    # Filter by pattern
-./stage-env run-tests tests/functional -p                # Parallel execution
-```
-
-### Cleanup
-
-```bash
-./stage-env clean --build                   # Clean build artifacts
-./stage-env clean --certs                   # Clean certificates
-./stage-env clean --all                     # Clean everything
-```
-
-## 🌐 Network Topologies
-
-Топологии определяются в `config/topologies/*.json`:
-
-```json
-{
-  "network": {
-    "name": "stagenet",
-    "network_id": "0x1",
-    "consensus": "esbocs"
-  },
-  "topology": {
-    "root": {
-      "count": 1,
-      "role": "root",
-      "consensus_participation": true,
-      "description": "Root validator node"
-    },
-    "master": {
-      "count": 2,
-      "role": "master",
-      "consensus_participation": true,
-      "description": "Master validator nodes"
-    },
-    "full": {
-      "count": 1,
-      "role": "full",
-      "consensus_participation": false,
-      "description": "Full node"
-    }
-  },
-  "network_settings": {
-    "base_rpc_port": 8545,
-    "base_p2p_port": 30303,
-    "base_cf_port": 8079,
-    "base_http_port": 8080,
-    "base_ip": "172.20.0.10",
-    "subnet": "172.20.0.0/16"
-  }
-}
-```
-
-### Создание своей топологии
-
-```bash
-# Скопируйте шаблон
-cp config/topologies/default.json config/topologies/my-topology.json
-
-# Отредактируйте параметры
-vim config/topologies/my-topology.json
-
-# Используйте
-./stage-env start --topology my-topology
-```
-
-## 🧪 Testing
-
-### Базовые тесты
-
-```bash
-# Запуск базовых тестов (самопроверка stage-env)
-./stage-env run-tests tests/base
-```
-
-Базовые тесты проверяют:
-- CLI доступность
-- Импорт Python модулей
-- Наличие requirements.txt
-- Корректность структуры
-
-### Интеграция с вашими тестами
-
-stage-env агностичен к типам тестов - он просто запускает pytest для указанных директорий.
-
-```bash
-# Ваши функциональные тесты
-./stage-env run-tests /path/to/your/functional/tests
-
-# Ваши E2E сценарии
-./stage-env run-tests /path/to/your/e2e/scenarios
-
-# Несколько директорий
-./stage-env run-tests /path1 /path2 /path3
-```
-
-## 🔧 Configuration
-
-### Stage Environment Config
-
-Stage-env использует централизованную конфигурацию в `config/stage-env.cfg` с дефолтными значениями для всех параметров.
-
-При первом запуске автоматически создаётся из `config/stage-env.cfg.default`:
-
-```bash
-# Автоматически создаётся при первом запуске
-./stage-env start
-```
-
-**Структура конфига:**
+Основная конфигурация находится в `tests/stage-env.cfg`:
 
 ```ini
-# config/stage-env.cfg
 [network]
 name = stagenet
 network_id = 0x1234
-consensus_type = esbocs
 
-[topology]
-root_nodes_count = 3
-master_nodes_count = 3
-full_nodes_count = 1
+[paths]
+cache_dir = ../testing/cache
+artifacts_dir = ../testing/artifacts
 
-[network_settings]
-node_port = 8079          # Стандартный порт Cellframe Node
-base_ip = 172.20.0.10
-subnet = 172.20.0.0/16
+[artifacts]
+collect_node_logs = true
+collect_health_logs = true
+collect_crash_dumps = true
+retain_days = 30
 
-[consensus]
-min_validators = 2
-new_round_delay = 45
-auth_certs_prefix = stagenet.master
-
-[features]
-crash_artifacts = true
+[timeouts]
+startup = 600
+health_check = 600
+command = 30
 ```
 
-**Переопределение параметров:**
+## 🎯 Интеграция в свой проект
 
-1. В конфиге (для глобальных изменений):
-```bash
-vim config/stage-env.cfg
-# Измените node_port = 9000
-```
-
-2. В шаблоне топологии (для конкретной топологии):
-```jinja2
-{
-  "network_settings": {
-    "node_port": {{ node_port | default(8079) }}
-  }
-}
-```
-
-3. В сценарии (для конкретной ноды):
-```yaml
-network:
-  nodes:
-    - name: node1
-      role: root
-      port: 9000  # Переопределение порта для этой ноды
-```
-
-**Топологии как шаблоны:**
-
-Топологии теперь являются Jinja2 шаблонами (`config/topologies/*.json.tpl`):
+### Пример run.sh
 
 ```bash
-# Создание новой топологии
-cp config/topologies/default.json.tpl config/topologies/custom.json.tpl
-vim config/topologies/custom.json.tpl
+#!/bin/bash
+set -euo pipefail
+
+STAGE_ENV="./stage-env/stage-env"
+STAGE_ENV_CONFIG="./stage-env.cfg"
+
+# Сборка (опционально)
+# cmake -B build && make -C build
+
+# Запуск сети
+"$STAGE_ENV" --config="$STAGE_ENV_CONFIG" start
+
+# Запуск тестов
+"$STAGE_ENV" --config="$STAGE_ENV_CONFIG" run-tests scenarios/
+
+# Сбор артефактов
+"$STAGE_ENV" --config="$STAGE_ENV_CONFIG" collect-artifacts e2e --exit-code=$?
+
+# Остановка
+"$STAGE_ENV" --config="$STAGE_ENV_CONFIG" stop
 ```
 
-Шаблон автоматически подставляет значения из `stage-env.cfg`:
+### Настройка топологии
+
+Создайте `config/topologies/my-network.json`:
 
 ```json
 {
   "network": {
-    "name": "{{ name | default('stagenet') }}",
-    "network_id": "{{ network_id | default('0x1234') }}"
+    "name": "mynet",
+    "network_id": "0x5678"
   },
-  "topology": {
-    "root_nodes": {
-      "count": {{ root_nodes_count | default(3) }}
-    }
-  },
-  "network_settings": {
-    "node_port": {{ node_port | default(8079) }}
-  }
-}
-```
-
-### Environment Variables
-
-```bash
-# Docker
-export DOCKER_BUILDKIT=1           # Enable BuildKit
-export COMPOSE_DOCKER_CLI_BUILD=1  # Use Docker CLI for builds
-
-# Logging
-export STAGE_ENV_LOG_LEVEL=DEBUG   # Verbose logging
-export STAGE_ENV_LOG_JSON=1        # JSON logging for CI/CD
-```
-
-## 🐛 Artifacts Collection
-
-При падении ноды автоматически собираются артефакты в `cache/crash-artifacts/<node>_<timestamp>/`:
-
-- **Core dumps** - сжатые coredump файлы
-- **Application logs** - логи из контейнера
-- **Stack traces** - backtrace (если доступен gdb)
-- **System info** - состояние системы на момент падения
-- **Monitoring metrics** - метрики производительности
-- **SUMMARY.json** - полный отчёт
-
-```bash
-# Просмотр артефактов
-ls -lh cache/crash-artifacts/
-
-# Анализ последнего падения
-cd cache/crash-artifacts/node1_20251019_210000/
-cat SUMMARY.json
-```
-
-## 📦 Портативность
-
-### Перенос в другой проект
-
-```bash
-# 1. Скопируйте stage-env
-cp -r tests/stage-env /new/project/testing/
-
-# 2. Запустите (venv создастся автоматически)
-cd /new/project/testing/stage-env
-./stage-env --help
-
-# 3. Настройте топологии под ваш проект
-vim config/topologies/my-network.json
-
-# 4. Готово!
-./stage-env start --topology my-network
-```
-
-### Требования
-
-- Python 3.8+
-- Docker 20.10+
-- Bash (для wrapper скрипта)
-
-## 🔍 Troubleshooting
-
-### venv не создаётся
-
-```bash
-# Проверьте Python
-python3 --version
-
-# Установите venv
-sudo apt install python3-venv  # Debian/Ubuntu
-sudo dnf install python3-virtualenv  # Fedora/RHEL
-```
-
-### Docker не доступен
-
-```bash
-# Проверьте Docker
-docker --version
-docker ps
-
-# Добавьте пользователя в группу docker
-sudo usermod -aG docker $USER
-newgrp docker
-```
-
-### Зависимости не устанавливаются
-
-```bash
-# Принудительное переустановление
-rm -rf .venv
-./stage-env --help  # Пересоздаст venv
-```
-
-### Порты заняты
-
-```bash
-# Измените базовые порты в топологии
-vim config/topologies/default.json
-
-# Или используйте другую топологию
-./stage-env start --topology minimal
-```
-
-## 📚 Advanced Usage
-
-### Custom Topologies
-
-Создайте сложные топологии с произвольными параметрами:
-
-```json
-{
   "topology": {
     "validators": {
-      "count": 10,
+      "count": 5,
       "role": "validator",
       "consensus_participation": true
     },
-    "observers": {
-      "count": 5,
-      "role": "observer",
-      "consensus_participation": false
-    },
-    "bridges": {
+    "full_nodes": {
       "count": 2,
-      "role": "bridge",
+      "role": "full",
       "consensus_participation": false
     }
   }
 }
 ```
 
-## 🤝 Integration with CI/CD
+Запустите:
 
-```yaml
-# .github/workflows/e2e-tests.yml
-name: E2E Tests
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Run E2E tests
-        run: |
-          cd tests/stage-env
-          ./stage-env start --wait
-          ./stage-env run-tests tests/scenarios
-          ./stage-env stop
+```bash
+./stage-env start --topology my-network
 ```
 
-## 📝 License
+## 📊 Артефакты и отчеты
 
-See project root LICENSE file.
+После каждого прогона в `testing/artifacts/<run_id>/`:
 
-## 🔗 Links
+```
+e2e_20251023_150000/
+├── reports/
+│   ├── report.md            # Markdown отчет
+│   └── report.pdf           # PDF отчет (pandoc)
+├── stage-env-logs/          # Логи stage-env
+├── node-logs/               # Логи Docker контейнеров
+├── core-dumps/              # Core dumps (если были)
+├── health-logs/             # Health check логи
+└── summary.json             # JSON сводка
+```
+
+## 🔍 Troubleshooting
+
+### Проблемы с Docker
+
+```bash
+# Проверка Docker
+docker ps
+docker-compose version
+
+# Перезапуск Docker
+sudo systemctl restart docker
+```
+
+### Проблемы с портами
+
+```bash
+# Проверка занятых портов
+ss -tlnp | grep 8079
+
+# Остановка всех контейнеров
+./stage-env stop --volumes
+```
+
+### Проблемы с Python
+
+```bash
+# Пересоздать venv
+rm -rf .venv
+./stage-env --help  # Создаст venv заново
+```
+
+### Логи для отладки
+
+```bash
+# Verbose режим
+./stage-env --verbose start
+
+# Логи конкретной ноды
+./stage-env logs node-1 --tail 100
+
+# Статус всех нод
+./stage-env status
+```
+
+## 📚 Подробная документация
+
+- **[Tutorial](docs/scenarios/Tutorial.md)** - Пошаговое руководство для QA
+- **[Cookbook](docs/scenarios/Cookbook.md)** - Рецепты для типовых задач
+- **[Glossary](docs/scenarios/Glossary.md)** - Полный справочник языка сценариев
+
+## 🤝 Участие в разработке
+
+1. Форк репозитория
+2. Создайте feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit изменений (`git commit -m 'Add amazing feature'`)
+4. Push в branch (`git push origin feature/amazing-feature`)
+5. Создайте Pull Request
+
+## 📜 Лицензия
+
+См. LICENSE в корне проекта.
+
+## 🔗 Ссылки
 
 - [Cellframe Node](https://github.com/demlabs-cellframe/cellframe-node)
 - [DAP SDK](https://github.com/demlabs-cellframe/dap-sdk)
