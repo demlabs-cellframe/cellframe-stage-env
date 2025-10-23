@@ -6,11 +6,14 @@ Handles:
 - Building certificates
 - Managing build cache
 - Artifact verification
+- Node source management (URL, repository, local)
 """
 
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import hashlib
+import shutil
+import os
 
 from pydantic import BaseModel
 
@@ -33,22 +36,25 @@ class BuildResult(BaseModel):
 class BuildManager:
     """Manage building of cellframe node and tools."""
     
-    def __init__(self, base_path: Path):
+    def __init__(self, base_path: Path, node_source_config: Optional[Dict[str, Any]] = None):
         """
         Initialize build manager.
         
         Args:
             base_path: Base path to stage-env directory
+            node_source_config: Node source configuration from stage-env.cfg
         """
         self.base_path = base_path
         self.project_root = base_path.parent.parent  # Go up to project root
         self.build_dir = self.project_root / "build"
         self.cache_dir = base_path / "cache" / "build"
+        self.node_source_config = node_source_config or {}
         
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         logger.info("build_manager_initialized",
-                   project_root=str(self.project_root))
+                   project_root=str(self.project_root),
+                   node_source_type=self.node_source_config.get("type", "url"))
     
     def build(
         self,
@@ -291,4 +297,162 @@ class BuildManager:
             pass
         
         return total
+    
+    def get_node_package(self) -> Optional[Path]:
+        """
+        Get cellframe-node package based on node_source configuration.
+        
+        Returns:
+            Path to .deb package or None if failed
+        """
+        source_type = self.node_source_config.get("type", "url")
+        
+        logger.info("getting_node_package", source_type=source_type)
+        print_info(f"Getting cellframe-node package (source: {source_type})")
+        
+        try:
+            if source_type == "url":
+                return self._get_package_from_url()
+            elif source_type == "repository":
+                return self._get_package_from_repository()
+            elif source_type == "local":
+                return self._get_package_from_local()
+            else:
+                print_error(f"Unknown node_source type: {source_type}")
+                logger.error("unknown_source_type", type=source_type)
+                return None
+        except Exception as e:
+            print_error(f"Failed to get node package: {e}")
+            logger.error("get_node_package_failed", error=str(e))
+            return None
+    
+    def _get_package_from_url(self) -> Optional[Path]:
+        """
+        Download cellframe-node package from URL.
+        
+        Returns:
+            Path to downloaded .deb package
+        """
+        url = self.node_source_config.get("url")
+        if not url:
+            print_error("No URL specified in node_source config")
+            return None
+        
+        print_info(f"Downloading from: {url}")
+        logger.info("downloading_from_url", url=url)
+        
+        # Download to cache
+        package_name = "cellframe-node-latest.deb"
+        package_path = self.cache_dir / package_name
+        
+        try:
+            run_command(["wget", "-O", str(package_path), url])
+            print_success(f"Downloaded: {package_name}")
+            return package_path
+        except Exception as e:
+            print_error(f"Download failed: {e}")
+            return None
+    
+    def _get_package_from_repository(self) -> Optional[Path]:
+        """
+        Clone repository, build, and create .deb package.
+        
+        Returns:
+            Path to built .deb package
+        """
+        repo_url = self.node_source_config.get("repository_url")
+        branch = self.node_source_config.get("repository_branch", "master")
+        build_type = self.node_source_config.get("build_type", "debug")
+        
+        if not repo_url:
+            print_error("No repository_url specified in node_source config")
+            return None
+        
+        print_info(f"Cloning repository: {repo_url} (branch: {branch})")
+        logger.info("cloning_repository", url=repo_url, branch=branch)
+        
+        # Clone directory
+        clone_dir = self.cache_dir / "cellframe-node-repo"
+        
+        # Remove if exists
+        if clone_dir.exists():
+            print_info("Removing existing clone...")
+            shutil.rmtree(clone_dir)
+        
+        try:
+            # Clone
+            run_command(["git", "clone", "--depth", "1", "-b", branch, repo_url, str(clone_dir)])
+            
+            # Build
+            build_dir = clone_dir / "build"
+            build_dir.mkdir(exist_ok=True)
+            
+            cmake_build_type = "Debug" if build_type == "debug" else "Release"
+            
+            print_info("Configuring with CMake...")
+            run_command(
+                ["cmake", f"-DCMAKE_BUILD_TYPE={cmake_build_type}", ".."],
+                cwd=build_dir
+            )
+            
+            jobs = self._get_cpu_count()
+            print_info(f"Building with {jobs} parallel jobs...")
+            run_command(["cmake", "--build", ".", "--", f"-j{jobs}"], cwd=build_dir)
+            
+            # Package
+            print_info("Creating .deb package...")
+            run_command(["cpack", "-G", "DEB"], cwd=build_dir)
+            
+            # Find .deb package
+            deb_files = list(build_dir.glob("*.deb"))
+            if not deb_files:
+                print_error("No .deb package found after build")
+                return None
+            
+            package_path = deb_files[0]
+            
+            # Copy to cache root for easier access
+            cached_package = self.cache_dir / package_path.name
+            shutil.copy2(package_path, cached_package)
+            
+            print_success(f"Package created: {cached_package.name}")
+            return cached_package
+            
+        except Exception as e:
+            print_error(f"Repository build failed: {e}")
+            logger.error("repository_build_failed", error=str(e))
+            return None
+    
+    def _get_package_from_local(self) -> Optional[Path]:
+        """
+        Get cellframe-node package from local file.
+        
+        Returns:
+            Path to local .deb package
+        """
+        local_path = self.node_source_config.get("local_path")
+        if not local_path:
+            print_error("No local_path specified in node_source config")
+            return None
+        
+        # Resolve path (can be relative to stage-env dir or absolute)
+        package_path = Path(local_path)
+        if not package_path.is_absolute():
+            package_path = self.base_path / local_path
+        
+        package_path = package_path.resolve()
+        
+        if not package_path.exists():
+            print_error(f"Local package not found: {package_path}")
+            logger.error("local_package_not_found", path=str(package_path))
+            return None
+        
+        if not package_path.suffix == ".deb":
+            print_error(f"Local file is not a .deb package: {package_path}")
+            return None
+        
+        print_success(f"Using local package: {package_path.name}")
+        logger.info("using_local_package", path=str(package_path))
+        
+        return package_path
 
