@@ -122,9 +122,26 @@ def check_overlayfs_support() -> bool:
         True if overlay filesystem is available
     """
     try:
-        # Check if overlay module is loaded or available
-        result = run_command(['modinfo', 'overlay'], check=False)
-        return result.returncode == 0
+        # Check if overlay module is loaded
+        with open('/proc/filesystems', 'r') as f:
+            filesystems = f.read()
+            if 'overlay' in filesystems:
+                return True
+        
+        # Check if module is loaded via lsmod
+        result = run_command(['lsmod'], check=False, capture_output=True)
+        if result.returncode == 0 and 'overlay' in result.stdout:
+            return True
+        
+        # Try modinfo if available
+        try:
+            result = run_command(['modinfo', 'overlay'], check=False, capture_output=True)
+            if result.returncode == 0:
+                return True
+        except FileNotFoundError:
+            pass
+        
+        return False
     except Exception:
         return False
 
