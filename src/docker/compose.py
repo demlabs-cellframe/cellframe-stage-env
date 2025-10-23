@@ -592,31 +592,38 @@ class DockerComposeManager:
             Status string like: "NET_STATE_ONLINE" or "LINKS_CONNECTING (2/3)" or "Initializing consensus"
         """
         try:
-            # First try JSON-RPC API for current state
-            api_result = container.exec_run(
-                'curl -X POST -s -H "Content-Type: application/json" '
-                '-d \'{"method":"net", "params":["net;get;status;-net;stagenet"], "id":"1"}\' '
-                'http://127.0.0.1:12345 2>/dev/null',
+            # Use cellframe-node-cli to get current state (most reliable)
+            cli_result = container.exec_run(
+                'cellframe-node-cli net get status -net stagenet',
                 demux=False
             )
             
-            if api_result.exit_code == 0:
-                try:
-                    import json
-                    api_response = json.loads(api_result.output.decode("utf-8"))
-                    if api_response.get("type") == 2 and "result" in api_response:
-                        status = api_response["result"][0]["status"]
-                        current_state = status["states"]["current"]
-                        links = status["links"]
-                        active_links = links.get("active", 0)
-                        required_links = links.get("required", 3)
-                        
-                        # Add link info if connecting
-                        if current_state == "NET_STATE_LINKS_CONNECTING":
-                            return f"{current_state} ({active_links}/{required_links} links)"
-                        return current_state
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    pass
+            if cli_result.exit_code == 0:
+                output = cli_result.output.decode("utf-8")
+                # Parse CLI output for current state
+                for line in output.split('\n'):
+                    line = line.strip()
+                    if 'current:' in line and 'NET_STATE_' in line:
+                        # Extract state like "current: NET_STATE_ONLINE"
+                        parts = line.split(':', 1)
+                        if len(parts) == 2:
+                            state = parts[1].strip()
+                            # Get link info if available
+                            if "NET_STATE_LINKS_CONNECTING" in state or "NET_STATE_ONLINE" in state:
+                                for info_line in output.split('\n'):
+                                    if 'active:' in info_line:
+                                        try:
+                                            active = int(info_line.split(':')[1].strip())
+                                            for req_line in output.split('\n'):
+                                                if 'required:' in req_line:
+                                                    required = int(req_line.split(':')[1].strip())
+                                                    if "NET_STATE_LINKS_CONNECTING" in state:
+                                                        return f"NET_STATE_LINKS_CONNECTING ({active}/{required} links)"
+                                                    break
+                                        except:
+                                            pass
+                            return state
+                return "Loading"
             
             # Fallback to log parsing
             logs = container.logs(tail=200).decode("utf-8", errors="ignore")
@@ -673,39 +680,34 @@ class DockerComposeManager:
                              container=container.name)
                 return False
             
-            # Use JSON-RPC API for CURRENT state (more reliable than logs)
-            api_result = container.exec_run(
-                'curl -X POST -s -H "Content-Type: application/json" '
-                '-d \'{"method":"net", "params":["net;get;status;-net;stagenet"], "id":"1"}\' '
-                'http://127.0.0.1:12345 2>/dev/null',
+            # Use cellframe-node-cli to check ONLINE status
+            cli_result = container.exec_run(
+                'cellframe-node-cli net get status -net stagenet',
                 demux=False
             )
             
-            if api_result.exit_code == 0:
-                try:
-                    import json
-                    output_str = api_result.output.decode("utf-8")
-                    logger.info("api_raw_output", container=container.name, output=output_str[:300])
-                    api_response = json.loads(output_str)
-                    logger.info("api_response_parsed", container=container.name, 
-                               type=api_response.get("type"),
-                               has_result=("result" in api_response))
-                    if api_response.get("type") == 2 and "result" in api_response:
-                        current_state = api_response["result"][0]["status"]["states"]["current"]
-                        logger.info("api_state_check", container=container.name, state=current_state)
-                        if current_state in ["NET_STATE_ONLINE", "NET_STATE_SYNC_CHAINS"]:
-                            logger.info("network_ready_via_api",
+            if cli_result.exit_code == 0:
+                output = cli_result.output.decode("utf-8")
+                # Check for current state
+                for line in output.split('\n'):
+                    line = line.strip()
+                    if 'current:' in line and 'NET_STATE_' in line:
+                        parts = line.split(':', 1)
+                        if len(parts) == 2:
+                            current_state = parts[1].strip()
+                            logger.debug("cli_state_check", container=container.name, state=current_state)
+                            if current_state in ["NET_STATE_ONLINE", "NET_STATE_SYNC_CHAINS"]:
+                                logger.info("network_ready_via_cli",
+                                           container=container.name,
+                                           state=current_state)
+                                return True
+                            logger.debug("network_not_ready_via_cli",
                                        container=container.name,
                                        state=current_state)
-                            return True
-                        logger.warning("network_not_ready_via_api",
-                                   container=container.name,
-                                   state=current_state)
-                        return False
-                except (json.JSONDecodeError, KeyError, IndexError) as e:
-                    logger.error("api_parse_error", container=container.name, error=str(e), 
-                                traceback=True)
-                    pass  # Fallback to logs
+                            return False
+                # If we couldn't find state in CLI output, node might still be starting
+                logger.debug("no_state_in_cli_output", container=container.name)
+                return False
             
             # Fallback: Check network status via logs
             net_status = self._check_network_status(container)
