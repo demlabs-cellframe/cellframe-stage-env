@@ -136,13 +136,13 @@ services:
     ulimits:
       core: -1
     volumes:
-    - ./cache/configs/node1/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
-    - ./cache/configs/node1/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
-    - ./cache/configs/node1/network:/opt/cellframe-node/etc/network
-    - ./cache/data/node1:/opt/cellframe-node/var
-    - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
-    - ./cache/crash-artifacts/node1:/crash-artifacts/node-1
-    - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - ./../testing/cache/configs/node1/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
+    - ./../testing/cache/configs/node1/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
+    - ./../testing/cache/configs/node1/network:/opt/cellframe-node/etc/network
+    - ./../testing/cache/data/node1:/opt/cellframe-node/var
+    - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
+    - ./../testing/cache/crash-artifacts/node1:/crash-artifacts/node-1
+    - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
   node-2:
     build:
       args:
@@ -180,13 +180,13 @@ services:
     ulimits:
       core: -1
     volumes:
-    - ./cache/configs/node2/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
-    - ./cache/configs/node2/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
-    - ./cache/configs/node2/network:/opt/cellframe-node/etc/network
-    - ./cache/data/node2:/opt/cellframe-node/var
-    - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
-    - ./cache/crash-artifacts/node2:/crash-artifacts/node-2
-    - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - ./../testing/cache/configs/node2/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
+    - ./../testing/cache/configs/node2/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
+    - ./../testing/cache/configs/node2/network:/opt/cellframe-node/etc/network
+    - ./../testing/cache/data/node2:/opt/cellframe-node/var
+    - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
+    - ./../testing/cache/crash-artifacts/node2:/crash-artifacts/node-2
+    - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
   node-3:
     build:
       args:
@@ -224,13 +224,13 @@ services:
     ulimits:
       core: -1
     volumes:
-    - ./cache/configs/node3/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
-    - ./cache/configs/node3/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
-    - ./cache/configs/node3/network:/opt/cellframe-node/etc/network
-    - ./cache/data/node3:/opt/cellframe-node/var
-    - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
-    - ./cache/crash-artifacts/node3:/crash-artifacts/node-3
-    - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - ./../testing/cache/configs/node3/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
+    - ./../testing/cache/configs/node3/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
+    - ./../testing/cache/configs/node3/network:/opt/cellframe-node/etc/network
+    - ./../testing/cache/data/node3:/opt/cellframe-node/var
+    - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
+    - ./../testing/cache/crash-artifacts/node3:/crash-artifacts/node-3
+    - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
   node-4:
     build:
       args:
@@ -268,13 +268,13 @@ services:
     ulimits:
       core: -1
     volumes:
-    - ./cache/configs/node4/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
-    - ./cache/configs/node4/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
-    - ./cache/configs/node4/network:/opt/cellframe-node/etc/network
-    - ./cache/data/node4:/opt/cellframe-node/var
-    - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
-    - ./cache/crash-artifacts/node4:/crash-artifacts/node-4
-    - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - ./../testing/cache/configs/node4/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
+    - ./../testing/cache/configs/node4/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
+    - ./../testing/cache/configs/node4/network:/opt/cellframe-node/etc/network
+    - ./../testing/cache/data/node4:/opt/cellframe-node/var
+    - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
+    - ./../testing/cache/crash-artifacts/node4:/crash-artifacts/node-4
+    - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
   node-5:
     build:
       args:
@@ -312,13 +312,13 @@ services:
     ulimits:
       core: -1
     volumes:
-    - ./cache/configs/node5/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
-    - ./cache/configs/node5/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
-    - ./cache/configs/node5/network:/opt/cellframe-node/etc/network
-    - ./cache/data/node5:/opt/cellframe-node/var
-    - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
-    - ./cache/crash-artifacts/node5:/crash-artifacts/node-5
-    - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - ./../testing/cache/configs/node5/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
+    - ./../testing/cache/configs/node5/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
+    - ./../testing/cache/configs/node5/network:/opt/cellframe-node/etc/network
+    - ./../testing/cache/data/node5:/opt/cellframe-node/var
+    - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
+    - ./../testing/cache/crash-artifacts/node5:/crash-artifacts/node-5
+    - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
   node-6:
     build:
       args:
@@ -356,13 +356,13 @@ services:
     ulimits:
       core: -1
     volumes:
-    - ./cache/configs/node6/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
-    - ./cache/configs/node6/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
-    - ./cache/configs/node6/network:/opt/cellframe-node/etc/network
-    - ./cache/data/node6:/opt/cellframe-node/var
-    - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
-    - ./cache/crash-artifacts/node6:/crash-artifacts/node-6
-    - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - ./../testing/cache/configs/node6/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
+    - ./../testing/cache/configs/node6/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
+    - ./../testing/cache/configs/node6/network:/opt/cellframe-node/etc/network
+    - ./../testing/cache/data/node6:/opt/cellframe-node/var
+    - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
+    - ./../testing/cache/crash-artifacts/node6:/crash-artifacts/node-6
+    - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
   node-7:
     build:
       args:
@@ -400,13 +400,13 @@ services:
     ulimits:
       core: -1
     volumes:
-    - ./cache/configs/node7/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
-    - ./cache/configs/node7/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
-    - ./cache/configs/node7/network:/opt/cellframe-node/etc/network
-    - ./cache/data/node7:/opt/cellframe-node/var
-    - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
-    - ./cache/crash-artifacts/node7:/crash-artifacts/node-7
-    - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - ./../testing/cache/configs/node7/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
+    - ./../testing/cache/configs/node7/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
+    - ./../testing/cache/configs/node7/network:/opt/cellframe-node/etc/network
+    - ./../testing/cache/data/node7:/opt/cellframe-node/var
+    - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
+    - ./../testing/cache/crash-artifacts/node7:/crash-artifacts/node-7
+    - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
 networks:
   stagenet:
     driver: bridge
