@@ -34,8 +34,12 @@ class ConfigGenerator:
         self.config_loader = ConfigLoader(base_path, config_path)
         self.cert_generator = CertGenerator(base_path)
         
+        # Load paths from config
+        paths_config = self.config_loader.get_paths_config()
+        cache_dir_relative = paths_config.get('cache_dir', 'cache')
+        
         # Directories
-        self.cache_dir = base_path / "cache"
+        self.cache_dir = (base_path / cache_dir_relative).resolve()
         self.configs_cache = self.cache_dir / "configs"
         self.data_cache = self.cache_dir / "data"
         self.certs_cache = self.cache_dir / "certs"

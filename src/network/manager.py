@@ -17,6 +17,7 @@ from ..config.generator import ConfigGenerator
 from ..docker.compose import DockerComposeManager
 from ..monitoring.health import HealthChecker, HealthStatus
 from ..utils.logger import get_logger
+from ..utils.artifacts import ArtifactsManager
 from .models import NodeConfig
 from .genesis import GenesisInitializer
 
@@ -66,10 +67,18 @@ class NetworkManager:
         # Load timeouts from config
         self.timeouts = self.config_loader.get_timeouts()
         
+        # Load paths from config
+        self.paths_config = self.config_loader.get_paths_config()
+        
+        # Initialize artifacts manager
+        artifacts_config = self.config_loader.get_artifacts_config()
+        self.artifacts_manager = ArtifactsManager(base_path, artifacts_config)
+        
         logger.info("network_manager_initialized",
                    topology=topology_name,
                    network=self.topology.network.name,
-                   timeouts=self.timeouts)
+                   timeouts=self.timeouts,
+                   cache_dir=self.paths_config.get('cache_dir'))
     
     def generate_node_configs(self) -> List[NodeConfig]:
         """
@@ -171,7 +180,8 @@ class NetworkManager:
         
         # Generate dynamic docker-compose.yml for all nodes
         logger.info("generating_docker_compose")
-        self.compose.generate_compose_for_nodes(node_configs)
+        cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
+        self.compose.generate_compose_for_nodes(node_configs, cache_dir_relative=cache_dir_relative)
         
         # Build images if requested
         if rebuild:

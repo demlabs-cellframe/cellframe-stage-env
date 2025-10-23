@@ -137,7 +137,8 @@ class DockerComposeManager:
         self,
         nodes: List[NodeConfig],
         build_type: str = "debug",
-        cellframe_version: str = "latest"
+        cellframe_version: str = "latest",
+        cache_dir_relative: str = "cache"
     ) -> None:
         """
         Generate docker-compose.yml dynamically for given nodes.
@@ -146,10 +147,12 @@ class DockerComposeManager:
             nodes: List of node configurations
             build_type: Build type (debug/release)
             cellframe_version: Cellframe version tag
+            cache_dir_relative: Relative path to cache directory
         """
         logger.info("generating_compose_file",
                    node_count=len(nodes),
-                   build_type=build_type)
+                   build_type=build_type,
+                   cache_dir=cache_dir_relative)
         
         # Read base template
         template_file = self.project_dir / "docker-compose.yml"
@@ -200,13 +203,13 @@ class DockerComposeManager:
             # Set volumes with node-specific paths
             node_service['volumes'] = [
                 # Main config file (generated per node with HTTP settings)
-                f"./cache/configs/node{node.node_id}/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg",
-                f"./cache/configs/node{node.node_id}/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d",
-                f"./cache/configs/node{node.node_id}/network:/opt/cellframe-node/etc/network",
-                f"./cache/data/node{node.node_id}:/opt/cellframe-node/var",
-                "./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro",
-                f"./cache/crash-artifacts/node{node.node_id}:/crash-artifacts/node-{node.node_id}",
-                "./cache/cellframe-packages:/var/cache/cellframe-packages"
+                f"./{cache_dir_relative}/configs/node{node.node_id}/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg",
+                f"./{cache_dir_relative}/configs/node{node.node_id}/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d",
+                f"./{cache_dir_relative}/configs/node{node.node_id}/network:/opt/cellframe-node/etc/network",
+                f"./{cache_dir_relative}/data/node{node.node_id}:/opt/cellframe-node/var",
+                f"./{cache_dir_relative}/configs/shared/ca:/opt/cellframe-node/share/ca:ro",
+                f"./{cache_dir_relative}/crash-artifacts/node{node.node_id}:/crash-artifacts/node-{node.node_id}",
+                f"./{cache_dir_relative}/cellframe-packages:/var/cache/cellframe-packages"
             ]
             
             # Set environment variables

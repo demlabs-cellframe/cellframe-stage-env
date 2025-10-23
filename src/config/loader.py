@@ -335,4 +335,91 @@ class ConfigLoader:
         
         logger.debug("timeouts_loaded", **timeouts)
         return timeouts
+    
+    def get_paths_config(self) -> Dict[str, str]:
+        """
+        Load paths configuration from stage-env.cfg.
+        
+        Returns:
+            Dictionary with path values:
+            - cache_dir: Cache directory path (default: cache)
+            - artifacts_dir: Artifacts directory path (default: artifacts)
+        """
+        # Use custom config path if provided, otherwise use default
+        if self.custom_config_path:
+            config_file = self.custom_config_path
+        else:
+            config_file = self.config_dir / "stage-env.cfg"
+        
+        # Default paths
+        paths = {
+            'cache_dir': 'cache',
+            'artifacts_dir': 'artifacts',
+        }
+        
+        if not config_file.exists():
+            logger.warning("config_not_found_using_defaults", path=str(config_file))
+            return paths
+        
+        # Load config
+        config = configparser.ConfigParser()
+        config.read(config_file)
+        
+        # Read paths section if exists
+        if config.has_section('paths'):
+            for key in paths.keys():
+                if config.has_option('paths', key):
+                    paths[key] = config.get('paths', key)
+        
+        logger.debug("paths_loaded", **paths)
+        return paths
+    
+    def get_artifacts_config(self) -> Dict[str, any]:
+        """
+        Load artifacts configuration from stage-env.cfg.
+        
+        Returns:
+            Dictionary with artifacts configuration
+        """
+        # Use custom config path if provided, otherwise use default
+        if self.custom_config_path:
+            config_file = self.custom_config_path
+        else:
+            config_file = self.config_dir / "stage-env.cfg"
+        
+        # Default artifacts config
+        artifacts = {
+            'collect_node_logs': True,
+            'collect_health_logs': True,
+            'collect_crash_dumps': True,
+            'retain_days': 30,
+        }
+        
+        if not config_file.exists():
+            logger.warning("config_not_found_using_defaults", path=str(config_file))
+            return artifacts
+        
+        # Load config
+        config = configparser.ConfigParser()
+        config.read(config_file)
+        
+        # Read artifacts section if exists
+        if config.has_section('artifacts'):
+            if config.has_option('artifacts', 'collect_node_logs'):
+                artifacts['collect_node_logs'] = config.getboolean('artifacts', 'collect_node_logs')
+            if config.has_option('artifacts', 'collect_health_logs'):
+                artifacts['collect_health_logs'] = config.getboolean('artifacts', 'collect_health_logs')
+            if config.has_option('artifacts', 'collect_crash_dumps'):
+                artifacts['collect_crash_dumps'] = config.getboolean('artifacts', 'collect_crash_dumps')
+            if config.has_option('artifacts', 'retain_days'):
+                artifacts['retain_days'] = config.getint('artifacts', 'retain_days')
+        
+        # Also get artifacts_dir from [paths] section
+        if config.has_section('paths') and config.has_option('paths', 'artifacts_dir'):
+            artifacts['artifacts_dir'] = config.get('paths', 'artifacts_dir')
+        else:
+            artifacts['artifacts_dir'] = '../testing/artifacts'
+        
+        logger.debug("artifacts_config_loaded", **artifacts)
+        return artifacts
 

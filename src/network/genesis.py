@@ -32,7 +32,12 @@ class GenesisInitializer:
         self.base_path = base_path
         self.network_name = network_name
         self.docker_client = docker.from_env()
-        self.certs_cache = base_path / "cache" / "certs"
+        # Load cache dir from config
+        from ..config.loader import ConfigLoader
+        config_loader = ConfigLoader(base_path)
+        paths_config = config_loader.get_paths_config()
+        cache_dir_relative = paths_config.get('cache_dir', 'cache')
+        self.certs_cache = (base_path / cache_dir_relative / "certs").resolve()
         
         logger.info("genesis_initializer_created", network=network_name)
     
