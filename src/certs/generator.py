@@ -40,15 +40,16 @@ class CertConfig(BaseModel):
 class CertGenerator:
     """Generate certificates for test network."""
     
-    def __init__(self, base_path: Path):
+    def __init__(self, base_path: Path, certs_dir: Optional[Path] = None):
         """
         Initialize certificate generator.
         
         Args:
             base_path: Base path to stage-env directory
+            certs_dir: Optional path to certificates directory (defaults to base_path/cache/certs)
         """
         self.base_path = base_path
-        self.certs_dir = base_path / "cache" / "certs"
+        self.certs_dir = certs_dir if certs_dir is not None else (base_path / "cache" / "certs")
         self.dockerfile = base_path / "Dockerfile.cert-generator"
         
         self.certs_dir.mkdir(parents=True, exist_ok=True)

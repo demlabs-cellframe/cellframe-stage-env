@@ -422,4 +422,47 @@ class ConfigLoader:
         
         logger.debug("artifacts_config_loaded", **artifacts)
         return artifacts
+    
+    def get_logging_config(self) -> Dict[str, any]:
+        """
+        Load logging configuration from stage-env.cfg.
+        
+        Returns:
+            Dictionary with logging configuration
+        """
+        # Use custom config path if provided, otherwise use default
+        if self.custom_config_path:
+            config_file = self.custom_config_path
+        else:
+            config_file = self.config_dir / "stage-env.cfg"
+        
+        # Default logging config
+        logging = {
+            'log_dir': 'logs',
+            'log_level': 'info',
+            'scenario_logs': True,
+            'retain_days': 7,
+        }
+        
+        if not config_file.exists():
+            logger.warning("config_not_found_using_defaults", path=str(config_file))
+            return logging
+        
+        # Load config
+        config = configparser.ConfigParser()
+        config.read(config_file)
+        
+        # Read logging section if exists
+        if config.has_section('logging'):
+            if config.has_option('logging', 'log_dir'):
+                logging['log_dir'] = config.get('logging', 'log_dir')
+            if config.has_option('logging', 'log_level'):
+                logging['log_level'] = config.get('logging', 'log_level')
+            if config.has_option('logging', 'scenario_logs'):
+                logging['scenario_logs'] = config.getboolean('logging', 'scenario_logs')
+            if config.has_option('logging', 'retain_days'):
+                logging['retain_days'] = config.getint('logging', 'retain_days')
+        
+        logger.debug("logging_config_loaded", **logging)
+        return logging
 

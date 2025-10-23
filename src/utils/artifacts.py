@@ -51,20 +51,11 @@ class ArtifactsManager:
                    collect_crash_dumps=self.should_collect_crash_dumps)
     
     def _create_base_structure(self):
-        """Create base artifacts directory structure."""
-        directories = [
-            self.artifacts_root,
-            self.artifacts_root / "stage-env-logs",
-            self.artifacts_root / "node-logs",
-            self.artifacts_root / "core-dumps",
-            self.artifacts_root / "stack-traces",
-            self.artifacts_root / "health-logs",
-            self.artifacts_root / "monitoring",
-        ]
-        
-        for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
-            logger.debug("created_artifacts_directory", path=str(directory))
+        """Create base artifacts directory structure (only root, subdirs are per-run)."""
+        # Only create the root artifacts directory
+        # All subdirectories (node-logs, core-dumps, etc.) are created per-run
+        self.artifacts_root.mkdir(parents=True, exist_ok=True)
+        logger.debug("created_artifacts_directory", path=str(self.artifacts_root))
     
     def create_run_directory(self, run_id: Optional[str] = None) -> Path:
         """
@@ -82,13 +73,14 @@ class ArtifactsManager:
         run_dir = self.artifacts_root / f"run_{run_id}"
         run_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create subdirectories
+        # Create subdirectories for this run
         subdirs = [
             "stage-env-logs",
             "node-logs",
             "core-dumps",
             "stack-traces",
             "health-logs",
+            "reports",
         ]
         
         for subdir in subdirs:

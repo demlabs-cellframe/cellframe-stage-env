@@ -32,7 +32,6 @@ class ConfigGenerator:
         """
         self.base_path = base_path
         self.config_loader = ConfigLoader(base_path, config_path)
-        self.cert_generator = CertGenerator(base_path)
         
         # Load paths from config
         paths_config = self.config_loader.get_paths_config()
@@ -43,6 +42,9 @@ class ConfigGenerator:
         self.configs_cache = self.cache_dir / "configs"
         self.data_cache = self.cache_dir / "data"
         self.certs_cache = self.cache_dir / "certs"
+        
+        # Initialize cert generator with correct certs path
+        self.cert_generator = CertGenerator(base_path, certs_dir=self.certs_cache)
         
         # Template directories
         self.templates_dir = base_path / "config" / "templates"

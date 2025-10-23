@@ -124,7 +124,14 @@ def certs(
 ):
     """🔐 Generate certificates for test network."""
     
-    cert_gen = CertGenerator(BASE_PATH)
+    # Load config to get correct cache_dir
+    config_loader = ConfigLoader(BASE_PATH, CONFIG_PATH)
+    paths_config = config_loader.get_paths_config()
+    cache_dir_relative = paths_config.get('cache_dir', 'cache')
+    cache_dir = (BASE_PATH / cache_dir_relative).resolve()
+    certs_dir = cache_dir / "certs"
+    
+    cert_gen = CertGenerator(BASE_PATH, certs_dir=certs_dir)
     
     if cert_gen.certs_exist() and not force:
         if not confirm("Certificates already exist. Regenerate?", default=False):
@@ -164,7 +171,14 @@ def start(
             return
         
         print_warning("Cleaning all data...")
-        cert_gen = CertGenerator(BASE_PATH)
+        # Load config to get correct cache_dir
+        config_loader = ConfigLoader(BASE_PATH, CONFIG_PATH)
+        paths_config = config_loader.get_paths_config()
+        cache_dir_relative = paths_config.get('cache_dir', 'cache')
+        cache_dir = (BASE_PATH / cache_dir_relative).resolve()
+        certs_dir = cache_dir / "certs"
+        
+        cert_gen = CertGenerator(BASE_PATH, certs_dir=certs_dir)
         cert_gen.clean()
     
     # Start network
@@ -360,7 +374,14 @@ def clean(
     
     if all or certs:
         print_info("Cleaning certificates...")
-        cert_gen = CertGenerator(BASE_PATH)
+        # Load config to get correct cache_dir
+        config_loader = ConfigLoader(BASE_PATH, CONFIG_PATH)
+        paths_config = config_loader.get_paths_config()
+        cache_dir_relative = paths_config.get('cache_dir', 'cache')
+        cache_dir = (BASE_PATH / cache_dir_relative).resolve()
+        certs_dir = cache_dir / "certs"
+        
+        cert_gen = CertGenerator(BASE_PATH, certs_dir=certs_dir)
         cert_gen.clean()
     
     print_success("Cleanup completed")
@@ -614,8 +635,10 @@ def collect_artifacts(
     
     print_info(f"Created run directory: {run_dir.name}")
     
-    # Collect stage-env log
-    log_dir = BASE_PATH.parent / "logs"
+    # Collect stage-env log (use log_dir from config)
+    logging_config = config_loader.get_logging_config()
+    log_dir_relative = logging_config.get('log_dir', 'logs')
+    log_dir = (CONFIG_PATH.parent / log_dir_relative).resolve() if CONFIG_PATH else (BASE_PATH.parent / "logs")
     if log_dir.exists():
         log_files = sorted(log_dir.glob("stage-env_*.log"), 
                           key=lambda p: p.stat().st_mtime, 

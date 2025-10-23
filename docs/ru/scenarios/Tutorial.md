@@ -965,3 +965,8 @@ version: "2.0"
 
 Удачи в тестировании! 🚀
 
+
+
+---
+
+**Язык:** Русский | [English](../../en/scenarios/Tutorial.md)
