@@ -1047,6 +1047,234 @@ steps:
 
 ---
 
+### Python Step
+
+Выполнение Python кода с доступом к контексту сценария.
+
+**Структура:**
+```yaml
+- python: string           # Python код (обязательно)
+  save: string             # Сохранить result (опционально)
+  description: string      # Описание шага (опционально)
+```
+
+**Параметры:**
+
+#### `python`
+- **Тип:** `string` (обязательно)
+- **Описание:** Python код для выполнения
+- **Доступ к контексту:**
+  - `ctx.get_variable('name')` - получить переменную
+  - `ctx.set_variable('name', value)` - установить переменную
+  - `ctx.variables` - словарь всех переменных
+  - `result` - переменная для сохранения через `save:`
+- **Библиотеки:** Полный доступ к Python стандартной библиотеке
+
+#### `save`
+- **Тип:** `string` (опционально)
+- **Описание:** Сохранить значение `result` в переменную
+- **Примечание:** В коде Python установите `result = значение`
+
+#### `description`
+- **Тип:** `string` (опционально)
+- **Описание:** Человекочитаемое описание шага
+
+**Примеры:**
+
+```yaml
+# Простая обработка данных
+- python: |
+    addr = ctx.get_variable('wallet_addr')
+    result = addr.upper()
+  save: uppercase_addr
+  description: "Convert address to uppercase"
+
+# Валидация с assert
+- python: |
+    balance = ctx.get_variable('balance')
+    assert balance > 0, "Balance must be positive"
+  description: "Validate balance"
+
+# Парсинг вывода CLI
+- python: |
+    import re
+    output = ctx.get_variable('wallet_info')
+    match = re.search(r'balance:\s*(\d+)', output)
+    if match:
+        result = int(match.group(1))
+    else:
+        result = 0
+  save: parsed_balance
+  description: "Parse balance from wallet info"
+
+# Работа со списками
+- python: |
+    tokens = ctx.get_variable('token_list').split('\n')
+    valid_tokens = [t for t in tokens if 'TEST' in t]
+    result = len(valid_tokens)
+  save: test_tokens_count
+  description: "Count TEST tokens"
+
+# Установка переменных
+- python: |
+    # Можно устанавливать переменные напрямую
+    ctx.set_variable('computed_fee', 0.01)
+    ctx.set_variable('max_retries', 3)
+  description: "Set computed parameters"
+```
+
+**Реальные примеры из тестов:**
+
+```yaml
+# Проверка сетевых линков (tests/e2e/net/003_net_links.yml)
+- python: |
+    links = ctx.get_variable('link_list')
+    has_links = any(word in links.lower() 
+                    for word in ['active', 'established', 'link'])
+    assert has_links, "Should have active links"
+  description: "Verify network links"
+
+# Проверка списка токенов (tests/e2e/token/006_token_with_flags.yml)
+- python: |
+    tokens = ctx.get_variable('token_list')
+    assert 'FLAGTEST1' in tokens, "FLAGTEST1 should be in list"
+    assert 'FLAGTEST2' in tokens, "FLAGTEST2 should be in list"
+  description: "Verify token flags"
+```
+
+**Best practices:**
+- Используйте Python для сложной обработки данных
+- Комбинируйте с CLI шагами: CLI получает данные → Python обрабатывает
+- Добавляйте `description` для понимания логики
+- Используйте `assert` с информативными сообщениями
+- Избегайте слишком сложной логики - разбивайте на несколько шагов
+
+---
+
+### Bash Step
+
+Выполнение Bash скрипта на указанной ноде.
+
+**Структура:**
+```yaml
+- bash: string             # Bash скрипт (обязательно)
+  node: string             # Нода для выполнения (опционально, default: node1)
+  save: string             # Сохранить stdout (опционально)
+  expect: enum             # Ожидаемый результат (опционально, default: success)
+  timeout: integer         # Таймаут в секундах (опционально, default: 30)
+  description: string      # Описание шага (опционально)
+```
+
+**Параметры:**
+
+#### `bash`
+- **Тип:** `string` (обязательно)
+- **Описание:** Bash скрипт для выполнения на ноде
+- **Возможности:**
+  - Полный доступ к shell командам
+  - Pipes, redirects, переменные окружения
+  - Доступ к файловой системе ноды
+  - Поддержка подстановки переменных: `{{variable_name}}`
+
+#### `node`
+- **Тип:** `string` (опционально, default: `node1`)
+- **Описание:** Имя ноды на которой выполнить скрипт
+- **Примеры:**
+```yaml
+node: node1
+node: node-2
+node: validator-1
+```
+
+#### `save`
+- **Тип:** `string` (опционально)
+- **Описание:** Сохранить stdout скрипта в переменную
+
+#### `expect`
+- **Тип:** `enum[success, error, any]` (опционально, default: `success`)
+- **Описание:** Ожидаемый результат выполнения
+  - `success` - exit code 0
+  - `error` - exit code != 0
+  - `any` - любой exit code
+
+#### `timeout`
+- **Тип:** `integer` (опционально, default: 30)
+- **Описание:** Таймаут выполнения в секундах
+
+#### `description`
+- **Тип:** `string` (опционально)
+- **Описание:** Человекочитаемое описание шага
+
+**Примеры:**
+
+```yaml
+# Простая команда
+- bash: |
+    ls -la /opt/cellframe-node/var
+  node: node1
+  description: "List node data directory"
+
+# Сбор системной информации
+- bash: |
+    mem=$(free -m | awk 'NR==2{print $3}')
+    disk=$(df -h / | awk 'NR==2{print $5}' | tr -d '%')
+    echo "Memory: ${mem}MB, Disk: ${disk}%"
+  node: node1
+  save: system_metrics
+  description: "Collect system metrics"
+
+# Проверка файла с expect
+- bash: |
+    if [ -f /opt/cellframe-node/var/run/cellframe-node.pid ]; then
+      cat /opt/cellframe-node/var/run/cellframe-node.pid
+      exit 0
+    else
+      exit 1
+    fi
+  node: node1
+  expect: success
+  description: "Check if node is running"
+
+# Использование переменных
+- bash: |
+    echo "Working with wallet: {{wallet_addr}}"
+    echo "Token: {{token_ticker}}"
+    # Переменные подставляются автоматически
+  node: node1
+  description: "Process with variables"
+
+# Сложный скрипт с таймаутом
+- bash: |
+    #!/bin/bash
+    set -e
+    
+    # Wait for condition
+    for i in {1..30}; do
+      if [ -f /tmp/ready ]; then
+        echo "Ready!"
+        exit 0
+      fi
+      sleep 1
+    done
+    
+    echo "Timeout waiting for ready"
+    exit 1
+  node: node1
+  timeout: 60
+  expect: success
+  description: "Wait for ready flag"
+```
+
+**Best practices:**
+- Используйте Bash для системных операций и проверок
+- Проверяйте файлы, процессы, сетевые подключения
+- Собирайте системные метрики
+- Используйте `set -e` для автоматического выхода при ошибках
+- Добавляйте `timeout` для long-running операций
+- Используйте `save` для передачи результатов в Python или другие шаги
+
+---
+
 ## CLI команды
 
 ### Wallet команды
@@ -1575,6 +1803,234 @@ check:
     params: ["{{wallet_addr}}"]
     result_contains: "0x"
 ```
+
+---
+
+### Python Check
+
+Проверка условий с помощью Python кода.
+
+**Структура:**
+```yaml
+- python: string           # Python код для проверки (обязательно)
+  description: string      # Описание проверки (опционально)
+```
+
+**Параметры:**
+
+#### `python`
+- **Тип:** `string` (обязательно)
+- **Описание:** Python код для выполнения проверки
+- **Правила:**
+  - Любое исключение (exception) = проверка провалена
+  - Нет исключений = проверка прошла
+  - Используйте `assert` для проверок с сообщениями
+  - Доступ к контексту через `ctx`
+
+#### `description`
+- **Тип:** `string` (опционально)
+- **Описание:** Человекочитаемое описание проверки
+
+**Примеры:**
+
+```yaml
+check:
+  # Простая проверка значения
+  - python: |
+      balance = ctx.get_variable('balance')
+      assert balance > 0, "Balance must be positive"
+    description: "Verify positive balance"
+  
+  # Валидация формата адреса
+  - python: |
+      addr = ctx.get_variable('wallet_addr')
+      assert addr, "Wallet address should not be empty"
+      assert '::' in addr, "Address should contain :: separator"
+      assert len(addr) > 10, "Address too short"
+    description: "Wallet address format is valid"
+  
+  # Проверка списка
+  - python: |
+      tokens = ctx.get_variable('token_list')
+      assert 'TEST' in tokens, "TEST token should be in list"
+      assert 'DEMO' in tokens, "DEMO token should be in list"
+    description: "Verify token list"
+  
+  # Сложная проверка с множественными условиями
+  - python: |
+      links = ctx.get_variable('link_list')
+      has_links = any(word in links.lower() 
+                      for word in ['active', 'established', 'link'])
+      assert has_links, "Should have active network links"
+      assert 'error' not in links.lower(), "Should not contain errors"
+    description: "Verify network connectivity"
+  
+  # Проверка диапазона
+  - python: |
+      value = ctx.get_variable('parsed_value')
+      assert 100 <= value <= 1000, f"Value {value} out of range [100, 1000]"
+    description: "Verify value range"
+  
+  # Проверка с регулярным выражением
+  - python: |
+      import re
+      status = ctx.get_variable('status')
+      pattern = r'^NET_STATE_(ONLINE|SYNC)'
+      assert re.match(pattern, status), f"Invalid status: {status}"
+    description: "Verify status format"
+```
+
+**Реальные примеры из тестов:**
+
+```yaml
+# Проверка сетевого статуса (tests/e2e/net/002_net_status.yml)
+- python: |
+    status = ctx.get_variable('net_status')
+    assert 'status' in status.lower() or 'state' in status.lower(), \
+      "Status should contain status information"
+  description: "Network status is valid"
+
+# Проверка адреса кошелька (tests/functional/wallet/002_wallet_info.yml)
+- python: |
+    addr = ctx.get_variable('wallet_addr')
+    assert addr, "Wallet address should not be empty"
+    assert '::' in addr, "Address should contain :: separator"
+  description: "Wallet address format is valid"
+
+# Проверка токенов с флагами (tests/e2e/token/006_token_with_flags.yml)
+- python: |
+    tokens = ctx.get_variable('token_list')
+    assert 'FLAGTEST1' in tokens, "FLAGTEST1 should be in list"
+    assert 'FLAGTEST2' in tokens, "FLAGTEST2 should be in list"
+  description: "Verify tokens with flags"
+```
+
+**Best practices:**
+- Используйте информативные сообщения в `assert`
+- Проверяйте одно логическое условие на один check
+- Используйте `description` для документирования проверки
+- Для сложных проверок разбивайте на несколько checks
+- Добавляйте контекст в сообщения об ошибках (f-strings)
+
+---
+
+### Bash Check
+
+Проверка условий с помощью Bash скрипта.
+
+**Структура:**
+```yaml
+- bash: string             # Bash скрипт для проверки (обязательно)
+  node: string             # Нода для выполнения (опционально, default: node1)
+  description: string      # Описание проверки (опционально)
+  timeout: integer         # Таймаут в секундах (опционально, default: 30)
+```
+
+**Параметры:**
+
+#### `bash`
+- **Тип:** `string` (обязательно)
+- **Описание:** Bash скрипт для выполнения проверки
+- **Правила:**
+  - Exit code 0 = проверка прошла
+  - Exit code != 0 = проверка провалена
+  - Используйте стандартные shell команды и условия
+
+#### `node`
+- **Тип:** `string` (опционально, default: `node1`)
+- **Описание:** Имя ноды на которой выполнить проверку
+
+#### `description`
+- **Тип:** `string` (опционально)
+- **Описание:** Человекочитаемое описание проверки
+
+#### `timeout`
+- **Тип:** `integer` (опционально, default: 30)
+- **Описание:** Таймаут выполнения в секундах
+
+**Примеры:**
+
+```yaml
+check:
+  # Проверка существования файла
+  - bash: |
+      [ -f /opt/cellframe-node/var/run/cellframe-node.pid ] && exit 0 || exit 1
+    node: node1
+    description: "Verify node process is running"
+  
+  # Проверка содержимого файла
+  - bash: |
+      if grep -q "ONLINE" /opt/cellframe-node/var/log/cellframe-node.log; then
+        exit 0
+      else
+        exit 1
+      fi
+    node: node1
+    description: "Verify node reached ONLINE state"
+  
+  # Проверка свободной памяти
+  - bash: |
+      mem=$(free -m | awk 'NR==2{print $4}')
+      if [ $mem -gt 100 ]; then
+        exit 0
+      else
+        echo "Low memory: ${mem}MB"
+        exit 1
+      fi
+    node: node1
+    description: "Verify sufficient free memory"
+  
+  # Проверка свободного места на диске
+  - bash: |
+      disk=$(df -h / | awk 'NR==2{print $5}' | tr -d '%')
+      if [ $disk -lt 90 ]; then
+        exit 0
+      else
+        echo "Disk usage too high: ${disk}%"
+        exit 1
+      fi
+    node: node1
+    description: "Verify disk space"
+  
+  # Проверка сетевого порта
+  - bash: |
+      if netstat -tuln | grep -q ":8079"; then
+        echo "Port 8079 is listening"
+        exit 0
+      else
+        echo "Port 8079 is not listening"
+        exit 1
+      fi
+    node: node1
+    description: "Verify node port is open"
+  
+  # Комплексная проверка с переменными
+  - bash: |
+      # Используем переменные сценария
+      expected_file="/opt/cellframe-node/var/lib/wallet/{{wallet_name}}"
+      
+      if [ -f "$expected_file" ]; then
+        size=$(stat -f%z "$expected_file" 2>/dev/null || stat -c%s "$expected_file")
+        if [ $size -gt 0 ]; then
+          echo "Wallet file exists and valid"
+          exit 0
+        fi
+      fi
+      
+      echo "Wallet file check failed"
+      exit 1
+    node: node1
+    timeout: 10
+    description: "Verify wallet file"
+```
+
+**Best practices:**
+- Используйте `exit 0` для успеха, `exit 1` для провала
+- Добавляйте информативные `echo` перед `exit 1`
+- Используйте стандартные команды (доступные в минимальных образах)
+- Проверяйте системные ресурсы и файлы
+- Используйте переменные сценария для параметризации
+- Добавляйте `timeout` для потенциально долгих проверок
 
 ---
 

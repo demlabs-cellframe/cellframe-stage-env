@@ -142,6 +142,27 @@ class RPCStep(BaseModel):
 class WaitStep(BaseModel):
     """Wait for duration or condition."""
     wait: str = Field(..., description="Duration (e.g., '5s') or condition")
+    description: Optional[str] = Field(None, description="Step description")
+
+
+class PythonStep(BaseModel):
+    """Execute Python code with access to context."""
+    python: str = Field(..., description="Python code to execute")
+    description: Optional[str] = Field(None, description="Step description")
+    save: Optional[str] = Field(None, description="Variable name to save result to")
+
+
+class BashStep(BaseModel):
+    """Execute Bash script."""
+    bash: str = Field(..., description="Bash script to execute")
+    node: str = Field("node1", description="Node to execute on")
+    description: Optional[str] = Field(None, description="Step description")
+    save: Optional[str] = Field(None, description="Variable name to save result to")
+    expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
+    timeout: Optional[int] = Field(30, description="Script timeout in seconds")
+    
+    class Config:
+        use_enum_values = True
 
 
 class LoopStep(BaseModel):
@@ -150,7 +171,7 @@ class LoopStep(BaseModel):
     steps: List["TestStep"] = Field(..., description="Steps to repeat")
 
 
-TestStep = Union[CLIStep, RPCStep, WaitStep, LoopStep]
+TestStep = Union[CLIStep, RPCStep, WaitStep, PythonStep, BashStep, LoopStep]
 
 
 # ============================================================================
@@ -177,7 +198,21 @@ class RPCCheck(BaseModel):
     timeout: Optional[int] = Field(30, description="RPC timeout")
 
 
-CheckSpec = Union[CLICheck, RPCCheck]
+class PythonCheck(BaseModel):
+    """Verify condition using Python code."""
+    python: str = Field(..., description="Python code that should not raise AssertionError")
+    description: Optional[str] = Field(None, description="Check description")
+
+
+class BashCheck(BaseModel):
+    """Verify condition using Bash script."""
+    bash: str = Field(..., description="Bash script (exit 0 = success)")
+    node: str = Field("node1", description="Node to execute on")
+    description: Optional[str] = Field(None, description="Check description")
+    timeout: Optional[int] = Field(30, description="Script timeout")
+
+
+CheckSpec = Union[CLICheck, RPCCheck, PythonCheck, BashCheck]
 
 
 # ============================================================================

@@ -15,8 +15,8 @@ from typing import Any, Dict, List, Optional
 from ..utils.logger import get_logger
 from .parser import ScenarioParser
 from .schema import (
-    CLIStep, RPCStep, WaitStep, LoopStep,
-    CLICheck, RPCCheck,
+    CLIStep, RPCStep, WaitStep, PythonStep, BashStep, LoopStep,
+    CLICheck, RPCCheck, PythonCheck, BashCheck,
     TestScenario, TestStep, CheckSpec
 )
 
@@ -176,6 +176,10 @@ class ScenarioExecutor:
                 await self._execute_rpc_step(step, ctx)
             elif isinstance(step, WaitStep):
                 await self._execute_wait_step(step, ctx)
+            elif isinstance(step, PythonStep):
+                await self._execute_python_step(step, ctx)
+            elif isinstance(step, BashStep):
+                await self._execute_bash_step(step, ctx)
             elif isinstance(step, LoopStep):
                 await self._execute_loop_step(step, ctx)
             else:
@@ -298,6 +302,10 @@ class ScenarioExecutor:
                 await self._execute_cli_check(check, ctx)
             elif isinstance(check, RPCCheck):
                 await self._execute_rpc_check(check, ctx)
+            elif isinstance(check, PythonCheck):
+                await self._execute_python_check(check, ctx)
+            elif isinstance(check, BashCheck):
+                await self._execute_bash_check(check, ctx)
             else:
                 raise ScenarioExecutionError(f"Unknown check type: {type(check)}")
     
@@ -373,6 +381,99 @@ class ScenarioExecutor:
             ctx.add_result("check_rpc", False, {"method": method, "error": "timeout"})
             raise ScenarioExecutionError(f"RPC check timeout: {method}")
     
+    async def _execute_python_check(self, check: PythonCheck, ctx: RuntimeContext):
+        """Execute Python assertion."""
+        logger.debug("Executing Python check")
+        
+        try:
+            # Create execution namespace with context
+            namespace = {
+                'ctx': ctx,
+                '__builtins__': __builtins__,
+            }
+            
+            # Execute Python code - should raise AssertionError if check fails
+            exec(check.python, namespace)
+            
+            ctx.add_result("check_python", True, {"description": check.description or "Python check"})
+            
+        except AssertionError as e:
+            ctx.add_result("check_python", False, {"error": str(e)})
+            raise ScenarioExecutionError(
+                f"Python check failed: {str(e)}",
+                step=check.python[:100]
+            )
+        except Exception as e:
+            ctx.add_result("check_python", False, {"error": str(e)})
+            raise ScenarioExecutionError(
+                f"Python check error: {str(e)}",
+                step=check.python[:100]
+            )
+    
+    async def _execute_bash_check(self, check: BashCheck, ctx: RuntimeContext):
+        """Execute Bash script assertion."""
+        # Substitute variables in bash script
+        script = ctx.substitute(check.bash)
+        
+        logger.debug(f"Executing Bash check on {check.node}")
+        
+        # Convert node ID to container name
+        if not check.node.startswith("cellframe-stage-"):
+            if check.node.startswith("node"):
+                node_num = check.node[4:]
+                container_name = f"cellframe-stage-node-{node_num}"
+            else:
+                container_name = f"cellframe-stage-{check.node}"
+        else:
+            container_name = check.node
+        
+        # Build docker exec command
+        full_cmd = [
+            "docker", "exec", container_name,
+            "bash", "-c", script
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *full_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=check.timeout
+            )
+            
+            result = {
+                "stdout": stdout.decode('utf-8', errors='replace'),
+                "stderr": stderr.decode('utf-8', errors='replace'),
+                "returncode": process.returncode
+            }
+            
+            if result["returncode"] != 0:
+                ctx.add_result("check_bash", False, {
+                    "error": f"Exit code {result['returncode']}",
+                    "stdout": result["stdout"],
+                    "stderr": result["stderr"]
+                })
+                raise ScenarioExecutionError(
+                    f"Bash check failed: exit code {result['returncode']}\n"
+                    f"stdout: {result['stdout']}\n"
+                    f"stderr: {result['stderr']}",
+                    step=script[:100]
+                )
+            
+            ctx.add_result("check_bash", True, {"description": check.description or "Bash check"})
+            
+        except asyncio.TimeoutError:
+            process.kill()
+            ctx.add_result("check_bash", False, {"error": "timeout"})
+            raise ScenarioExecutionError(
+                f"Bash check timeout after {check.timeout}s",
+                step=script[:100]
+            )
+    
     async def _run_cli_command(
         self, command: str, node: str, timeout: Optional[int] = 30
     ) -> Dict[str, Any]:
@@ -435,6 +536,95 @@ class ScenarioExecutor:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, json=payload)
             return response.json()
+    
+    async def _execute_python_step(self, step: PythonStep, ctx: RuntimeContext):
+        """Execute Python code with access to context."""
+        try:
+            # Create execution namespace with context
+            namespace = {
+                'ctx': ctx,
+                '__builtins__': __builtins__,
+            }
+            
+            # Execute Python code
+            exec(step.python, namespace)
+            
+            # If save is specified and result is in namespace
+            if step.save and 'result' in namespace:
+                ctx.set_variable(step.save, namespace['result'])
+                logger.debug("python_step_saved", variable=step.save, value=namespace['result'])
+                
+        except Exception as e:
+            raise ScenarioExecutionError(
+                f"Python step failed: {str(e)}",
+                step=step.python[:100],
+                context={'error': str(e)}
+            )
+    
+    async def _execute_bash_step(self, step: BashStep, ctx: RuntimeContext):
+        """Execute Bash script on specified node."""
+        # Substitute variables in bash script
+        script = ctx.substitute(step.bash)
+        
+        # Convert node ID to container name
+        if not step.node.startswith("cellframe-stage-"):
+            if step.node.startswith("node"):
+                node_num = step.node[4:]
+                container_name = f"cellframe-stage-node-{node_num}"
+            else:
+                container_name = f"cellframe-stage-{step.node}"
+        else:
+            container_name = step.node
+        
+        # Build docker exec command
+        full_cmd = [
+            "docker", "exec", container_name,
+            "bash", "-c", script
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *full_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=step.timeout
+            )
+            
+            result = {
+                "stdout": stdout.decode('utf-8', errors='replace'),
+                "stderr": stderr.decode('utf-8', errors='replace'),
+                "returncode": process.returncode
+            }
+            
+            # Save result if requested
+            if step.save:
+                ctx.set_variable(step.save, result["stdout"])
+                logger.debug("bash_step_saved", variable=step.save)
+            
+            # Check expectation
+            if step.expect == "success" and result["returncode"] != 0:
+                raise ScenarioExecutionError(
+                    f"Bash step failed: Expected success but got exit code {result['returncode']}",
+                    step=script[:100],
+                    context=result
+                )
+            elif step.expect == "error" and result["returncode"] == 0:
+                raise ScenarioExecutionError(
+                    f"Bash step failed: Expected error but got success",
+                    step=script[:100],
+                    context=result
+                )
+                
+        except asyncio.TimeoutError:
+            process.kill()
+            raise ScenarioExecutionError(
+                f"Bash step timed out after {step.timeout}s",
+                step=script[:100]
+            )
     
     async def _wait_duration(self, duration_str: str):
         """Parse and wait for duration (e.g., '5s', '100ms')."""
