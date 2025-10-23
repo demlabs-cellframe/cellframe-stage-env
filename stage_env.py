@@ -66,7 +66,26 @@ def main(
         if env_config:
             CONFIG_PATH = Path(env_config).resolve()
     
-    setup_logging(verbose=verbose, json_output=json_logs)
+    # Setup logging with file output
+    log_file = None
+    if CONFIG_PATH and CONFIG_PATH.exists():
+        try:
+            from configparser import ConfigParser
+            cfg = ConfigParser()
+            cfg.read(CONFIG_PATH)
+            if cfg.has_section('logging') and cfg.has_option('logging', 'log_dir'):
+                log_dir = Path(CONFIG_PATH.parent) / cfg.get('logging', 'log_dir')
+                log_dir.mkdir(parents=True, exist_ok=True)
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                log_file = log_dir / f"stage-env_{timestamp}.log"
+        except Exception as e:
+            print(f"Warning: Failed to setup file logging: {e}", file=sys.stderr)
+    
+    setup_logging(verbose=verbose, json_output=json_logs, log_file=log_file)
+    
+    if log_file:
+        logger.info("file_logging_enabled", log_file=str(log_file))
 
 
 @app.command()
