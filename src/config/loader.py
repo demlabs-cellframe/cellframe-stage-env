@@ -84,17 +84,19 @@ class NetworkTopology(BaseModel):
 class ConfigLoader:
     """Load and manage stage environment configurations."""
     
-    def __init__(self, base_path: Path):
+    def __init__(self, base_path: Path, config_path: Optional[Path] = None):
         """
         Initialize configuration loader.
         
         Args:
             base_path: Base path to stage-env directory
+            config_path: Optional path to stage-env.cfg (overrides default location)
         """
         self.base_path = base_path
         self.config_dir = base_path / "config"
         self.topologies_dir = self.config_dir / "topologies"
         self.templates_dir = self.config_dir / "templates"
+        self.custom_config_path = config_path
         
         # Setup Jinja2 environment
         self.jinja_env = Environment(
@@ -102,7 +104,9 @@ class ConfigLoader:
             autoescape=False,
         )
         
-        logger.debug("config_loader_initialized", base_path=str(base_path))
+        logger.debug("config_loader_initialized", 
+                    base_path=str(base_path),
+                    custom_config=str(config_path) if config_path else None)
     
     def load_stage_config(self) -> Dict[str, Any]:
         """
@@ -112,14 +116,19 @@ class ConfigLoader:
         Returns:
             Configuration dictionary with all default values
         """
-        config_file = self.config_dir / "stage-env.cfg"
-        default_file = self.config_dir / "stage-env.cfg.default"
-        
-        # Create from default if doesn't exist
-        if not config_file.exists() and default_file.exists():
-            logger.info("creating_config_from_default")
-            import shutil
-            shutil.copy2(default_file, config_file)
+        # Use custom config path if provided, otherwise use default
+        if self.custom_config_path:
+            config_file = self.custom_config_path
+            default_file = None  # Don't auto-create from default for custom paths
+        else:
+            config_file = self.config_dir / "stage-env.cfg"
+            default_file = self.config_dir / "stage-env.cfg.default"
+            
+            # Create from default if doesn't exist
+            if not config_file.exists() and default_file and default_file.exists():
+                logger.info("creating_config_from_default")
+                import shutil
+                shutil.copy2(default_file, config_file)
         
         # Load config
         if not config_file.exists():
@@ -128,6 +137,8 @@ class ConfigLoader:
         
         config = configparser.ConfigParser()
         config.read(config_file)
+        
+        logger.info("loaded_config", path=str(config_file))
         
         # Convert to flat dictionary for Jinja2
         result = {}

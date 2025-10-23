@@ -26,23 +26,24 @@ logger = get_logger(__name__)
 class NetworkManager:
     """Manage cellframe test network lifecycle."""
     
-    def __init__(self, base_path: Path, topology_name: str = "default"):
+    def __init__(self, base_path: Path, topology_name: str = "default", config_path: Optional[Path] = None):
         """
         Initialize network manager.
         
         Args:
             base_path: Base path to stage-env directory
             topology_name: Name of topology to use
+            config_path: Optional path to stage-env.cfg
         """
         self.base_path = base_path
         self.topology_name = topology_name
         
         # Load configuration
-        self.config_loader = ConfigLoader(base_path)
+        self.config_loader = ConfigLoader(base_path, config_path)
         self.topology = self.config_loader.load_topology(topology_name)
         
         # Config generator
-        self.config_generator = ConfigGenerator(base_path)
+        self.config_generator = ConfigGenerator(base_path, config_path)
         
         # Docker compose manager
         self.compose = DockerComposeManager(

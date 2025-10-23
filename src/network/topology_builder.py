@@ -20,15 +20,16 @@ logger = get_logger(__name__)
 class TopologyBuilder:
     """Build network topology from scenario node specifications."""
     
-    def __init__(self, base_path: Path):
+    def __init__(self, base_path: Path, config_path: Optional[Path] = None):
         """
         Initialize topology builder.
         
         Args:
             base_path: Base path to stage-env directory
+            config_path: Optional path to stage-env.cfg
         """
         self.base_path = base_path
-        self.config_loader = ConfigLoader(base_path)
+        self.config_loader = ConfigLoader(base_path, config_path)
     
     def build_from_scenario_nodes(
         self,

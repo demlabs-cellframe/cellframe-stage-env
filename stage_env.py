@@ -44,14 +44,28 @@ logger = get_logger(__name__)
 
 # Global state
 BASE_PATH = Path(__file__).parent
+CONFIG_PATH: Optional[Path] = None
 
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging"),
     json_logs: bool = typer.Option(False, "--json", help="Output logs as JSON"),
+    config: Optional[str] = typer.Option(None, "--config", help="Path to stage-env.cfg"),
 ):
     """Configure global options."""
+    global CONFIG_PATH
+    
+    # Set config path from option or environment variable
+    if config:
+        CONFIG_PATH = Path(config).resolve()
+    else:
+        import os
+        env_config = os.environ.get("STAGE_ENV_CONFIG")
+        if env_config:
+            CONFIG_PATH = Path(env_config).resolve()
+    
     setup_logging(verbose=verbose, json_output=json_logs)
 
 
@@ -135,7 +149,7 @@ def start(
         cert_gen.clean()
     
     # Start network
-    network_mgr = NetworkManager(BASE_PATH, topology_name=topology)
+    network_mgr = NetworkManager(BASE_PATH, topology_name=topology, config_path=CONFIG_PATH)
     
     async def _start():
         await network_mgr.start(rebuild=rebuild, wait_ready=wait)
@@ -159,7 +173,7 @@ def stop(
 ):
     """⏹️  Stop the test network."""
     
-    network_mgr = NetworkManager(BASE_PATH)
+    network_mgr = NetworkManager(BASE_PATH, config_path=CONFIG_PATH)
     
     async def _stop():
         await network_mgr.stop(remove_volumes=volumes)
@@ -178,7 +192,7 @@ def restart(
 ):
     """🔄 Restart network or specific node."""
     
-    network_mgr = NetworkManager(BASE_PATH)
+    network_mgr = NetworkManager(BASE_PATH, config_path=CONFIG_PATH)
     
     async def _restart():
         await network_mgr.restart(node_name=node)
@@ -200,7 +214,7 @@ def status(
 ):
     """📊 Show network status."""
     
-    network_mgr = NetworkManager(BASE_PATH, topology_name=topology)
+    network_mgr = NetworkManager(BASE_PATH, topology_name=topology, config_path=CONFIG_PATH)
     
     # Generate node configs to get info
     network_mgr.generate_node_configs()
@@ -266,7 +280,7 @@ def logs(
 ):
     """📜 Show logs for a node."""
     
-    network_mgr = NetworkManager(BASE_PATH)
+    network_mgr = NetworkManager(BASE_PATH, config_path=CONFIG_PATH)
     
     try:
         output = network_mgr.get_node_logs(node, tail=tail, follow=follow)
@@ -290,7 +304,7 @@ def exec(
 ):
     """⚙️  Execute command in node container."""
     
-    network_mgr = NetworkManager(BASE_PATH)
+    network_mgr = NetworkManager(BASE_PATH, config_path=CONFIG_PATH)
     
     try:
         exit_code, output = network_mgr.exec_in_node(

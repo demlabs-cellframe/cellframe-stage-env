@@ -22,15 +22,16 @@ logger = get_logger(__name__)
 class ConfigGenerator:
     """Generate configuration files for cellframe nodes."""
     
-    def __init__(self, base_path: Path):
+    def __init__(self, base_path: Path, config_path: Optional[Path] = None):
         """
         Initialize config generator.
         
         Args:
             base_path: Base path to stage-env directory
+            config_path: Optional path to stage-env.cfg
         """
         self.base_path = base_path
-        self.config_loader = ConfigLoader(base_path)
+        self.config_loader = ConfigLoader(base_path, config_path)
         self.cert_generator = CertGenerator(base_path)
         
         # Directories
