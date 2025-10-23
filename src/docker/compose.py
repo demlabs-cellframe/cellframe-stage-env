@@ -584,6 +584,65 @@ class DockerComposeManager:
         
         return None
     
+    def _get_node_loading_status(self, container: Container) -> str:
+        """
+        Get detailed node loading status with progress information.
+        
+        Returns:
+            Status string like: "NET_STATE_ONLINE" or "LINKS_CONNECTING (2/3)" or "Initializing consensus"
+        """
+        try:
+            # First try JSON-RPC API for current state
+            api_result = container.exec_run(
+                'curl -X POST -s -H "Content-Type: application/json" '
+                '-d \'{"method":"net", "params":["net;get;status;-net;stagenet"], "id":"1"}\' '
+                'http://127.0.0.1:12345 2>/dev/null',
+                demux=False
+            )
+            
+            if api_result.exit_code == 0:
+                try:
+                    import json
+                    api_response = json.loads(api_result.output.decode("utf-8"))
+                    if api_response.get("type") == 2 and "result" in api_response:
+                        status = api_response["result"][0]["status"]
+                        current_state = status["states"]["current"]
+                        links = status["links"]
+                        active_links = links.get("active", 0)
+                        required_links = links.get("required", 3)
+                        
+                        # Add link info if connecting
+                        if current_state == "NET_STATE_LINKS_CONNECTING":
+                            return f"{current_state} ({active_links}/{required_links} links)"
+                        return current_state
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    pass
+            
+            # Fallback to log parsing
+            logs = container.logs(tail=100).decode("utf-8", errors="ignore")
+            
+            # Check for initialization phases
+            if "Initializing consensus" in logs or "consensus.state: SYNC" in logs:
+                return "Initializing consensus"
+            if "Loading chain" in logs or "Loaded chain files" in logs:
+                return "Loading chains"
+            if "Connecting to" in logs or "NET_STATE_LINKS_CONNECTING" in logs:
+                return "Connecting to peers"
+            if "NET_STATE_SYNC_CHAINS" in logs:
+                return "Syncing chains"
+            if "NET_STATE_ONLINE" in logs:
+                return "NET_STATE_ONLINE"
+            if "NET_STATE_OFFLINE" in logs:
+                return "NET_STATE_OFFLINE"
+            
+            return "Starting"
+            
+        except Exception as e:
+            logger.warning("failed_to_get_loading_status",
+                         container=container.name,
+                         error=str(e))
+            return "Unknown"
+    
     def _check_node_online_status(self, container: Container) -> bool:
         """
         Check if Cellframe node is actually ONLINE by examining logs and network state.
@@ -890,10 +949,12 @@ class DockerComposeManager:
                         pending_containers.append(f"{service_name} ({health_status})")
                         continue
                 
-                # Check if node is actually ONLINE
+                # Check if node is actually ONLINE and get detailed status
                 if not self._check_node_online_status(container):
                     all_healthy = False
-                    pending_containers.append(f"{service_name} (waiting for ONLINE)")
+                    # Get detailed loading status for better visibility
+                    loading_status = self._get_node_loading_status(container)
+                    pending_containers.append(f"{service_name} ({loading_status})")
                     continue
             
             # Log status periodically
