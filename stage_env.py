@@ -409,16 +409,14 @@ def run_tests(
         print_info(f"  • {test_dir}")
     
     # Determine test type from test_dirs for artifact organization
-    # Detect if running e2e, functional, or base tests
+    # Test type = last directory name in path 
     test_type = None
     if test_dirs:
         first_dir = Path(test_dirs[0])
-        if 'e2e' in first_dir.parts:
-            test_type = 'e2e'
-        elif 'functional' in first_dir.parts:
-            test_type = 'functional'
-        elif 'base' in first_dir.parts or 'stage-env/tests' in str(first_dir):
-            test_type = 'base'
+        # Get the last meaningful directory name
+        for part in reversed(first_dir.parts):
+            test_type = part
+            break
     
     # Create run directory for this test session
     config_loader = ConfigLoader(BASE_PATH, CONFIG_PATH)
