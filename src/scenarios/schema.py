@@ -251,9 +251,15 @@ TestStep = Union[CLIStep, RPCStep, WaitStep, PythonStep, BashStep, LoopStep, Ste
 # ============================================================================
 
 class SectionConfig(BaseModel):
-    """Configuration for a test section (setup/test/check)."""
+    """Configuration for a test section (setup/test)."""
     defaults: Optional[StepDefaults] = Field(None, description="Default parameters for all steps in this section")
     steps: List[TestStep] = Field(default_factory=list, description="Steps in this section")
+
+
+class CheckSectionConfig(BaseModel):
+    """Configuration for check section (different from test/setup)."""
+    defaults: Optional[StepDefaults] = Field(None, description="Default parameters for all checks in this section")
+    steps: List[CheckSpec] = Field(default_factory=list, description="Checks in this section")
 
 
 # ============================================================================
@@ -300,8 +306,8 @@ class TestScenario(BaseModel):
     # Test phase - can be either list of steps (old format) or SectionConfig (new format)
     test: Union[List[TestStep], SectionConfig] = Field(..., description="Test steps")
     
-    # Check phase - can be either list of checks (old format) or SectionConfig (new format)
-    check: Union[List[CheckSpec], SectionConfig] = Field(default_factory=list, description="Assertions")
+    # Check phase - can be either list of checks (old format) or CheckSectionConfig (new format)
+    check: Union[List[CheckSpec], CheckSectionConfig] = Field(default_factory=list, description="Assertions")
     
     # Variables (runtime context)
     variables: Dict[str, Any] = Field(default_factory=dict, description="Predefined variables")
@@ -309,13 +315,13 @@ class TestScenario(BaseModel):
     @model_validator(mode='after')
     def validate_scenario(self) -> 'TestScenario':
         """Validate scenario structure."""
-        # Normalize sections to SectionConfig format
+        # Normalize sections to SectionConfig/CheckSectionConfig format
         if isinstance(self.setup, list):
             self.setup = SectionConfig(steps=self.setup)
         if isinstance(self.test, list):
             self.test = SectionConfig(steps=self.test)
         if isinstance(self.check, list):
-            self.check = SectionConfig(steps=self.check)
+            self.check = CheckSectionConfig(steps=self.check)
         
         # Validate at least one test step
         if not self.test.steps:
