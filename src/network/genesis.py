@@ -51,9 +51,10 @@ class GenesisInitializer:
         retry_delay: float = 1.0
     ) -> Optional[str]:
         """
-        Read node_addr.txt from container with retry logic.
+        Read node_addr.txt from HOST filesystem (not container).
         
-        The file is created by cellframe-node on startup, so we need to wait for it.
+        The file is created by cert-generator on the host in certs_cache/nodeN/node_addr.txt
+        and is NOT copied into the container.
         
         Args:
             node_id: Node ID
@@ -63,23 +64,18 @@ class GenesisInitializer:
         Returns:
             Node address string or None if failed
         """
-        node_container_name = f"cellframe-stage-node-{node_id}"
+        addr_file = self.certs_cache / f"node{node_id}" / "node_addr.txt"
         
         for attempt in range(1, max_retries + 1):
             try:
-                node_container = self.docker_client.containers.get(node_container_name)
-                addr_result = node_container.exec_run(
-                    "cat /opt/cellframe-node/var/lib/node_addr.txt",
-                    demux=False
-                )
-                
-                if addr_result.exit_code == 0:
-                    node_addr = addr_result.output.decode('utf-8').strip()
+                if addr_file.exists():
+                    node_addr = addr_file.read_text().strip()
                     if node_addr:  # Ensure non-empty
                         logger.debug("read_node_address",
                                     node_id=node_id,
                                     node_addr=node_addr,
-                                    attempt=attempt)
+                                    attempt=attempt,
+                                    source="host_filesystem")
                         return node_addr
                 
                 # File not ready yet
@@ -87,7 +83,8 @@ class GenesisInitializer:
                     logger.debug("node_addr_not_ready_retrying",
                                 node_id=node_id,
                                 attempt=attempt,
-                                max_retries=max_retries)
+                                max_retries=max_retries,
+                                path=str(addr_file))
                     time.sleep(retry_delay)
                     
             except Exception as e:
@@ -105,7 +102,9 @@ class GenesisInitializer:
         
         logger.error("failed_to_read_node_addr_after_retries",
                     node_id=node_id,
-                    max_retries=max_retries)
+                    max_retries=max_retries,
+                    path=str(addr_file),
+                    exists=addr_file.exists())
         return None
     
     async def initialize(self, nodes: List[NodeConfig]) -> None:
