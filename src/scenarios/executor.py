@@ -15,9 +15,9 @@ from typing import Any, Dict, List, Optional
 from ..utils.logger import get_logger
 from .parser import ScenarioParser
 from .schema import (
-    CLIStep, RPCStep, WaitStep, PythonStep, BashStep, LoopStep,
+    CLIStep, RPCStep, WaitStep, PythonStep, BashStep, LoopStep, StepGroup,
     CLICheck, RPCCheck, PythonCheck, BashCheck,
-    TestScenario, TestStep, CheckSpec
+    TestScenario, TestStep, CheckSpec, StepDefaults, SectionConfig
 )
 
 logger = get_logger(__name__)
@@ -115,6 +115,63 @@ class ScenarioExecutor:
             with open(self.log_file, 'a', encoding='utf-8') as f:
                 f.write(message + '\n')
     
+    def _merge_defaults(
+        self,
+        *defaults_list: Optional[StepDefaults]
+    ) -> Optional[StepDefaults]:
+        """
+        Merge multiple StepDefaults objects with priority (last wins).
+        
+        Args:
+            *defaults_list: List of StepDefaults to merge (global → section → group → step)
+            
+        Returns:
+            Merged StepDefaults or None
+        """
+        merged = {}
+        
+        for defaults in defaults_list:
+            if defaults:
+                if defaults.node is not None:
+                    merged['node'] = defaults.node
+                if defaults.wait is not None:
+                    merged['wait'] = defaults.wait
+                if defaults.expect is not None:
+                    merged['expect'] = defaults.expect
+                if defaults.timeout is not None:
+                    merged['timeout'] = defaults.timeout
+        
+        return StepDefaults(**merged) if merged else None
+    
+    def _apply_defaults(self, step: TestStep, defaults: Optional[StepDefaults]) -> TestStep:
+        """
+        Apply defaults to a step if not already set.
+        
+        Args:
+            step: Original step
+            defaults: Defaults to apply
+            
+        Returns:
+            Step with defaults applied
+        """
+        if not defaults:
+            return step
+        
+        # Apply to CLI/RPC/Bash steps (have node, wait, expect, timeout)
+        if isinstance(step, (CLIStep, RPCStep, BashStep)):
+            if defaults.node and not hasattr(step, '_node_set'):
+                # Only apply if using default node value
+                if step.node == "node1":  # Default value
+                    step.node = defaults.node
+            if defaults.wait and not step.wait:
+                step.wait = defaults.wait
+            if defaults.expect and step.expect == "success":  # Default value
+                step.expect = defaults.expect
+            if defaults.timeout and step.timeout == 30:  # Default value
+                step.timeout = defaults.timeout
+        
+        return step
+    
     async def execute_scenario(self, scenario: TestScenario) -> RuntimeContext:
         """
         Execute complete test scenario.
@@ -135,19 +192,25 @@ class ScenarioExecutor:
         self._running = True
         
         try:
+            # Global defaults (applied to all phases)
+            global_defaults = scenario.defaults
+            
             # Setup phase
             if scenario.setup:
                 logger.info("Executing setup phase...")
-                await self._execute_steps(scenario.setup, ctx)
+                section_defaults = self._merge_defaults(global_defaults, scenario.setup.defaults)
+                await self._execute_steps(scenario.setup.steps, ctx, section_defaults)
             
             # Test phase
             logger.info("Executing test phase...")
-            await self._execute_steps(scenario.test, ctx)
+            section_defaults = self._merge_defaults(global_defaults, scenario.test.defaults)
+            await self._execute_steps(scenario.test.steps, ctx, section_defaults)
             
             # Check phase
             if scenario.check:
                 logger.info("Executing check phase...")
-                await self._execute_checks(scenario.check, ctx)
+                section_defaults = self._merge_defaults(global_defaults, scenario.check.defaults)
+                await self._execute_checks(scenario.check.steps, ctx, section_defaults)
             
             summary = ctx.get_summary()
             logger.info(f"Scenario completed: {summary['passed']}/{summary['total_steps']} steps passed")
@@ -173,10 +236,42 @@ class ScenarioExecutor:
         finally:
             self._running = False
     
-    async def _execute_steps(self, steps: List[TestStep], ctx: RuntimeContext):
-        """Execute list of test steps."""
+    async def _execute_steps(
+        self,
+        steps: List[TestStep],
+        ctx: RuntimeContext,
+        defaults: Optional[StepDefaults] = None
+    ):
+        """
+        Execute list of test steps with defaults.
+        
+        Args:
+            steps: List of steps to execute
+            ctx: Runtime context
+            defaults: Default parameters to apply
+        """
         for i, step in enumerate(steps, 1):
             logger.info(f"Step {i}/{len(steps)}: {type(step).__name__}")
+            
+            # Handle StepGroup
+            if isinstance(step, StepGroup):
+                if step.name:
+                    logger.info(f"Entering group: {step.name}")
+                if step.description:
+                    logger.debug(f"Group description: {step.description}")
+                
+                # Merge group defaults with section defaults
+                group_defaults = self._merge_defaults(defaults, step.defaults)
+                
+                # Recursively execute group steps
+                await self._execute_steps(step.steps, ctx, group_defaults)
+                
+                if step.name:
+                    logger.info(f"Exited group: {step.name}")
+                continue
+            
+            # Apply defaults to step
+            step = self._apply_defaults(step, defaults)
             
             if isinstance(step, CLIStep):
                 await self._execute_cli_step(step, ctx)
@@ -189,7 +284,7 @@ class ScenarioExecutor:
             elif isinstance(step, BashStep):
                 await self._execute_bash_step(step, ctx)
             elif isinstance(step, LoopStep):
-                await self._execute_loop_step(step, ctx)
+                await self._execute_loop_step(step, ctx, defaults)
             else:
                 raise ScenarioExecutionError(f"Unknown step type: {type(step)}")
     
@@ -336,7 +431,12 @@ class ScenarioExecutor:
         await self._wait_duration(step.wait)
         ctx.add_result("wait", True, {"duration": step.wait})
     
-    async def _execute_loop_step(self, step: LoopStep, ctx: RuntimeContext):
+    async def _execute_loop_step(
+        self,
+        step: LoopStep,
+        ctx: RuntimeContext,
+        defaults: Optional[StepDefaults] = None
+    ):
         """Execute loop step."""
         logger.info(f"Starting loop: {step.loop} iterations")
         
@@ -345,14 +445,26 @@ class ScenarioExecutor:
             ctx.set_variable("i", i)
             ctx.set_variable("iteration", i + 1)
             
-            await self._execute_steps(step.steps, ctx)
+            await self._execute_steps(step.steps, ctx, defaults)
         
         ctx.add_result("loop", True, {"iterations": step.loop})
     
-    async def _execute_checks(self, checks: List[CheckSpec], ctx: RuntimeContext):
-        """Execute assertion checks."""
+    async def _execute_checks(
+        self,
+        checks: List[CheckSpec],
+        ctx: RuntimeContext,
+        defaults: Optional[StepDefaults] = None
+    ):
+        """Execute assertion checks with defaults."""
         for i, check in enumerate(checks, 1):
             logger.info(f"Check {i}/{len(checks)}: {type(check).__name__}")
+            
+            # Apply defaults to checks (node, timeout)
+            if defaults and isinstance(check, (CLICheck, RPCCheck, BashCheck)):
+                if defaults.node and check.node == "node1":  # Default value
+                    check.node = defaults.node
+                if defaults.timeout and check.timeout == 30:  # Default value
+                    check.timeout = defaults.timeout
             
             if isinstance(check, CLICheck):
                 await self._execute_cli_check(check, ctx)

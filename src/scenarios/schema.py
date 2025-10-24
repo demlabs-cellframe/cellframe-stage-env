@@ -220,6 +220,43 @@ CheckSpec = Union[CLICheck, RPCCheck, PythonCheck, BashCheck]
 
 
 # ============================================================================
+# Step Defaults and Grouping
+# ============================================================================
+
+class StepDefaults(BaseModel):
+    """Default parameters for steps in a section or group."""
+    node: Optional[str] = Field(None, description="Default node for all steps")
+    wait: Optional[str] = Field(None, description="Default wait duration after each step")
+    expect: Optional[ExpectResult] = Field(None, description="Default expected result")
+    timeout: Optional[int] = Field(None, description="Default timeout in seconds")
+    
+    class Config:
+        use_enum_values = True
+
+
+class StepGroup(BaseModel):
+    """Group of steps with shared defaults."""
+    name: Optional[str] = Field(None, description="Group name for logging")
+    description: Optional[str] = Field(None, description="Group description")
+    defaults: Optional[StepDefaults] = Field(None, description="Default parameters for this group")
+    steps: List[Union["TestStep", "StepGroup"]] = Field(..., description="Steps in this group")
+
+
+# Update TestStep to include StepGroup
+TestStep = Union[CLIStep, RPCStep, WaitStep, PythonStep, BashStep, LoopStep, StepGroup]
+
+
+# ============================================================================
+# Section Configuration (for setup/test/check)
+# ============================================================================
+
+class SectionConfig(BaseModel):
+    """Configuration for a test section (setup/test/check)."""
+    defaults: Optional[StepDefaults] = Field(None, description="Default parameters for all steps in this section")
+    steps: List[TestStep] = Field(default_factory=list, description="Steps in this section")
+
+
+# ============================================================================
 # Main Scenario Model
 # ============================================================================
 
@@ -254,14 +291,17 @@ class TestScenario(BaseModel):
     # File placement
     files: List[FileSpec] = Field(default_factory=list, description="Files to place in nodes")
     
-    # Setup phase
-    setup: List[TestStep] = Field(default_factory=list, description="Setup steps")
+    # Global defaults (applied to all sections)
+    defaults: Optional[StepDefaults] = Field(None, description="Global default parameters")
     
-    # Test phase
-    test: List[TestStep] = Field(..., description="Test steps")
+    # Setup phase - can be either list of steps (old format) or SectionConfig (new format)
+    setup: Union[List[TestStep], SectionConfig] = Field(default_factory=list, description="Setup steps")
     
-    # Check phase
-    check: List[CheckSpec] = Field(default_factory=list, description="Assertions")
+    # Test phase - can be either list of steps (old format) or SectionConfig (new format)
+    test: Union[List[TestStep], SectionConfig] = Field(..., description="Test steps")
+    
+    # Check phase - can be either list of checks (old format) or SectionConfig (new format)
+    check: Union[List[CheckSpec], SectionConfig] = Field(default_factory=list, description="Assertions")
     
     # Variables (runtime context)
     variables: Dict[str, Any] = Field(default_factory=dict, description="Predefined variables")
@@ -269,11 +309,22 @@ class TestScenario(BaseModel):
     @model_validator(mode='after')
     def validate_scenario(self) -> 'TestScenario':
         """Validate scenario structure."""
-        if not self.test:
+        # Normalize sections to SectionConfig format
+        if isinstance(self.setup, list):
+            self.setup = SectionConfig(steps=self.setup)
+        if isinstance(self.test, list):
+            self.test = SectionConfig(steps=self.test)
+        if isinstance(self.check, list):
+            self.check = SectionConfig(steps=self.check)
+        
+        # Validate at least one test step
+        if not self.test.steps:
             raise ValueError("Test scenario must have at least one test step")
+        
         return self
 
 
 # Allow forward references for recursive models
 LoopStep.model_rebuild()
+StepGroup.model_rebuild()
 
