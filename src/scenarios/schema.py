@@ -115,6 +115,7 @@ class CLIStep(BaseModel):
     """Execute CLI command."""
     cli: str = Field(..., description="CLI command to execute")
     node: str = Field("node1", description="Node to execute on")
+    description: Optional[str] = Field(None, description="Step description")
     save: Optional[str] = Field(None, description="Variable name to save result to")
     wait: Optional[str] = Field(None, description="Wait duration after command (e.g., '5s')")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
@@ -130,6 +131,7 @@ class RPCStep(BaseModel):
     rpc: str = Field(..., description="JSON-RPC method name")
     params: List[Any] = Field(default_factory=list, description="RPC parameters")
     node: str = Field("node1", description="Node to call RPC on")
+    description: Optional[str] = Field(None, description="Step description")
     save: Optional[str] = Field(None, description="Variable name to save result to")
     wait: Optional[str] = Field(None, description="Wait duration after call")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
@@ -182,6 +184,7 @@ class CLICheck(BaseModel):
     """Verify CLI command output."""
     cli: str = Field(..., description="CLI command to execute")
     node: str = Field("node1", description="Node to execute on")
+    description: Optional[str] = Field(None, description="Check description")
     contains: Optional[str] = Field(None, description="Expected substring")
     not_contains: Optional[str] = Field(None, description="Substring that should not be present")
     equals: Optional[str] = Field(None, description="Exact expected output")
@@ -193,6 +196,7 @@ class RPCCheck(BaseModel):
     rpc: str = Field(..., description="JSON-RPC method")
     params: List[Any] = Field(default_factory=list, description="RPC parameters")
     node: str = Field("node1", description="Node to call on")
+    description: Optional[str] = Field(None, description="Check description")
     result_contains: Optional[Any] = Field(None, description="Expected value in result")
     result_equals: Optional[Any] = Field(None, description="Exact expected result")
     timeout: Optional[int] = Field(30, description="RPC timeout")

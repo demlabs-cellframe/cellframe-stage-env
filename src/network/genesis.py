@@ -9,8 +9,9 @@ Handles initial setup tasks after network start:
 
 import asyncio
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 import docker
+import time
 
 from ..utils.logger import get_logger
 from .models import NodeConfig
@@ -42,6 +43,70 @@ class GenesisInitializer:
         self.certs_cache = (base_path / cache_dir_relative / "certs").resolve()
         
         logger.info("genesis_initializer_created", network=network_name)
+    
+    def _read_node_addr_with_retry(
+        self, 
+        node_id: int, 
+        max_retries: int = 10, 
+        retry_delay: float = 1.0
+    ) -> Optional[str]:
+        """
+        Read node_addr.txt from container with retry logic.
+        
+        The file is created by cellframe-node on startup, so we need to wait for it.
+        
+        Args:
+            node_id: Node ID
+            max_retries: Maximum number of retry attempts
+            retry_delay: Delay between retries in seconds
+            
+        Returns:
+            Node address string or None if failed
+        """
+        node_container_name = f"cellframe-stage-node-{node_id}"
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                node_container = self.docker_client.containers.get(node_container_name)
+                addr_result = node_container.exec_run(
+                    "cat /opt/cellframe-node/var/lib/node_addr.txt",
+                    demux=False
+                )
+                
+                if addr_result.exit_code == 0:
+                    node_addr = addr_result.output.decode('utf-8').strip()
+                    if node_addr:  # Ensure non-empty
+                        logger.debug("read_node_address",
+                                    node_id=node_id,
+                                    node_addr=node_addr,
+                                    attempt=attempt)
+                        return node_addr
+                
+                # File not ready yet
+                if attempt < max_retries:
+                    logger.debug("node_addr_not_ready_retrying",
+                                node_id=node_id,
+                                attempt=attempt,
+                                max_retries=max_retries)
+                    time.sleep(retry_delay)
+                    
+            except Exception as e:
+                if attempt < max_retries:
+                    logger.debug("node_addr_read_error_retrying",
+                                node_id=node_id,
+                                attempt=attempt,
+                                error=str(e))
+                    time.sleep(retry_delay)
+                else:
+                    logger.error("failed_to_get_node_address",
+                                node_id=node_id,
+                                error=str(e),
+                                attempts=attempt)
+        
+        logger.error("failed_to_read_node_addr_after_retries",
+                    node_id=node_id,
+                    max_retries=max_retries)
+        return None
     
     async def initialize(self, nodes: List[NodeConfig]) -> None:
         """
@@ -103,34 +168,18 @@ class GenesisInitializer:
         # Read all root node addresses first (from containers, not host)
         root_node_data = []
         for node in root_nodes:
-            container_name = f"cellframe-stage-node-{node.node_id}"
+            # Use retry logic to read node_addr.txt
+            node_addr = self._read_node_addr_with_retry(node.node_id)
             
-            try:
-                container = self.docker_client.containers.get(container_name)
-                
-                # Read validator_addr from inside container
-                validator_result = container.exec_run(
-                    f"cat /opt/cellframe-node/var/lib/node_addr.txt",
-                    demux=False
-                )
-                
-                if validator_result.exit_code == 0:
-                    validator_addr = validator_result.output.decode('utf-8').strip()
-                    node_addr = validator_addr  # Same as validator_addr for now
-                    
-                    root_node_data.append({
-                        'node': node,
-                        'validator_addr': validator_addr,
-                        'node_addr': node_addr
-                    })
-                else:
-                    logger.warning("failed_to_read_node_addr",
-                                  node_id=node.node_id,
-                                  container=container_name)
-            except Exception as e:
-                logger.warning("failed_to_get_node_addr",
-                              node_id=node.node_id,
-                              error=str(e))
+            if node_addr:
+                root_node_data.append({
+                    'node': node,
+                    'validator_addr': node_addr,  # Same as node_addr
+                    'node_addr': node_addr
+                })
+            else:
+                logger.warning("skipping_node_no_address",
+                              node_id=node.node_id)
         
         # For each root node, add all other root nodes to its nodelist
         for current in root_node_data:
@@ -253,30 +302,17 @@ class GenesisInitializer:
         validator_idx = node.node_id - 1
         cert_name = f"pvt.{self.network_name}.master.{validator_idx}"
         
-        # Read node address from inside the node's container
-        node_container_name = f"cellframe-stage-node-{node.node_id}"
-        try:
-            node_container = self.docker_client.containers.get(node_container_name)
-            addr_result = node_container.exec_run(
-                "cat /opt/cellframe-node/var/lib/node_addr.txt",
-                demux=False
-            )
-            
-            if addr_result.exit_code != 0:
-                logger.error("failed_to_read_node_addr_from_container",
-                            node_id=node.node_id,
-                            container=node_container_name)
-                return
-            
-            node_addr = addr_result.output.decode('utf-8').strip()
-            logger.info("read_node_address",
-                       node_id=node.node_id,
-                       node_addr=node_addr)
-        except Exception as e:
-            logger.error("failed_to_get_node_address",
-                        node_id=node.node_id,
-                        error=str(e))
+        # Read node address with retry logic
+        node_addr = self._read_node_addr_with_retry(node.node_id)
+        
+        if not node_addr:
+            logger.error("cannot_create_order_no_node_addr",
+                        node_id=node.node_id)
             return
+        
+        logger.info("read_node_address",
+                   node_id=node.node_id,
+                   node_addr=node_addr)
         
         # Order parameters
         # value_min and value_max in datoshi (1 token = 10^18 datoshi)
@@ -354,25 +390,12 @@ class GenesisInitializer:
         
         # Register each node
         for node in nodes:
-            # Read node address from inside the node's container
-            node_container_name = f"cellframe-stage-node-{node.node_id}"
-            try:
-                node_container = self.docker_client.containers.get(node_container_name)
-                addr_result = node_container.exec_run(
-                    "cat /opt/cellframe-node/var/lib/node_addr.txt",
-                    demux=False
-                )
-                
-                if addr_result.exit_code != 0:
-                    logger.warning("failed_to_read_node_addr",
-                                  node_id=node.node_id)
-                    continue
-                
-                node_addr = addr_result.output.decode('utf-8').strip()
-            except Exception as e:
-                logger.warning("failed_to_get_node_address",
-                              node_id=node.node_id,
-                              error=str(e))
+            # Read node address with retry logic
+            node_addr = self._read_node_addr_with_retry(node.node_id)
+            
+            if not node_addr:
+                logger.warning("skipping_node_alias_no_address",
+                              node_id=node.node_id)
                 continue
             
             # GDB command to register node_alias
