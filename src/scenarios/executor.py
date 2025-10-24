@@ -157,25 +157,27 @@ class ScenarioExecutor:
         if not defaults:
             return step
         
-        # Apply to all steps that have relevant attributes
-        # node: CLI, RPC, Bash, Python steps
-        if isinstance(step, (CLIStep, RPCStep, BashStep, PythonStep)):
-            if defaults.node and step.node == "node1":  # Default value
+        # Universal approach: apply all defaults to all steps that have these attributes
+        # No type checking - just check if attribute exists and has default value
+        
+        # node
+        if defaults.node and hasattr(step, 'node'):
+            if step.node == "node1":  # Default value
                 step.node = defaults.node
         
-        # wait: CLI, RPC, Bash, Python, Wait steps
-        if isinstance(step, (CLIStep, RPCStep, BashStep, PythonStep, WaitStep)):
-            if defaults.wait and not step.wait:
+        # wait
+        if defaults.wait and hasattr(step, 'wait'):
+            if not step.wait:  # None or empty
                 step.wait = defaults.wait
         
-        # expect: CLI, RPC, Bash steps
-        if isinstance(step, (CLIStep, RPCStep, BashStep)):
-            if defaults.expect and step.expect == "success":  # Default value
+        # expect
+        if defaults.expect and hasattr(step, 'expect'):
+            if step.expect == "success":  # Default value
                 step.expect = defaults.expect
         
-        # timeout: CLI, RPC, Bash, Python steps
-        if isinstance(step, (CLIStep, RPCStep, BashStep, PythonStep)):
-            if defaults.timeout and step.timeout == 30:  # Default value
+        # timeout
+        if defaults.timeout and hasattr(step, 'timeout'):
+            if step.timeout == 30:  # Default value
                 step.timeout = defaults.timeout
         
         return step
@@ -467,16 +469,16 @@ class ScenarioExecutor:
         for i, check in enumerate(checks, 1):
             logger.info(f"Check {i}/{len(checks)}: {type(check).__name__}")
             
-            # Apply defaults to all checks that have relevant attributes
+            # Apply defaults universally - check if attribute exists
             if defaults:
-                # node: CLI, RPC, Bash, Python checks
-                if isinstance(check, (CLICheck, RPCCheck, BashCheck, PythonCheck)):
-                    if defaults.node and check.node == "node1":  # Default value
+                # node
+                if defaults.node and hasattr(check, 'node'):
+                    if check.node == "node1":  # Default value
                         check.node = defaults.node
                 
-                # timeout: CLI, RPC, Bash, Python checks
-                if isinstance(check, (CLICheck, RPCCheck, BashCheck, PythonCheck)):
-                    if defaults.timeout and check.timeout == 30:  # Default value
+                # timeout
+                if defaults.timeout and hasattr(check, 'timeout'):
+                    if check.timeout == 30:  # Default value
                         check.timeout = defaults.timeout
             
             if isinstance(check, CLICheck):

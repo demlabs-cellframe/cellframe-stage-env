@@ -2346,23 +2346,41 @@ test:
 
 ### Применяемые параметры
 
-**Defaults применяются к:**
+**Универсальный подход:**
 
-**Steps:**
-- ✅ `CLIStep` - все параметры (node, wait, expect, timeout)
-- ✅ `RPCStep` - все параметры (node, wait, expect, timeout)
-- ✅ `BashStep` - все параметры (node, wait, expect, timeout)
-- ✅ `PythonStep` - node, wait, timeout
-- ✅ `WaitStep` - wait (только wait применяется)
-- ⚠️ `LoopStep` - defaults передаются внутрь цикла к вложенным шагам
+Defaults применяются **ко всем типам шагов и checks**, у которых есть соответствующие атрибуты.
 
-**Checks:**
-- ✅ `CLICheck` - node, timeout
-- ✅ `RPCCheck` - node, timeout
-- ✅ `BashCheck` - node, timeout
-- ✅ `PythonCheck` - node, timeout
+**Проверка:** `hasattr(step, 'node')` вместо `isinstance(step, CLIStep)`
 
-**Примечание:** Все типы шагов и checks теперь поддерживают defaults для своих соответствующих атрибутов.
+**Параметры:**
+- `node` → применяется ко всем шагам/checks с атрибутом `node`
+- `wait` → применяется ко всем шагам с атрибутом `wait`
+- `expect` → применяется ко всем шагам с атрибутом `expect`
+- `timeout` → применяется ко всем шагам/checks с атрибутом `timeout`
+
+**Преимущества:**
+- ✅ Никаких ограничений по типам
+- ✅ Автоматическая поддержка новых типов шагов
+- ✅ Простая и предсказуемая логика
+- ✅ Если у шага есть атрибут - defaults применится
+
+**Примеры:**
+```yaml
+defaults:
+  node: node2
+  wait: 2s
+
+test:
+  # node применится к ЛЮБОМУ шагу с атрибутом 'node'
+  - cli: "version"        # ✅ node=node2
+  - python: "print('x')"  # ✅ node=node2
+  - bash: "ls"            # ✅ node=node2
+  - wait: 1s              # ❌ нет атрибута node
+  
+  # wait применится к ЛЮБОМУ шагу с атрибутом 'wait'
+  - cli: "stats"          # ✅ wait=2s (если не указан)
+  - wait: ~               # ✅ wait=2s (если не указан)
+```
 
 ---
 
