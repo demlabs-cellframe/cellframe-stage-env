@@ -347,10 +347,19 @@ url = https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-m
 #   2. YAML scenarios - for specific test requirements
 #
 # Use cases:
-#   - VPN testing: enable TUN/TAP driver, add NET_ADMIN capability
+#   - VPN testing: enable TUN/TAP driver (NET_ADMIN capability)
 #   - Network simulation: custom volumes for tc/netem configs
-#   - Hardware access: mount specific devices (GPU, USB, etc)
+#   - Hardware access: mount specific devices (GPU, USB, serial ports)
 #   - Advanced networking: custom network modes, sysctls
+#
+# IMPORTANT: Device mappings vs Capabilities
+# -------------------------------------------
+# - /dev/net/tun: Usually NOT needed! Present by default in most images.
+#                 Only NET_ADMIN capability required for VPN/tunnels.
+#                 Add device mapping only if missing in your base image.
+#
+# - Hardware devices: Need explicit mapping (GPU, USB, serial, etc)
+#   Example: /dev/nvidia0, /dev/ttyUSB0, /dev/video0
 #
 # ============================================================================
 
@@ -380,11 +389,9 @@ url = https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-m
 # 
 # volumes = /tmp/node1-data:/opt/test-data:rw
 # capabilities = NET_ADMIN,NET_RAW
-# devices = /dev/net/tun
 # 
-# # Example: Enable TUN/TAP for VPN testing
-# # extra_config = {"devices": ["/dev/net/tun:/dev/net/tun"],
-# #                 "sysctls": {"net.ipv4.ip_forward": "1"}}
+# # Example: Enable IP forwarding for VPN/routing tests
+# # extra_config = {"sysctls": {"net.ipv4.ip_forward": "1"}}
 
 # ============================================================================
 # Configuration Priority for Docker Customizations
@@ -413,9 +420,9 @@ url = https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-m
 # Use Case 1: VPN/TUN Testing (OpenVPN, WireGuard inside container)
 # -------------------------------------------------------------------
 # [role_docker_full]
-# # Enable TUN/TAP driver inside container + network capabilities
+# # Enable TUN/TAP driver inside container (usually already present)
+# # Only NET_ADMIN capability needed, /dev/net/tun typically exists by default
 # capabilities = NET_ADMIN,NET_RAW
-# devices = /dev/net/tun
 # extra_config = {"sysctls": {"net.ipv4.ip_forward": "1",
 #                             "net.ipv6.conf.all.disable_ipv6": "0"}}
 
