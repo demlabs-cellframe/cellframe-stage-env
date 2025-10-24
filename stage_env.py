@@ -408,30 +408,20 @@ def run_tests(
     for test_dir in test_dirs:
         print_info(f"  • {test_dir}")
     
-    # Determine test type from test_dirs for artifact organization
-    # Test type = last directory name in path 
-    test_type = None
-    if test_dirs:
-        first_dir = Path(test_dirs[0])
-        # Get the last meaningful directory name
-        for part in reversed(first_dir.parts):
-            test_type = part
-            break
-    
-    # Create run directory for this test session
+    # Create run directory for this test session (without test_type subdirs yet)
     config_loader = ConfigLoader(BASE_PATH, CONFIG_PATH)
     artifacts_config = config_loader.get_artifacts_config()
     artifacts_manager = ArtifactsManager(BASE_PATH, artifacts_config)
     
-    # Create run ID and directory with test type
+    # Create run ID - one timestamp for entire test session
     timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
     run_id = timestamp_str
-    run_dir = artifacts_manager.create_run_directory(run_id, test_type=test_type)
     
-    if test_type:
-        print_info(f"📁 Created run directory: run_{run_id}/{test_type}/")
-    else:
-        print_info(f"📁 Created run directory: {run_dir.name}")
+    # Create base run directory (without test_type - will create subdirs as needed)
+    run_dir_base = artifacts_manager.artifacts_root / f"run_{run_id}"
+    run_dir_base.mkdir(parents=True, exist_ok=True)
+    
+    print_info(f"📁 Created run directory: run_{run_id}/")
     
     # Start network if requested
     network_mgr = None
@@ -464,6 +454,34 @@ def run_tests(
             if not test_path.exists():
                 print_warning(f"Directory not found: {test_path}")
                 continue
+            
+            # Determine test type from this specific test_dir
+            test_type = None
+            for part in reversed(test_path.parts):
+                test_type = part
+                break
+            
+            # Create test_type subdirectory in run_dir if not exists
+            if test_type:
+                run_dir = run_dir_base / test_type
+                run_dir.mkdir(exist_ok=True)
+                
+                # Create artifact subdirectories for this test type
+                subdirs = [
+                    "stage-env-logs",
+                    "node-logs",
+                    "core-dumps",
+                    "stack-traces",
+                    "health-logs",
+                    "reports",
+                    "scenario-logs",
+                ]
+                for subdir in subdirs:
+                    (run_dir / subdir).mkdir(exist_ok=True)
+                
+                print_info(f"\n📂 Using artifacts directory: run_{run_id}/{test_type}/")
+            else:
+                run_dir = run_dir_base
             
             # Find all YAML scenario files
             yml_files = list(test_path.glob("**/*.yml")) + list(test_path.glob("**/*.yaml"))
@@ -602,19 +620,24 @@ def run_tests(
         print_info("\n📦 Collecting test artifacts...")
         
         try:
-            # Collect stage-env log
+            # Collect stage-env log to base run directory
             logging_config = config_loader.get_logging_config()
             log_dir_relative = logging_config.get('log_dir', 'logs')
             log_dir = (BASE_PATH / log_dir_relative).resolve()
+            
+            # Create stage-env-logs in base directory
+            stage_env_logs_dir = run_dir_base / "stage-env-logs"
+            stage_env_logs_dir.mkdir(exist_ok=True)
+            
             if log_dir.exists():
                 log_files = sorted(log_dir.glob("stage-env_*.log"), 
                                   key=lambda p: p.stat().st_mtime, 
                                   reverse=True)
                 if log_files:
-                    artifacts_manager.collect_stage_env_log(run_dir, log_files[0])
+                    artifacts_manager.collect_stage_env_log(run_dir_base, log_files[0])
                     print_success(f"Collected stage-env log")
             
-            # Collect node logs from Docker containers if network was started
+            # Collect node logs from Docker containers if network was started (once, in base dir)
             if network_mgr:
                 import docker
                 try:
@@ -626,7 +649,8 @@ def run_tests(
                         filters={"label": f"com.docker.compose.project={project_name}"}
                     )
                     
-                    node_logs_dir = run_dir / "node-logs"
+                    node_logs_dir = run_dir_base / "node-logs"
+                    node_logs_dir.mkdir(exist_ok=True)
                     collected_logs = 0
                     
                     for container in containers:
@@ -649,18 +673,18 @@ def run_tests(
                     if collected_logs > 0:
                         print_success(f"Collected {collected_logs} node logs")
                     
-                    # Collect health logs
+                    # Collect health logs (once, in base dir)
                     print_info("Collecting health check logs...")
-                    artifacts_manager.collect_health_logs(run_dir)
+                    artifacts_manager.collect_health_logs(run_dir_base)
                     print_success("Health logs collected")
                     
                 except Exception as e:
                     print_warning(f"Failed to collect Docker artifacts: {e}")
             
-            # Create run summary with detailed test information
+            # Generate summary and reports for the ENTIRE run
             summary_data = {
                 'run_id': run_id,
-                'test_type': test_type or 'mixed',
+                'test_type': 'mixed' if len(test_dirs) > 1 else (test_type or 'unknown'),
                 'topology': 'default',
                 'network': 'stagenet',
                 'total_nodes': 7,
@@ -676,12 +700,14 @@ def run_tests(
                 'tests_failed': failed_scenarios,
                 'tests_skipped': 0,
             }
-            artifacts_manager.create_run_summary(run_dir, summary_data)
             
-            # Generate reports
+            # Save summary to base directory
+            artifacts_manager.create_run_summary(run_dir_base, summary_data)
+            
+            # Generate reports in base directory
             print_info("Generating test reports...")
             from src.utils.report_generator import ReportGenerator
-            report_gen = ReportGenerator(run_dir)
+            report_gen = ReportGenerator(run_dir_base)
             try:
                 reports = report_gen.generate_full_report(summary_data)
                 for report_type, report_path in reports.items():
@@ -689,7 +715,7 @@ def run_tests(
             except Exception as e:
                 print_warning(f"Failed to generate some reports: {e}")
             
-            print_success(f"✅ Artifacts saved to: run_{run_id}/{test_type or ''}")
+            print_success(f"✅ Artifacts saved to: run_{run_id}/")
             
         except Exception as e:
             print_warning(f"Failed to collect some artifacts: {e}")
