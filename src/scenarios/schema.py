@@ -296,6 +296,24 @@ class ScenarioMetadata(BaseModel):
     version: str = Field("1.0", description="Scenario version")
 
 
+class SuiteDescriptor(BaseModel):
+    """Test suite descriptor (metadata only, no executable steps)."""
+    
+    # Metadata
+    name: str = Field(..., description="Suite name")
+    description: str = Field(..., description="Suite description")
+    author: Optional[str] = Field(None, description="Author name")
+    tags: List[str] = Field(default_factory=list, description="Tags")
+    version: str = Field("1.0", description="Version")
+    
+    # Suite-specific metadata
+    suite: bool = Field(True, description="Marker that this is a suite descriptor")
+    scenarios: List[str] = Field(default_factory=list, description="List of scenario files in this suite")
+    
+    # Optional network configuration for suite-level defaults
+    network: Optional[NetworkConfig] = Field(None, description="Default network topology for suite")
+
+
 class TestScenario(BaseModel):
     """Complete test scenario definition."""
     

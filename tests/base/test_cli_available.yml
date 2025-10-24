@@ -9,28 +9,29 @@ version: "1.0"
 network:
   topology: default
 
+# Global defaults
+defaults:
+  wait: 1s
+
 setup:
   # Wait for nodes to be fully ready
   - wait: 5s
 
 test:
-  # Test CLI on node1 (validator)
-  - cli: version
-    node: node1
-    expect: success
-    description: "Check CLI works on validator node1"
-  
-  # Test CLI on node4 (regular node)
-  - cli: version
-    node: node4
-    expect: success
-    description: "Check CLI works on regular node4"
-  
-  # Test help command
-  - cli: help
-    node: node1
-    expect: success
-    description: "Check help command works"
+  # Test CLI on multiple nodes using group
+  - name: "CLI availability on key nodes"
+    steps:
+      - cli: version
+        node: node1
+        description: "Check CLI works on validator node1"
+      
+      - cli: version
+        node: node4
+        description: "Check CLI works on regular node4"
+      
+      - cli: help
+        node: node1
+        description: "Check help command works"
 
 check:
   # Verify version output contains expected info

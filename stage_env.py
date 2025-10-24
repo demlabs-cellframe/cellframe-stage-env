@@ -659,8 +659,15 @@ def run_tests(
                 try:
                     suite_desc_rel = suite_descriptor.relative_to(suite_descriptor.parent)
                     suite_spec = parser.load_scenario(str(suite_desc_rel))
-                    suite_name = suite_spec.name
-                    suite_description = suite_spec.description
+                    # Check if it's a SuiteDescriptor
+                    from src.scenarios.schema import SuiteDescriptor
+                    if isinstance(suite_spec, SuiteDescriptor):
+                        suite_name = suite_spec.name
+                        suite_description = suite_spec.description
+                    else:
+                        # It's a regular TestScenario, extract metadata
+                        suite_name = suite_spec.name
+                        suite_description = getattr(suite_spec, 'description', None)
                 except Exception as e:
                     suite_name = suite_path.name
                     suite_description = None
@@ -725,10 +732,16 @@ def run_tests(
                         # Convert absolute path to relative path from scenarios_root
                         relative_path = scenario_file.relative_to(suite_path)
                         scenario = parser.load_scenario(str(relative_path))
+                        
+                        # Skip if it's a SuiteDescriptor (metadata only)
+                        from src.scenarios.schema import SuiteDescriptor
+                        if isinstance(scenario, SuiteDescriptor):
+                            continue
+                        
                         print_info(f"  📋 Name: {scenario.name}")
-                        if scenario.description:
+                        if hasattr(scenario, 'description') and scenario.description:
                             print_info(f"  📝 Description: {scenario.description}")
-                        if scenario.tags:
+                        if hasattr(scenario, 'tags') and scenario.tags:
                             print_info(f"  🏷️  Tags: {', '.join(scenario.tags)}")
                         
                         # Get step counts (handle both list and SectionConfig)
