@@ -299,19 +299,25 @@ class ScenarioMetadata(BaseModel):
 class SuiteDescriptor(BaseModel):
     """Test suite descriptor (metadata only, no executable steps)."""
     
+    # Suite marker with name (elegant single field)
+    suite: str = Field(..., description="Suite name (presence of this field marks it as suite descriptor)")
+    
     # Metadata
-    name: str = Field(..., description="Suite name")
-    description: str = Field(..., description="Suite description")
+    description: Optional[str] = Field(None, description="Suite description")
     author: Optional[str] = Field(None, description="Author name")
     tags: List[str] = Field(default_factory=list, description="Tags")
     version: str = Field("1.0", description="Version")
     
     # Suite-specific metadata
-    suite: bool = Field(True, description="Marker that this is a suite descriptor")
     scenarios: List[str] = Field(default_factory=list, description="List of scenario files in this suite")
     
     # Optional network configuration for suite-level defaults
     network: Optional[NetworkConfig] = Field(None, description="Default network topology for suite")
+    
+    @property
+    def name(self) -> str:
+        """Alias for suite name (for compatibility)."""
+        return self.suite
 
 
 class TestScenario(BaseModel):

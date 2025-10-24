@@ -78,8 +78,8 @@ class ScenarioParser:
             # Load main scenario file
             raw_data = self._load_yaml_file(full_path)
             
-            # Check if this is a suite descriptor (has 'suite: true' marker)
-            if raw_data.get('suite', False):
+            # Check if this is a suite descriptor (has 'suite: "Name"' field)
+            if 'suite' in raw_data and isinstance(raw_data['suite'], str):
                 from .schema import SuiteDescriptor
                 suite = SuiteDescriptor(**raw_data)
                 logger.info(f"Loaded suite descriptor: {suite.name} from {scenario_path}")
