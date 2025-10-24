@@ -679,13 +679,11 @@ def run_tests(
                 # Create suite-specific directory: run_<timestamp>/<test_type>/<suite_name>/
                 # Example: tests/e2e/wallet/ -> run_XXX/e2e/wallet/
                 # Determine test_type from current test_path
-                try:
-                    # Get the relative path from tests/ to current test_path
-                    test_relative = test_path.relative_to(test_path.parent.parent / "tests")
-                    test_type = test_relative.parts[0]  # e.g., 'e2e', 'functional', 'base'
-                except:
-                    # Fallback: use test_path name as test_type
-                    test_type = test_path.name
+                # test_path examples:
+                #   /path/to/tests/e2e -> test_type='e2e'
+                #   /path/to/tests/functional -> test_type='functional'
+                #   /path/to/tests/stage-env/tests/base -> test_type='base'
+                test_type = test_path.name  # Simply use the last directory name
                 
                 # Suite relative path is: test_type/suite_name
                 suite_relative_path = Path(test_type) / suite_path.name
