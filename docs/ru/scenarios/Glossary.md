@@ -21,6 +21,8 @@
 13. [Выполнение на нодах](#выполнение-на-нодах)
 14. [Таймауты](#таймауты)
 15. [Специальные возможности](#специальные-возможности)
+16. [🆕 Defaults и группировка шагов](#defaults-и-группировка-шагов)
+17. [Best Practices](#best-practices)
 
 ---
 
@@ -2155,6 +2157,338 @@ files:
     content: "wallet={{wallet_addr}}"
     dst: /tmp/wallet.conf
 ```
+
+---
+
+## Defaults и группировка шагов
+
+### 🆕 Hierarchical Defaults (v2.0+)
+
+**Описание:** Система иерархических параметров по умолчанию, позволяющая избежать повторений в сценариях.
+
+**Уровни наследования (по приоритету):**
+```
+Step > Group > Section > Global > Hardcoded Default
+```
+
+---
+
+### Global Defaults
+
+**Тип:** `object` (опционально)
+
+**Описание:** Параметры по умолчанию для ВСЕХ секций сценария (setup, test, check).
+
+**Структура:**
+```yaml
+defaults:
+  node: string              # Нода по умолчанию
+  wait: string              # Задержка после каждого шага
+  expect: string            # Ожидаемый результат (success/error)
+  timeout: integer          # Таймаут в секундах
+```
+
+**Пример:**
+```yaml
+name: My Scenario
+
+defaults:
+  node: node1      # Все команды выполняются на node1
+  wait: 3s         # После каждого шага ждём 3 секунды
+  timeout: 60      # Таймаут 60 секунд для всех команд
+
+setup:
+  - cli: wallet new -w test    # node=node1, wait=3s, timeout=60
+
+test:
+  - cli: token_decl ...        # Тоже наследует все defaults
+
+check:
+  - cli: wallet list           # И здесь тоже
+```
+
+---
+
+### Section Defaults
+
+**Тип:** `object` (опционально)
+
+**Описание:** Параметры по умолчанию для конкретной секции (setup/test/check). Переопределяют Global defaults.
+
+**Старый формат (список шагов):**
+```yaml
+setup:
+  - cli: command1
+  - cli: command2
+```
+
+**Новый формат (с defaults):**
+```yaml
+setup:
+  defaults:
+    node: node1
+    wait: 5s
+  steps:
+    - cli: command1
+    - cli: command2
+```
+
+**Пример:**
+```yaml
+defaults:
+  node: node1       # Global
+  wait: 2s          # Global
+
+setup:
+  defaults:
+    wait: 5s        # Override для setup (дольше подготовка)
+  steps:
+    - cli: wallet new -w test    # node=node1 (Global), wait=5s (Section)
+
+test:
+  defaults:
+    node: node2     # Override для test (другая нода)
+  steps:
+    - cli: wallet list           # node=node2 (Section), wait=2s (Global)
+```
+
+**Backward compatibility:** Старый формат (список) работает как раньше.
+
+---
+
+### Group Defaults
+
+**Тип:** `StepGroup` (опционально)
+
+**Описание:** Группировка шагов с локальными defaults. Переопределяют Section defaults.
+
+**Структура:**
+```yaml
+- group:
+    name: string                  # Имя группы (опционально)
+    description: string           # Описание (опционально)
+    defaults:
+      node: string
+      wait: string
+      expect: string
+      timeout: integer
+    steps:
+      - [test_step]
+      - [test_step]
+      - group: ...                # Вложенные группы поддерживаются!
+```
+
+**Пример:**
+```yaml
+defaults:
+  wait: 2s
+
+test:
+  # Группа 1: Операции на node1
+  - group:
+      name: "Node1 Operations"
+      description: "Prepare wallets and tokens on node1"
+      defaults:
+        node: node1
+        wait: 4s
+      steps:
+        - cli: wallet new -w node1_wallet
+        - cli: token_decl -net stagenet -token TOKEN1
+        - cli: token_emit -net stagenet -token TOKEN1 -value 1000
+  
+  # Группа 2: Операции на node2
+  - group:
+      name: "Node2 Operations"
+      defaults:
+        node: node2
+        wait: 3s
+      steps:
+        - cli: wallet new -w node2_wallet
+        - cli: wallet list
+  
+  # Шаг вне групп (использует global defaults)
+  - cli: net -net stagenet link list
+    node: node1
+```
+
+**Преимущества:**
+- ✅ Логическая группировка операций
+- ✅ Видно в логах: "Entering group: Node1 Operations"
+- ✅ Легко читать и поддерживать
+- ✅ Локальные defaults для каждой группы
+
+---
+
+### Вложенные группы
+
+**Описание:** Группы могут быть вложены без ограничения глубины.
+
+**Пример:**
+```yaml
+test:
+  - group:
+      name: "Multi-Node Setup"
+      defaults:
+        wait: 3s
+      steps:
+        # Вложенная группа 1
+        - group:
+            name: "Validators Setup"
+            defaults:
+              wait: 5s    # Переопределяет родительскую группу
+            steps:
+              - cli: wallet new -w validator1
+                node: node1
+              - cli: wallet new -w validator2
+                node: node2
+        
+        # Вложенная группа 2
+        - group:
+            name: "Full Nodes Setup"
+            defaults:
+              wait: 2s
+            steps:
+              - cli: wallet new -w full1
+                node: node3
+              - cli: wallet new -w full2
+                node: node4
+```
+
+---
+
+### Применяемые параметры
+
+**Defaults применяются к:**
+
+**Steps:**
+- ✅ `CLIStep` - все параметры (node, wait, expect, timeout)
+- ✅ `RPCStep` - все параметры
+- ✅ `BashStep` - все параметры
+- ❌ `WaitStep` - не применяются
+- ❌ `PythonStep` - не применяются
+- ❌ `LoopStep` - не применяются (но defaults передаются внутрь цикла)
+
+**Checks:**
+- ✅ `CLICheck` - node, timeout
+- ✅ `RPCCheck` - node, timeout
+- ✅ `BashCheck` - node, timeout
+- ❌ `PythonCheck` - не применяются
+
+---
+
+### Переопределение параметров
+
+**Правило:** Параметр на более конкретном уровне всегда переопределяет более общий.
+
+**Пример:**
+```yaml
+defaults:
+  node: node1   # 1. Global
+  wait: 2s
+
+test:
+  defaults:
+    wait: 3s    # 2. Section (переопределяет Global wait)
+  
+  steps:
+    - group:
+        defaults:
+          node: node2   # 3. Group (переопределяет Global node)
+          wait: 4s      # 3. Group (переопределяет Section wait)
+        steps:
+          - cli: wallet list
+            # Результат: node=node2 (Group), wait=4s (Group)
+          
+          - cli: token info
+            wait: 1s    # 4. Step (переопределяет Group wait)
+            # Результат: node=node2 (Group), wait=1s (Step)
+```
+
+---
+
+### Примеры использования Defaults
+
+**До (без defaults - много повторений):**
+```yaml
+test:
+  - cli: wallet new -w w1
+    node: node1
+    wait: 3s
+  - cli: wallet new -w w2
+    node: node1
+    wait: 3s
+  - cli: wallet list
+    node: node1
+    wait: 3s
+```
+
+**После (с defaults - чисто и компактно):**
+```yaml
+defaults:
+  node: node1
+  wait: 3s
+
+test:
+  - cli: wallet new -w w1
+  - cli: wallet new -w w2
+  - cli: wallet list
+```
+
+**Экономия:** 55% меньше кода!
+
+---
+
+### Группировка для читаемости
+
+**До (без групп - плоский список):**
+```yaml
+test:
+  - cli: wallet new -w node1_wallet
+    node: node1
+  - cli: token_decl -token T1
+    node: node1
+  - cli: wallet new -w node2_wallet
+    node: node2
+  - cli: token_decl -token T2
+    node: node2
+```
+
+**После (с группами - структура ясна):**
+```yaml
+test:
+  - group:
+      name: "Setup Node1"
+      defaults:
+        node: node1
+      steps:
+        - cli: wallet new -w node1_wallet
+        - cli: token_decl -token T1
+  
+  - group:
+      name: "Setup Node2"
+      defaults:
+        node: node2
+      steps:
+        - cli: wallet new -w node2_wallet
+        - cli: token_decl -token T2
+```
+
+---
+
+### Логи групп
+
+При выполнении группы в логах видно вход/выход:
+
+```
+[info] Step 1/5: StepGroup
+[info] Entering group: Node1 Operations
+[info] Step 1/3: CLIStep
+[debug] Executing CLI: wallet new -w test on node1
+...
+[info] Exited group: Node1 Operations
+```
+
+Это помогает при отладке понять где именно произошла ошибка.
 
 ---
 
