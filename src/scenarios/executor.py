@@ -13,11 +13,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..utils.logger import get_logger
+from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
-    CLIStep, RPCStep, WaitStep, PythonStep, BashStep, LoopStep, StepGroup,
+    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, LoopStep, StepGroup,
     CLICheck, RPCCheck, PythonCheck, BashCheck,
-    TestScenario, TestStep, CheckSpec, StepDefaults, SectionConfig
+    TestScenario, TestStep, CheckSpec, StepDefaults, SectionConfig, DatumStatus
 )
 
 logger = get_logger(__name__)
@@ -48,6 +49,17 @@ class RuntimeContext:
         """Initialize runtime context."""
         self.scenario = scenario
         self.variables: Dict[str, Any] = scenario.variables.copy()
+        
+        # Add network_name from network configuration
+        if hasattr(scenario, 'network') and scenario.network:
+            if hasattr(scenario.network, 'name') and scenario.network.name:
+                self.variables['network_name'] = scenario.network.name
+                logger.debug(f"Set network_name from scenario.network.name: {scenario.network.name}")
+            else:
+                logger.warning(f"scenario.network exists but has no 'name' attribute or it's None")
+        else:
+            logger.warning(f"scenario has no 'network' attribute or it's None")
+        
         self.step_results: List[Dict[str, Any]] = []
         self.start_time = time.time()
         self.parser = ScenarioParser(Path.cwd())
@@ -97,17 +109,20 @@ class RuntimeContext:
 class ScenarioExecutor:
     """Execute test scenarios with full lifecycle management."""
     
-    def __init__(self, node_cli_path: str = "cellframe-node-cli", log_file: Optional[Path] = None):
+    def __init__(self, node_cli_path: str = "cellframe-node-cli", log_file: Optional[Path] = None, debug: bool = False):
         """
         Initialize executor.
         
         Args:
             node_cli_path: Path to cellframe-node-cli binary
             log_file: Optional path to detailed log file
+            debug: Enable debug logging
         """
         self.node_cli_path = node_cli_path
         self.log_file = log_file
+        self.debug = debug
         self._running = False
+        # Monitoring manager будет получен через синглтон при старте сценария
     
     def _log_to_file(self, message: str):
         """Write message to log file if enabled."""
@@ -129,6 +144,7 @@ class ScenarioExecutor:
             Merged StepDefaults or None
         """
         merged = {}
+        merged_cli = {}
         
         for defaults in defaults_list:
             if defaults:
@@ -140,6 +156,12 @@ class ScenarioExecutor:
                     merged['expect'] = defaults.expect
                 if defaults.timeout is not None:
                     merged['timeout'] = defaults.timeout
+                if defaults.cli is not None:
+                    # Merge CLI defaults (later overrides earlier)
+                    merged_cli.update(defaults.cli)
+        
+        if merged_cli:
+            merged['cli'] = merged_cli
         
         return StepDefaults(**merged) if merged else None
     
@@ -180,6 +202,18 @@ class ScenarioExecutor:
             if step.timeout == 30:  # Default value
                 step.timeout = defaults.timeout
         
+        # Special handling for WaitForDatumStep timeouts
+        if isinstance(step, WaitForDatumStep) and defaults.timeout:
+            # Apply timeout to all WaitForDatumStep timeout fields if they have default values
+            if step.timeout_total == 300:
+                step.timeout_total = defaults.timeout
+            if step.timeout_mempool == 60:
+                step.timeout_mempool = defaults.timeout
+            if step.timeout_verification == 120:
+                step.timeout_verification = defaults.timeout
+            if step.timeout_in_blocks == 180:
+                step.timeout_in_blocks = defaults.timeout
+        
         return step
     
     async def execute_scenario(self, scenario: TestScenario) -> RuntimeContext:
@@ -205,6 +239,12 @@ class ScenarioExecutor:
         try:
             # Global defaults (applied to all phases)
             global_defaults = scenario.defaults
+            
+            # Debug: log defaults
+            if self.debug and global_defaults:
+                self._log_to_file(f"\n[DEBUG] Global defaults: {global_defaults}")
+                if global_defaults.cli:
+                    self._log_to_file(f"[DEBUG] CLI defaults: {global_defaults.cli}")
             
             # Setup phase
             if scenario.setup:
@@ -262,13 +302,21 @@ class ScenarioExecutor:
             defaults: Default parameters to apply
         """
         for i, step in enumerate(steps, 1):
-            logger.info(f"Step {i}/{len(steps)}: {type(step).__name__}")
+            # Generate step description for logging
+            step_type = type(step).__name__
+            step_desc = step_type
+            
+            # Add details for specific step types
+            if isinstance(step, WaitForDatumStep):
+                datum_count = len(step.wait_for_datum) if isinstance(step.wait_for_datum, list) else 1
+                step_desc = f"WaitForDatumStep ({datum_count} datum{'s' if datum_count > 1 else ''})"
+            elif isinstance(step, StepGroup) and step.name:
+                step_desc = f"StepGroup: {step.name}"
+            
+            logger.info(f"Step {i}/{len(steps)}: {step_desc}")
             
             # Handle StepGroup
             if isinstance(step, StepGroup):
-                if step.name:
-                    logger.info(f"Entering group: {step.name}")
-                
                 # Merge group defaults with section defaults
                 group_defaults = self._merge_defaults(defaults, step.defaults)
                 
@@ -283,11 +331,13 @@ class ScenarioExecutor:
             step = self._apply_defaults(step, defaults)
             
             if isinstance(step, CLIStep):
-                await self._execute_cli_step(step, ctx)
+                await self._execute_cli_step(step, ctx, defaults)
             elif isinstance(step, RPCStep):
                 await self._execute_rpc_step(step, ctx)
             elif isinstance(step, WaitStep):
                 await self._execute_wait_step(step, ctx)
+            elif isinstance(step, WaitForDatumStep):
+                await self._execute_wait_for_datum_step(step, ctx)
             elif isinstance(step, PythonStep):
                 await self._execute_python_step(step, ctx)
             elif isinstance(step, BashStep):
@@ -297,10 +347,51 @@ class ScenarioExecutor:
             else:
                 raise ScenarioExecutionError(f"Unknown step type: {type(step)}")
     
-    async def _execute_cli_step(self, step: CLIStep, ctx: RuntimeContext):
+    async def _execute_cli_step(self, step: CLIStep, ctx: RuntimeContext, defaults: Optional[StepDefaults] = None):
         """Execute CLI command step."""
         # Substitute variables in command
         cmd = ctx.substitute(step.cli)
+        
+        # Apply CLI defaults if present
+        if defaults and defaults.cli:
+            from ..utils.cli_parser import get_cli_parser
+            cli_parser = get_cli_parser()
+            
+            if self.debug:
+                self._log_to_file(f"[DEBUG] Applying CLI defaults: {defaults.cli}")
+                self._log_to_file(f"[DEBUG] Original command: {cmd}")
+                self._log_to_file(f"[DEBUG] Parser state: parsed={cli_parser._parsed}, commands_count={len(cli_parser.commands)}")
+            
+            # Substitute variables in CLI defaults
+            cli_defaults = {
+                key: ctx.substitute(value) 
+                for key, value in defaults.cli.items()
+            }
+            
+            if self.debug:
+                self._log_to_file(f"[DEBUG] CLI defaults after substitution: {cli_defaults}")
+            
+            # Apply defaults to command
+            cmd_with_defaults = cli_parser.apply_cli_defaults(cmd, cli_defaults)
+            
+            if self.debug:
+                self._log_to_file(f"[DEBUG] Command after defaults: {cmd_with_defaults}")
+                # Extract command name to check available options
+                cmd_parts = cmd.split()
+                if cmd_parts:
+                    cmd_name = cmd_parts[0]
+                    available_opts = cli_parser.get_command_options(cmd_name)
+                    self._log_to_file(f"[DEBUG] Command '{cmd_name}' available options: {available_opts}")
+            
+            # Ensure result is a string
+            if cmd_with_defaults and isinstance(cmd_with_defaults, str):
+                cmd = cmd_with_defaults
+            else:
+                if self.debug:
+                    self._log_to_file(f"[DEBUG] apply_cli_defaults returned invalid result: {type(cmd_with_defaults)}")
+        else:
+            if self.debug:
+                self._log_to_file(f"[DEBUG] No CLI defaults to apply (defaults={defaults}, cli={defaults.cli if defaults else 'N/A'})")
         
         logger.debug(f"Executing CLI: {cmd} on {step.node}")
         
@@ -348,8 +439,85 @@ class ScenarioExecutor:
             
             # Save result to variable if requested
             if step.save:
-                ctx.set_variable(step.save, result["stdout"].strip())
+                output = result["stdout"].strip()
+                
+                # Try to extract hash from output for common commands
+                # token_decl, token_emit, tx_create, etc. return hash
+                saved_value = output
+                
+                # Check if this looks like a command that returns a hash
+                hash_commands = ['token_decl', 'token_emit', 'token_update', 'tx_create', 
+                                'tx_send', 'wallet_new', 'cert_create']
+                cmd_lower = step.cli.lower()
+                
+                if any(cmd in cmd_lower for cmd in hash_commands):
+                    # Try to parse output and extract hash
+                    try:
+                        import yaml
+                        parsed = yaml.safe_load(output)
+                        
+                        # Look for common hash field names
+                        if isinstance(parsed, dict):
+                            for key in ['hash', 'tx_hash', 'datum_hash', 'token_hash', 
+                                       'emission_hash', 'cert_hash', 'wallet_addr']:
+                                if key in parsed and parsed[key]:
+                                    saved_value = parsed[key]
+                                    self._log_to_file(f"✓ Extracted {key}: {saved_value}")
+                                    break
+                    except:
+                        # Fallback: look for hash pattern in output (0x[hex])
+                        import re
+                        hash_pattern = r'0x[0-9a-fA-F]{64,}'
+                        
+                        # Ensure output is a string
+                        if isinstance(output, str):
+                            match = re.search(hash_pattern, output)
+                            if match:
+                                saved_value = match.group(0)
+                                self._log_to_file(f"✓ Extracted hash from output: {saved_value}")
+                
+                ctx.set_variable(step.save, saved_value)
                 self._log_to_file(f"✓ Saved to variable: {step.save}")
+            
+            # Extract and validate specific values if requested
+            if step.extract_to:
+                from .extractors import DataExtractor, ExtractionError
+                
+                self._log_to_file(f"\n--- Extracting Values ---")
+                for var_name, extract_spec in step.extract_to.items():
+                    try:
+                        # Use default pattern for type if not specified
+                        pattern = extract_spec.pattern
+                        if not pattern:
+                            pattern = DataExtractor.get_default_pattern(extract_spec.type)
+                            self._log_to_file(f"Using default pattern for {extract_spec.type}: {pattern}")
+                        
+                        extracted_value, error = DataExtractor.extract_and_validate(
+                            output=result["stdout"],
+                            pattern=pattern,
+                            extract_type=extract_spec.type,
+                            group=extract_spec.group,
+                            required=extract_spec.required,
+                            default=extract_spec.default
+                        )
+                        
+                        if extracted_value is not None:
+                            ctx.set_variable(var_name, extracted_value)
+                            self._log_to_file(f"✓ Extracted '{var_name}': {extracted_value[:50]}{'...' if len(extracted_value) > 50 else ''}")
+                            self._log_to_file(f"  Type: {extract_spec.type}")
+                        elif error:
+                            self._log_to_file(f"✗ Extraction warning for '{var_name}': {error}")
+                            if extract_spec.required:
+                                raise ExtractionError(error)
+                    
+                    except ExtractionError as e:
+                        self._log_to_file(f"✗ Extraction failed for '{var_name}': {e}")
+                        ctx.add_result("extraction", False, {
+                            "variable": var_name,
+                            "error": str(e),
+                            "output": result["stdout"][:200]
+                        })
+                        raise ScenarioExecutionError(f"Failed to extract '{var_name}': {e}")
             
             ctx.add_result("cli", True, {
                 "command": cmd,
@@ -435,6 +603,95 @@ class ScenarioExecutor:
         logger.debug(f"Waiting: {step.wait}")
         await self._wait_duration(step.wait)
         ctx.add_result("wait", True, {"duration": step.wait})
+    
+    async def _execute_wait_for_datum_step(self, step: WaitForDatumStep, ctx: RuntimeContext):
+        """Execute wait-for-datum step - register datum with background monitor."""
+        # Support both single hash and list of hashes
+        datum_hashes = step.wait_for_datum if isinstance(step.wait_for_datum, list) else [step.wait_for_datum]
+        
+        # Substitute variables in hashes
+        datum_hashes = [ctx.substitute(h) for h in datum_hashes]
+        
+        logger.info(f"Registering {len(datum_hashes)} datum(s) for monitoring")
+        
+        # Get monitoring manager singleton
+        monitoring = await MonitoringManager.get_instance()
+        
+        # Register and wait for each datum
+        results = []
+        for datum_hash in datum_hashes:
+            logger.debug(f"Monitoring datum: {datum_hash[:16]}...")
+            
+            # Register datum for tracking (returns Future)
+            result_future = monitoring.datum.track_datum(
+                datum_hash=datum_hash,
+                node=step.node,
+                network=step.network,
+                chain=step.chain,
+                check_master_nodes=step.check_master_nodes,
+                timeout_total=step.timeout_total,
+                timeout_mempool=step.timeout_mempool,
+                timeout_verification=step.timeout_verification,
+                timeout_in_blocks=step.timeout_in_blocks
+            )
+            
+            # Wait for result
+            result = await result_future
+            results.append(result)
+            
+            # Check if monitoring failed
+            if result.status not in [DatumStatus.PROPAGATED, DatumStatus.IN_BLOCKS]:
+                error_msg = f"Datum monitoring failed: {result.error_message}"
+                logger.error(error_msg)
+                
+                # Log to scenario file
+                if self.log_file:
+                    self._log_to_file(f"\n{'=' * 80}\n")
+                    self._log_to_file(f"❌ WAIT_FOR_DATUM FAILED\n")
+                    self._log_to_file(f"Datum: {datum_hash}\n")
+                    self._log_to_file(f"Status: {result.status.value}\n")
+                    self._log_to_file(f"Error: {result.error_message}\n")
+                    self._log_to_file(f"Elapsed: {result.elapsed_time:.1f}s\n")
+                    self._log_to_file(f"Details: {result.details}\n")
+                    self._log_to_file(f"{'=' * 80}\n\n")
+                
+                raise ScenarioExecutionError(
+                    error_msg,
+                    step=step,
+                    context={
+                        "datum_hash": datum_hash,
+                        "status": result.status.value,
+                        "elapsed_time": result.elapsed_time,
+                        "details": result.details
+                    }
+                )
+            
+            logger.info(f"✅ Datum {datum_hash[:16]}... monitored successfully: {result.status.value} in {result.elapsed_time:.1f}s")
+        
+        # Save status to variable if requested
+        if step.save_status:
+            if len(results) == 1:
+                ctx.set_variable(step.save_status, results[0].status.value)
+            else:
+                ctx.set_variable(step.save_status, [r.status.value for r in results])
+        
+        # Add to context results
+        ctx.add_result(
+            "wait_for_datum",
+            True,
+            {
+                "datum_count": len(datum_hashes),
+                "results": [
+                    {
+                        "hash": r.datum_hash,
+                        "status": r.status.value,
+                        "elapsed": r.elapsed_time,
+                        "details": r.details
+                    }
+                    for r in results
+                ]
+            }
+        )
     
     async def _execute_loop_step(
         self,
@@ -828,15 +1085,74 @@ class ScenarioExecutor:
         self, result: Dict[str, Any], expect: str, contains: Optional[str]
     ) -> bool:
         """Check if result matches expectation."""
+        import json
+        import yaml
+        
+        # Cellframe CLI always returns exit code 0, but puts errors in output
+        # Output can be JSON or YAML format
+        has_error = False
+        stdout = result["stdout"].strip()
+        
+        if stdout:
+            # Try to parse as YAML first (Cellframe CLI default format)
+            try:
+                yaml_response = yaml.safe_load(stdout)
+                
+                if self.debug:
+                    self._log_to_file(f"[DEBUG] YAML parsed: type={type(yaml_response)}, value={yaml_response}")
+                
+                if isinstance(yaml_response, dict):
+                    # Check for 'errors' key
+                    if "errors" in yaml_response:
+                        errors = yaml_response["errors"]
+                        if self.debug:
+                            self._log_to_file(f"[DEBUG] Found 'errors' in YAML: type={type(errors)}, value={errors}")
+                        # Consider it an error if errors field is not empty
+                        if errors:
+                            if isinstance(errors, dict) and errors:
+                                has_error = True
+                                if self.debug:
+                                    self._log_to_file("[DEBUG] Detected error: errors is non-empty dict")
+                            elif isinstance(errors, list) and len(errors) > 0:
+                                has_error = True
+                                if self.debug:
+                                    self._log_to_file("[DEBUG] Detected error: errors is non-empty list")
+            except (yaml.YAMLError, ValueError, AttributeError) as e:
+                # Try JSON format
+                try:
+                    json_response = json.loads(stdout)
+                    
+                    if isinstance(json_response, dict):
+                        # Check for 'errors' key (can be dict or list)
+                        if "errors" in json_response:
+                            errors = json_response["errors"]
+                            # Consider it an error if errors field is not empty
+                            if errors:
+                                if isinstance(errors, dict) and errors:
+                                    has_error = True
+                                elif isinstance(errors, list) and len(errors) > 0:
+                                    has_error = True
+                except (json.JSONDecodeError, ValueError):
+                    # Not JSON or YAML - check for text error patterns
+                    error_patterns = ["error:", "Error:", "ERROR:", "failed", "Failed"]
+                    if any(pattern in stdout for pattern in error_patterns):
+                        has_error = True
+        
+        # Check expectation
         if expect == "success":
+            # Success means: returncode 0 AND no errors
             if result["returncode"] != 0:
                 return False
+            if has_error:
+                return False
         elif expect == "error":
-            if result["returncode"] == 0:
+            # Error means: returncode != 0 OR has errors
+            if result["returncode"] == 0 and not has_error:
                 return False
         
+        # Check contains if specified
         if contains:
-            if contains not in result["stdout"]:
+            if contains not in stdout:
                 return False
         
         return True

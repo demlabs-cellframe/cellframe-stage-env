@@ -176,8 +176,15 @@ class NetworkManager:
             force=rebuild
         )
         
-        # Clean up stale Docker resources before starting
-        logger.info("cleaning_up_stale_resources")
+        # Stop previous environment (keep volumes - they contain certs!)
+        logger.info("stopping_previous_environment")
+        try:
+            self.compose.down(volumes=False, remove_images=False)
+            logger.info("previous_environment_stopped")
+        except Exception as e:
+            logger.debug("no_previous_environment", error=str(e))
+        
+        # Clean up any remaining stale resources
         self.compose.cleanup_stale_resources()
         
         # Generate dynamic docker-compose.yml for all nodes
@@ -211,6 +218,50 @@ class NetworkManager:
         logger.info("network_started",
                    nodes=len(self.nodes),
                    topology=self.topology.network.name)
+    
+    async def clean_test_data(self) -> None:
+        """
+        Clean user test data (wallets, chains, logs) while keeping system files.
+        
+        Safe to call on running network - cleans only user-created data.
+        """
+        logger.info("cleaning_test_data")
+        
+        try:
+            # Get running containers
+            running_containers = self.compose.client.containers.list(
+                filters={"label": f"com.docker.compose.project={self.compose.project_name}"}
+            )
+            
+            if not running_containers:
+                logger.warning("no_running_containers_to_clean")
+                return
+            
+            logger.info("cleaning_user_data_via_exec", count=len(running_containers))
+            for container in running_containers:
+                try:
+                    # Clean only user data, keep system files
+                    clean_script = """
+                    cd /opt/cellframe-node/var || exit 0
+                    # Clean user wallets (all *.dwallet files - no system wallet in stagenet)
+                    rm -f lib/wallet/*.dwallet 2>/dev/null || true
+                    # Clean chains
+                    rm -rf lib/chains/* 2>/dev/null || true
+                    # Clean GDB
+                    rm -rf lib/gdb/* 2>/dev/null || true
+                    # Clean logs (will be collected by artifacts before cleaning)
+                    rm -f log/*.log 2>/dev/null || true
+                    # DON'T clean lib/ca/ - it contains validator certificates!
+                    """
+                    container.exec_run(["sh", "-c", clean_script], user="root")
+                    logger.debug("cleaned_user_data", container=container.name)
+                except Exception as e:
+                    logger.warning("failed_to_clean_container_data", container=container.name, error=str(e))
+            
+            logger.info("test_data_cleaned")
+            
+        except Exception as e:
+            logger.warning("failed_to_clean_test_data", error=str(e))
     
     async def stop(self, remove_volumes: bool = False) -> None:
         """
@@ -308,10 +359,29 @@ class NetworkManager:
                     "response_time_ms": 0,
                 }
         
+        # Build nodes array with combined info
+        nodes_data = []
+        for node_name, config in self.nodes.items():
+            # Get container status
+            container_status = service_status.get(node_name, {})
+            # Get health status
+            health = health_status.get(node_name, {})
+            
+            nodes_data.append({
+                "name": node_name,
+                "role": config.role,
+                "container_status": container_status.get("status", "unknown"),
+                "health_status": health.get("state", "unknown"),
+                "healthy": health.get("healthy", False),
+                "rpc_port": config.rpc_port,
+                "p2p_port": config.p2p_port,
+            })
+        
         return {
             "topology": self.topology_name,
             "network_name": self.topology.network.name,
             "total_nodes": len(self.nodes),
+            "nodes": nodes_data,
             "containers": service_status,
             "health": health_status,
         }

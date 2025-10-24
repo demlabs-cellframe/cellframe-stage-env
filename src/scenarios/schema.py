@@ -28,6 +28,20 @@ class ExpectResult(str, Enum):
     ANY = "any"
 
 
+class DatumStatus(str, Enum):
+    """Status of datum processing through the network."""
+    NOT_FOUND = "not_found"
+    IN_MEMPOOL = "in_mempool"
+    VERIFIED = "verified"
+    IN_BLOCKS = "in_blocks"
+    PROPAGATED = "propagated"
+    REJECTED = "rejected"
+    TIMEOUT_MEMPOOL = "timeout_mempool"
+    TIMEOUT_VERIFICATION = "timeout_verification"
+    TIMEOUT_BLOCKS = "timeout_blocks"
+    TIMEOUT_TOTAL = "timeout_total"
+
+
 # ============================================================================
 # Network Configuration Models
 # ============================================================================
@@ -77,6 +91,7 @@ class NodeConfig(BaseModel):
 
 class NetworkConfig(BaseModel):
     """Network topology configuration."""
+    name: Optional[str] = Field(None, description="Network name (e.g., 'stagenet')")
     topology: str = Field("default", description="Topology template name")
     nodes: List[NodeConfig] = Field(default_factory=list, description="Node configurations")
     
@@ -139,6 +154,33 @@ FileSpec = Union[FileFromSource, FileFromContent]
 
 
 # ============================================================================
+# Extract Helpers - Built-in data extraction with validation
+# ============================================================================
+
+class ExtractType(str, Enum):
+    """Type of data to extract and validate."""
+    WALLET_ADDRESS = "wallet_address"  # Wallet address (base58, 75-105 chars)
+    NODE_ADDRESS = "node_address"      # Node address (hex with :: separators, e.g., A1B2::C3D4::E5F6)
+    HASH = "hash"                      # Transaction/block hash (0x... hex)
+    NUMBER = "number"                  # Numeric value
+    TOKEN_NAME = "token_name"          # Token ticker (alphanumeric)
+    BOOL = "bool"                      # Boolean value
+    RAW = "raw"                        # Raw string (no validation)
+
+
+class ExtractSpec(BaseModel):
+    """Specification for extracting and validating data from command output."""
+    pattern: Optional[str] = Field(None, description="Regex pattern to extract data (auto-detected if not specified)")
+    type: ExtractType = Field(ExtractType.RAW, description="Type of extracted data for validation")
+    group: int = Field(1, description="Regex capture group number (default: 1)")
+    required: bool = Field(True, description="Whether extraction failure should fail the test")
+    default: Optional[str] = Field(None, description="Default value if extraction fails (only if not required)")
+    
+    class Config:
+        use_enum_values = True
+
+
+# ============================================================================
 # Test Step Models
 # ============================================================================
 
@@ -147,6 +189,7 @@ class CLIStep(BaseModel):
     cli: str = Field(..., description="CLI command to execute")
     node: str = Field("node1", description="Node to execute on")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+    extract_to: Optional[Dict[str, ExtractSpec]] = Field(None, description="Extract and save specific values from output")
     wait: Optional[str] = Field(None, description="Wait duration after command (e.g., '5s')")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     contains: Optional[str] = Field(None, description="Expected substring in output")
@@ -199,7 +242,22 @@ class LoopStep(BaseModel):
     steps: List["TestStep"] = Field(..., description="Steps to repeat")
 
 
-TestStep = Union[CLIStep, RPCStep, WaitStep, PythonStep, BashStep, LoopStep]
+class WaitForDatumStep(BaseModel):
+    """Wait for datum to be processed through mempool → verification → blocks → propagation."""
+    wait_for_datum: Union[str, List[str]] = Field(..., description="Datum hash(es) to monitor")
+    node: str = Field("node1", description="Target node to check for datum")
+    network: str = Field("stagenet", description="Network name")
+    chain: str = Field("main", description="Chain name")
+    check_master_nodes: bool = Field(True, description="Check master nodes for verification and blocks")
+    timeout_total: int = Field(300, description="Total timeout in seconds")
+    timeout_mempool: int = Field(60, description="Timeout for mempool stage")
+    timeout_verification: int = Field(120, description="Timeout after verification")
+    timeout_in_blocks: int = Field(180, description="Timeout after appearing in blocks")
+    check_interval: int = Field(2, description="Check interval in seconds")
+    save_status: Optional[str] = Field(None, description="Variable name to save final status")
+
+
+TestStep = Union[CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, LoopStep]
 
 
 # ============================================================================
@@ -251,6 +309,7 @@ class StepDefaults(BaseModel):
     wait: Optional[str] = Field(None, description="Default wait duration after each step")
     expect: Optional[ExpectResult] = Field(None, description="Default expected result")
     timeout: Optional[int] = Field(None, description="Default timeout in seconds")
+    cli: Optional[Dict[str, str]] = Field(None, description="Default CLI option prefixes (e.g., {'net': 'stagenet'})")
     
     class Config:
         use_enum_values = True
@@ -264,7 +323,7 @@ class StepGroup(BaseModel):
 
 
 # Update TestStep to include StepGroup
-TestStep = Union[CLIStep, RPCStep, WaitStep, PythonStep, BashStep, LoopStep, StepGroup]
+TestStep = Union[CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, LoopStep, StepGroup]
 
 
 # ============================================================================
@@ -333,8 +392,8 @@ class TestScenario(BaseModel):
     # Includes for reusable configs
     includes: List[str] = Field(default_factory=list, description="Paths to included YAML files")
     
-    # Network configuration
-    network: NetworkConfig = Field(..., description="Network topology")
+    # Network configuration (optional, defaults to 'default' topology)
+    network: Optional[NetworkConfig] = Field(None, description="Network topology (default: topology='default')")
     
     # Package installation
     packages: List[PackageSpec] = Field(default_factory=list, description="Packages to install")
@@ -360,6 +419,14 @@ class TestScenario(BaseModel):
     @model_validator(mode='after')
     def validate_scenario(self) -> 'TestScenario':
         """Validate scenario structure."""
+        # Set default network if not specified
+        if self.network is None:
+            self.network = NetworkConfig(topology="default", name="stagenet")
+        
+        # Set default network name if not specified
+        if self.network and not self.network.name:
+            self.network.name = "stagenet"
+        
         # Normalize sections to SectionConfig/CheckSectionConfig format
         if isinstance(self.setup, list):
             self.setup = SectionConfig(steps=self.setup)
