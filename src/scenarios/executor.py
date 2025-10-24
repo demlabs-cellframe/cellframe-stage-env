@@ -97,15 +97,23 @@ class RuntimeContext:
 class ScenarioExecutor:
     """Execute test scenarios with full lifecycle management."""
     
-    def __init__(self, node_cli_path: str = "cellframe-node-cli"):
+    def __init__(self, node_cli_path: str = "cellframe-node-cli", log_file: Optional[Path] = None):
         """
         Initialize executor.
         
         Args:
             node_cli_path: Path to cellframe-node-cli binary
+            log_file: Optional path to detailed log file
         """
         self.node_cli_path = node_cli_path
+        self.log_file = log_file
         self._running = False
+    
+    def _log_to_file(self, message: str):
+        """Write message to log file if enabled."""
+        if self.log_file:
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(message + '\n')
     
     async def execute_scenario(self, scenario: TestScenario) -> RuntimeContext:
         """
@@ -192,9 +200,32 @@ class ScenarioExecutor:
         
         logger.debug(f"Executing CLI: {cmd} on {step.node}")
         
+        # Log to file
+        self._log_to_file(f"\n{'=' * 70}")
+        self._log_to_file(f"CLI COMMAND")
+        self._log_to_file(f"{'=' * 70}")
+        self._log_to_file(f"Node: {step.node}")
+        self._log_to_file(f"Command: {cmd}")
+        if step.description:
+            self._log_to_file(f"Description: {step.description}")
+        self._log_to_file(f"Timeout: {step.timeout}s")
+        self._log_to_file(f"Expected: {step.expect}")
+        self._log_to_file("")
+        
         try:
             # Execute command
             result = await self._run_cli_command(cmd, step.node, step.timeout)
+            
+            # Log response
+            self._log_to_file(f"--- Node Response ---")
+            self._log_to_file(f"Exit Code: {result['returncode']}")
+            if result["stdout"]:
+                self._log_to_file(f"\nStdout:")
+                self._log_to_file(result["stdout"])
+            if result["stderr"]:
+                self._log_to_file(f"\nStderr:")
+                self._log_to_file(result["stderr"])
+            self._log_to_file(f"{'=' * 70}\n")
             
             # Check expected result
             success = self._check_expectation(result, step.expect, step.contains)
@@ -216,6 +247,7 @@ class ScenarioExecutor:
             # Save result to variable if requested
             if step.save:
                 ctx.set_variable(step.save, result["stdout"].strip())
+                self._log_to_file(f"✓ Saved to variable: {step.save}")
             
             ctx.add_result("cli", True, {
                 "command": cmd,
@@ -228,6 +260,8 @@ class ScenarioExecutor:
                 await self._wait_duration(step.wait)
                 
         except subprocess.TimeoutExpired:
+            self._log_to_file(f"✗ TIMEOUT after {step.timeout}s")
+            self._log_to_file(f"{'=' * 70}\n")
             ctx.add_result("cli", False, {
                 "command": cmd,
                 "error": f"Command timeout after {step.timeout}s"
@@ -242,9 +276,28 @@ class ScenarioExecutor:
         
         logger.debug(f"Executing RPC: {method}({params}) on {step.node}")
         
+        # Log to file
+        self._log_to_file(f"\n{'=' * 70}")
+        self._log_to_file(f"RPC CALL")
+        self._log_to_file(f"{'=' * 70}")
+        self._log_to_file(f"Node: {step.node}")
+        self._log_to_file(f"Method: {method}")
+        self._log_to_file(f"Params: {params}")
+        if step.description:
+            self._log_to_file(f"Description: {step.description}")
+        self._log_to_file(f"Timeout: {step.timeout}s")
+        self._log_to_file(f"Expected: {step.expect}")
+        self._log_to_file("")
+        
         try:
             # Execute RPC call
             result = await self._call_rpc(method, params, step.node, step.timeout)
+            
+            # Log response
+            self._log_to_file(f"--- Node Response ---")
+            import json
+            self._log_to_file(json.dumps(result, indent=2, ensure_ascii=False))
+            self._log_to_file(f"{'=' * 70}\n")
             
             # Check expected result
             if step.expect == "error" and "error" not in result:
@@ -256,6 +309,7 @@ class ScenarioExecutor:
             if step.save:
                 value = result.get("result", result)
                 ctx.set_variable(step.save, value)
+                self._log_to_file(f"✓ Saved to variable: {step.save}")
             
             ctx.add_result("rpc", True, {
                 "method": method,
@@ -268,6 +322,8 @@ class ScenarioExecutor:
                 await self._wait_duration(step.wait)
                 
         except asyncio.TimeoutError:
+            self._log_to_file(f"✗ TIMEOUT after {step.timeout}s")
+            self._log_to_file(f"{'=' * 70}\n")
             ctx.add_result("rpc", False, {
                 "method": method,
                 "error": f"RPC timeout after {step.timeout}s"

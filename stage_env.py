@@ -508,7 +508,7 @@ def run_tests(
                         log_f.write(f"{'=' * 60}\n\n")
                     
                     # Execute scenario
-                    executor = ScenarioExecutor(node_cli_path=cli_path)
+                    executor = ScenarioExecutor(node_cli_path=cli_path, log_file=scenario_log_file)
                     
                     async def _execute():
                         return await executor.execute_scenario(scenario)
