@@ -57,15 +57,16 @@ class ArtifactsManager:
         self.artifacts_root.mkdir(parents=True, exist_ok=True)
         logger.debug("created_artifacts_directory", path=str(self.artifacts_root))
     
-    def create_run_directory(self, run_id: Optional[str] = None) -> Path:
+    def create_run_directory(self, run_id: Optional[str] = None, test_type: Optional[str] = None) -> Path:
         """
         Create a directory for a specific test run.
         
         Args:
             run_id: Optional run identifier (defaults to timestamp)
+            test_type: Optional test type (e2e, functional, base) to create subdirectories
             
         Returns:
-            Path to the run directory
+            Path to the run directory (or test_type subdir if specified)
         """
         if run_id is None:
             run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -84,11 +85,28 @@ class ArtifactsManager:
             "scenario-logs",
         ]
         
-        for subdir in subdirs:
-            (run_dir / subdir).mkdir(exist_ok=True)
+        # If test_type specified, create test type subdirectories  
+        if test_type:
+            for test_cat in ['e2e', 'functional', 'base']:
+                cat_dir = run_dir / test_cat
+                cat_dir.mkdir(exist_ok=True)
+                # Create subdirs under each category
+                for subdir in subdirs:
+                    (cat_dir / subdir).mkdir(exist_ok=True)
+            
+            # Return the specific test type directory
+            result_dir = run_dir / test_type
+        else:
+            # Create subdirs at run_dir level (old behavior)
+            for subdir in subdirs:
+                (run_dir / subdir).mkdir(exist_ok=True)
+            result_dir = run_dir
         
-        logger.info("created_run_directory", run_id=run_id, path=str(run_dir))
-        return run_dir
+        logger.info("created_run_directory", 
+                   run_id=run_id, 
+                   test_type=test_type,
+                   path=str(result_dir))
+        return result_dir
     
     def collect_stage_env_log(self, run_dir: Path, log_file: Path):
         """
@@ -259,7 +277,7 @@ class ArtifactsManager:
     
     def collect_health_logs(self, run_dir: Path):
         """
-        Collect health check and monitoring logs.
+        Collect health check and monitoring logs from Docker containers.
         
         Args:
             run_dir: Run directory
@@ -268,9 +286,72 @@ class ArtifactsManager:
             logger.debug("health_logs_collection_disabled")
             return
         
-        # Health logs are currently part of stage-env logs
-        # This is a placeholder for future separate health check logging
-        logger.debug("health_logs_collected_as_part_of_stage_env_logs")
+        try:
+            import docker
+            client = docker.from_env()
+            project_name = "cellframe-stage"
+            
+            containers = client.containers.list(
+                all=True,
+                filters={"label": f"com.docker.compose.project={project_name}"}
+            )
+            
+            health_logs_dir = run_dir / "health-logs"
+            collected = 0
+            
+            for container in containers:
+                try:
+                    container_name = container.name
+                    if "node-" in container_name:
+                        node_name = container_name.split("node-", 1)[1]
+                        node_id = f"node-{node_name}"
+                        
+                        # Get container health status
+                        health_info = {
+                            "node_id": node_id,
+                            "container_name": container_name,
+                            "status": container.status,
+                            "health": container.attrs.get('State', {}).get('Health', {}),
+                            "started_at": container.attrs.get('State', {}).get('StartedAt'),
+                            "finished_at": container.attrs.get('State', {}).get('FinishedAt'),
+                        }
+                        
+                        # Try to get cellframe-node CLI health check
+                        try:
+                            result = container.exec_run("cellframe-node-cli version", demux=False)
+                            health_info["cli_available"] = result.exit_code == 0
+                            if result.exit_code == 0:
+                                health_info["version"] = result.output.decode('utf-8', errors='ignore').strip()
+                        except:
+                            health_info["cli_available"] = False
+                        
+                        # Try to get network status
+                        try:
+                            result = container.exec_run(
+                                "cellframe-node-cli net -net stagenet get status",
+                                demux=False
+                            )
+                            if result.exit_code == 0:
+                                health_info["network_status"] = result.output.decode('utf-8', errors='ignore').strip()
+                        except:
+                            pass
+                        
+                        # Write health info to file
+                        import json
+                        health_file = health_logs_dir / f"{node_id}_health.json"
+                        health_file.write_text(json.dumps(health_info, indent=2, default=str))
+                        collected += 1
+                        
+                except Exception as e:
+                    logger.warning("failed_to_collect_health_info",
+                                 container=container.name,
+                                 error=str(e))
+            
+            if collected > 0:
+                logger.info("collected_health_logs", count=collected)
+                
+        except Exception as e:
+            logger.error("health_logs_collection_failed", error=str(e))
     
     def cleanup_old_artifacts(self):
         """Remove artifacts older than retain_days."""

@@ -408,14 +408,32 @@ def run_tests(
     for test_dir in test_dirs:
         print_info(f"  • {test_dir}")
     
+    # Determine test type from test_dirs for artifact organization
+    # Detect if running e2e, functional, or base tests
+    test_type = None
+    if test_dirs:
+        first_dir = Path(test_dirs[0])
+        if 'e2e' in first_dir.parts:
+            test_type = 'e2e'
+        elif 'functional' in first_dir.parts:
+            test_type = 'functional'
+        elif 'base' in first_dir.parts or 'stage-env/tests' in str(first_dir):
+            test_type = 'base'
+    
     # Create run directory for this test session
     config_loader = ConfigLoader(BASE_PATH, CONFIG_PATH)
     artifacts_config = config_loader.get_artifacts_config()
     artifacts_manager = ArtifactsManager(BASE_PATH, artifacts_config)
     
-    run_id = f"tests_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    run_dir = artifacts_manager.create_run_directory(run_id)
-    print_info(f"📁 Created run directory: {run_dir.name}")
+    # Create run ID and directory with test type
+    timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_id = timestamp_str
+    run_dir = artifacts_manager.create_run_directory(run_id, test_type=test_type)
+    
+    if test_type:
+        print_info(f"📁 Created run directory: run_{run_id}/{test_type}/")
+    else:
+        print_info(f"📁 Created run directory: {run_dir.name}")
     
     # Start network if requested
     network_mgr = None
@@ -633,22 +651,47 @@ def run_tests(
                     if collected_logs > 0:
                         print_success(f"Collected {collected_logs} node logs")
                     
+                    # Collect health logs
+                    print_info("Collecting health check logs...")
+                    artifacts_manager.collect_health_logs(run_dir)
+                    print_success("Health logs collected")
+                    
                 except Exception as e:
                     print_warning(f"Failed to collect Docker artifacts: {e}")
             
-            # Create run summary
+            # Create run summary with detailed test information
             summary_data = {
                 'run_id': run_id,
-                'test_type': 'scenarios',
+                'test_type': test_type or 'mixed',
+                'topology': 'default',
+                'network': 'stagenet',
+                'total_nodes': 7,
                 'exit_code': 0 if all_passed else 1,
                 'status': 'passed' if all_passed else 'failed',
                 'timestamp': datetime.now().isoformat(),
                 'total_scenarios': total_scenarios,
                 'passed_scenarios': passed_scenarios,
                 'failed_scenarios': failed_scenarios,
+                # For report compatibility
+                'tests_run': total_scenarios,
+                'tests_passed': passed_scenarios,
+                'tests_failed': failed_scenarios,
+                'tests_skipped': 0,
             }
             artifacts_manager.create_run_summary(run_dir, summary_data)
-            print_success(f"✅ Artifacts saved to: {run_dir.name}")
+            
+            # Generate reports
+            print_info("Generating test reports...")
+            from src.utils.report_generator import ReportGenerator
+            report_gen = ReportGenerator(run_dir)
+            try:
+                reports = report_gen.generate_full_report(summary_data)
+                for report_type, report_path in reports.items():
+                    print_success(f"Generated {report_type}: {report_path.name}")
+            except Exception as e:
+                print_warning(f"Failed to generate some reports: {e}")
+            
+            print_success(f"✅ Artifacts saved to: run_{run_id}/{test_type or ''}")
             
         except Exception as e:
             print_warning(f"Failed to collect some artifacts: {e}")
