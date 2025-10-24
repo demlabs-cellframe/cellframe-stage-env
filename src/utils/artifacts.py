@@ -81,6 +81,7 @@ class ArtifactsManager:
             "stack-traces",
             "health-logs",
             "reports",
+            "scenario-logs",
         ]
         
         for subdir in subdirs:

@@ -399,12 +399,23 @@ def run_tests(
     
     import asyncio
     from pathlib import Path
+    from datetime import datetime
     from src.scenarios.parser import ScenarioParser
     from src.scenarios.executor import ScenarioExecutor, ScenarioExecutionError
+    from src.utils.artifacts import ArtifactsManager
     
     print_info(f"Running tests from {len(test_dirs)} director{'y' if len(test_dirs) == 1 else 'ies'}:")
     for test_dir in test_dirs:
         print_info(f"  • {test_dir}")
+    
+    # Create run directory for this test session
+    config_loader = ConfigLoader(BASE_PATH, CONFIG_PATH)
+    artifacts_config = config_loader.get_artifacts_config()
+    artifacts_manager = ArtifactsManager(BASE_PATH, artifacts_config)
+    
+    run_id = f"tests_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir = artifacts_manager.create_run_directory(run_id)
+    print_info(f"📁 Created run directory: {run_dir.name}")
     
     # Start network if requested
     network_mgr = None
@@ -464,18 +475,13 @@ def run_tests(
                 print_info(f"\n{'─' * 60}")
                 print_info(f"▶ Running scenario: {scenario_file.name}")
                 
-                # Create scenario-specific log file
-                from datetime import datetime
+                # Create scenario-specific log file in run directory
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 scenario_name_clean = scenario_file.stem.replace(' ', '_')
                 scenario_log_name = f"scenario_{scenario_name_clean}_{timestamp}.log"
                 
-                # Get artifacts directory
-                config_loader = ConfigLoader(BASE_PATH, CONFIG_PATH)
-                artifacts_config = config_loader.get_artifacts_config()
-                artifacts_dir = (BASE_PATH / artifacts_config.get('artifacts_dir', '../testing/artifacts')).resolve()
-                scenario_logs_dir = artifacts_dir / "scenario-logs"
-                scenario_logs_dir.mkdir(parents=True, exist_ok=True)
+                # Save logs in run_dir/scenario-logs/
+                scenario_logs_dir = run_dir / "scenario-logs"
                 scenario_log_file = scenario_logs_dir / scenario_log_name
                 
                 try:
@@ -576,6 +582,77 @@ def run_tests(
         print_info(f"{'═' * 60}")
         
     finally:
+        # Collect artifacts before stopping
+        print_info("\n📦 Collecting test artifacts...")
+        
+        try:
+            # Collect stage-env log
+            logging_config = config_loader.get_logging_config()
+            log_dir_relative = logging_config.get('log_dir', 'logs')
+            log_dir = (BASE_PATH / log_dir_relative).resolve()
+            if log_dir.exists():
+                log_files = sorted(log_dir.glob("stage-env_*.log"), 
+                                  key=lambda p: p.stat().st_mtime, 
+                                  reverse=True)
+                if log_files:
+                    artifacts_manager.collect_stage_env_log(run_dir, log_files[0])
+                    print_success(f"Collected stage-env log")
+            
+            # Collect node logs from Docker containers if network was started
+            if network_mgr:
+                import docker
+                try:
+                    client = docker.from_env()
+                    project_name = "cellframe-stage"
+                    
+                    containers = client.containers.list(
+                        all=True,
+                        filters={"label": f"com.docker.compose.project={project_name}"}
+                    )
+                    
+                    node_logs_dir = run_dir / "node-logs"
+                    collected_logs = 0
+                    
+                    for container in containers:
+                        try:
+                            container_name = container.name
+                            if "node-" in container_name:
+                                node_name = container_name.split("node-", 1)[1]
+                                node_id = f"node-{node_name}"
+                                
+                                # Collect logs
+                                logs = container.logs(tail=10000).decode('utf-8', errors='ignore')
+                                log_file = node_logs_dir / f"{node_id}.log"
+                                log_file.write_text(logs)
+                                collected_logs += 1
+                        except Exception as e:
+                            logger.warning("failed_to_collect_container_log",
+                                         container=container.name,
+                                         error=str(e))
+                    
+                    if collected_logs > 0:
+                        print_success(f"Collected {collected_logs} node logs")
+                    
+                except Exception as e:
+                    print_warning(f"Failed to collect Docker artifacts: {e}")
+            
+            # Create run summary
+            summary_data = {
+                'run_id': run_id,
+                'test_type': 'scenarios',
+                'exit_code': 0 if all_passed else 1,
+                'status': 'passed' if all_passed else 'failed',
+                'timestamp': datetime.now().isoformat(),
+                'total_scenarios': total_scenarios,
+                'passed_scenarios': passed_scenarios,
+                'failed_scenarios': failed_scenarios,
+            }
+            artifacts_manager.create_run_summary(run_dir, summary_data)
+            print_success(f"✅ Artifacts saved to: {run_dir.name}")
+            
+        except Exception as e:
+            print_warning(f"Failed to collect some artifacts: {e}")
+        
         # Stop network if requested
         if stop_after and network_mgr:
             print_info("\n🛑 Stopping test network...")
