@@ -76,15 +76,136 @@ health_check = 600
 command = 30
 
 [node_source]
-# Cellframe node package source
-# type: url, repository, or local
-# For url: provide full URL to .deb package
-# For repository: provide git URL and branch
-# For local: provide path to .deb file
+# ============================================================================
+# Cellframe Node Package Source Configuration
+# ============================================================================
+# Defines where to get the cellframe-node package for Docker containers
+# 
+# Supported types:
+#   - url        : Download .deb package from HTTP/HTTPS URL
+#   - repository : Build from git repository (source build)
+#   - local      : Use local .deb file from filesystem
+#
+# Choose ONE type and configure its parameters below
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Option 1: URL - Download pre-built package from web
+# ----------------------------------------------------------------------------
+# Use this for official releases or CI artifacts
 type = url
 url = https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-master-amd64.deb
+
+# Optional: Verify package integrity with checksum
+# checksum = sha256:abc123def456...
+
+# Optional: Custom HTTP headers (for authentication, etc.)
+# headers = Authorization: Bearer TOKEN
+
+# ----------------------------------------------------------------------------
+# Option 2: Local - Use local .deb package
+# ----------------------------------------------------------------------------
+# Use this for development with locally built packages
+# Path is relative to stage-env/ directory (BASE_PATH)
+#
 # type = local
-# local_path = ../../build/cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
+# local_path = ../build/cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
+#
+# Examples of relative paths from stage-env/:
+#   ../build/cellframe-node.deb              - from project build/ dir
+#   ../../packages/cellframe-node.deb        - from parent directory
+#   /tmp/cellframe-node.deb                  - absolute path
+#   ~/Downloads/cellframe-node.deb           - home directory
+
+# ----------------------------------------------------------------------------
+# Option 3: Repository - Build from source (git)
+# ----------------------------------------------------------------------------
+# Use this to build from specific git branch or commit
+# This will clone repo and build inside Docker
+#
+# type = repository
+# git_url = https://gitlab.demlabs.net/cellframe/cellframe-node.git
+# branch = master                    # or: dev, feature/xyz
+# commit = abc123def                 # optional: specific commit hash
+#
+# Optional: Submodules
+# submodules = true                  # clone with --recursive
+#
+# Optional: Build configuration
+# build_type = Release               # or: Debug, RelWithDebInfo
+# cmake_flags = -DBUILD_TESTS=ON -DBUILD_DOCS=OFF
+#
+# Optional: Git credentials for private repos
+# git_username = myuser
+# git_token = ghp_abc123...          # GitHub Personal Access Token
+#
+# Optional: Custom build script (instead of default CMake)
+# build_script = scripts/custom-build.sh
+
+# ----------------------------------------------------------------------------
+# Advanced Options (apply to all types)
+# ----------------------------------------------------------------------------
+
+# Cache downloaded/built packages to speed up subsequent runs
+# cache_packages = true
+# cache_dir = ../testing/cache/packages
+
+# Verify package signature (for official releases)
+# verify_signature = true
+# gpg_key_url = https://pub.cellframe.net/linux/gpg-key.asc
+
+# Custom Docker build args (passed to docker build)
+# docker_build_args = HTTP_PROXY=http://proxy:8080
+
+# Package installation options
+# install_recommends = false         # apt-get --no-install-recommends
+# force_reinstall = false            # always reinstall even if cached
+
+# ----------------------------------------------------------------------------
+# Examples
+# ----------------------------------------------------------------------------
+
+# Example 1: Official master build
+# type = url
+# url = https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-master-amd64.deb
+
+# Example 2: Official stable release
+# type = url  
+# url = https://debian.pub.demlabs.net/public/cellframe-node-5.5-amd64.deb
+# checksum = sha256:1234567890abcdef...
+
+# Example 3: Local debug build
+# type = local
+# local_path = ../build/cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
+
+# Example 4: Build from dev branch
+# type = repository
+# git_url = https://gitlab.demlabs.net/cellframe/cellframe-node.git
+# branch = dev
+# build_type = Debug
+# submodules = true
+
+# Example 5: Build from specific commit
+# type = repository
+# git_url = https://gitlab.demlabs.net/cellframe/cellframe-node.git
+# commit = abc123def456
+# build_type = RelWithDebInfo
+
+# Example 6: Private repo with authentication
+# type = repository
+# git_url = https://github.com/myorg/cellframe-fork.git
+# branch = feature/my-changes
+# git_username = myuser
+# git_token = ghp_xxxxxxxxxxxx
+
+# Example 7: CI artifact from URL with auth
+# type = url
+# url = https://ci.example.com/artifacts/cellframe-node-latest.deb
+# headers = Authorization: Bearer CI_TOKEN
+
+# Example 8: Local build with custom path
+# type = local
+# local_path = /opt/cellframe-builds/cellframe-node-custom.deb
 
 # ============================================================================
 # Docker Image Customization (Optional)
