@@ -578,6 +578,9 @@ def run_tests(
     passed_scenarios = 0
     failed_scenarios = 0
     
+    # Detailed results for report
+    scenario_results = []  # List of {name, suite, path, status, duration, error, error_log}
+    
     # Path to CLI binary inside containers
     cli_path = "cellframe-node-cli"
     
@@ -673,12 +676,19 @@ def run_tests(
                     suite_description = None
                     print_warning(f"Failed to parse suite descriptor {suite_descriptor.name}: {e}")
                 
-                # Create suite-specific directory: run_<timestamp>/<relative_path_to_suite>/
+                # Create suite-specific directory: run_<timestamp>/<test_type>/<suite_name>/
                 # Example: tests/e2e/wallet/ -> run_XXX/e2e/wallet/
+                # Determine test_type from current test_path
                 try:
-                    suite_relative_path = suite_path.relative_to(test_path.parent)
+                    # Get the relative path from tests/ to current test_path
+                    test_relative = test_path.relative_to(test_path.parent.parent / "tests")
+                    test_type = test_relative.parts[0]  # e.g., 'e2e', 'functional', 'base'
                 except:
-                    suite_relative_path = Path(test_path.name) / suite_path.name
+                    # Fallback: use test_path name as test_type
+                    test_type = test_path.name
+                
+                # Suite relative path is: test_type/suite_name
+                suite_relative_path = Path(test_type) / suite_path.name
                 
                 suite_dir = run_dir_base / suite_relative_path
                 suite_dir.mkdir(parents=True, exist_ok=True)
@@ -790,6 +800,19 @@ def run_tests(
                         
                         passed_scenarios += 1
                         
+                        # Record success
+                        scenario_results.append({
+                            'name': scenario.name,
+                            'file': scenario_file.name,
+                            'suite': suite_name,
+                            'path': str(suite_relative_path / scenario_file.name),
+                            'status': 'passed',
+                            'duration': summary.get('duration_seconds', 0),
+                            'steps_total': summary['total_steps'],
+                            'steps_passed': summary['passed'],
+                            'log_file': str(scenario_log_file.relative_to(run_dir_base))
+                        })
+                        
                     except ScenarioExecutionError as e:
                         failed_scenarios += 1
                         all_passed = False
@@ -805,6 +828,27 @@ def run_tests(
                         logger.error("scenario_execution_failed", 
                                    scenario=str(scenario_file),
                                    error=str(e))
+                        
+                        # Extract last 30 lines of log for error report
+                        error_log_excerpt = ""
+                        try:
+                            with open(scenario_log_file, 'r', encoding='utf-8') as log_f:
+                                lines = log_f.readlines()
+                                error_log_excerpt = ''.join(lines[-30:])  # Last 30 lines
+                        except:
+                            error_log_excerpt = "Failed to read log file"
+                        
+                        # Record failure
+                        scenario_results.append({
+                            'name': getattr(scenario, 'name', scenario_file.stem),
+                            'file': scenario_file.name,
+                            'suite': suite_name,
+                            'path': str(suite_relative_path / scenario_file.name),
+                            'status': 'failed',
+                            'error': str(e),
+                            'error_log': error_log_excerpt,
+                            'log_file': str(scenario_log_file.relative_to(run_dir_base))
+                        })
                         
                     except Exception as e:
                         failed_scenarios += 1
@@ -822,6 +866,29 @@ def run_tests(
                         print_error(f"  ❌ Unexpected error: {str(e)}")
                         logger.exception("scenario_unexpected_error", 
                                        scenario=str(scenario_file))
+                        
+                        # Extract last 30 lines of log for error report
+                        error_log_excerpt = ""
+                        try:
+                            with open(scenario_log_file, 'r', encoding='utf-8') as log_f:
+                                lines = log_f.readlines()
+                                error_log_excerpt = ''.join(lines[-30:])  # Last 30 lines
+                        except:
+                            error_log_excerpt = "Failed to read log file"
+                        
+                        # Record error
+                        import traceback
+                        scenario_results.append({
+                            'name': scenario_file.stem,
+                            'file': scenario_file.name,
+                            'suite': suite_name,
+                            'path': str(suite_relative_path / scenario_file.name),
+                            'status': 'error',
+                            'error': f"Unexpected error: {str(e)}",
+                            'error_log': error_log_excerpt,
+                            'traceback': traceback.format_exc(),
+                            'log_file': str(scenario_log_file.relative_to(run_dir_base))
+                        })
                 
                 # Collect node logs and health logs for this specific suite
                 if network_mgr:
@@ -917,6 +984,8 @@ def run_tests(
                 'tests_passed': passed_scenarios,
                 'tests_failed': failed_scenarios,
                 'tests_skipped': 0,
+                # Detailed scenario results
+                'scenarios': scenario_results,
             }
             
             # Save summary to base directory
