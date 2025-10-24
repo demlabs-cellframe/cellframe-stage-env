@@ -32,6 +32,24 @@ class ExpectResult(str, Enum):
 # Network Configuration Models
 # ============================================================================
 
+class NodePackageSourceConfig(BaseModel):
+    """Package source configuration for a node in YAML scenarios."""
+    type: str = Field(..., description="Source type: url, repository, or local")
+    
+    # URL source
+    url: Optional[str] = Field(None, description="Package URL")
+    checksum: Optional[str] = Field(None, description="Package checksum for verification")
+    
+    # Repository source  
+    git_url: Optional[str] = Field(None, description="Git repository URL")
+    branch: Optional[str] = Field(None, description="Git branch")
+    commit: Optional[str] = Field(None, description="Specific commit hash")
+    build_type: Optional[str] = Field(None, description="Build type: Debug, Release, RelWithDebInfo")
+    
+    # Local source
+    local_path: Optional[str] = Field(None, description="Path to local .deb file")
+
+
 class NodeConfig(BaseModel):
     """Single node configuration."""
     name: str = Field(..., description="Unique node identifier")
@@ -39,6 +57,13 @@ class NodeConfig(BaseModel):
     ip: Optional[str] = Field(None, description="Optional static IP")
     port: Optional[int] = Field(None, ge=1024, le=65535, description="Optional custom node port (default: 8079)")
     validator: bool = Field(False, description="Is validator node")
+    
+    # Per-node package source 
+    package: Optional[NodePackageSourceConfig] = Field(None, description="Custom package source for this node")
+    
+    # Per-node customizations
+    custom_packages: Optional[List[str]] = Field(None, description="Additional packages to install")
+    custom_env: Optional[Dict[str, str]] = Field(None, description="Custom environment variables")
     
     class Config:
         use_enum_values = True
@@ -115,7 +140,6 @@ class CLIStep(BaseModel):
     """Execute CLI command."""
     cli: str = Field(..., description="CLI command to execute")
     node: str = Field("node1", description="Node to execute on")
-    description: Optional[str] = Field(None, description="Step description")
     save: Optional[str] = Field(None, description="Variable name to save result to")
     wait: Optional[str] = Field(None, description="Wait duration after command (e.g., '5s')")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
@@ -131,7 +155,6 @@ class RPCStep(BaseModel):
     rpc: str = Field(..., description="JSON-RPC method name")
     params: List[Any] = Field(default_factory=list, description="RPC parameters")
     node: str = Field("node1", description="Node to call RPC on")
-    description: Optional[str] = Field(None, description="Step description")
     save: Optional[str] = Field(None, description="Variable name to save result to")
     wait: Optional[str] = Field(None, description="Wait duration after call")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
@@ -144,13 +167,11 @@ class RPCStep(BaseModel):
 class WaitStep(BaseModel):
     """Wait for duration or condition."""
     wait: str = Field(..., description="Duration (e.g., '5s') or condition")
-    description: Optional[str] = Field(None, description="Step description")
 
 
 class PythonStep(BaseModel):
     """Execute Python code with access to context."""
     python: str = Field(..., description="Python code to execute")
-    description: Optional[str] = Field(None, description="Step description")
     save: Optional[str] = Field(None, description="Variable name to save result to")
 
 
@@ -158,7 +179,6 @@ class BashStep(BaseModel):
     """Execute Bash script."""
     bash: str = Field(..., description="Bash script to execute")
     node: str = Field("node1", description="Node to execute on")
-    description: Optional[str] = Field(None, description="Step description")
     save: Optional[str] = Field(None, description="Variable name to save result to")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     timeout: Optional[int] = Field(30, description="Script timeout in seconds")
@@ -184,7 +204,6 @@ class CLICheck(BaseModel):
     """Verify CLI command output."""
     cli: str = Field(..., description="CLI command to execute")
     node: str = Field("node1", description="Node to execute on")
-    description: Optional[str] = Field(None, description="Check description")
     contains: Optional[str] = Field(None, description="Expected substring")
     not_contains: Optional[str] = Field(None, description="Substring that should not be present")
     equals: Optional[str] = Field(None, description="Exact expected output")
@@ -196,7 +215,6 @@ class RPCCheck(BaseModel):
     rpc: str = Field(..., description="JSON-RPC method")
     params: List[Any] = Field(default_factory=list, description="RPC parameters")
     node: str = Field("node1", description="Node to call on")
-    description: Optional[str] = Field(None, description="Check description")
     result_contains: Optional[Any] = Field(None, description="Expected value in result")
     result_equals: Optional[Any] = Field(None, description="Exact expected result")
     timeout: Optional[int] = Field(30, description="RPC timeout")
@@ -205,14 +223,12 @@ class RPCCheck(BaseModel):
 class PythonCheck(BaseModel):
     """Verify condition using Python code."""
     python: str = Field(..., description="Python code that should not raise AssertionError")
-    description: Optional[str] = Field(None, description="Check description")
 
 
 class BashCheck(BaseModel):
     """Verify condition using Bash script."""
     bash: str = Field(..., description="Bash script (exit 0 = success)")
     node: str = Field("node1", description="Node to execute on")
-    description: Optional[str] = Field(None, description="Check description")
     timeout: Optional[int] = Field(30, description="Script timeout")
 
 
@@ -237,7 +253,6 @@ class StepDefaults(BaseModel):
 class StepGroup(BaseModel):
     """Group of steps with shared defaults."""
     name: Optional[str] = Field(None, description="Group name for logging")
-    description: Optional[str] = Field(None, description="Group description")
     defaults: Optional[StepDefaults] = Field(None, description="Default parameters for this group")
     steps: List[Union["TestStep", "StepGroup"]] = Field(..., description="Steps in this group")
 
