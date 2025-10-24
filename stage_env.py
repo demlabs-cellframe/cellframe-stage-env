@@ -74,7 +74,7 @@ def main(
             cfg = ConfigParser()
             cfg.read(CONFIG_PATH)
             if cfg.has_section('logging') and cfg.has_option('logging', 'log_dir'):
-                log_dir = Path(CONFIG_PATH.parent) / cfg.get('logging', 'log_dir')
+                log_dir = BASE_PATH / cfg.get('logging', 'log_dir')
                 log_dir.mkdir(parents=True, exist_ok=True)
                 from datetime import datetime
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -794,7 +794,7 @@ def collect_artifacts(
     # Collect stage-env log (use log_dir from config)
     logging_config = config_loader.get_logging_config()
     log_dir_relative = logging_config.get('log_dir', 'logs')
-    log_dir = (CONFIG_PATH.parent / log_dir_relative).resolve() if CONFIG_PATH else (BASE_PATH.parent / "logs")
+    log_dir = (BASE_PATH / log_dir_relative).resolve()
     if log_dir.exists():
         log_files = sorted(log_dir.glob("stage-env_*.log"), 
                           key=lambda p: p.stat().st_mtime, 

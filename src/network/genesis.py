@@ -38,11 +38,8 @@ class GenesisInitializer:
         config_loader = ConfigLoader(base_path, config_path)
         paths_config = config_loader.get_paths_config()
         cache_dir_relative = paths_config.get('cache_dir', 'cache')
-        # Resolve cache dir relative to config file location (not base_path)
-        if config_path:
-            self.certs_cache = (config_path.parent / cache_dir_relative / "certs").resolve()
-        else:
-            self.certs_cache = (base_path / cache_dir_relative / "certs").resolve()
+        # Resolve cache dir relative to BASE_PATH (always)
+        self.certs_cache = (base_path / cache_dir_relative / "certs").resolve()
         
         logger.info("genesis_initializer_created", network=network_name)
     
