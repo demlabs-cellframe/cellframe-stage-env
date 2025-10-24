@@ -455,20 +455,95 @@ def run_tests(
                 print_warning(f"Directory not found: {test_path}")
                 continue
             
-            # Determine test type from this specific test_dir
-            test_type = None
-            for part in reversed(test_path.parts):
-                test_type = part
-                break
+            # Find all YAML scenario files (including suite descriptors)
+            yml_files = list(test_path.glob("**/*.yml")) + list(test_path.glob("**/*.yaml"))
             
-            # Create test_type subdirectory in run_dir if not exists
-            if test_type:
-                run_dir = run_dir_base / test_type
-                run_dir.mkdir(exist_ok=True)
+            if not yml_files:
+                print_warning(f"No YAML scenario files found in {test_path.name}")
+                continue
+            
+            # Group files by suite:
+            # Suite = directory with matching .yml file at same level
+            # Example: wallet/ folder + wallet.yml file = suite "wallet"
+            suites = {}  # suite_path -> {'descriptor': file, 'scenarios': [files]}
+            standalone_scenarios = []  # scenarios without suite
+            
+            for yml_file in yml_files:
+                parent_dir = yml_file.parent
+                file_stem = yml_file.stem
                 
-                # Create artifact subdirectories for this test type
+                # Check if this is a suite descriptor:
+                # File name matches directory name at same level
+                matching_dir = parent_dir / file_stem
+                if matching_dir.exists() and matching_dir.is_dir():
+                    # This is a suite descriptor
+                    suite_key = str(matching_dir.relative_to(test_path))
+                    if suite_key not in suites:
+                        suites[suite_key] = {
+                            'descriptor': yml_file,
+                            'scenarios': [],
+                            'path': matching_dir
+                        }
+                    # Don't process descriptor as regular scenario
+                    continue
+                
+                # Check if this scenario belongs to a suite
+                # (is inside a directory that has a matching descriptor)
+                suite_found = False
+                for potential_suite_dir in [parent_dir] + list(parent_dir.parents):
+                    if potential_suite_dir == test_path:
+                        break
+                    suite_name = potential_suite_dir.name
+                    descriptor_file = potential_suite_dir.parent / f"{suite_name}.yml"
+                    if descriptor_file.exists():
+                        # This scenario belongs to a suite
+                        suite_key = str(potential_suite_dir.relative_to(test_path))
+                        if suite_key not in suites:
+                            suites[suite_key] = {
+                                'descriptor': descriptor_file,
+                                'scenarios': [],
+                                'path': potential_suite_dir
+                            }
+                        suites[suite_key]['scenarios'].append(yml_file)
+                        suite_found = True
+                        break
+                
+                if not suite_found:
+                    # Standalone scenario (no suite)
+                    standalone_scenarios.append(yml_file)
+            
+            # Process each suite
+            for suite_key, suite_info in suites.items():
+                suite_path = suite_info['path']
+                suite_descriptor = suite_info['descriptor']
+                suite_scenarios = suite_info['scenarios']
+                
+                # Parse suite descriptor to get metadata
+                common_root = BASE_PATH / "tests"
+                parser = ScenarioParser(scenarios_root=suite_descriptor.parent, common_root=common_root)
+                
+                try:
+                    suite_desc_rel = suite_descriptor.relative_to(suite_descriptor.parent)
+                    suite_spec = parser.load_scenario(str(suite_desc_rel))
+                    suite_name = suite_spec.name
+                    suite_description = suite_spec.description
+                except Exception as e:
+                    suite_name = suite_path.name
+                    suite_description = None
+                    print_warning(f"Failed to parse suite descriptor {suite_descriptor.name}: {e}")
+                
+                # Create suite-specific directory: run_<timestamp>/<relative_path_to_suite>/
+                # Example: tests/e2e/wallet/ -> run_XXX/e2e/wallet/
+                try:
+                    suite_relative_path = suite_path.relative_to(test_path.parent)
+                except:
+                    suite_relative_path = Path(test_path.name) / suite_path.name
+                
+                suite_dir = run_dir_base / suite_relative_path
+                suite_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Create artifact subdirectories for this suite
                 subdirs = [
-                    "stage-env-logs",
                     "node-logs",
                     "core-dumps",
                     "stack-traces",
@@ -477,132 +552,168 @@ def run_tests(
                     "scenario-logs",
                 ]
                 for subdir in subdirs:
-                    (run_dir / subdir).mkdir(exist_ok=True)
+                    (suite_dir / subdir).mkdir(exist_ok=True)
                 
-                print_info(f"\n📂 Using artifacts directory: run_{run_id}/{test_type}/")
-            else:
-                run_dir = run_dir_base
-            
-            # Find all YAML scenario files
-            yml_files = list(test_path.glob("**/*.yml")) + list(test_path.glob("**/*.yaml"))
-            
-            if not yml_files:
-                print_warning(f"No YAML scenario files found in {test_path.name}")
-                continue
-            
-            # Filter scenarios if needed
-            if filter:
-                yml_files = [f for f in yml_files if filter.lower() in f.name.lower()]
-                if not yml_files:
-                    print_warning(f"No scenarios match filter '{filter}'")
-                    continue
-            
-            print_info(f"\n🧪 Running {len(yml_files)} scenario(s) from {test_path.name}...")
-            
-            # Parse and execute each scenario
-            # Common includes are in stage-env/tests/common
-            common_root = BASE_PATH / "tests"
-            parser = ScenarioParser(scenarios_root=test_path, common_root=common_root)
-            
-            for scenario_file in yml_files:
-                total_scenarios += 1
-                print_info(f"\n{'─' * 60}")
-                print_info(f"▶ Running scenario: {scenario_file.name}")
+                print_info(f"\n{'═' * 60}")
+                print_info(f"📦 Suite: {suite_name}")
+                if suite_description:
+                    print_info(f"   {suite_description}")
+                print_info(f"   Path: {suite_relative_path}")
+                print_info(f"   Scenarios: {len(suite_scenarios)}")
+                print_info(f"{'═' * 60}")
                 
-                # Create scenario-specific log file in run directory
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                scenario_name_clean = scenario_file.stem.replace(' ', '_')
-                scenario_log_name = f"scenario_{scenario_name_clean}_{timestamp}.log"
+                # Filter scenarios if needed
+                if filter:
+                    suite_scenarios = [f for f in suite_scenarios if filter.lower() in f.name.lower()]
+                    if not suite_scenarios:
+                        print_warning(f"No scenarios match filter '{filter}' in suite {suite_name}")
+                        continue
                 
-                # Save logs in run_dir/scenario-logs/
-                scenario_logs_dir = run_dir / "scenario-logs"
-                scenario_log_file = scenario_logs_dir / scenario_log_name
+                # Execute suite scenarios
+                parser = ScenarioParser(scenarios_root=suite_path, common_root=common_root)
                 
-                try:
-                    # Parse scenario
-                    # Convert absolute path to relative path from scenarios_root
-                    relative_path = scenario_file.relative_to(test_path)
-                    scenario = parser.load_scenario(str(relative_path))
-                    print_info(f"  📋 Name: {scenario.name}")
-                    if scenario.description:
-                        print_info(f"  📝 Description: {scenario.description}")
-                    if scenario.tags:
-                        print_info(f"  🏷️  Tags: {', '.join(scenario.tags)}")
+                for scenario_file in suite_scenarios:
+                    total_scenarios += 1
+                    print_info(f"\n{'─' * 60}")
+                    print_info(f"▶ Running scenario: {scenario_file.name}")
                     
-                    print_info(f"  📊 Steps: setup={len(scenario.setup)}, test={len(scenario.test)}, check={len(scenario.check)}")
-                    print_info(f"  📄 Log: {scenario_log_file.name}")
+                    # Create scenario-specific log file in suite directory
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    scenario_name_clean = scenario_file.stem.replace(' ', '_')
+                    scenario_log_name = f"scenario_{scenario_name_clean}_{timestamp}.log"
                     
-                    # Setup scenario logging
-                    with open(scenario_log_file, 'w', encoding='utf-8') as log_f:
-                        log_f.write(f"=== Scenario: {scenario.name} ===\n")
-                        log_f.write(f"File: {scenario_file}\n")
-                        log_f.write(f"Description: {scenario.description or 'N/A'}\n")
-                        log_f.write(f"Tags: {', '.join(scenario.tags) if scenario.tags else 'N/A'}\n")
-                        log_f.write(f"Started: {timestamp}\n")
-                        log_f.write(f"{'=' * 60}\n\n")
+                    # Save logs in suite_dir/scenario-logs/
+                    scenario_logs_dir = suite_dir / "scenario-logs"
+                    scenario_log_file = scenario_logs_dir / scenario_log_name
                     
-                    # Execute scenario
-                    executor = ScenarioExecutor(node_cli_path=cli_path, log_file=scenario_log_file)
-                    
-                    async def _execute():
-                        return await executor.execute_scenario(scenario)
-                    
-                    print_info("  ▶️  Executing...")
-                    ctx = asyncio.run(_execute())
-                    
-                    # Get summary
-                    summary = ctx.get_summary()
-                    
-                    # Write results to scenario log
-                    with open(scenario_log_file, 'a', encoding='utf-8') as log_f:
-                        log_f.write(f"\n{'=' * 60}\n")
-                        log_f.write(f"=== Results ===\n")
-                        log_f.write(f"Status: PASSED\n")
-                        log_f.write(f"Steps: {summary['passed']}/{summary['total_steps']} passed\n")
+                    try:
+                        # Parse scenario
+                        # Convert absolute path to relative path from scenarios_root
+                        relative_path = scenario_file.relative_to(suite_path)
+                        scenario = parser.load_scenario(str(relative_path))
+                        print_info(f"  📋 Name: {scenario.name}")
+                        if scenario.description:
+                            print_info(f"  📝 Description: {scenario.description}")
+                        if scenario.tags:
+                            print_info(f"  🏷️  Tags: {', '.join(scenario.tags)}")
+                        
+                        print_info(f"  📊 Steps: setup={len(scenario.setup)}, test={len(scenario.test)}, check={len(scenario.check)}")
+                        print_info(f"  📄 Log: {scenario_log_file.name}")
+                        
+                        # Setup scenario logging
+                        with open(scenario_log_file, 'w', encoding='utf-8') as log_f:
+                            log_f.write(f"=== Scenario: {scenario.name} ===\n")
+                            log_f.write(f"File: {scenario_file}\n")
+                            log_f.write(f"Description: {scenario.description or 'N/A'}\n")
+                            log_f.write(f"Tags: {', '.join(scenario.tags) if scenario.tags else 'N/A'}\n")
+                            log_f.write(f"Started: {timestamp}\n")
+                            log_f.write(f"{'=' * 60}\n\n")
+                        
+                        # Execute scenario
+                        executor = ScenarioExecutor(node_cli_path=cli_path, log_file=scenario_log_file)
+                        
+                        async def _execute():
+                            return await executor.execute_scenario(scenario)
+                        
+                        print_info("  ▶️  Executing...")
+                        ctx = asyncio.run(_execute())
+                        
+                        # Get summary
+                        summary = ctx.get_summary()
+                        
+                        # Write results to scenario log
+                        with open(scenario_log_file, 'a', encoding='utf-8') as log_f:
+                            log_f.write(f"\n{'=' * 60}\n")
+                            log_f.write(f"=== Results ===\n")
+                            log_f.write(f"Status: PASSED\n")
+                            log_f.write(f"Steps: {summary['passed']}/{summary['total_steps']} passed\n")
+                            if summary.get('variables'):
+                                log_f.write(f"Variables saved: {len(summary['variables'])}\n")
+                                for var_name, var_value in summary.get('variables', {}).items():
+                                    log_f.write(f"  {var_name} = {var_value}\n")
+                        
+                        print_success(f"  ✅ Scenario passed!")
+                        print_info(f"     Steps: {summary['passed']}/{summary['total_steps']} passed")
                         if summary.get('variables'):
-                            log_f.write(f"Variables saved: {len(summary['variables'])}\n")
-                            for var_name, var_value in summary.get('variables', {}).items():
-                                log_f.write(f"  {var_name} = {var_value}\n")
-                    
-                    print_success(f"  ✅ Scenario passed!")
-                    print_info(f"     Steps: {summary['passed']}/{summary['total_steps']} passed")
-                    if summary.get('variables'):
-                        print_info(f"     Variables: {len(summary['variables'])} saved")
-                    
-                    passed_scenarios += 1
-                    
-                except ScenarioExecutionError as e:
-                    failed_scenarios += 1
-                    all_passed = False
-                    
-                    # Write error to scenario log
-                    with open(scenario_log_file, 'a', encoding='utf-8') as log_f:
-                        log_f.write(f"\n{'=' * 60}\n")
-                        log_f.write(f"=== Results ===\n")
-                        log_f.write(f"Status: FAILED\n")
-                        log_f.write(f"Error: {str(e)}\n")
-                    
-                    print_error(f"  ❌ Scenario failed: {str(e)}")
-                    logger.error("scenario_execution_failed", 
-                               scenario=str(scenario_file),
-                               error=str(e))
-                    
-                except Exception as e:
-                    failed_scenarios += 1
-                    all_passed = False
-                    
-                    # Write error to scenario log
-                    with open(scenario_log_file, 'a', encoding='utf-8') as log_f:
-                        log_f.write(f"\n{'=' * 60}\n")
-                        log_f.write(f"=== Results ===\n")
-                        log_f.write(f"Status: ERROR\n")
-                        log_f.write(f"Exception: {str(e)}\n")
-                        import traceback
-                        log_f.write(f"Traceback:\n{traceback.format_exc()}\n")
-                    
-                    print_error(f"  ❌ Unexpected error: {str(e)}")
-                    logger.exception("scenario_unexpected_error", 
-                                   scenario=str(scenario_file))
+                            print_info(f"     Variables: {len(summary['variables'])} saved")
+                        
+                        passed_scenarios += 1
+                        
+                    except ScenarioExecutionError as e:
+                        failed_scenarios += 1
+                        all_passed = False
+                        
+                        # Write error to scenario log
+                        with open(scenario_log_file, 'a', encoding='utf-8') as log_f:
+                            log_f.write(f"\n{'=' * 60}\n")
+                            log_f.write(f"=== Results ===\n")
+                            log_f.write(f"Status: FAILED\n")
+                            log_f.write(f"Error: {str(e)}\n")
+                        
+                        print_error(f"  ❌ Scenario failed: {str(e)}")
+                        logger.error("scenario_execution_failed", 
+                                   scenario=str(scenario_file),
+                                   error=str(e))
+                        
+                    except Exception as e:
+                        failed_scenarios += 1
+                        all_passed = False
+                        
+                        # Write error to scenario log
+                        with open(scenario_log_file, 'a', encoding='utf-8') as log_f:
+                            log_f.write(f"\n{'=' * 60}\n")
+                            log_f.write(f"=== Results ===\n")
+                            log_f.write(f"Status: ERROR\n")
+                            log_f.write(f"Exception: {str(e)}\n")
+                            import traceback
+                            log_f.write(f"Traceback:\n{traceback.format_exc()}\n")
+                        
+                        print_error(f"  ❌ Unexpected error: {str(e)}")
+                        logger.exception("scenario_unexpected_error", 
+                                       scenario=str(scenario_file))
+                
+                # Collect node logs and health logs for this specific suite
+                if network_mgr:
+                    print_info(f"\n📦 Collecting suite artifacts for {suite_relative_path}...")
+                    import docker
+                    try:
+                        client = docker.from_env()
+                        project_name = "cellframe-stage"
+                        
+                        containers = client.containers.list(
+                            all=True,
+                            filters={"label": f"com.docker.compose.project={project_name}"}
+                        )
+                        
+                        node_logs_dir = suite_dir / "node-logs"
+                        collected_logs = 0
+                        
+                        for container in containers:
+                            try:
+                                container_name = container.name
+                                if "node-" in container_name:
+                                    node_name = container_name.split("node-", 1)[1]
+                                    node_id = f"node-{node_name}"
+                                    
+                                    # Collect logs
+                                    logs = container.logs(tail=10000).decode('utf-8', errors='ignore')
+                                    log_file = node_logs_dir / f"{node_id}.log"
+                                    log_file.write_text(logs)
+                                    collected_logs += 1
+                            except Exception as e:
+                                logger.warning("failed_to_collect_container_log",
+                                             container=container.name,
+                                             error=str(e))
+                        
+                        if collected_logs > 0:
+                            print_success(f"  Collected {collected_logs} node logs")
+                        
+                        # Collect health logs for this suite
+                        artifacts_manager.collect_health_logs(suite_dir)
+                        print_success(f"  Health logs collected")
+                        
+                    except Exception as e:
+                        print_warning(f"  Failed to collect suite artifacts: {e}")
         
         # Print summary
         print_info(f"\n{'═' * 60}")
@@ -616,8 +727,8 @@ def run_tests(
         print_info(f"{'═' * 60}")
         
     finally:
-        # Collect artifacts before stopping
-        print_info("\n📦 Collecting test artifacts...")
+        # Collect final artifacts
+        print_info("\n📦 Finalizing artifacts...")
         
         try:
             # Collect stage-env log to base run directory
@@ -637,54 +748,10 @@ def run_tests(
                     artifacts_manager.collect_stage_env_log(run_dir_base, log_files[0])
                     print_success(f"Collected stage-env log")
             
-            # Collect node logs from Docker containers if network was started (once, in base dir)
-            if network_mgr:
-                import docker
-                try:
-                    client = docker.from_env()
-                    project_name = "cellframe-stage"
-                    
-                    containers = client.containers.list(
-                        all=True,
-                        filters={"label": f"com.docker.compose.project={project_name}"}
-                    )
-                    
-                    node_logs_dir = run_dir_base / "node-logs"
-                    node_logs_dir.mkdir(exist_ok=True)
-                    collected_logs = 0
-                    
-                    for container in containers:
-                        try:
-                            container_name = container.name
-                            if "node-" in container_name:
-                                node_name = container_name.split("node-", 1)[1]
-                                node_id = f"node-{node_name}"
-                                
-                                # Collect logs
-                                logs = container.logs(tail=10000).decode('utf-8', errors='ignore')
-                                log_file = node_logs_dir / f"{node_id}.log"
-                                log_file.write_text(logs)
-                                collected_logs += 1
-                        except Exception as e:
-                            logger.warning("failed_to_collect_container_log",
-                                         container=container.name,
-                                         error=str(e))
-                    
-                    if collected_logs > 0:
-                        print_success(f"Collected {collected_logs} node logs")
-                    
-                    # Collect health logs (once, in base dir)
-                    print_info("Collecting health check logs...")
-                    artifacts_manager.collect_health_logs(run_dir_base)
-                    print_success("Health logs collected")
-                    
-                except Exception as e:
-                    print_warning(f"Failed to collect Docker artifacts: {e}")
-            
             # Generate summary and reports for the ENTIRE run
             summary_data = {
                 'run_id': run_id,
-                'test_type': 'mixed' if len(test_dirs) > 1 else (test_type or 'unknown'),
+                'test_type': 'mixed' if len(test_dirs) > 1 else 'single_suite',
                 'topology': 'default',
                 'network': 'stagenet',
                 'total_nodes': 7,
@@ -715,7 +782,7 @@ def run_tests(
             except Exception as e:
                 print_warning(f"Failed to generate some reports: {e}")
             
-            print_success(f"✅ Artifacts saved to: run_{run_id}/")
+            print_success(f"✅ All artifacts saved to: run_{run_id}/")
             
         except Exception as e:
             print_warning(f"Failed to collect some artifacts: {e}")
