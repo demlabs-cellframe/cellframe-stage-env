@@ -2215,14 +2215,6 @@ check:
 
 **Описание:** Параметры по умолчанию для конкретной секции (setup/test/check). Переопределяют Global defaults.
 
-**Старый формат (список шагов):**
-```yaml
-setup:
-  - cli: command1
-  - cli: command2
-```
-
-**Новый формат (с defaults):**
 ```yaml
 setup:
   defaults:
@@ -2251,10 +2243,6 @@ test:
   steps:
     - cli: wallet list           # node=node2 (Section), wait=2s (Global)
 ```
-
-**Backward compatibility:** Старый формат (список) работает как раньше.
-
----
 
 ### Group Defaults
 
@@ -2362,17 +2350,19 @@ test:
 
 **Steps:**
 - ✅ `CLIStep` - все параметры (node, wait, expect, timeout)
-- ✅ `RPCStep` - все параметры
-- ✅ `BashStep` - все параметры
-- ❌ `WaitStep` - не применяются
-- ❌ `PythonStep` - не применяются
-- ❌ `LoopStep` - не применяются (но defaults передаются внутрь цикла)
+- ✅ `RPCStep` - все параметры (node, wait, expect, timeout)
+- ✅ `BashStep` - все параметры (node, wait, expect, timeout)
+- ✅ `PythonStep` - node, wait, timeout
+- ✅ `WaitStep` - wait (только wait применяется)
+- ⚠️ `LoopStep` - defaults передаются внутрь цикла к вложенным шагам
 
 **Checks:**
 - ✅ `CLICheck` - node, timeout
 - ✅ `RPCCheck` - node, timeout
 - ✅ `BashCheck` - node, timeout
-- ❌ `PythonCheck` - не применяются
+- ✅ `PythonCheck` - node, timeout
+
+**Примечание:** Все типы шагов и checks теперь поддерживают defaults для своих соответствующих атрибутов.
 
 ---
 

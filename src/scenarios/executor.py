@@ -157,16 +157,24 @@ class ScenarioExecutor:
         if not defaults:
             return step
         
-        # Apply to CLI/RPC/Bash steps (have node, wait, expect, timeout)
-        if isinstance(step, (CLIStep, RPCStep, BashStep)):
-            if defaults.node and not hasattr(step, '_node_set'):
-                # Only apply if using default node value
-                if step.node == "node1":  # Default value
-                    step.node = defaults.node
+        # Apply to all steps that have relevant attributes
+        # node: CLI, RPC, Bash, Python steps
+        if isinstance(step, (CLIStep, RPCStep, BashStep, PythonStep)):
+            if defaults.node and step.node == "node1":  # Default value
+                step.node = defaults.node
+        
+        # wait: CLI, RPC, Bash, Python, Wait steps
+        if isinstance(step, (CLIStep, RPCStep, BashStep, PythonStep, WaitStep)):
             if defaults.wait and not step.wait:
                 step.wait = defaults.wait
+        
+        # expect: CLI, RPC, Bash steps
+        if isinstance(step, (CLIStep, RPCStep, BashStep)):
             if defaults.expect and step.expect == "success":  # Default value
                 step.expect = defaults.expect
+        
+        # timeout: CLI, RPC, Bash, Python steps
+        if isinstance(step, (CLIStep, RPCStep, BashStep, PythonStep)):
             if defaults.timeout and step.timeout == 30:  # Default value
                 step.timeout = defaults.timeout
         
@@ -459,12 +467,17 @@ class ScenarioExecutor:
         for i, check in enumerate(checks, 1):
             logger.info(f"Check {i}/{len(checks)}: {type(check).__name__}")
             
-            # Apply defaults to checks (node, timeout)
-            if defaults and isinstance(check, (CLICheck, RPCCheck, BashCheck)):
-                if defaults.node and check.node == "node1":  # Default value
-                    check.node = defaults.node
-                if defaults.timeout and check.timeout == 30:  # Default value
-                    check.timeout = defaults.timeout
+            # Apply defaults to all checks that have relevant attributes
+            if defaults:
+                # node: CLI, RPC, Bash, Python checks
+                if isinstance(check, (CLICheck, RPCCheck, BashCheck, PythonCheck)):
+                    if defaults.node and check.node == "node1":  # Default value
+                        check.node = defaults.node
+                
+                # timeout: CLI, RPC, Bash, Python checks
+                if isinstance(check, (CLICheck, RPCCheck, BashCheck, PythonCheck)):
+                    if defaults.timeout and check.timeout == 30:  # Default value
+                        check.timeout = defaults.timeout
             
             if isinstance(check, CLICheck):
                 await self._execute_cli_check(check, ctx)
