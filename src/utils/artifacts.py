@@ -85,17 +85,16 @@ class ArtifactsManager:
             "scenario-logs",
         ]
         
-        # If test_type specified, create test type subdirectories  
+        # If test_type specified, create only that test type subdirectory
         if test_type:
-            for test_cat in ['e2e', 'functional', 'base']:
-                cat_dir = run_dir / test_cat
-                cat_dir.mkdir(exist_ok=True)
-                # Create subdirs under each category
-                for subdir in subdirs:
-                    (cat_dir / subdir).mkdir(exist_ok=True)
+            test_type_dir = run_dir / test_type
+            test_type_dir.mkdir(exist_ok=True)
             
-            # Return the specific test type directory
-            result_dir = run_dir / test_type
+            # Create subdirs under this specific test type
+            for subdir in subdirs:
+                (test_type_dir / subdir).mkdir(exist_ok=True)
+            
+            result_dir = test_type_dir
         else:
             # Create subdirs at run_dir level (old behavior)
             for subdir in subdirs:
