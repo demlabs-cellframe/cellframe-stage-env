@@ -65,6 +65,12 @@ class NodeConfig(BaseModel):
     custom_packages: Optional[List[str]] = Field(None, description="Additional packages to install")
     custom_env: Optional[Dict[str, str]] = Field(None, description="Custom environment variables")
     
+    # Docker customizations
+    docker_volumes: Optional[List[str]] = Field(None, description="Additional volume mounts (host:container[:mode])")
+    docker_capabilities: Optional[List[str]] = Field(None, description="Additional Linux capabilities")
+    docker_devices: Optional[List[str]] = Field(None, description="Device mappings")
+    docker_extra: Optional[Dict[str, Any]] = Field(None, description="Raw docker-compose config sections")
+    
     class Config:
         use_enum_values = True
 

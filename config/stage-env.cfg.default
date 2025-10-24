@@ -336,3 +336,124 @@ url = https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-m
 # - Use node-specific customization only when absolutely necessary
 # - Document your customizations in comments above each section
 # 
+
+# ============================================================================
+# Docker Advanced Customization (Per-Node/Per-Role)
+# ============================================================================
+#
+# These settings allow deep Docker customization beyond packages/scripts.
+# Can be applied via:
+#   1. stage-env.cfg (this file) - for role-based defaults
+#   2. YAML scenarios - for specific test requirements
+#
+# Use cases:
+#   - VPN testing: enable TUN/TAP driver, add NET_ADMIN capability
+#   - Network simulation: custom volumes for tc/netem configs
+#   - Hardware access: mount specific devices (GPU, USB, etc)
+#   - Advanced networking: custom network modes, sysctls
+#
+# ============================================================================
+
+# Example configurations (commented out by default):
+
+# [role_docker_root]
+# # Docker customizations for ALL root nodes
+# 
+# # Additional volume mounts (host:container[:mode])
+# # volumes = /dev/shm:/dev/shm:rw
+# #          /host/vpn/configs:/etc/vpn:ro
+# 
+# # Additional Linux capabilities
+# # capabilities = NET_ADMIN,NET_RAW,SYS_ADMIN
+# 
+# # Device mappings (for hardware access - GPU, USB, etc)
+# # devices = /dev/nvidia0,/dev/nvidiactl
+# 
+# # Raw docker-compose config sections (advanced)
+# # Merged into generated docker-compose.yml
+# # extra_config = {"sysctls": {"net.ipv4.ip_forward": "1"},
+# #                 "privileged": false}
+
+# [node_docker_1]
+# # Docker customizations for specific node (node1)
+# # Useful for asymmetric testing scenarios
+# 
+# volumes = /tmp/node1-data:/opt/test-data:rw
+# capabilities = NET_ADMIN,NET_RAW
+# devices = /dev/net/tun
+# 
+# # Example: Enable TUN/TAP for VPN testing
+# # extra_config = {"devices": ["/dev/net/tun:/dev/net/tun"],
+# #                 "sysctls": {"net.ipv4.ip_forward": "1"}}
+
+# ============================================================================
+# Configuration Priority for Docker Customizations
+# ============================================================================
+#
+# Docker settings are applied in this order (later overrides earlier):
+#
+# 1. Base docker-compose.yml template (standard volumes, network, etc)
+# 2. [role_docker_<role>] - role-based docker customizations
+# 3. Per-node from YAML scenario - scenario-specific requirements
+# 4. [node_docker_<id>] - node-specific overrides (highest priority)
+#
+# Merging rules:
+#   - volumes:      Lists are EXTENDED (all volumes kept)
+#   - capabilities: Lists are EXTENDED (all caps added)
+#   - devices:      Lists are EXTENDED (all devices added)
+#   - environment:  Dicts are MERGED (later values win)
+#   - extra_config: Deep merge (dicts merged, lists extended, scalars replaced)
+#
+# ============================================================================
+
+# ============================================================================
+# Common Use Cases
+# ============================================================================
+
+# Use Case 1: VPN/TUN Testing (OpenVPN, WireGuard inside container)
+# -------------------------------------------------------------------
+# [role_docker_full]
+# # Enable TUN/TAP driver inside container + network capabilities
+# capabilities = NET_ADMIN,NET_RAW
+# devices = /dev/net/tun
+# extra_config = {"sysctls": {"net.ipv4.ip_forward": "1",
+#                             "net.ipv6.conf.all.disable_ipv6": "0"}}
+
+# Use Case 2: Shared Memory for IPC
+# ----------------------------------
+# [docker_customization]
+# volumes = /dev/shm:/dev/shm:rw
+
+# Use Case 3: Debug with GDB/Strace
+# ----------------------------------
+# [node_docker_1]
+# capabilities = SYS_PTRACE
+# extra_config = {"security_opt": ["apparmor=unconfined"]}
+
+# Use Case 4: Custom Network Tools
+# ---------------------------------
+# [role_customization_master]
+# packages = iproute2,tcpdump,iperf3,netcat-openbsd,wireguard-tools,openvpn
+
+# Use Case 5: Persistent Test Data
+# ---------------------------------
+# [node_docker_1]
+# volumes = /host/persistent/node1:/opt/cellframe-node/var/test-data:rw
+
+# Use Case 6: Network Simulation with TC/Netem
+# ----------------------------------------------
+# [role_docker_master]
+# capabilities = NET_ADMIN
+# extra_config = {"sysctls": {"net.core.rmem_max": "2500000",
+#                             "net.core.wmem_max": "2500000"}}
+#
+# [role_customization_master]
+# packages = iproute2
+# post_script = /path/to/setup-netem.sh
+
+# Use Case 7: GPU Access (for crypto acceleration)
+# -------------------------------------------------
+# [node_docker_1]
+# devices = /dev/nvidia0,/dev/nvidiactl,/dev/nvidia-uvm
+# extra_config = {"runtime": "nvidia"}
+#

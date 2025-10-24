@@ -212,6 +212,13 @@ class DockerComposeManager:
                 f"./{cache_dir_relative}/cellframe-packages:/var/cache/cellframe-packages"
             ]
             
+            # Add custom volumes if specified
+            if hasattr(node, 'docker_volumes') and node.docker_volumes:
+                node_service['volumes'].extend(node.docker_volumes)
+                logger.debug("added_custom_volumes",
+                           node_id=node.node_id,
+                           volumes=node.docker_volumes)
+            
             # Set environment variables
             node_service['environment'] = {
                 'NODE_ID': str(node.node_id),
@@ -222,6 +229,45 @@ class DockerComposeManager:
                 'DAP_DEBUG': '1',
                 'CELLFRAME_DEBUG': '1'
             }
+            
+            # Add custom environment variables if specified
+            if hasattr(node, 'custom_env_vars') and node.custom_env_vars:
+                node_service['environment'].update(node.custom_env_vars)
+                logger.debug("added_custom_env_vars",
+                           node_id=node.node_id,
+                           vars=list(node.custom_env_vars.keys()))
+            
+            # Add custom capabilities if specified
+            if hasattr(node, 'docker_capabilities') and node.docker_capabilities:
+                if 'cap_add' not in node_service:
+                    node_service['cap_add'] = []
+                node_service['cap_add'].extend(node.docker_capabilities)
+                logger.debug("added_custom_capabilities",
+                           node_id=node.node_id,
+                           caps=node.docker_capabilities)
+            
+            # Add custom devices if specified
+            if hasattr(node, 'docker_devices') and node.docker_devices:
+                node_service['devices'] = node.docker_devices
+                logger.debug("added_custom_devices",
+                           node_id=node.node_id,
+                           devices=node.docker_devices)
+            
+            # Merge custom docker config if specified
+            if hasattr(node, 'docker_extra_config') and node.docker_extra_config:
+                for key, value in node.docker_extra_config.items():
+                    if isinstance(value, dict) and key in node_service and isinstance(node_service[key], dict):
+                        # Merge dictionaries
+                        node_service[key].update(value)
+                    elif isinstance(value, list) and key in node_service and isinstance(node_service[key], list):
+                        # Extend lists
+                        node_service[key].extend(value)
+                    else:
+                        # Override or add new key
+                        node_service[key] = value
+                logger.debug("merged_custom_docker_config",
+                           node_id=node.node_id,
+                           keys=list(node.docker_extra_config.keys()))
             
             # Add to services
             compose_data['services'][service_name] = node_service

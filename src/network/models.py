@@ -63,4 +63,10 @@ class NodeConfig(BaseModel):
     custom_packages: Optional[str] = None  # Comma-separated package names
     custom_post_script: Optional[str] = None  # Path to post-install script
     custom_env_vars: Optional[Dict[str, str]] = None  # Additional environment variables
+    
+    # Docker customizations (optional, extends base docker config)
+    docker_volumes: Optional[List[str]] = None  # Additional volume mounts: ["host:container:mode"]
+    docker_capabilities: Optional[List[str]] = None  # Additional capabilities: ["NET_ADMIN", "SYS_ADMIN"]
+    docker_devices: Optional[List[str]] = None  # Device mappings: ["/dev/net/tun"]
+    docker_extra_config: Optional[Dict[str, Any]] = None  # Raw docker-compose config sections
 
