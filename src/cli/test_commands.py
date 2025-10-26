@@ -103,7 +103,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 print_error(f"Failed to start network: {e}")
                 raise typer.Exit(1)
         else:
-            # Network already running - still need to initialize CLI parser
+            # Network already running - connect to it
+            print_info("🔗 Connecting to running network...")
+            config_path = get_config_path()
+            network_mgr = NetworkManager(base_path, topology_name="default", config_path=config_path)
+            
+            # Still need to initialize CLI parser
             print_info("📖 Initializing CLI parser from running network...")
             from ..utils.cli_parser import get_cli_parser
             
@@ -132,6 +137,17 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         scenario_results = []
         
         cli_path = "cellframe-node-cli"
+        
+        # Check if we have pristine network (just started with snapshot)
+        pristine_marker = artifacts_manager.artifacts_root / ".pristine_network"
+        is_first_suite = pristine_marker.exists()
+        
+        if is_first_suite:
+            print_info("🎯 Detected pristine network - first suite will use it directly!")
+        
+        # Track if this is the first suite (to optimize snapshot creation)
+        first_suite_executed = False
+        snapshot_created = False
         
         # Start monitoring services ONCE for entire test session
         async def _start_monitoring():
@@ -216,6 +232,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     common_root = base_path / "tests"
                     parser = ScenarioParser(scenarios_root=suite_descriptor.parent, common_root=common_root)
                     
+                    suite_spec = None  # Initialize to None in case of parse failure
                     try:
                         suite_desc_rel = suite_descriptor.relative_to(suite_descriptor.parent)
                         suite_spec = parser.load_scenario(str(suite_desc_rel))
@@ -250,16 +267,73 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     
                     # Clean test data before each suite (if network is running)
                     if network_mgr:
-                        print_info("🧹 Cleaning test data for fresh suite state...")
+                        # OPTIMIZATION: Skip restore for first suite if we have pristine network
+                        if is_first_suite:
+                            # CRITICAL: Remove marker IMMEDIATELY before using pristine network
+                            # Even if suite fails, next run will correctly do restore
+                            try:
+                                pristine_marker.unlink()
+                            except FileNotFoundError:
+                                pass  # Already removed, that's fine
+                            is_first_suite = False  # Only first suite gets this benefit
+                            
+                            print_success("🚀 Using pristine network (no restore needed)")
+                        else:
+                            print_info("🧹 Restoring clean environment state...")
+                            
+                            async def _restore_state():
+                                await network_mgr.restore_clean_state()
+                            
+                            try:
+                                asyncio.run(_restore_state())
+                                print_success("✓ Environment restored from snapshot")
+                            except Exception as e:
+                                print_warning(f"Failed to restore clean state: {e}")
+
+                    # CRITICAL: Execute suite-level setup AFTER restore for EVERY suite
+                    # This ensures certificates and other ephemeral resources are created
+                    # even after snapshot restore (which doesn't include certs)
+                    if isinstance(suite_spec, SuiteDescriptor) and (suite_spec.includes or suite_spec.setup):
+                        print_info("🔧 Executing suite-level setup...")
                         
-                        async def _clean_data():
-                            await network_mgr.clean_test_data()
+                        from ..scenarios.executor import ScenarioExecutor
+                        from ..scenarios.parser import SuiteSetupParser
                         
                         try:
-                            asyncio.run(_clean_data())
-                            print_success("✓ Test data cleaned")
+                            # Use dedicated SuiteSetupParser to process includes
+                            suite_setup_parser = SuiteSetupParser(
+                                scenarios_root=suite_path,
+                                common_root=common_root
+                            )
+                            
+                            # Load and parse suite setup with includes
+                            suite_setup_scenario = suite_setup_parser.load_suite_setup(
+                                suite_includes=suite_spec.includes or [],
+                                suite_setup=suite_spec.setup.dict() if suite_spec.setup else None,
+                                suite_name=suite_name,
+                                base_dir=suite_path
+                            )
+                            
+                            # Execute setup
+                            executor = ScenarioExecutor(
+                                node_cli_path="cellframe-node-cli",
+                                log_file=suite_dir / "suite-setup.log",
+                                debug=debug_mode
+                            )
+                            
+                            async def _run_suite_setup():
+                                await executor.execute_scenario(suite_setup_scenario)
+                            
+                            asyncio.run(_run_suite_setup())
+                            print_success("✓ Suite setup completed")
+                            
                         except Exception as e:
-                            print_warning(f"Failed to clean test data: {e}")
+                            print_error(f"Suite setup failed: {e}")
+                            print_error(f"❌ Skipping all scenarios in suite: {suite_name}")
+                            # Skip all scenarios in this suite
+                            continue
+
+
                     
                     # Filter scenarios if needed
                     if filter:
@@ -292,6 +366,60 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             # Skip if it's a SuiteDescriptor
                             if isinstance(scenario, SuiteDescriptor):
                                 continue
+                            
+                            # CRITICAL: Merge suite includes/defaults into scenario
+                            # Suite includes provide common settings (like -net stagenet)
+                            if isinstance(suite_spec, SuiteDescriptor) and suite_spec.includes:
+                                # Load suite includes and extract defaults
+                                from ..scenarios.parser import ScenarioParser as SP
+                                suite_parser = SP(scenarios_root=suite_path, common_root=common_root)
+                                
+                                # Process suite includes
+                                suite_includes_data = {}
+                                for include_path in suite_spec.includes:
+                                    search_paths = [
+                                        (suite_path / include_path).resolve(),
+                                        (base_path / "tests" / include_path).resolve(),
+                                        (common_root / include_path).resolve(),
+                                    ]
+                                    
+                                    include_full = None
+                                    for path in search_paths:
+                                        if path.exists():
+                                            include_full = path
+                                            break
+                                    
+                                    if include_full:
+                                        with open(include_full, 'r', encoding='utf-8') as f:
+                                            import yaml
+                                            include_data = yaml.safe_load(f)
+                                            if include_data and isinstance(include_data, dict):
+                                                # Merge defaults
+                                                if 'defaults' in include_data:
+                                                    if not suite_includes_data.get('defaults'):
+                                                        suite_includes_data['defaults'] = {}
+                                                    # Deep merge defaults
+                                                    for key, value in include_data['defaults'].items():
+                                                        if key not in suite_includes_data['defaults']:
+                                                            suite_includes_data['defaults'][key] = value
+                                                        elif isinstance(value, dict) and isinstance(suite_includes_data['defaults'][key], dict):
+                                                            suite_includes_data['defaults'][key].update(value)
+                                
+                                # Merge suite defaults into scenario defaults
+                                if suite_includes_data.get('defaults'):
+                                    from ..scenarios.schema import StepDefaults
+                                    if not scenario.defaults:
+                                        scenario.defaults = StepDefaults()
+                                    
+                                    suite_defaults_dict = suite_includes_data['defaults']
+                                    # Merge cli defaults
+                                    if 'cli' in suite_defaults_dict:
+                                        if not scenario.defaults.cli:
+                                            scenario.defaults.cli = {}
+                                        # Add suite CLI defaults that aren't in scenario
+                                        for opt, val in suite_defaults_dict['cli'].items():
+                                            if opt not in scenario.defaults.cli:
+                                                scenario.defaults.cli[opt] = val
                             
                             print_info(f"  📋 Name: {scenario.name}")
                             if hasattr(scenario, 'description') and scenario.description:

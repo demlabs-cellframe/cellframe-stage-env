@@ -10,15 +10,15 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from ..utils.logger import get_logger
 from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
-    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, LoopStep, StepGroup,
+    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
     CLICheck, RPCCheck, PythonCheck, BashCheck,
-    TestScenario, TestStep, CheckSpec, StepDefaults, SectionConfig, DatumStatus
+    TestScenario, SuiteSetupScenario, TestStep, CheckSpec, StepDefaults, SectionConfig, DatumStatus
 )
 
 logger = get_logger(__name__)
@@ -45,10 +45,10 @@ class ScenarioExecutionError(Exception):
 class RuntimeContext:
     """Runtime context for scenario execution."""
     
-    def __init__(self, scenario: TestScenario):
+    def __init__(self, scenario: Union[TestScenario, SuiteSetupScenario]):
         """Initialize runtime context."""
         self.scenario = scenario
-        self.variables: Dict[str, Any] = scenario.variables.copy()
+        self.variables: Dict[str, Any] = scenario.variables.copy() if hasattr(scenario, 'variables') else {}
         
         # Add network_name from network configuration
         if hasattr(scenario, 'network') and scenario.network:
@@ -123,6 +123,80 @@ class ScenarioExecutor:
         self.debug = debug
         self._running = False
         # Monitoring manager будет получен через синглтон при старте сценария
+        # Node role to ID mapping cache (populated from topology)
+        self._node_role_mapping: Optional[Dict[str, str]] = None
+    
+    def _resolve_node_alias(self, node_alias: str) -> str:
+        """
+        Resolve node alias to actual node ID.
+        
+        Supports formats:
+        - node1, node2, ... -> node1, node2 (passthrough)
+        - node-1, node-2 -> node1, node2
+        - root-1, root-2 -> first/second root node
+        - master-1, master-2 -> first/second master node
+        - full-1, full-2 -> first/second full node
+        
+        Args:
+            node_alias: Node alias from scenario
+            
+        Returns:
+            Actual node ID (e.g., "node1")
+        """
+        # Direct node ID (node1, node2, etc.)
+        if node_alias.startswith("node") and len(node_alias) > 4 and node_alias[4:].isdigit():
+            return node_alias
+        
+        # node-N format -> nodeN
+        if node_alias.startswith("node-"):
+            node_num = node_alias[5:]
+            if node_num.isdigit():
+                return f"node{node_num}"
+        
+        # Role-based aliases (root-1, master-2, full-1)
+        if "-" in node_alias:
+            parts = node_alias.rsplit("-", 1)
+            if len(parts) == 2:
+                role, index_str = parts
+                if index_str.isdigit():
+                    index = int(index_str)
+                    
+                    # Need to resolve from topology
+                    if self._node_role_mapping:
+                        role_nodes = [
+                            node_id for node_id, node_role in self._node_role_mapping.items()
+                            if node_role == role
+                        ]
+                        if role_nodes and 1 <= index <= len(role_nodes):
+                            return role_nodes[index - 1]  # 1-indexed
+        
+        # Fallback: return as-is (will fail later if invalid)
+        return node_alias
+    
+    def _resolve_node_to_container(self, node: str) -> str:
+        """
+        Convert node ID/alias to Docker container name.
+        
+        Args:
+            node: Node ID or alias
+            
+        Returns:
+            Container name (e.g., "cellframe-stage-node-1")
+        """
+        # Resolve alias to actual node ID first
+        node_id = self._resolve_node_alias(node)
+        
+        # Already a full container name
+        if node_id.startswith("cellframe-stage-"):
+            return node_id
+        
+        # Extract number from node ID (node1 -> 1)
+        if node_id.startswith("node"):
+            node_num = node_id[4:]  # Remove "node" prefix
+            return f"cellframe-stage-node-{node_num}"
+        
+        # Unknown format - assume it's a service name
+        return f"cellframe-stage-{node_id}"
     
     def _log_to_file(self, message: str):
         """Write message to log file if enabled."""
@@ -216,12 +290,12 @@ class ScenarioExecutor:
         
         return step
     
-    async def execute_scenario(self, scenario: TestScenario) -> RuntimeContext:
+    async def execute_scenario(self, scenario: Union[TestScenario, SuiteSetupScenario]) -> RuntimeContext:
         """
-        Execute complete test scenario.
+        Execute complete test scenario or suite setup.
         
         Args:
-            scenario: Parsed test scenario
+            scenario: Parsed test scenario or suite setup scenario
             
         Returns:
             Runtime context with results
@@ -230,7 +304,7 @@ class ScenarioExecutor:
             ScenarioExecutionError: If execution fails
         """
         logger.info(f"Starting scenario: {scenario.name}")
-        if scenario.description:
+        if hasattr(scenario, 'description') and scenario.description:
             logger.info(f"Description: {scenario.description}")
         
         ctx = RuntimeContext(scenario)
@@ -238,7 +312,7 @@ class ScenarioExecutor:
         
         try:
             # Global defaults (applied to all phases)
-            global_defaults = scenario.defaults
+            global_defaults = scenario.defaults if hasattr(scenario, 'defaults') else None
             
             # Debug: log defaults
             if self.debug and global_defaults:
@@ -247,18 +321,19 @@ class ScenarioExecutor:
                     self._log_to_file(f"[DEBUG] CLI defaults: {global_defaults.cli}")
             
             # Setup phase
-            if scenario.setup:
+            if hasattr(scenario, 'setup') and scenario.setup:
                 logger.info("Executing setup phase...")
                 section_defaults = self._merge_defaults(global_defaults, scenario.setup.defaults)
                 await self._execute_steps(scenario.setup.steps, ctx, section_defaults)
             
-            # Test phase
-            logger.info("Executing test phase...")
-            section_defaults = self._merge_defaults(global_defaults, scenario.test.defaults)
-            await self._execute_steps(scenario.test.steps, ctx, section_defaults)
+            # Test phase (only for TestScenario, not for SuiteSetupScenario)
+            if hasattr(scenario, 'test') and scenario.test:
+                logger.info("Executing test phase...")
+                section_defaults = self._merge_defaults(global_defaults, scenario.test.defaults)
+                await self._execute_steps(scenario.test.steps, ctx, section_defaults)
             
-            # Check phase
-            if scenario.check:
+            # Check phase (only for TestScenario)
+            if hasattr(scenario, 'check') and scenario.check:
                 logger.info("Executing check phase...")
                 section_defaults = self._merge_defaults(global_defaults, scenario.check.defaults)
                 await self._execute_checks(scenario.check.steps, ctx, section_defaults)
@@ -342,6 +417,8 @@ class ScenarioExecutor:
                 await self._execute_python_step(step, ctx)
             elif isinstance(step, BashStep):
                 await self._execute_bash_step(step, ctx)
+            elif isinstance(step, ToolStep):
+                await self._execute_tool_step(step, ctx)
             elif isinstance(step, LoopStep):
                 await self._execute_loop_step(step, ctx, defaults)
             else:
@@ -424,6 +501,31 @@ class ScenarioExecutor:
             success = self._check_expectation(result, step.expect, step.contains)
             
             if not success:
+                # Determine what went wrong for better error message
+                error_details = []
+                if step.expect == "success":
+                    if result["returncode"] != 0:
+                        error_details.append(f"exit code {result['returncode']} (expected 0)")
+                    # Check if there's an error in output
+                    if result["stdout"]:
+                        try:
+                            import yaml
+                            yaml_response = yaml.safe_load(result["stdout"])
+                            if isinstance(yaml_response, dict) and "errors" in yaml_response:
+                                errors = yaml_response["errors"]
+                                if isinstance(errors, dict):
+                                    error_code = errors.get('code')
+                                    if error_code is not None and error_code != 0:
+                                        error_details.append(f"errors.code={error_code}")
+                                        if 'message' in errors:
+                                            error_details.append(f"message: {errors['message']}")
+                                elif isinstance(errors, list) and errors:
+                                    error_details.append(f"errors list: {errors}")
+                        except:
+                            pass
+                
+                error_summary = "; ".join(error_details) if error_details else f"exit code {result['returncode']}"
+                
                 ctx.add_result("cli", False, {
                     "command": cmd,
                     "node": step.node,
@@ -431,11 +533,19 @@ class ScenarioExecutor:
                     "error": result["stderr"],
                     "exit_code": result["returncode"]
                 })
-                raise ScenarioExecutionError(
-                    f"CLI command failed: {cmd}\n"
-                    f"Expected: {step.expect}\n"
-                    f"Got: exit code {result['returncode']}"
-                )
+                
+                # Create detailed error message
+                error_msg = f"CLI command failed: {cmd}\n"
+                error_msg += f"Expected: {step.expect}\n"
+                error_msg += f"Got: {error_summary}\n"
+                if result["stdout"]:
+                    # Show first 500 chars of output
+                    stdout_preview = result["stdout"][:500]
+                    if len(result["stdout"]) > 500:
+                        stdout_preview += "... (truncated)"
+                    error_msg += f"\nOutput:\n{stdout_preview}"
+                
+                raise ScenarioExecutionError(error_msg)
             
             # Save result to variable if requested
             if step.save:
@@ -458,12 +568,19 @@ class ScenarioExecutor:
                         
                         # Look for common hash field names
                         if isinstance(parsed, dict):
+                            # First check direct fields
                             for key in ['hash', 'tx_hash', 'datum_hash', 'token_hash', 
                                        'emission_hash', 'cert_hash', 'wallet_addr']:
                                 if key in parsed and parsed[key]:
                                     saved_value = parsed[key]
                                     self._log_to_file(f"✓ Extracted {key}: {saved_value}")
                                     break
+                            
+                            # If not found, check errors.message for hash (Cellframe CLI format)
+                            if saved_value == output and 'errors' in parsed:
+                                errors = parsed['errors']
+                                if isinstance(errors, dict) and 'message' in errors:
+                                    message = errors['message']
                     except:
                         # Fallback: look for hash pattern in output (0x[hex])
                         import re
@@ -479,36 +596,46 @@ class ScenarioExecutor:
                 ctx.set_variable(step.save, saved_value)
                 self._log_to_file(f"✓ Saved to variable: {step.save}")
             
-            # Extract and validate specific values if requested
-            if step.extract_to:
-                from .extractors import DataExtractor, ExtractionError
+            # Extract and validate specific values using new save_* helpers
+            if step.save_hash or step.save_wallet or step.save_node:
+                from .extractors import DataExtractor, ExtractionError, ExtractType
                 
                 self._log_to_file(f"\n--- Extracting Values ---")
-                for var_name, extract_spec in step.extract_to.items():
+                
+                # Map of save_* field → (variable_name, extract_type)
+                extractions = []
+                if step.save_hash:
+                    extractions.append((step.save_hash, ExtractType.HASH))
+                if step.save_wallet:
+                    extractions.append((step.save_wallet, ExtractType.WALLET_ADDRESS))
+                if step.save_node:
+                    extractions.append((step.save_node, ExtractType.NODE_ADDRESS))
+                
+                for var_name, extract_type in extractions:
                     try:
-                        # Use default pattern for type if not specified
-                        pattern = extract_spec.pattern
-                        if not pattern:
-                            pattern = DataExtractor.get_default_pattern(extract_spec.type)
-                            self._log_to_file(f"Using default pattern for {extract_spec.type}: {pattern}")
+                        # Get default pattern for type
+                        pattern = DataExtractor.get_default_pattern(extract_type)
+                        self._log_to_file(f"Extracting {extract_type.value} as '{var_name}' using pattern: {pattern}")
                         
                         extracted_value, error = DataExtractor.extract_and_validate(
                             output=result["stdout"],
                             pattern=pattern,
-                            extract_type=extract_spec.type,
-                            group=extract_spec.group,
-                            required=extract_spec.required,
-                            default=extract_spec.default
+                            extract_type=extract_type,
+                            group=1,
+                            required=True,
+                            default=None
                         )
                         
                         if extracted_value is not None:
                             ctx.set_variable(var_name, extracted_value)
                             self._log_to_file(f"✓ Extracted '{var_name}': {extracted_value[:50]}{'...' if len(extracted_value) > 50 else ''}")
-                            self._log_to_file(f"  Type: {extract_spec.type}")
-                        elif error:
-                            self._log_to_file(f"✗ Extraction warning for '{var_name}': {error}")
-                            if extract_spec.required:
-                                raise ExtractionError(error)
+                            self._log_to_file(f"  Type: {extract_type.value}")
+                        else:
+                            raise ScenarioExecutionError(
+                                f"Failed to extract '{var_name}': {error}",
+                                step=step,
+                                context={"command": step.cli, "output": result["stdout"][:200]}
+                            )
                     
                     except ExtractionError as e:
                         self._log_to_file(f"✗ Extraction failed for '{var_name}': {e}")
@@ -605,25 +732,28 @@ class ScenarioExecutor:
         ctx.add_result("wait", True, {"duration": step.wait})
     
     async def _execute_wait_for_datum_step(self, step: WaitForDatumStep, ctx: RuntimeContext):
-        """Execute wait-for-datum step - register datum with background monitor."""
+        """Execute wait-for-datum step - directly monitor datum lifecycle."""
         # Support both single hash and list of hashes
         datum_hashes = step.wait_for_datum if isinstance(step.wait_for_datum, list) else [step.wait_for_datum]
         
         # Substitute variables in hashes
         datum_hashes = [ctx.substitute(h) for h in datum_hashes]
         
-        logger.info(f"Registering {len(datum_hashes)} datum(s) for monitoring")
+        logger.info(f"Monitoring {len(datum_hashes)} datum(s)")
         
         # Get monitoring manager singleton
-        monitoring = await MonitoringManager.get_instance()
+        monitoring = MonitoringManager.get_instance(
+            node_cli_path=self.node_cli_path,
+            log_file=self.log_file
+        )
         
-        # Register and wait for each datum
+        # Monitor each datum directly (no background tasks)
         results = []
         for datum_hash in datum_hashes:
             logger.debug(f"Monitoring datum: {datum_hash[:16]}...")
             
-            # Register datum for tracking (returns Future)
-            result_future = monitoring.datum.track_datum(
+            # Wait for datum to complete processing
+            result = await monitoring.datum.wait_for_datum(
                 datum_hash=datum_hash,
                 node=step.node,
                 network=step.network,
@@ -635,12 +765,10 @@ class ScenarioExecutor:
                 timeout_in_blocks=step.timeout_in_blocks
             )
             
-            # Wait for result
-            result = await result_future
             results.append(result)
             
             # Check if monitoring failed
-            if result.status not in [DatumStatus.PROPAGATED, DatumStatus.IN_BLOCKS]:
+            if result.status != DatumStatus.SUCCESS:
                 error_msg = f"Datum monitoring failed: {result.error_message}"
                 logger.error(error_msg)
                 
@@ -913,17 +1041,8 @@ class ScenarioExecutor:
         self, command: str, node: str, timeout: Optional[int] = 30
     ) -> Dict[str, Any]:
         """Run CLI command via docker exec."""
-        # Convert node ID to container name
-        # node1 -> cellframe-stage-node-1
-        if not node.startswith("cellframe-stage-"):
-            # Extract number from node ID (node1 -> 1, node2 -> 2, etc.)
-            if node.startswith("node"):
-                node_num = node[4:]  # Remove "node" prefix
-                container_name = f"cellframe-stage-node-{node_num}"
-            else:
-                container_name = f"cellframe-stage-{node}"
-        else:
-            container_name = node
+        # Convert node alias to container name
+        container_name = self._resolve_node_to_container(node)
         
         # Build docker exec command
         full_cmd = [
@@ -1001,15 +1120,8 @@ class ScenarioExecutor:
         # Substitute variables in bash script
         script = ctx.substitute(step.bash)
         
-        # Convert node ID to container name
-        if not step.node.startswith("cellframe-stage-"):
-            if step.node.startswith("node"):
-                node_num = step.node[4:]
-                container_name = f"cellframe-stage-node-{node_num}"
-            else:
-                container_name = f"cellframe-stage-{step.node}"
-        else:
-            container_name = step.node
+        # Convert node alias to container name
+        container_name = self._resolve_node_to_container(step.node)
         
         # Build docker exec command
         full_cmd = [
@@ -1061,6 +1173,96 @@ class ScenarioExecutor:
                 step=script[:100]
             )
     
+    async def _execute_tool_step(self, step: ToolStep, ctx: RuntimeContext):
+        """Execute cellframe-node-tool command on specified node."""
+        # Substitute variables in tool command
+        tool_cmd = ctx.substitute(step.tool)
+        
+        # Convert node ID to container name
+        if not step.node.startswith("cellframe-stage-"):
+            if step.node.startswith("node"):
+                node_num = step.node[4:]
+                container_name = f"cellframe-stage-node-{node_num}"
+            else:
+                container_name = f"cellframe-stage-{step.node}"
+        else:
+            container_name = step.node
+        
+        # Build docker exec command with cellframe-node-tool
+        full_cmd = [
+            "docker", "exec", container_name,
+            "cellframe-node-tool"
+        ] + tool_cmd.split()
+        
+        process = await asyncio.create_subprocess_exec(
+            *full_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=step.timeout
+            )
+            
+            result = {
+                "stdout": stdout.decode('utf-8', errors='replace'),
+                "stderr": stderr.decode('utf-8', errors='replace'),
+                "returncode": process.returncode
+            }
+            
+            # Log tool execution
+            self._log_to_file("\n" + "=" * 70)
+            self._log_to_file("TOOL COMMAND")
+            self._log_to_file("=" * 70)
+            self._log_to_file(f"Node: {step.node}")
+            self._log_to_file(f"Command: cellframe-node-tool {tool_cmd}")
+            self._log_to_file(f"Timeout: {step.timeout}s")
+            self._log_to_file(f"Expected: {step.expect}")
+            self._log_to_file("\n--- Tool Response ---")
+            self._log_to_file(f"Exit Code: {result['returncode']}\n")
+            if result["stdout"]:
+                self._log_to_file(f"Stdout:\n{result['stdout']}")
+            if result["stderr"]:
+                self._log_to_file(f"Stderr:\n{result['stderr']}")
+            self._log_to_file("\n" + "=" * 70 + "\n")
+            
+            # Save result if requested
+            if step.save:
+                ctx.set_variable(step.save, result["stdout"].strip())
+                self._log_to_file(f"✓ Saved to variable: {step.save}")
+                logger.debug("tool_step_saved", variable=step.save)
+            
+            # Check expectation
+            if step.expect == "success" and result["returncode"] != 0:
+                raise ScenarioExecutionError(
+                    f"Tool command failed: Expected success but got exit code {result['returncode']}",
+                    step=f"cellframe-node-tool {tool_cmd}",
+                    context=result
+                )
+            elif step.expect == "error" and result["returncode"] == 0:
+                raise ScenarioExecutionError(
+                    f"Tool command succeeded: Expected error but got exit code 0",
+                    step=f"cellframe-node-tool {tool_cmd}"
+                )
+            
+            ctx.add_result("tool_step", True, {"command": tool_cmd, "returncode": result["returncode"]})
+            
+        except asyncio.TimeoutError:
+            process.kill()
+            ctx.add_result("tool_step", False, {"error": "timeout"})
+            raise ScenarioExecutionError(
+                f"Tool command timeout after {step.timeout}s",
+                step=f"cellframe-node-tool {tool_cmd}"
+            )
+        except Exception as e:
+            ctx.add_result("tool_step", False, {"error": str(e), "returncode": getattr(process, 'returncode', -1)})
+            raise ScenarioExecutionError(
+                f"Tool command failed: {str(e)}",
+                step=f"cellframe-node-tool {tool_cmd}"
+            )
+    
     async def _wait_duration(self, duration_str: str):
         """Parse and wait for duration (e.g., '5s', '100ms')."""
         match = re.match(r'(\d+)(s|ms|m)', duration_str)
@@ -1107,16 +1309,27 @@ class ScenarioExecutor:
                         errors = yaml_response["errors"]
                         if self.debug:
                             self._log_to_file(f"[DEBUG] Found 'errors' in YAML: type={type(errors)}, value={errors}")
-                        # Consider it an error if errors field is not empty
-                        if errors:
-                            if isinstance(errors, dict) and errors:
+                        
+                        # Cellframe CLI uses 'errors' field even for success!
+                        # Check if errors dict has 'code' field - code: 0 means success
+                        if isinstance(errors, dict):
+                            error_code = errors.get('code')
+                            if error_code is not None and error_code != 0:
                                 has_error = True
                                 if self.debug:
-                                    self._log_to_file("[DEBUG] Detected error: errors is non-empty dict")
-                            elif isinstance(errors, list) and len(errors) > 0:
+                                    self._log_to_file(f"[DEBUG] Detected error: code={error_code} (non-zero)")
+                            elif error_code == 0:
+                                if self.debug:
+                                    self._log_to_file(f"[DEBUG] Success: code=0 in errors dict")
+                            elif errors:
+                                # No 'code' field but errors dict is not empty
                                 has_error = True
                                 if self.debug:
-                                    self._log_to_file("[DEBUG] Detected error: errors is non-empty list")
+                                    self._log_to_file("[DEBUG] Detected error: errors dict without code field")
+                        elif isinstance(errors, list) and len(errors) > 0:
+                            has_error = True
+                            if self.debug:
+                                self._log_to_file("[DEBUG] Detected error: errors is non-empty list")
             except (yaml.YAMLError, ValueError, AttributeError) as e:
                 # Try JSON format
                 try:
@@ -1126,12 +1339,20 @@ class ScenarioExecutor:
                         # Check for 'errors' key (can be dict or list)
                         if "errors" in json_response:
                             errors = json_response["errors"]
-                            # Consider it an error if errors field is not empty
-                            if errors:
-                                if isinstance(errors, dict) and errors:
+                            
+                            # Check if errors dict has 'code' field - code: 0 means success
+                            if isinstance(errors, dict):
+                                error_code = errors.get('code')
+                                if error_code is not None and error_code != 0:
                                     has_error = True
-                                elif isinstance(errors, list) and len(errors) > 0:
+                                elif error_code == 0:
+                                    # Success - code: 0
+                                    pass
+                                elif errors:
+                                    # No 'code' field but errors dict is not empty
                                     has_error = True
+                            elif isinstance(errors, list) and len(errors) > 0:
+                                has_error = True
                 except (json.JSONDecodeError, ValueError):
                     # Not JSON or YAML - check for text error patterns
                     error_patterns = ["error:", "Error:", "ERROR:", "failed", "Failed"]

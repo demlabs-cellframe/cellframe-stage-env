@@ -35,10 +35,12 @@ class DatumStatus(str, Enum):
     VERIFIED = "verified"
     IN_BLOCKS = "in_blocks"
     PROPAGATED = "propagated"
+    SUCCESS = "success"  # Alias for successful completion (in_blocks or propagated)
     REJECTED = "rejected"
     TIMEOUT_MEMPOOL = "timeout_mempool"
     TIMEOUT_VERIFICATION = "timeout_verification"
     TIMEOUT_BLOCKS = "timeout_blocks"
+    TIMEOUT_IN_BLOCKS = "timeout_in_blocks"  # Alias for TIMEOUT_BLOCKS
     TIMEOUT_TOTAL = "timeout_total"
 
 
@@ -168,18 +170,6 @@ class ExtractType(str, Enum):
     RAW = "raw"                        # Raw string (no validation)
 
 
-class ExtractSpec(BaseModel):
-    """Specification for extracting and validating data from command output."""
-    pattern: Optional[str] = Field(None, description="Regex pattern to extract data (auto-detected if not specified)")
-    type: ExtractType = Field(ExtractType.RAW, description="Type of extracted data for validation")
-    group: int = Field(1, description="Regex capture group number (default: 1)")
-    required: bool = Field(True, description="Whether extraction failure should fail the test")
-    default: Optional[str] = Field(None, description="Default value if extraction fails (only if not required)")
-    
-    class Config:
-        use_enum_values = True
-
-
 # ============================================================================
 # Test Step Models
 # ============================================================================
@@ -189,7 +179,9 @@ class CLIStep(BaseModel):
     cli: str = Field(..., description="CLI command to execute")
     node: str = Field("node1", description="Node to execute on")
     save: Optional[str] = Field(None, description="Variable name to save result to")
-    extract_to: Optional[Dict[str, ExtractSpec]] = Field(None, description="Extract and save specific values from output")
+    save_hash: Optional[str] = Field(None, description="Extract and save hash (0x[hex]) to variable")
+    save_wallet: Optional[str] = Field(None, description="Extract and validate wallet address to variable")
+    save_node: Optional[str] = Field(None, description="Extract node address (0x::format) to variable")
     wait: Optional[str] = Field(None, description="Wait duration after command (e.g., '5s')")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     contains: Optional[str] = Field(None, description="Expected substring in output")
@@ -236,6 +228,18 @@ class BashStep(BaseModel):
         use_enum_values = True
 
 
+class ToolStep(BaseModel):
+    """Execute cellframe-node-tool command."""
+    tool: str = Field(..., description="Tool command (e.g., 'cert create test_cert sig_dil')")
+    node: str = Field("node1", description="Node to execute on")
+    save: Optional[str] = Field(None, description="Variable name to save result to")
+    expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
+    timeout: Optional[int] = Field(30, description="Command timeout in seconds")
+    
+    class Config:
+        use_enum_values = True
+
+
 class LoopStep(BaseModel):
     """Loop over steps multiple times."""
     loop: int = Field(..., gt=0, description="Number of iterations")
@@ -255,9 +259,6 @@ class WaitForDatumStep(BaseModel):
     timeout_in_blocks: int = Field(180, description="Timeout after appearing in blocks")
     check_interval: int = Field(2, description="Check interval in seconds")
     save_status: Optional[str] = Field(None, description="Variable name to save final status")
-
-
-TestStep = Union[CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, LoopStep]
 
 
 # ============================================================================
@@ -323,7 +324,7 @@ class StepGroup(BaseModel):
 
 
 # Update TestStep to include StepGroup
-TestStep = Union[CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, LoopStep, StepGroup]
+TestStep = Union[CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup]
 
 
 # ============================================================================
@@ -373,10 +374,58 @@ class SuiteDescriptor(BaseModel):
     # Optional network configuration for suite-level defaults
     network: Optional[NetworkConfig] = Field(None, description="Default network topology for suite")
     
+    # Optional includes for suite-level setup (executed once before all scenarios)
+    includes: List[str] = Field(default_factory=list, description="Common includes for all scenarios in suite")
+    
+    # Optional setup steps for suite (executed once before all scenarios)
+    setup: Optional[SectionConfig] = Field(None, description="Suite-level setup steps")
+    
     @property
     def name(self) -> str:
         """Alias for suite name (for compatibility)."""
         return self.suite
+
+
+class SuiteSetupScenario(BaseModel):
+    """
+    Lightweight scenario model for executing suite-level setup.
+    
+    Unlike TestScenario, this doesn't require test steps,
+    only includes and setup sections.
+    """
+    
+    # Minimal metadata
+    name: str = Field(..., description="Setup scenario name")
+    description: str = Field(..., description="Setup description")
+    
+    # Network configuration (inherited from suite descriptor)
+    network: Optional[NetworkConfig] = Field(None, description="Network topology")
+    
+    # Includes for reusable configs
+    includes: List[str] = Field(default_factory=list, description="Paths to included YAML files")
+    
+    # Setup phase - this is what actually executes
+    setup: Union[List[TestStep], SectionConfig] = Field(default_factory=list, description="Setup steps")
+    
+    # Variables (runtime context)
+    variables: Dict[str, Any] = Field(default_factory=dict, description="Predefined variables")
+    
+    @model_validator(mode='after')
+    def validate_suite_setup(self) -> 'SuiteSetupScenario':
+        """Normalize setup to SectionConfig."""
+        # Set default network if not specified
+        if self.network is None:
+            self.network = NetworkConfig(topology="default", name="stagenet")
+        
+        # Set default network name if not specified
+        if self.network and not self.network.name:
+            self.network.name = "stagenet"
+        
+        # Normalize setup to SectionConfig
+        if isinstance(self.setup, list):
+            self.setup = SectionConfig(steps=self.setup)
+        
+        return self
 
 
 class TestScenario(BaseModel):

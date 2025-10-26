@@ -118,29 +118,32 @@ class ConfigLoader:
     def load_stage_config(self) -> Dict[str, Any]:
         """
         Load stage-env configuration file.
-        Creates from .default if not exists.
+        
+        Config file must exist explicitly - no auto-creation.
+        Use custom config path with ConfigLoader(base_path, config_path) or
+        ensure stage-env.cfg exists in config/ directory.
         
         Returns:
             Configuration dictionary with all default values
+            
+        Raises:
+            FileNotFoundError: If config file doesn't exist
         """
         # Use custom config path if provided, otherwise use default
         if self.custom_config_path:
             config_file = self.custom_config_path
-            default_file = None  # Don't auto-create from default for custom paths
         else:
             config_file = self.config_dir / "stage-env.cfg"
-            default_file = self.config_dir / "stage-env.cfg.default"
-            
-            # Create from default if doesn't exist
-            if not config_file.exists() and default_file and default_file.exists():
-                logger.info("creating_config_from_default")
-                import shutil
-                shutil.copy2(default_file, config_file)
         
-        # Load config
+        # Load config (no auto-creation - config must exist explicitly)
         if not config_file.exists():
+            error_msg = f"Configuration file not found: {config_file}"
+            if not self.custom_config_path:
+                error_msg += f"\n\nDefault config location: {self.config_dir / 'stage-env.cfg'}"
+                error_msg += f"\nYou can copy from template: {self.config_dir / 'stage-env.cfg.default'}"
+                error_msg += f"\nOr specify custom config with --config option"
             logger.error("config_not_found", path=str(config_file))
-            raise FileNotFoundError(f"Configuration file not found: {config_file}")
+            raise FileNotFoundError(error_msg)
         
         config = configparser.ConfigParser()
         config.read(config_file)
@@ -500,4 +503,63 @@ class ConfigLoader:
         
         logger.debug("scenarios_config_loaded", **scenarios)
         return scenarios
+    
+    def get_suite_isolation_config(self) -> Dict[str, Any]:
+        """
+        Load suite isolation (snapshot) configuration from stage-env.cfg.
+        
+        Returns:
+            Dictionary with suite isolation configuration:
+            - mode: Snapshot mode (disabled/recreate/filesystem/squashfs)
+            - squashfs_compression: Compression for squashfs mode
+            - auto_create_on_startup: Auto-create snapshot after network start
+            - snapshot_name: Name of snapshot to use for suite isolation
+            - auto_cleanup: Automatically cleanup old snapshots
+            - keep_snapshot_count: Number of snapshots to keep
+            - snapshots_dir: Directory for storing snapshots
+        """
+        # Use custom config path if provided, otherwise use default
+        if self.custom_config_path:
+            config_file = self.custom_config_path
+        else:
+            config_file = self.config_dir / "stage-env.cfg"
+        
+        # Default configuration
+        suite_isolation = {
+            'mode': 'filesystem',
+            'squashfs_compression': 'none',
+            'auto_create_on_startup': True,
+            'snapshot_name': 'clean_state',
+            'auto_cleanup': True,
+            'keep_snapshot_count': 5,
+            'snapshots_dir': '../testing/snapshots',
+        }
+        
+        if not config_file.exists():
+            logger.warning("config_not_found_using_defaults", path=str(config_file))
+            return suite_isolation
+        
+        # Load config
+        config = configparser.ConfigParser()
+        config.read(config_file)
+        
+        # Read suite_isolation section if exists
+        if config.has_section('suite_isolation'):
+            if config.has_option('suite_isolation', 'mode'):
+                suite_isolation['mode'] = config.get('suite_isolation', 'mode')
+            if config.has_option('suite_isolation', 'squashfs_compression'):
+                suite_isolation['squashfs_compression'] = config.get('suite_isolation', 'squashfs_compression')
+            if config.has_option('suite_isolation', 'auto_create_on_startup'):
+                suite_isolation['auto_create_on_startup'] = config.getboolean('suite_isolation', 'auto_create_on_startup')
+            if config.has_option('suite_isolation', 'snapshot_name'):
+                suite_isolation['snapshot_name'] = config.get('suite_isolation', 'snapshot_name')
+            if config.has_option('suite_isolation', 'auto_cleanup'):
+                suite_isolation['auto_cleanup'] = config.getboolean('suite_isolation', 'auto_cleanup')
+            if config.has_option('suite_isolation', 'keep_snapshot_count'):
+                suite_isolation['keep_snapshot_count'] = config.getint('suite_isolation', 'keep_snapshot_count')
+            if config.has_option('suite_isolation', 'snapshots_dir'):
+                suite_isolation['snapshots_dir'] = config.get('suite_isolation', 'snapshots_dir')
+        
+        logger.debug("suite_isolation_config_loaded", **suite_isolation)
+        return suite_isolation
 

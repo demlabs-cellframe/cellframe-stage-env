@@ -6,6 +6,7 @@ Manages the lifecycle of test network:
 - Node startup/shutdown
 - Network readiness checking
 - Node discovery and configuration
+- Snapshot-based suite isolation for fast environment restoration
 """
 
 import asyncio
@@ -18,6 +19,7 @@ from ..docker.compose import DockerComposeManager
 from ..monitoring.health import HealthChecker, HealthStatus
 from ..utils.logger import get_logger
 from ..utils.artifacts import ArtifactsManager
+from ..snapshots.manager import SnapshotManager, SnapshotMode
 from .models import NodeConfig
 from .genesis import GenesisInitializer
 
@@ -39,6 +41,9 @@ class NetworkManager:
         self.base_path = base_path
         self.topology_name = topology_name
         self.config_path = config_path
+        
+        # CLI path for node commands
+        self.node_cli_path = "cellframe-node-cli"
         
         # Load configuration
         self.config_loader = ConfigLoader(base_path, config_path)
@@ -76,11 +81,37 @@ class NetworkManager:
         artifacts_config = self.config_loader.get_artifacts_config()
         self.artifacts_manager = ArtifactsManager(base_path, artifacts_config)
         
+        # Initialize snapshot manager for suite isolation
+        suite_isolation_config = self.config_loader.get_suite_isolation_config()
+        snapshot_mode_str = suite_isolation_config.get('mode', 'filesystem')
+        
+        # Convert mode string to enum
+        try:
+            snapshot_mode = SnapshotMode(snapshot_mode_str)
+        except ValueError:
+            logger.warning("invalid_snapshot_mode",
+                          mode=snapshot_mode_str,
+                          fallback="filesystem")
+            snapshot_mode = SnapshotMode.FILESYSTEM
+        
+        # Pass full config including cache_dir
+        snapshot_config = dict(suite_isolation_config)
+        snapshot_config['cache_dir'] = self.paths_config.get('cache_dir', '../testing/cache')
+        
+        self.snapshot_manager = SnapshotManager(
+            base_path,
+            mode=snapshot_mode,
+            config=snapshot_config
+        )
+        
+        self.suite_isolation_config = suite_isolation_config
+        
         logger.info("network_manager_initialized",
                    topology=topology_name,
                    network=self.topology.network.name,
                    timeouts=self.timeouts,
-                   cache_dir=self.paths_config.get('cache_dir'))
+                   cache_dir=self.paths_config.get('cache_dir'),
+                   snapshot_mode=snapshot_mode.value)
     
     def generate_node_configs(self) -> List[NodeConfig]:
         """
@@ -162,6 +193,24 @@ class NetworkManager:
                    topology=self.topology_name,
                    rebuild=rebuild)
         
+        # Stop previous environment FIRST (keep volumes - they contain certs!)
+        logger.info("stopping_previous_environment")
+        try:
+            self.compose.down(volumes=False, remove_images=False)
+            logger.info("previous_environment_stopped")
+        except Exception as e:
+            logger.debug("no_previous_environment", error=str(e))
+        
+        # Clean up any remaining stale resources
+        self.compose.cleanup_stale_resources()
+        
+        # CRITICAL: Clean node data AFTER stopping old network, BEFORE any generation
+        # This ensures clean slate before configs/certs generation
+        if self.suite_isolation_config.get('auto_create_on_startup', True):
+            if self.snapshot_manager.mode != SnapshotMode.DISABLED:
+                logger.info("cleaning_node_data_after_stop")
+                self._clean_node_data()
+        
         # Generate node configurations
         if not self.nodes:
             node_configs = self.generate_node_configs()
@@ -175,17 +224,6 @@ class NetworkManager:
             node_configs,
             force=rebuild
         )
-        
-        # Stop previous environment (keep volumes - they contain certs!)
-        logger.info("stopping_previous_environment")
-        try:
-            self.compose.down(volumes=False, remove_images=False)
-            logger.info("previous_environment_stopped")
-        except Exception as e:
-            logger.debug("no_previous_environment", error=str(e))
-        
-        # Clean up any remaining stale resources
-        self.compose.cleanup_stale_resources()
         
         # Generate dynamic docker-compose.yml for all nodes
         logger.info("generating_docker_compose")
@@ -205,63 +243,201 @@ class NetworkManager:
         if wait_ready:
             await self._wait_for_network_ready()
         
-        # Initialize genesis state (create validator orders, register node aliases)
-        logger.info("initializing_genesis_state")
+        # PHASE 0: Initialize genesis state (create validator certificates FIRST)
+        # Root certificates are required for TCELL token signing
+        logger.info("=== PHASE 0: Genesis Initialization (Certificates) ===")
         try:
             await self.genesis.initialize(node_configs)
-            await self.genesis.register_node_aliases(node_configs)
+            logger.info("genesis_certificates_created")
         except Exception as e:
             logger.error("genesis_initialization_failed", error=str(e))
-            # Don't fail the whole start process, just log the error
-            # Validator orders might already exist in a restarted network
+            # Critical - stop network
+            try:
+                self.compose.down(volumes=False, remove_images=False)
+            except Exception as stop_error:
+                logger.warning("failed_to_stop_network", error=str(stop_error))
+            raise RuntimeError(f"Genesis initialization failed: {e}") from e
+        
+        # PHASE 1: Generate fee wallet and native token (TCELL)
+        # This creates the foundational economic layer for the network
+        logger.info("=== PHASE 1: Fee Wallet & Native Token Generation ===")
+        
+        try:
+            # Step 1: Generate fee collection wallet on node1
+            logger.info("step_1_generating_fee_wallet")
+            fee_addr = await self.genesis.generate_fee_wallet()
+            logger.info("fee_wallet_created", address=fee_addr)
+            
+            # Step 2: Create TCELL token on zerochain
+            logger.info("step_2_creating_tcell_token")
+            token_hash = await self.genesis.create_native_token()
+            logger.info("tcell_token_created", hash=token_hash[:16])
+            
+            # Step 3: Process token declaration through zerochain DAG-PoA
+            logger.info("step_3_processing_token_decl_zerochain")
+            root_nodes = [n for n in node_configs if n.role == 'root']
+            await self.genesis.process_zerochain_datum(token_hash, root_nodes)
+            logger.info("token_decl_finalized")
+            
+            # Step 4: Emit TCELL to fee wallet on zerochain
+            logger.info("step_4_emitting_tcell")
+            emission_hash = await self.genesis.emit_native_token(fee_addr)
+            logger.info("tcell_emitted", hash=emission_hash[:16])
+            
+            # Step 5: Process emission through zerochain DAG-PoA
+            logger.info("step_5_processing_emission_zerochain")
+            await self.genesis.process_zerochain_datum(emission_hash, root_nodes)
+            logger.info("emission_finalized")
+            
+            # Step 6: Create first transaction on main chain
+            logger.info("step_6_creating_first_transaction")
+            tx_hash = await self.genesis.create_first_transaction(emission_hash)
+            logger.info("first_transaction_created", hash=tx_hash[:16])
+            
+            # Step 7: Synchronize network after TCELL genesis
+            logger.info("step_7_synchronizing_network")
+            await self.genesis.sync_network(node_configs)
+            logger.info("network_synchronized_after_tcell")
+            
+        except Exception as e:
+            logger.error("tcell_genesis_failed", error=str(e))
+            logger.error("stopping_network_due_to_genesis_failure")
+            try:
+                self.compose.down(volumes=False, remove_images=False)
+            except Exception as stop_error:
+                logger.warning("failed_to_stop_network", error=str(stop_error))
+            raise RuntimeError(f"TCELL genesis failed: {e}") from e
+        
+        # PHASE 2: Capture genesis blocks for both chains
+        logger.info("=== PHASE 2: Genesis Block Capture ===")
+        
+        try:
+            # Step 8: Get genesis block hashes from both chains
+            logger.info("step_8_capturing_genesis_blocks")
+            zerochain_genesis = await self.genesis.get_genesis_block_hash("zerochain")
+            main_genesis = await self.genesis.get_genesis_block_hash("main")
+            
+            if zerochain_genesis:
+                logger.info("zerochain_genesis_captured", hash=zerochain_genesis[:16])
+            else:
+                logger.warning("zerochain_genesis_not_found")
+            
+            if main_genesis:
+                logger.info("main_genesis_captured", hash=main_genesis[:16])
+            else:
+                logger.warning("main_genesis_not_found")
+            
+            # TODO: Update chain configs with genesis blocks
+            # This would require modifying config files and reloading
+            # For now, we log the hashes for manual configuration
+            
+        except Exception as e:
+            logger.warning("genesis_block_capture_failed", error=str(e))
+            # Non-critical - continue without genesis blocks
+        
+        # PHASE 3: Node Registration & Aliases
+        # Register node aliases and populate node lists
+        logger.info("=== PHASE 3: Node Registration & Aliases ===")
+        try:
+            await self.genesis.register_node_aliases(node_configs)
+            
+            # CRITICAL: Register all nodes via CLI from node1
+            # This immediately populates node lists without waiting for P2P discovery
+            logger.info("registering_all_nodes_via_cli")
+            await self.genesis.register_all_nodes_via_cli(node_configs)
+        except Exception as e:
+            logger.error("node_registration_failed", error=str(e))
+            # Non-critical - continue, nodes may self-discover
+        
+        # PHASE 4: Wait for network consensus
+        logger.info("=== PHASE 4: Network Consensus Verification ===")
+        from ..monitoring.network_consensus import NetworkConsensusMonitor
+        
+        consensus_monitor = NetworkConsensusMonitor(
+            nodes=self.nodes,
+            node_cli_path=self.node_cli_path,
+            network_name=self.topology.network.name,
+            check_interval=2.0
+        )
+        
+        try:
+            await consensus_monitor.wait_for_network_ready(timeout=150.0)  # 150s for 8-node topology
+            logger.info("network_consensus_achieved")
+        except TimeoutError as e:
+            logger.error("network_consensus_timeout_critical",
+                        error=str(e),
+                        note="Network failed to reach consensus - stopping all containers")
+            
+            # Collect metrics for diagnosis
+            try:
+                metrics = await consensus_monitor.collect_all_metrics()
+                logger.error("final_network_state_before_shutdown",
+                           metrics={
+                               node_id: {
+                                   "online": m.is_online,
+                                   "error": m.error,
+                                   "node_list_count": m.node_list_count,
+                                   "blocks": m.main_chain_blocks,
+                               }
+                               for node_id, m in metrics.items()
+                           })
+            except Exception as diag_error:
+                logger.warning("failed_to_collect_diagnostic_metrics",
+                             error=str(diag_error))
+            
+            # Stop all containers
+            logger.info("stopping_failed_network")
+            try:
+                self.compose.down(volumes=False, remove_images=False)
+            except Exception as stop_error:
+                logger.warning("failed_to_stop_network",
+                             error=str(stop_error))
+            
+            # Re-raise with clear message
+            raise RuntimeError(
+                f"Network failed to reach consensus within 60s. "
+                f"All nodes must be online with synchronized node lists and chains. "
+                f"Check logs above for details. Network has been stopped."
+            ) from e
+        
+        # OPTIMIZATION: Create pristine snapshot for fast suite isolation
+        # Pause containers → Create snapshot → Unpause
+        # This way first suite can use already running network immediately
+        # and snapshot remains pristine for subsequent suites
+        if self.suite_isolation_config.get('auto_create_on_startup', True):
+            if self.snapshot_manager.mode != SnapshotMode.DISABLED:
+                logger.info("creating_initial_clean_snapshot_with_pause")
+                containers_paused = False
+                try:
+                    # Pause all containers to freeze state
+                    logger.info("pausing_containers_for_snapshot")
+                    self.compose.pause()
+                    containers_paused = True
+                    
+                    # Create snapshot of paused state
+                    await self.create_clean_snapshot()
+                    logger.info("initial_snapshot_created")
+                    
+                    # Unpause containers - ready for first suite
+                    logger.info("unpausing_containers")
+                    self.compose.unpause()
+                    containers_paused = False
+                    logger.info("containers_unpaused_ready_for_first_suite")
+                    
+                except Exception as e:
+                    # Only unpause if we actually paused
+                    if containers_paused:
+                        try:
+                            self.compose.unpause()
+                        except:
+                            pass
+                    logger.warning("initial_snapshot_creation_failed",
+                                  error=str(e),
+                                  note="Will fallback to traditional cleanup")
         
         logger.info("network_started",
                    nodes=len(self.nodes),
                    topology=self.topology.network.name)
-    
-    async def clean_test_data(self) -> None:
-        """
-        Clean user test data (wallets, chains, logs) while keeping system files.
-        
-        Safe to call on running network - cleans only user-created data.
-        """
-        logger.info("cleaning_test_data")
-        
-        try:
-            # Get running containers
-            running_containers = self.compose.client.containers.list(
-                filters={"label": f"com.docker.compose.project={self.compose.project_name}"}
-            )
-            
-            if not running_containers:
-                logger.warning("no_running_containers_to_clean")
-                return
-            
-            logger.info("cleaning_user_data_via_exec", count=len(running_containers))
-            for container in running_containers:
-                try:
-                    # Clean only user data, keep system files
-                    clean_script = """
-                    cd /opt/cellframe-node/var || exit 0
-                    # Clean user wallets (all *.dwallet files - no system wallet in stagenet)
-                    rm -f lib/wallet/*.dwallet 2>/dev/null || true
-                    # Clean chains
-                    rm -rf lib/chains/* 2>/dev/null || true
-                    # Clean GDB
-                    rm -rf lib/gdb/* 2>/dev/null || true
-                    # Clean logs (will be collected by artifacts before cleaning)
-                    rm -f log/*.log 2>/dev/null || true
-                    # DON'T clean lib/ca/ - it contains validator certificates!
-                    """
-                    container.exec_run(["sh", "-c", clean_script], user="root")
-                    logger.debug("cleaned_user_data", container=container.name)
-                except Exception as e:
-                    logger.warning("failed_to_clean_container_data", container=container.name, error=str(e))
-            
-            logger.info("test_data_cleaned")
-            
-        except Exception as e:
-            logger.warning("failed_to_clean_test_data", error=str(e))
     
     async def stop(self, remove_volumes: bool = False) -> None:
         """
@@ -467,4 +643,167 @@ class NetworkManager:
     async def cleanup(self) -> None:
         """Cleanup resources."""
         await self.health_checker.close()
+    
+    async def create_clean_snapshot(self, name: Optional[str] = None) -> bool:
+        """
+        Create a snapshot of current clean environment state.
+        
+        Should be called after network is fully initialized and ready,
+        before any tests are run.
+        
+        Args:
+            name: Optional snapshot name (defaults to config snapshot_name)
+            
+        Returns:
+            True if snapshot created successfully
+        """
+        snapshot_name = name or self.suite_isolation_config.get('snapshot_name', 'clean_state')
+        
+        logger.info("creating_clean_snapshot",
+                   name=snapshot_name,
+                   mode=self.snapshot_manager.mode.value)
+        
+        result = await self.snapshot_manager.create_snapshot(snapshot_name)
+        
+        if result and self.suite_isolation_config.get('auto_cleanup', True):
+            # Cleanup old snapshots
+            keep_count = self.suite_isolation_config.get('keep_snapshot_count', 5)
+            await self.snapshot_manager.cleanup_old_snapshots(keep_count)
+        
+        return result
+    
+    async def restore_clean_state(self, name: Optional[str] = None) -> bool:
+        """
+        Restore environment to clean snapshot state.
+        
+        This replaces the current clean_test_data() approach with snapshot restoration,
+        providing much faster suite isolation.
+        
+        Args:
+            name: Optional snapshot name (defaults to config snapshot_name)
+            
+        Returns:
+            True if restore successful
+        """
+        snapshot_name = name or self.suite_isolation_config.get('snapshot_name', 'clean_state')
+        
+        logger.info("restoring_clean_state",
+                   name=snapshot_name,
+                   mode=self.snapshot_manager.mode.value)
+        
+        # Special case for 'recreate' mode - use traditional cleanup
+        if self.snapshot_manager.mode == SnapshotMode.RECREATE:
+            logger.info("recreate_mode_using_clean_test_data")
+            await self.clean_test_data()
+            return True
+        
+        # For other modes, restore from snapshot
+        # CRITICAL: Stop containers before restore to avoid file conflicts
+        logger.info("stopping_containers_before_snapshot_restore")
+        await self.stop(remove_volumes=False)
+        
+        # Restore snapshot with containers stopped
+        result = await self.snapshot_manager.restore_snapshot(snapshot_name)
+        
+        if not result:
+            logger.warning("snapshot_restore_failed_fallback_to_cleanup")
+            # Restart containers even if restore failed
+            logger.info("starting_containers_after_failed_restore")
+            await self.start(rebuild=False, wait_ready=True)
+            # Only try cleanup if containers are running
+            if self.compose and self.compose.is_running():
+                await self.clean_test_data()
+            else:
+                logger.warning("containers_not_running_skipping_cleanup")
+            return False
+        
+        # Restart containers with restored data
+        logger.info("starting_containers_after_snapshot_restore")
+        await self.start(rebuild=False, wait_ready=True)
+        
+        return result
+    
+    async def clean_test_data(self) -> None:
+        """
+        Clean test data from all nodes (traditional approach).
+        
+        This is the original cleanup method, now used as fallback or for 'recreate' mode.
+        Removes user-generated data while preserving system files.
+        """
+        logger.info("cleaning_test_data_traditional_method")
+        
+        for node_name in self.nodes.keys():
+            try:
+                # Execute cleanup inside container to avoid permission issues
+                cleanup_script = """
+                # Clean user-generated data
+                rm -f /opt/cellframe-node/var/lib/wallet/*.dwallet 2>/dev/null || true
+                rm -rf /opt/cellframe-node/var/lib/chains/* 2>/dev/null || true
+                rm -rf /opt/cellframe-node/var/lib/gdb/* 2>/dev/null || true
+                rm -f /opt/cellframe-node/var/log/*.log 2>/dev/null || true
+                
+                # Preserve:
+                # - /opt/cellframe-node/var/lib/ca/ (validator certificates)
+                # - /opt/cellframe-node/var/run/ (PID files, sockets)
+                
+                echo "Cleanup complete for $(hostname)"
+                """
+                
+                exit_code, output = self.compose.exec(
+                    node_name,
+                    ["sh", "-c", cleanup_script]
+                )
+                
+                if exit_code == 0:
+                    logger.debug("node_data_cleaned", node=node_name)
+                else:
+                    logger.warning("node_cleanup_failed",
+                                  node=node_name,
+                                  exit_code=exit_code,
+                                  output=output)
+            except Exception as e:
+                logger.error("node_cleanup_error",
+                            node=node_name,
+                            error=str(e))
+    
+    def _clean_node_data(self):
+        """
+        Clean node data directories on host before creating pristine snapshot.
+        
+        This method removes and recreates data directories mounted into containers,
+        ensuring that wallets, chains, and other runtime data from previous runs
+        don't pollute the snapshot.
+        
+        Called before pause→snapshot→unpause to guarantee pristine state.
+        
+        Implementation: Uses temporary Docker container (Alpine) to clean files.
+        This ensures proper permissions for root-owned files created by node containers.
+        """
+        cache_dir = self.paths_config.get('cache_dir', '../testing/cache')
+        cache_path = (self.base_path / cache_dir).resolve()
+        data_dir = cache_path / "data"
+        
+        if not data_dir.exists():
+            logger.debug("node_data_dir_not_exists", path=str(data_dir))
+            return
+        
+        logger.info("removing_node_data_directories", path=str(data_dir))
+        
+        # Use Docker container to remove files (handles root-owned files)
+        try:
+            self.compose.clean_cache_data(cache_path)
+            logger.info("node_data_removed")
+        except Exception as e:
+            logger.error("failed_to_remove_node_data", error=str(e))
+            raise
+        
+        # Recreate empty data directory structure for each node
+        data_dir.mkdir(parents=True, exist_ok=True)
+        
+        for node_id in range(1, len(self.nodes) + 1):
+            node_data_path = data_dir / f"node{node_id}"
+            node_data_path.mkdir(parents=True, exist_ok=True)
+            logger.debug("recreated_node_data_dir", node_id=node_id, path=str(node_data_path))
+        
+        logger.info("node_data_cleaned_and_recreated", nodes=len(self.nodes))
 
