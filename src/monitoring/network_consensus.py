@@ -557,10 +557,10 @@ class NetworkConsensusMonitor:
         except Exception as e:
             raise RuntimeError(f"Container {container_name} not found: {e}")
         
-        # Use sh -c wrapper to execute CLI with Unix socket explicitly
-        # This prevents JSON-RPC fallback by ensuring socket is always used
-        socket_path = "/opt/cellframe-node/var/run/node_cli"
-        full_cmd = f"{self.node_cli_path} {command}"
+        # Execute CLI with explicit config path to ensure Unix socket is used
+        # Without config, CLI falls back to JSON-RPC with incorrect command format
+        config_path = "/opt/cellframe-node/etc/cellframe-node.cfg"
+        full_cmd = f"{self.node_cli_path} -c {config_path} {command}"
         
         # Wrap in sh -c to ensure proper execution environment
         cmd_array = ["sh", "-c", full_cmd]

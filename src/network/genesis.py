@@ -231,6 +231,7 @@ class GenesisInitializer:
         # Note: Cellframe Node uses "node add" not "nodelist add"
         cmd = [
             "cellframe-node-cli",
+            "-c", "/opt/cellframe-node/etc/cellframe-node.cfg",
             "node", "add",
             "-net", self.network_name,
             "-addr", target_node_addr
@@ -431,7 +432,7 @@ class GenesisInitializer:
             container_name = f"cellframe-stage-node-{node.node_id}"
             try:
                 container = self.docker_client.containers.get(container_name)
-                cmd = ["cellframe-node-cli", "net", "-net", self.network_name, "go", "online"]
+                cmd = ["cellframe-node-cli", "-c", "/opt/cellframe-node/etc/cellframe-node.cfg", "net", "-net", self.network_name, "go", "online"]
                 result = container.exec_run(cmd, demux=True)
                 
                 if result.exit_code == 0:
@@ -487,7 +488,7 @@ class GenesisInitializer:
                 return False
             
             # Execute "node dump -net <net>" to get actual node address
-            cmd_dump = ["cellframe-node-cli", "node", "dump", "-net", self.network_name]
+            cmd_dump = ["cellframe-node-cli", "-c", "/opt/cellframe-node/etc/cellframe-node.cfg", "node", "dump", "-net", self.network_name]
             try:
                 result = node_container.exec_run(cmd_dump, demux=True)
                 stdout, stderr = result.output
