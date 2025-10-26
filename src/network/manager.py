@@ -327,6 +327,18 @@ class NetworkManager:
                            exit_code=exit_code,
                            ledger_preview=stdout[:300] if stdout else "empty")
             
+            # CRITICAL: Get genesis EVENT hash from zerochain and update configs!
+            logger.info("getting_zerochain_genesis_event_hash")
+            zerochain_genesis_hash = await self.genesis.get_genesis_event_hash("zerochain")
+            if not zerochain_genesis_hash:
+                raise RuntimeError("Failed to retrieve zerochain genesis event hash")
+            logger.info("zerochain_genesis_event_hash", hash=zerochain_genesis_hash[:16])
+            
+            # Update static_genesis_event_hash in zerochain.cfg for ALL nodes
+            logger.info("updating_static_genesis_event_in_all_configs")
+            await self.genesis.update_static_genesis_in_config("zerochain", zerochain_genesis_hash, node_configs)
+            logger.info("zerochain_static_genesis_updated")
+            
             # Genesis events created successfully with seed_mode!
             # seed_mode will be disabled in PHASE 2 before ROOT restart
             

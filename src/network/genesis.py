@@ -1265,6 +1265,61 @@ class GenesisInitializer:
             except Exception as e:
                 logger.error("disable_seed_mode_error", node_id=node_id, error=str(e))
     
+    async def get_genesis_event_hash(self, chain_name: str) -> Optional[str]:
+        """
+        Get genesis event hash from DAG chain (for DAG-PoA like zerochain).
+        
+        Retrieves the first event hash from a DAG chain for use in
+        static_genesis_event_hash configuration.
+        
+        Args:
+            chain_name: DAG chain name (e.g., "zerochain")
+            
+        Returns:
+            Genesis event hash or None if not found
+        """
+        logger.info("getting_genesis_event", chain=chain_name)
+        
+        try:
+            # Get from node1 (first ROOT node)
+            container_name = f"cellframe-stage-node-1"
+            container = self.docker_client.containers.get(container_name)
+            
+            logger.debug("fetching_first_event", chain=chain_name)
+            
+            exit_code, stdout_str, stderr_str = self._exec_cli(
+                1,
+                f"dag event list -net {self.network_name} -chain {chain_name} -from events -limit 1",
+                check_output=False
+            )
+            
+            if exit_code != 0:
+                logger.warning("event_list_failed", chain=chain_name, exit_code=exit_code)
+                return None
+            
+            # Parse event hash from output
+            # Format: "event hash: 0x..."
+            import re
+            hash_match = re.search(r'event\s+hash:\s*(0x[A-Fa-f0-9]{64})', stdout_str, re.IGNORECASE)
+            if hash_match:
+                genesis_hash = hash_match.group(1)
+                logger.info("genesis_event_found", chain=chain_name, hash=genesis_hash[:16])
+                return genesis_hash
+            
+            # Try alternative format (just first hash in output)
+            hash_match = re.search(r'(0x[A-Fa-f0-9]{64})', stdout_str)
+            if hash_match:
+                genesis_hash = hash_match.group(1)
+                logger.info("genesis_event_found_alt_format", chain=chain_name, hash=genesis_hash[:16])
+                return genesis_hash
+            
+            logger.warning("genesis_event_not_found", chain=chain_name, output=stdout_str[:200])
+            return None
+            
+        except Exception as e:
+            logger.error("genesis_event_retrieval_error", chain=chain_name, error=str(e))
+            return None
+    
     async def get_genesis_block_hash(self, chain_name: str) -> Optional[str]:
         """
         Get genesis block hash from specified chain.
@@ -1322,18 +1377,28 @@ class GenesisInitializer:
     
     async def update_static_genesis_in_config(self, chain_name: str, genesis_hash: str, node_configs: List[NodeConfig]) -> None:
         """
-        Update static_genesis_block in chain config files on ALL nodes.
+        Update static_genesis_block or static_genesis_event_hash in chain config files.
         
-        CRITICAL: Must be done after genesis creation and seed_mode disabling
-        to ensure all nodes validate the same genesis.
+        Auto-detects chain type:
+        - DAG chains (zerochain): updates static_genesis_event_hash
+        - Blockchain chains (main): updates static_genesis_block
+        
+        CRITICAL: Must be done after genesis creation to ensure
+        all nodes validate the same genesis when seed_mode=false.
         
         Args:
             chain_name: Chain name (main or zerochain)
-            genesis_hash: Genesis block hash (0x...)
+            genesis_hash: Genesis block/event hash (0x...)
             node_configs: List of all node configurations
         """
+        # Detect chain type
+        is_dag = chain_name.lower() in ["zerochain", "zero", "0"]
+        param_name = "static_genesis_event_hash" if is_dag else "static_genesis_block"
+        
         logger.info("updating_static_genesis_in_configs", 
-                   chain=chain_name, 
+                   chain=chain_name,
+                   type="DAG_event" if is_dag else "blockchain_block",
+                   parameter=param_name,
                    hash=genesis_hash[:16],
                    nodes=len(node_configs))
         
@@ -1344,23 +1409,27 @@ class GenesisInitializer:
                 
                 config_path = f"/opt/cellframe-node/etc/network/{self.network_name}/{chain_name}.cfg"
                 
-                # Update static_genesis_block in chain config
+                # Update the correct parameter based on chain type
                 cmd = [
                     "sed", "-i",
-                    f"s|^static_genesis_block=.*|static_genesis_block={genesis_hash}|g",
+                    f"s|^{param_name}=.*|{param_name}={genesis_hash}|g",
                     config_path
                 ]
                 
                 result = container.exec_run(cmd)
                 if result.exit_code != 0:
                     logger.warning("failed_to_update_genesis_hash", 
-                                  node=node.name, 
+                                  node=node.name,
+                                  parameter=param_name,
                                   error=result.output)
                 else:
-                    logger.debug("genesis_hash_updated", node=node.name, hash=genesis_hash[:16])
+                    logger.debug("genesis_hash_updated", 
+                                node=node.name,
+                                parameter=param_name,
+                                hash=genesis_hash[:16])
                     
             except Exception as e:
                 logger.error("update_genesis_hash_error", node=node.name, error=str(e))
         
-        logger.info("genesis_hash_updated_on_all_nodes", chain=chain_name)
+        logger.info("genesis_hash_updated_on_all_nodes", chain=chain_name, parameter=param_name)
 
