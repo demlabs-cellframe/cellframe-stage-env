@@ -292,6 +292,11 @@ class NetworkManager:
             fee_addr = await self.genesis.generate_fee_wallet()
             logger.info("fee_wallet_created", address=fee_addr)
             
+            # Update fee_addr in main.cfg on ALL nodes
+            logger.info("updating_fee_addr_in_all_configs")
+            await self.genesis.update_fee_addr_in_config(fee_addr, node_configs)
+            logger.info("fee_addr_updated_in_configs")
+            
             # Create TCELL token on zerochain
             logger.info("creating_tcell_token_on_zerochain")
             token_hash = await self.genesis.create_native_token()

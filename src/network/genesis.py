@@ -1432,6 +1432,45 @@ class GenesisInitializer:
             logger.error("genesis_block_retrieval_error", chain=chain_name, error=str(e))
             return None
     
+    async def update_fee_addr_in_config(self, fee_addr: str, node_configs: List[NodeConfig]) -> None:
+        """
+        Update fee_addr in main.cfg on ALL nodes.
+        
+        Args:
+            fee_addr: Fee collection wallet address
+            node_configs: List of all node configurations
+        """
+        logger.info("updating_fee_addr_in_configs", 
+                   fee_addr=fee_addr[:20] + "...",
+                   nodes=len(node_configs))
+        
+        for node in node_configs:
+            try:
+                container_name = f"cellframe-stage-node-{node.node_id}"
+                container = self.docker_client.containers.get(container_name)
+                
+                config_path = f"/opt/cellframe-node/etc/network/{self.network_name}/main.cfg"
+                
+                # Update fee_addr in main.cfg
+                cmd = [
+                    "sed", "-i",
+                    f"s|^fee_addr=.*|fee_addr={fee_addr}|g",
+                    config_path
+                ]
+                
+                result = container.exec_run(cmd)
+                if result.exit_code != 0:
+                    logger.warning("failed_to_update_fee_addr",
+                                  node=f"node{node.node_id}",
+                                  error=result.output)
+                else:
+                    logger.debug("fee_addr_updated", node=f"node{node.node_id}")
+                    
+            except Exception as e:
+                logger.error("update_fee_addr_error", node=f"node{node.node_id}", error=str(e))
+        
+        logger.info("fee_addr_updated_on_all_nodes")
+    
     async def update_static_genesis_in_config(self, chain_name: str, genesis_hash: str, node_configs: List[NodeConfig]) -> None:
         """
         Update static_genesis_block or static_genesis_event_hash in chain config files.
@@ -1450,7 +1489,9 @@ class GenesisInitializer:
         """
         # Detect chain type
         is_dag = chain_name.lower() in ["zerochain", "zero", "0"]
-        param_name = "static_genesis_event_hash" if is_dag else "static_genesis_block"
+        # SDK reads: [dag] static_genesis_event (NOT static_genesis_event_hash!)
+        # SDK reads: [blocks] static_genesis_block
+        param_name = "static_genesis_event" if is_dag else "static_genesis_block"
         
         logger.info("updating_static_genesis_in_configs", 
                    chain=chain_name,
@@ -1466,23 +1507,38 @@ class GenesisInitializer:
                 
                 config_path = f"/opt/cellframe-node/etc/network/{self.network_name}/{chain_name}.cfg"
                 
-                # Update the correct parameter based on chain type
-                cmd = [
+                # Update the genesis hash parameter
+                cmd_hash = [
                     "sed", "-i",
                     f"s|^{param_name}=.*|{param_name}={genesis_hash}|g",
                     config_path
                 ]
-                
-                result = container.exec_run(cmd)
+                result = container.exec_run(cmd_hash)
                 if result.exit_code != 0:
                     logger.warning("failed_to_update_genesis_hash", 
                                   node=f"node{node.node_id}",
                                   parameter=param_name,
                                   error=result.output)
+                    continue
+                
+                # Also enable the is_static_genesis_* flag
+                flag_name = "is_static_genesis_event" if is_dag else "is_static_genesis_block"
+                cmd_flag = [
+                    "sed", "-i",
+                    f"s|^{flag_name}=.*|{flag_name}=true|g",
+                    config_path
+                ]
+                result_flag = container.exec_run(cmd_flag)
+                if result_flag.exit_code != 0:
+                    logger.warning("failed_to_enable_genesis_flag",
+                                  node=f"node{node.node_id}",
+                                  flag=flag_name,
+                                  error=result_flag.output)
                 else:
-                    logger.debug("genesis_hash_updated", 
+                    logger.debug("genesis_hash_and_flag_updated", 
                                 node=f"node{node.node_id}",
                                 parameter=param_name,
+                                flag=flag_name,
                                 hash=genesis_hash[:16])
                     
             except Exception as e:
