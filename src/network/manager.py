@@ -409,9 +409,10 @@ class NetworkManager:
             tx_hash = await self.genesis.create_first_transaction(emission_hash, master_nodes=master_nodes)
             logger.info("first_transaction_created", hash=tx_hash[:16])
             
-            # Wait for genesis block
-            logger.info("waiting_for_main_genesis_block")
-            await asyncio.sleep(15)
+            # Wait for genesis block to be created (ESBocs consensus needs time)
+            logger.info("waiting_for_main_genesis_block_creation")
+            await self.genesis.wait_for_first_block("main", timeout=60)
+            logger.info("main_genesis_block_created")
             
             # Get genesis block hash
             main_genesis_hash = await self.genesis.get_genesis_block_hash("main")

@@ -1322,6 +1322,54 @@ class GenesisInitializer:
             except Exception as e:
                 logger.error("disable_seed_mode_error", node_id=node_id, error=str(e))
     
+    async def wait_for_first_block(self, chain_name: str, timeout: int = 60) -> None:
+        """
+        Wait for first block to be created in blockchain chain.
+        
+        Polls 'block list' until at least one block appears.
+        
+        Args:
+            chain_name: Blockchain chain name (e.g., "main", "kelvin")
+            timeout: Timeout in seconds
+            
+        Raises:
+            RuntimeError: If no block appears within timeout
+        """
+        logger.info("waiting_for_first_block", chain=chain_name, timeout=timeout)
+        
+        import time
+        start_time = time.time()
+        check_interval = 3
+        
+        while time.time() - start_time < timeout:
+            try:
+                exit_code, stdout_str, _ = self._exec_cli(
+                    1,  # Check on node1
+                    f"block list -net {self.network_name} -chain {chain_name} -last 1",
+                    check_output=False
+                )
+                
+                if exit_code == 0 and "block #" in stdout_str.lower():
+                    elapsed = time.time() - start_time
+                    logger.info("first_block_appeared", chain=chain_name, elapsed=f"{elapsed:.1f}s")
+                    return
+                
+                # Log progress every 15s
+                elapsed = time.time() - start_time
+                if int(elapsed) % 15 == 0 and elapsed > 1:
+                    logger.info("waiting_for_block_progress", 
+                               chain=chain_name,
+                               elapsed=f"{elapsed:.1f}s",
+                               output_preview=stdout_str[:100] if stdout_str else "empty")
+                
+            except Exception as e:
+                logger.debug("block_check_error", error=str(e)[:100])
+            
+            await asyncio.sleep(check_interval)
+        
+        # Timeout
+        raise RuntimeError(f"No blocks appeared in {chain_name} after {timeout}s")
+    
     async def get_genesis_event_hash(self, chain_name: str) -> Optional[str]:
         """
         Get genesis event hash from DAG chain (for DAG-PoA like zerochain).
@@ -1444,27 +1492,31 @@ class GenesisInitializer:
                    fee_addr=fee_addr[:20] + "...",
                    nodes=len(node_configs))
         
+        import re
+        
         for node in node_configs:
             try:
-                container_name = f"cellframe-stage-node-{node.node_id}"
-                container = self.docker_client.containers.get(container_name)
+                # Update config on HOST filesystem (works for both running and stopped containers)
+                config_file = self.base_path / ".." / "testing" / "cache" / "configs" / f"node{node.node_id}" / self.network_name / "main.cfg"
+                config_file = config_file.resolve()
                 
-                config_path = f"/opt/cellframe-node/etc/network/{self.network_name}/main.cfg"
-                
-                # Update fee_addr in main.cfg
-                cmd = [
-                    "sed", "-i",
-                    f"s|^fee_addr=.*|fee_addr={fee_addr}|g",
-                    config_path
-                ]
-                
-                result = container.exec_run(cmd)
-                if result.exit_code != 0:
-                    logger.warning("failed_to_update_fee_addr",
+                if not config_file.exists():
+                    logger.warning("main_cfg_not_found",
                                   node=f"node{node.node_id}",
-                                  error=result.output)
-                else:
-                    logger.debug("fee_addr_updated", node=f"node{node.node_id}")
+                                  path=str(config_file))
+                    continue
+                
+                # Read, replace, write
+                config_content = config_file.read_text()
+                config_content = re.sub(
+                    r"^fee_addr=.*",
+                    f"fee_addr={fee_addr}",
+                    config_content,
+                    flags=re.MULTILINE
+                )
+                config_file.write_text(config_content)
+                
+                logger.debug("fee_addr_updated_on_host", node=f"node{node.node_id}")
                     
             except Exception as e:
                 logger.error("update_fee_addr_error", node=f"node{node.node_id}", error=str(e))
@@ -1487,6 +1539,8 @@ class GenesisInitializer:
             genesis_hash: Genesis block/event hash (0x...)
             node_configs: List of all node configurations
         """
+        import re
+        
         # Detect chain type
         is_dag = chain_name.lower() in ["zerochain", "zero", "0"]
         # SDK reads: [dag] static_genesis_event (NOT static_genesis_event_hash!)
@@ -1502,44 +1556,46 @@ class GenesisInitializer:
         
         for node in node_configs:
             try:
-                container_name = f"cellframe-stage-node-{node.node_id}"
-                container = self.docker_client.containers.get(container_name)
+                # Update config on HOST filesystem (works for both running and stopped containers)
+                # Configs are mounted from cache/configs/nodeN/ into containers
+                config_file = self.base_path / ".." / "testing" / "cache" / "configs" / f"node{node.node_id}" / self.network_name / f"{chain_name}.cfg"
+                config_file = config_file.resolve()
                 
-                config_path = f"/opt/cellframe-node/etc/network/{self.network_name}/{chain_name}.cfg"
+                if not config_file.exists():
+                    logger.warning("config_file_not_found", 
+                                  node=f"node{node.node_id}",
+                                  chain=chain_name,
+                                  path=str(config_file))
+                    continue
+                
+                # Read config
+                config_content = config_file.read_text()
                 
                 # Update the genesis hash parameter
-                cmd_hash = [
-                    "sed", "-i",
-                    f"s|^{param_name}=.*|{param_name}={genesis_hash}|g",
-                    config_path
-                ]
-                result = container.exec_run(cmd_hash)
-                if result.exit_code != 0:
-                    logger.warning("failed_to_update_genesis_hash", 
-                                  node=f"node{node.node_id}",
-                                  parameter=param_name,
-                                  error=result.output)
-                    continue
+                config_content = re.sub(
+                    f"^{param_name}=.*",
+                    f"{param_name}={genesis_hash}",
+                    config_content,
+                    flags=re.MULTILINE
+                )
                 
                 # Also enable the is_static_genesis_* flag
                 flag_name = "is_static_genesis_event" if is_dag else "is_static_genesis_block"
-                cmd_flag = [
-                    "sed", "-i",
-                    f"s|^{flag_name}=.*|{flag_name}=true|g",
-                    config_path
-                ]
-                result_flag = container.exec_run(cmd_flag)
-                if result_flag.exit_code != 0:
-                    logger.warning("failed_to_enable_genesis_flag",
-                                  node=f"node{node.node_id}",
-                                  flag=flag_name,
-                                  error=result_flag.output)
-                else:
-                    logger.debug("genesis_hash_and_flag_updated", 
-                                node=f"node{node.node_id}",
-                                parameter=param_name,
-                                flag=flag_name,
-                                hash=genesis_hash[:16])
+                config_content = re.sub(
+                    f"^{flag_name}=.*",
+                    f"{flag_name}=true",
+                    config_content,
+                    flags=re.MULTILINE
+                )
+                
+                # Write back
+                config_file.write_text(config_content)
+                
+                logger.debug("genesis_hash_and_flag_updated_on_host", 
+                            node=f"node{node.node_id}",
+                            parameter=param_name,
+                            flag=flag_name,
+                            hash=genesis_hash[:16])
                     
             except Exception as e:
                 logger.error("update_genesis_hash_error", node=f"node{node.node_id}", error=str(e))
