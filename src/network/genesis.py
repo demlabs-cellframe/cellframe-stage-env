@@ -852,6 +852,30 @@ class GenesisInitializer:
             container_name = f"cellframe-stage-node-{first_master.node_id}"
             container = self.docker_client.containers.get(container_name)
             
+            # DIAGNOSTIC: Check if master node can see emission in zerochain ledger
+            logger.info("diagnostic_checking_emission_in_ledger", emission=emission_hash[:16])
+            exit_code_ledger, stdout_ledger, _ = self._exec_cli(
+                first_master.node_id,
+                f"ledger list -net {self.network_name} -chain zerochain",
+                check_output=False
+            )
+            logger.info("ledger_list_check",
+                       exit_code=exit_code_ledger,
+                       has_emission=emission_hash.lower() in stdout_ledger.lower(),
+                       output_preview=stdout_ledger[:300] if stdout_ledger else "empty")
+            
+            # Also check token list
+            logger.info("diagnostic_checking_token_list")
+            exit_code_token, stdout_token, _ = self._exec_cli(
+                first_master.node_id,
+                f"token list -net {self.network_name}",
+                check_output=False
+            )
+            logger.info("token_list_check",
+                       exit_code=exit_code_token,
+                       has_tcell="TCELL" in stdout_token.upper(),
+                       output_preview=stdout_token[:300] if stdout_token else "empty")
+            
             # Use unified CLI method WITH -chain main (CRITICAL for correct mempool!)
             # Even though emission is in zerochain, TX must be in mainchain (ESBocs)
             logger.debug("executing_tx_create")
