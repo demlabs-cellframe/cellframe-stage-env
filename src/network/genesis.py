@@ -76,7 +76,8 @@ class GenesisInitializer:
         
         # Собираем полную команду как ОДНУ строку и выполняем через sh -c
         # Это предотвращает JSON-RPC fallback и неправильное разделение аргументов
-        full_cmd = f"cellframe-node-cli -c {self.cli_config_path} {command}"
+        # NOTE: cellframe-node-cli НЕ поддерживает -c, он ищет конфиг в g_sys_dir_path/etc
+        full_cmd = f"cellframe-node-cli {command}"
         cmd = ["sh", "-c", full_cmd]
         
         # Выполняем команду
