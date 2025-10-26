@@ -476,12 +476,41 @@ class GenesisInitializer:
             if node.node_id == 1:
                 return True
             
-            # Read node address with retry logic
-            node_addr = self._read_node_addr_with_retry(node.node_id)
+            # Get node address directly from running container via CLI
+            node_container_name = f"cellframe-stage-node-{node.node_id}"
+            try:
+                node_container = self.docker_client.containers.get(node_container_name)
+            except docker.errors.NotFound:
+                logger.warning("skipping_node_registration_container_not_found",
+                              node_id=node.node_id,
+                              container=node_container_name)
+                return False
             
-            if not node_addr:
-                logger.warning("skipping_node_registration_no_address",
-                              node_id=node.node_id)
+            # Execute "node dump -net <net>" to get actual node address
+            cmd_dump = ["cellframe-node-cli", "node", "dump", "-net", self.network_name]
+            try:
+                result = node_container.exec_run(cmd_dump, demux=True)
+                stdout, stderr = result.output
+                stdout_str = stdout.decode('utf-8').strip() if stdout else ""
+                
+                # Parse "Node address: XXXX::XXXX::XXXX::XXXX"
+                import re
+                addr_match = re.search(r'Node address:\s+([0-9A-Fa-f:]+)', stdout_str)
+                if not addr_match:
+                    logger.warning("skipping_node_registration_no_address_in_dump",
+                                  node_id=node.node_id,
+                                  dump_output=stdout_str[:200])
+                    return False
+                
+                node_addr = addr_match.group(1)
+                logger.debug("fetched_node_address_from_container",
+                           node_id=node.node_id,
+                           node_addr=node_addr[:20] + "...")
+                
+            except Exception as e:
+                logger.warning("failed_to_fetch_node_address",
+                              node_id=node.node_id,
+                              error=str(e))
                 return False
             
             # CLI command: node add -net <net> -addr <node_addr> -host <ip> -port <p2p_port>
