@@ -471,25 +471,20 @@ class GenesisInitializer:
     
     async def register_all_nodes_via_cli(self, nodes: List[NodeConfig]) -> None:
         """
-        Register ALL nodes on EACH node via CLI 'node add' command.
+        Register ALL nodes via CLI 'node add' command from node1 (ROOT node with admin rights).
         
-        CRITICAL: Each node must register ALL OTHER nodes locally!
-        This ensures:
-        - Full mesh node list on each node
-        - GDB sync works (nodes connected)
-        - Consensus can operate (all validators known)
-        
-        Uses parallel registration for speed.
+        CRITICAL: Only ROOT nodes have rights to modify node list!
+        Node list then propagates via GDB sync over established links.
         
         Args:
             nodes: List of all node configurations
         """
-        logger.info("registering_full_mesh_node_list", total_nodes=len(nodes))
+        logger.info("registering_nodes_via_cli_from_node1", total_nodes=len(nodes))
         
-        # Prepare registration tasks: each node registers ALL nodes (including itself)
-        async def register_node_on_target(current_node: NodeConfig, target_node: NodeConfig) -> bool:
+        # Prepare registration tasks: node1 registers ALL nodes (including itself)
+        async def register_single_node(target_node: NodeConfig) -> bool:
             """
-            Register target_node on current_node's node list.
+            Register target_node from node1 (admin node).
             Returns True on success.
             """
             
@@ -502,8 +497,7 @@ class GenesisInitializer:
                 )
                 
                 if exit_code != 0:
-                    logger.warning("skipping_registration_target_dump_failed",
-                                  current=current_node.node_id,
+                    logger.warning("skipping_registration_dump_failed",
                                   target=target_node.node_id,
                                   stderr=stderr)
                     return False
@@ -512,8 +506,7 @@ class GenesisInitializer:
                 import re
                 addr_match = re.search(r'Node addr:\s+([0-9A-Fa-f:]+)', stdout_str)
                 if not addr_match:
-                    logger.warning("skipping_registration_no_target_address",
-                                  current=current_node.node_id,
+                    logger.warning("skipping_registration_no_address",
                                   target=target_node.node_id,
                                   dump_output=stdout_str[:200])
                     return False
@@ -521,46 +514,40 @@ class GenesisInitializer:
                 target_addr = addr_match.group(1)
                 
             except Exception as e:
-                logger.warning("failed_to_fetch_target_address",
-                              current=current_node.node_id,
+                logger.warning("failed_to_fetch_address",
                               target=target_node.node_id,
                               error=str(e))
                 return False
             
-            # Register target_node on current_node's node list
-            logger.debug("registering_node_on_peer",
-                       current=current_node.node_id,
+            # Register target_node on node1's node list (will propagate via GDB)
+            logger.debug("registering_node_from_node1",
                        target=target_node.node_id,
                        target_addr=target_addr[:20] + "...")
             
             try:
                 exit_code, stdout_str, stderr_str = self._exec_cli(
-                    current_node.node_id,  # Register ON this node
+                    1,  # Always register FROM node1 (ROOT with admin rights)
                     f"node add -net {self.network_name} -addr {target_addr} -host {target_node.ip_address} -port {target_node.node_port}",
                     check_output=False
                 )
                 
                 if exit_code == 0:
-                    # Check for common success/warning messages
+                    # Check for success/warning messages
                     if "You have no access rights" in stdout_str:
                         logger.warning("node_add_no_rights",
-                                      current=current_node.node_id,
                                       target=target_node.node_id)
                         return False
                     elif "already" in stdout_str.lower():
                         logger.debug("node_already_in_list",
-                                    current=current_node.node_id,
                                     target=target_node.node_id)
                         return True
                     else:
-                        logger.info("node_registered_on_peer",
-                                  current=current_node.node_id,
+                        logger.info("node_registered_via_cli",
                                   target=target_node.node_id,
                                   output=stdout_str[:50] if stdout_str else "success")
                         return True
                 else:
-                    logger.warning("node_add_failed_on_peer",
-                                  current=current_node.node_id,
+                    logger.warning("node_add_failed",
                                   target=target_node.node_id,
                                   exit_code=exit_code,
                                   stderr=stderr_str[:100])
@@ -568,21 +555,16 @@ class GenesisInitializer:
                     
             except Exception as e:
                 logger.exception("node_add_exception",
-                               current=current_node.node_id,
                                target=target_node.node_id,
                                error=str(e))
                 return False
         
-        # Create full mesh: each node registers all others
-        # Tasks: (node1→node2), (node1→node3), (node2→node1), (node2→node3), (node3→node1), (node3→node2)
-        registration_tasks = []
-        for current_node in nodes:
-            for target_node in nodes:
-                registration_tasks.append(register_node_on_target(current_node, target_node))
+        # Node1 registers ALL nodes (including itself)
+        # GDB will sync node list to other nodes via established links
+        registration_tasks = [register_single_node(node) for node in nodes]
         
-        logger.info("starting_full_mesh_registration", 
-                   total_pairs=len(registration_tasks),
-                   nodes=len(nodes))
+        logger.info("starting_node_registration_from_node1", 
+                   total_nodes=len(nodes))
         
         results = await asyncio.gather(*registration_tasks, return_exceptions=True)
         
@@ -590,10 +572,10 @@ class GenesisInitializer:
         success_count = sum(1 for r in results if r is True)
         failed_count = len(results) - success_count
         
-        logger.info("full_mesh_registration_complete",
+        logger.info("node_registration_complete",
                    successful=success_count,
                    failed=failed_count,
-                   total_pairs=len(registration_tasks))
+                   total=len(nodes))
         
         # CRITICAL: After node list population, restart network to establish links
         # Without this, nodes won't connect (node list was empty during initial NET_STATE_ONLINE)
