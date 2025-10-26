@@ -275,20 +275,11 @@ class NetworkManager:
                 node_cli_path=self.node_cli_path
             )
             
-            # Wait for ROOT nodes to be online (basic init)
-            # Note: node list will be empty initially - we'll populate it via CLI
-            try:
-                await consensus_monitor.wait_for_network_ready(timeout=90.0)
-                logger.info("root_nodes_ready_and_online")
-            except TimeoutError:
-                # Expected - node list empty, continue to register nodes
-                logger.info("root_nodes_online_but_node_list_empty_as_expected")
-            
-            # CRITICAL: Wait for nodes to fully initialize network subsystems
-            # Before registration: chains must load, GDB clusters created, roles assigned
-            logger.info("waiting_for_network_subsystems_init", delay=10)
-            await asyncio.sleep(10)
-            logger.info("network_subsystems_init_complete")
+            # Wait for ROOT nodes to reach NET_STATE_LINKS_CONNECTING
+            # This means network subsystems are initialized and ready for node registration
+            logger.info("waiting_for_network_ready_for_registration")
+            await consensus_monitor.wait_for_links_connecting_state(timeout=60.0)
+            logger.info("root_nodes_ready_for_registration")
             
             # Register ONLY ROOT nodes (first 3) in node1's node list immediately
             # This pre-populates the essential validators; other nodes will self-discover

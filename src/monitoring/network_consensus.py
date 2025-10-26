@@ -369,6 +369,74 @@ class NetworkConsensusMonitor:
         
         return state
     
+    async def wait_for_links_connecting_state(self, timeout: float = 60.0) -> None:
+        """
+        Wait for all nodes to reach NET_STATE_LINKS_CONNECTING state.
+        
+        This state indicates that network subsystems are fully initialized:
+        - Chains loaded
+        - GDB clusters created
+        - Role assigned
+        - Node is ready to accept 'node add' commands
+        
+        Args:
+            timeout: Maximum seconds to wait
+            
+        Raises:
+            TimeoutError: If nodes don't reach LINKS_CONNECTING within timeout
+        """
+        logger.info("waiting_for_links_connecting_state", 
+                   nodes=self.expected_node_count,
+                   timeout=timeout)
+        
+        start_time = asyncio.get_event_loop().time()
+        last_log = start_time
+        
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            
+            if elapsed > timeout:
+                logger.error("links_connecting_timeout", 
+                           elapsed=f"{elapsed:.1f}s",
+                           timeout=timeout)
+                raise TimeoutError(f"Nodes did not reach LINKS_CONNECTING state within {timeout}s")
+            
+            # Check state of all nodes
+            ready_count = 0
+            for node_id in self.nodes.keys():
+                try:
+                    net_state = await self._exec_cli(
+                        node_id,
+                        f"net -net {self.network_name} get state"
+                    )
+                    
+                    # Check for NET_STATE_LINKS_CONNECTING or higher
+                    # States: OFFLINE(0), LINKS_PREPARE(1), LINKS_CONNECTING(2), LINKS_ESTABLISHED(3), ONLINE(4)
+                    if any(state in net_state for state in ['NET_STATE_LINKS_CONNECTING', 'NET_STATE_LINKS_ESTABLISHED', 'NET_STATE_ONLINE']):
+                        ready_count += 1
+                        
+                except Exception as e:
+                    logger.debug("failed_to_check_net_state",
+                               node=node_id,
+                               error=str(e))
+            
+            # Log progress periodically
+            if asyncio.get_event_loop().time() - last_log >= 5:
+                logger.info("links_connecting_progress",
+                           ready=ready_count,
+                           total=self.expected_node_count,
+                           elapsed=f"{elapsed:.1f}s")
+                last_log = asyncio.get_event_loop().time()
+            
+            # All nodes ready?
+            if ready_count == self.expected_node_count:
+                logger.info("all_nodes_reached_links_connecting",
+                           elapsed=f"{elapsed:.1f}s")
+                return
+            
+            # Wait before next check
+            await asyncio.sleep(self.check_interval)
+    
     async def wait_for_network_ready(
         self,
         timeout: float = 60.0,
