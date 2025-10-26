@@ -645,7 +645,6 @@ class GenesisInitializer:
                 f"wallet info -w fee_collector -net {self.network_name}",
                 check_output=True
             )
-                raise RuntimeError(error_msg)
             
             # Extract address from wallet info output
             # Format: "addr: <address>"
