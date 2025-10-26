@@ -577,22 +577,30 @@ class GenesisInitializer:
                    failed=failed_count,
                    total=len(nodes))
         
-        # CRITICAL: After node list population, restart network to establish links
-        # Without this, nodes won't connect (node list was empty during initial NET_STATE_ONLINE)
-        logger.info("restarting_network_to_establish_links")
+        # CRITICAL: After node list population, force network to establish links IMMEDIATELY
+        # Without this, nodes wait for timeout before trying to connect
+        logger.info("forcing_network_reconnection_after_node_list_update")
+        
+        # First: bring all offline
         for node in nodes:
             try:
-                # Go offline then online to trigger reconnection
-                logger.debug("cycling_network_state", node_id=node.node_id)
+                logger.debug("bringing_offline", node_id=node.node_id)
                 self._exec_cli(node.node_id, f"net -net {self.network_name} go offline", check_output=False)
-                self._exec_cli(node.node_id, f"net -net {self.network_name} go online", check_output=False)
-                logger.debug("network_cycled", node_id=node.node_id)
             except Exception as e:
-                logger.warning("failed_to_cycle_network",
-                              node_id=node.node_id,
-                              error=str(e))
+                logger.warning("failed_to_go_offline", node_id=node.node_id, error=str(e))
         
-        logger.info("network_restarted_waiting_for_links")
+        # Small delay to ensure offline processed
+        await asyncio.sleep(1)
+        
+        # Then: bring all online simultaneously → immediate link establishment!
+        for node in nodes:
+            try:
+                logger.debug("bringing_online", node_id=node.node_id)
+                self._exec_cli(node.node_id, f"net -net {self.network_name} go online", check_output=False)
+            except Exception as e:
+                logger.warning("failed_to_go_online", node_id=node.node_id, error=str(e))
+        
+        logger.info("all_nodes_forced_online_links_will_establish_immediately")
         
         # Wait for links to actually establish before proceeding
         # This is CRITICAL - consensus won't work without active links!
