@@ -852,12 +852,13 @@ class GenesisInitializer:
             container_name = f"cellframe-stage-node-{first_master.node_id}"
             container = self.docker_client.containers.get(container_name)
             
-            # Use unified CLI method (no -chain parameter for auto-detection)
+            # Use unified CLI method WITH -chain main (CRITICAL for correct mempool!)
+            # Even though emission is in zerochain, TX must be in mainchain (ESBocs)
             logger.debug("executing_tx_create")
             
             exit_code, stdout_str, stderr_str = self._exec_cli(
                 first_master.node_id,  # Execute on dynamically determined first MASTER node
-                f"tx_create -token TCELL -from_emission {emission_hash} -value 100000000 -fee 0.1 -cert {master_cert_name} -net {self.network_name}",
+                f"tx_create -token TCELL -from_emission {emission_hash} -value 100000000 -fee 0.1 -cert {master_cert_name} -net {self.network_name} -chain main",
                 check_output=False
             )
             
