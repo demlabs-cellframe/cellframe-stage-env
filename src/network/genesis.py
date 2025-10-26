@@ -42,7 +42,60 @@ class GenesisInitializer:
         # Resolve cache dir relative to BASE_PATH (always)
         self.certs_cache = (base_path / cache_dir_relative / "certs").resolve()
         
+        self.cli_config_path = "/opt/cellframe-node/etc/cellframe-node.cfg"
         logger.info("genesis_initializer_created", network=network_name)
+    
+    def _exec_cli(self, node_id: int, command: str, check_output: bool = True) -> tuple:
+        """
+        Execute CLI command in specified node container.
+        
+        Универсальный метод для вызова cellframe-node-cli в Docker контейнере.
+        Автоматически добавляет путь к конфигу для использования Unix socket.
+        
+        Args:
+            node_id: ID ноды (1, 2, 3, etc.)
+            command: CLI команда БЕЗ префикса 'cellframe-node-cli' 
+                    Например: "node list -net stagenet"
+            check_output: Выбрасывать исключение при ненулевом exit code
+            
+        Returns:
+            Tuple[int, str, str]: (exit_code, stdout, stderr)
+            
+        Raises:
+            RuntimeError: Если контейнер не найден или команда упала (при check_output=True)
+            
+        Example:
+            exit_code, stdout, stderr = self._exec_cli(1, "node list -net stagenet")
+        """
+        container_name = f"cellframe-stage-node-{node_id}"
+        
+        try:
+            container = self.docker_client.containers.get(container_name)
+        except Exception as e:
+            raise RuntimeError(f"Container {container_name} not found: {e}")
+        
+        # Собираем полную команду как ОДНУ строку и выполняем через sh -c
+        # Это предотвращает JSON-RPC fallback и неправильное разделение аргументов
+        full_cmd = f"cellframe-node-cli -c {self.cli_config_path} {command}"
+        cmd = ["sh", "-c", full_cmd]
+        
+        # Выполняем команду
+        result = container.exec_run(cmd, demux=True)
+        exit_code = result.exit_code
+        stdout, stderr = result.output
+        
+        stdout_str = stdout.decode('utf-8').strip() if stdout else ""
+        stderr_str = stderr.decode('utf-8').strip() if stderr else ""
+        
+        if check_output and exit_code != 0:
+            raise RuntimeError(
+                f"CLI command failed in node-{node_id}: {command}\n"
+                f"Exit code: {exit_code}\n"
+                f"Stderr: {stderr_str}\n"
+                f"Stdout: {stdout_str}"
+            )
+        
+        return exit_code, stdout_str, stderr_str
     
     def _read_node_addr_with_retry(
         self, 
@@ -429,20 +482,19 @@ class GenesisInitializer:
         # Bring all nodes online explicitly (in case auto_online didn't work)
         logger.info("bringing_nodes_online")
         for node in nodes:
-            container_name = f"cellframe-stage-node-{node.node_id}"
             try:
-                container = self.docker_client.containers.get(container_name)
-                cmd = ["cellframe-node-cli", "-c", "/opt/cellframe-node/etc/cellframe-node.cfg", "net", "-net", self.network_name, "go", "online"]
-                result = container.exec_run(cmd, demux=True)
+                exit_code, stdout, stderr = self._exec_cli(
+                    node.node_id,
+                    f"net -net {self.network_name} go online",
+                    check_output=False
+                )
                 
-                if result.exit_code == 0:
+                if exit_code == 0:
                     logger.info("node_brought_online", node_id=node.node_id)
                 else:
-                    stdout, stderr = result.output
-                    stderr_str = stderr.decode() if stderr else ""
                     logger.warning("failed_to_bring_node_online",
                                   node_id=node.node_id,
-                                  stderr=stderr_str)
+                                  stderr=stderr)
             except Exception as e:
                 logger.warning("exception_bringing_node_online",
                               node_id=node.node_id,
@@ -487,12 +539,19 @@ class GenesisInitializer:
                               container=node_container_name)
                 return False
             
-            # Execute "node dump -net <net>" to get actual node address
-            cmd_dump = ["cellframe-node-cli", "-c", "/opt/cellframe-node/etc/cellframe-node.cfg", "node", "dump", "-net", self.network_name]
+            # Get node address from running container via CLI
             try:
-                result = node_container.exec_run(cmd_dump, demux=True)
-                stdout, stderr = result.output
-                stdout_str = stdout.decode('utf-8').strip() if stdout else ""
+                exit_code, stdout_str, stderr = self._exec_cli(
+                    node.node_id,
+                    f"node dump -net {self.network_name}",
+                    check_output=False
+                )
+                
+                if exit_code != 0:
+                    logger.warning("skipping_node_registration_cli_failed",
+                                  node_id=node.node_id,
+                                  stderr=stderr)
+                    return False
                 
                 # Parse "Node address: XXXX::XXXX::XXXX::XXXX"
                 import re
@@ -1008,16 +1067,18 @@ class GenesisInitializer:
                                       status=node_container.status)
                         continue
                     
-                    cmd_proc = ["cellframe-node-cli", "mempool_proc", "-datum", datum_hash, "-net", self.network_name, "-chain", "zerochain"]
                     logger.debug("triggering_mempool_proc", node=f"node{node.node_id}", datum=datum_hash[:16])
                     
-                    result_proc = node_container.exec_run(cmd_proc, demux=True)
-                    exit_code = result_proc.exit_code
+                    exit_code, stdout, stderr = self._exec_cli(
+                        node.node_id,
+                        f"mempool_proc -datum {datum_hash} -net {self.network_name} -chain zerochain",
+                        check_output=False
+                    )
                     
                     if exit_code == 0:
                         logger.info("mempool_proc_triggered", node=f"node{node.node_id}")
                     else:
-                        logger.warning("mempool_proc_failed", node=f"node{node.node_id}", exit_code=exit_code)
+                        logger.warning("mempool_proc_failed", node=f"node{node.node_id}", exit_code=exit_code, stderr=stderr)
                         
                 except docker.errors.NotFound:
                     logger.warning("container_not_found_skipping", 
