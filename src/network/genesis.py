@@ -852,17 +852,23 @@ class GenesisInitializer:
             container_name = f"cellframe-stage-node-{first_master.node_id}"
             container = self.docker_client.containers.get(container_name)
             
-            # DIAGNOSTIC: Check if master node can see emission in zerochain ledger
-            logger.info("diagnostic_checking_emission_in_ledger", emission=emission_hash[:16])
-            exit_code_ledger, stdout_ledger, _ = self._exec_cli(
+            # DIAGNOSTIC: Check if master node can see emission in zerochain DAG events
+            logger.info("diagnostic_checking_emission_in_dag", emission=emission_hash[:16])
+            exit_code_dag, stdout_dag, _ = self._exec_cli(
                 first_master.node_id,
-                f"ledger list -net {self.network_name} -chain zerochain",
+                f"dag event list -net {self.network_name} -chain zerochain -from events -limit 20",
                 check_output=False
             )
-            logger.info("ledger_list_check",
-                       exit_code=exit_code_ledger,
-                       has_emission=emission_hash.lower() in stdout_ledger.lower(),
-                       output_preview=stdout_ledger[:300] if stdout_ledger else "empty")
+            # Check if DAG has ANY events (indicates sync worked)
+            import re
+            total_match = re.search(r'total events:\s*(\d+)', stdout_dag, re.IGNORECASE) if stdout_dag else None
+            total_events = int(total_match.group(1)) if total_match else 0
+            
+            logger.info("dag_events_check",
+                       exit_code=exit_code_dag,
+                       total_events=total_events,
+                       has_data=total_events > 0,
+                       output_preview=stdout_dag[:300] if stdout_dag else "empty")
             
             # Also check token list
             logger.info("diagnostic_checking_token_list")
@@ -1129,22 +1135,39 @@ class GenesisInitializer:
                     
                     for node in nodes:
                         try:
-                            # Check if node has any data in the chain (ledger not empty)
-                            exit_code_check, stdout_check, _ = self._exec_cli(
-                                node.node_id,
-                                f"dag event list -net {self.network_name} -chain {chain_name} -from events -limit 1" if chain_name == "zerochain" else f"block list -net {self.network_name} -chain {chain_name} -last 1",
-                                check_output=False
-                            )
+                            # Check if node has any data in the chain
+                            is_dag_chain = chain_name.lower() in ["zerochain", "zero", "0"]
                             
-                            # If we got data (non-empty output beyond headers), chain is synced
-                            has_data = exit_code_check == 0 and (
-                                "total" in stdout_check.lower() or 
-                                "block" in stdout_check.lower() or
-                                "event" in stdout_check.lower()
-                            )
+                            if is_dag_chain:
+                                # For DAG: check total events > 0
+                                exit_code_check, stdout_check, _ = self._exec_cli(
+                                    node.node_id,
+                                    f"dag event list -net {self.network_name} -chain {chain_name} -from events -limit 1",
+                                    check_output=False
+                                )
+                                
+                                # Parse "total events: N"
+                                import re
+                                total_match = re.search(r'total events:\s*(\d+)', stdout_check, re.IGNORECASE) if stdout_check else None
+                                total_events = int(total_match.group(1)) if total_match else 0
+                                has_data = exit_code_check == 0 and total_events > 0
+                            else:
+                                # For blockchain: check if any blocks exist
+                                exit_code_check, stdout_check, _ = self._exec_cli(
+                                    node.node_id,
+                                    f"block list -net {self.network_name} -chain {chain_name} -last 1",
+                                    check_output=False
+                                )
+                                
+                                # Look for "block #" in output
+                                has_data = exit_code_check == 0 and "block #" in stdout_check.lower()
                             
                             if has_data:
                                 synced_count += 1
+                                logger.debug("node_has_chain_data", 
+                                           node=f"node{node.node_id}",
+                                           chain=chain_name,
+                                           preview=stdout_check[:100] if stdout_check else "empty")
                                 
                         except Exception as e:
                             logger.debug("failed_to_check_chain_data", node=f"node{node.node_id}", error=str(e)[:100])
@@ -1153,12 +1176,23 @@ class GenesisInitializer:
                         logger.info("chain_data_propagated", chain=chain_name, synced=synced_count, total=len(nodes), elapsed=f"{time.time() - start_time:.1f}s")
                         return
                     
-                    logger.debug("chain_sync_progress", chain=chain_name, synced=synced_count, total=len(nodes), elapsed=f"{time.time() - start_time:.1f}s")
+                    # Log progress every iteration (it's important to see what's happening!)
+                    logger.info("chain_sync_progress", 
+                               chain=chain_name,
+                               synced=synced_count,
+                               total=len(nodes),
+                               elapsed=f"{time.time() - start_time:.1f}s",
+                               missing=len(nodes) - synced_count)
                     await asyncio.sleep(check_interval)
                 
-                # Timeout - but continue anyway
-                logger.warning("chain_sync_timeout", chain=chain_name, elapsed=timeout)
-                return
+                # Timeout reached - CRITICAL ERROR!
+                logger.error("chain_sync_timeout_critical",
+                            chain=chain_name,
+                            elapsed=timeout,
+                            synced=synced_count,
+                            total=len(nodes),
+                            missing=len(nodes) - synced_count)
+                raise RuntimeError(f"Chain {chain_name} sync timeout: only {synced_count}/{len(nodes)} nodes have data after {timeout}s")
             
             # For full network sync (sync all), check general status
             while time.time() - start_time < timeout:
