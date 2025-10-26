@@ -371,21 +371,22 @@ class NetworkConsensusMonitor:
     
     async def wait_for_links_connecting_state(self, timeout: float = 60.0) -> None:
         """
-        Wait for all nodes to reach NET_STATE_LINKS_CONNECTING state.
+        Wait for all nodes to reach NET_STATE_LINKS_CONNECTING AND register their state in GDB.
         
-        This state indicates that network subsystems are fully initialized:
+        This ensures network subsystems are fully initialized:
         - Chains loaded
         - GDB clusters created
         - Role assigned
-        - Node is ready to accept 'node add' commands
+        - Node state registered in GDB
+        - Node is ready to accept 'node add' commands AND respond to 'node dump'
         
         Args:
             timeout: Maximum seconds to wait
             
         Raises:
-            TimeoutError: If nodes don't reach LINKS_CONNECTING within timeout
+            TimeoutError: If nodes don't reach ready state within timeout
         """
-        logger.info("waiting_for_links_connecting_state", 
+        logger.info("waiting_for_links_connecting_and_state_registration", 
                    nodes=self.expected_node_count,
                    timeout=timeout)
         
@@ -396,37 +397,54 @@ class NetworkConsensusMonitor:
             elapsed = asyncio.get_event_loop().time() - start_time
             
             if elapsed > timeout:
-                logger.error("links_connecting_timeout", 
+                logger.error("node_state_registration_timeout", 
                            elapsed=f"{elapsed:.1f}s",
                            timeout=timeout)
-                raise TimeoutError(f"Nodes did not reach LINKS_CONNECTING state within {timeout}s")
+                raise TimeoutError(f"Nodes did not register their state within {timeout}s")
             
-            # Check state of all nodes
+            # Check state AND node dump availability
             ready_count = 0
             for node_id in self.nodes.keys():
                 try:
+                    # Check 1: Network state (LINKS_CONNECTING or higher)
                     net_status = await self._exec_cli(
                         node_id,
                         f"net -net {self.network_name} get status"
                     )
                     
-                    # Check for NET_STATE_LINKS_CONNECTING or higher in YAML output
-                    # States: OFFLINE(0), LINKS_PREPARE(1), LINKS_CONNECTING(2), LINKS_ESTABLISHED(3), ONLINE(4)
-                    # Output format: "current: NET_STATE_LINKS_CONNECTING"
-                    if any(state in net_status for state in ['NET_STATE_LINKS_CONNECTING', 'NET_STATE_LINKS_ESTABLISHED', 'NET_STATE_ONLINE']):
-                        ready_count += 1
-                        logger.debug("node_reached_links_connecting", 
+                    state_ok = any(state in net_status for state in ['NET_STATE_LINKS_CONNECTING', 'NET_STATE_LINKS_ESTABLISHED', 'NET_STATE_ONLINE'])
+                    
+                    if not state_ok:
+                        continue
+                    
+                    # Check 2: Node dump works (state registered in GDB)
+                    try:
+                        node_dump = await self._exec_cli(
+                            node_id,
+                            f"node dump -net {self.network_name}"
+                        )
+                        
+                        # If dump succeeds and contains node addr - node is fully ready
+                        if 'Node addr:' in node_dump:
+                            ready_count += 1
+                            logger.debug("node_fully_ready_for_registration", 
+                                       node=node_id,
+                                       state_ok=True,
+                                       dump_ok=True)
+                    except Exception as dump_err:
+                        # node dump failed - state not registered yet
+                        logger.debug("node_state_not_registered_yet",
                                    node=node_id,
-                                   state_preview=net_status[:100])
+                                   error=str(dump_err)[:100])
                         
                 except Exception as e:
-                    logger.debug("failed_to_check_net_state",
+                    logger.debug("failed_to_check_node_readiness",
                                node=node_id,
-                               error=str(e))
+                               error=str(e)[:100])
             
             # Log progress periodically
             if asyncio.get_event_loop().time() - last_log >= 5:
-                logger.info("links_connecting_progress",
+                logger.info("node_registration_readiness_progress",
                            ready=ready_count,
                            total=self.expected_node_count,
                            elapsed=f"{elapsed:.1f}s")
@@ -434,7 +452,7 @@ class NetworkConsensusMonitor:
             
             # All nodes ready?
             if ready_count == self.expected_node_count:
-                logger.info("all_nodes_reached_links_connecting",
+                logger.info("all_nodes_ready_for_registration",
                            elapsed=f"{elapsed:.1f}s")
                 return
             
