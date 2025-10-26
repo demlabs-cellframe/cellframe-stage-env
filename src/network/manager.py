@@ -312,6 +312,21 @@ class NetworkManager:
             await self.genesis.process_zerochain_datum(emission_hash, root_nodes)
             logger.info("emission_finalized_in_dag")
             
+            # DIAGNOSTIC: Verify emission is visible on ROOT nodes BEFORE restart
+            logger.info("verifying_emission_on_root_nodes", emission=emission_hash[:16])
+            for root_node in root_nodes[:1]:  # Check first ROOT node
+                exit_code, stdout, _ = self.genesis._exec_cli(
+                    root_node.node_id,
+                    f"ledger list -net {self.topology.network.name} -chain zerochain",
+                    check_output=False
+                )
+                has_emission = emission_hash.lower() in stdout.lower() if stdout else False
+                logger.info("root_emission_check",
+                           node=f"node{root_node.node_id}",
+                           has_emission=has_emission,
+                           exit_code=exit_code,
+                           ledger_preview=stdout[:300] if stdout else "empty")
+            
             # Genesis events created successfully with seed_mode!
             # seed_mode will be disabled in PHASE 2 before ROOT restart
             
