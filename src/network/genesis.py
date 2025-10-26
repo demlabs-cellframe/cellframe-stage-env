@@ -1120,6 +1120,47 @@ class GenesisInitializer:
             start_time = time.time()
             check_interval = 5
             
+            # For chain-specific sync, verify by checking if chain has data
+            if chain_name:
+                logger.info("waiting_for_chain_data_propagation", chain=chain_name, timeout=timeout)
+                
+                while time.time() - start_time < timeout:
+                    synced_count = 0
+                    
+                    for node in nodes:
+                        try:
+                            # Check if node has any data in the chain (ledger not empty)
+                            exit_code_check, stdout_check, _ = self._exec_cli(
+                                node.node_id,
+                                f"dag event list -net {self.network_name} -chain {chain_name} -from events -limit 1" if chain_name == "zerochain" else f"block list -net {self.network_name} -chain {chain_name} -last 1",
+                                check_output=False
+                            )
+                            
+                            # If we got data (non-empty output beyond headers), chain is synced
+                            has_data = exit_code_check == 0 and (
+                                "total" in stdout_check.lower() or 
+                                "block" in stdout_check.lower() or
+                                "event" in stdout_check.lower()
+                            )
+                            
+                            if has_data:
+                                synced_count += 1
+                                
+                        except Exception as e:
+                            logger.debug("failed_to_check_chain_data", node=f"node{node.node_id}", error=str(e)[:100])
+                    
+                    if synced_count >= len(nodes):  # All nodes have data
+                        logger.info("chain_data_propagated", chain=chain_name, synced=synced_count, total=len(nodes), elapsed=f"{time.time() - start_time:.1f}s")
+                        return
+                    
+                    logger.debug("chain_sync_progress", chain=chain_name, synced=synced_count, total=len(nodes), elapsed=f"{time.time() - start_time:.1f}s")
+                    await asyncio.sleep(check_interval)
+                
+                # Timeout - but continue anyway
+                logger.warning("chain_sync_timeout", chain=chain_name, elapsed=timeout)
+                return
+            
+            # For full network sync (sync all), check general status
             while time.time() - start_time < timeout:
                 all_synced = True
                 sync_status = {}
