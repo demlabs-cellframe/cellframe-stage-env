@@ -867,8 +867,8 @@ class GenesisInitializer:
                 "-value", "100000000",
                 "-fee", "0.1",
                 "-cert", root_cert_name,
-                "-net", self.network_name,
-                "-chain", "main"
+                "-net", self.network_name
+                # NOTE: No -chain parameter! Let SDK auto-detect based on emission location
             ]
             
             logger.debug("executing_tx_create", command=" ".join(cmd))
