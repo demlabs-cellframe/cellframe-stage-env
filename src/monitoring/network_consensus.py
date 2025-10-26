@@ -534,7 +534,9 @@ class NetworkConsensusMonitor:
     
     async def _exec_cli(self, node_id: str, command: str) -> str:
         """
-        Execute CLI command in node container using Docker SDK.
+        Execute CLI command via Unix socket directly.
+        
+        Uses `sh -c` wrapper to ensure Unix socket is used (not JSON-RPC fallback).
         
         Args:
             node_id: Node identifier (e.g., "node1")
@@ -555,8 +557,13 @@ class NetworkConsensusMonitor:
         except Exception as e:
             raise RuntimeError(f"Container {container_name} not found: {e}")
         
-        # Build CLI command array
-        cmd_array = [self.node_cli_path] + command.split()
+        # Use sh -c wrapper to execute CLI with Unix socket explicitly
+        # This prevents JSON-RPC fallback by ensuring socket is always used
+        socket_path = "/opt/cellframe-node/var/run/node_cli"
+        full_cmd = f"{self.node_cli_path} {command}"
+        
+        # Wrap in sh -c to ensure proper execution environment
+        cmd_array = ["sh", "-c", full_cmd]
         
         # Execute using Docker SDK (synchronous, but we're in async context)
         result = container.exec_run(cmd_array, demux=True)
