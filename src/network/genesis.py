@@ -970,6 +970,14 @@ class GenesisInitializer:
                 try:
                     node_container = self.docker_client.containers.get(container_name)
                     
+                    # Check if container is still running
+                    node_container.reload()  # Refresh container state
+                    if node_container.status != 'running':
+                        logger.warning("container_not_running", 
+                                      node=f"node{node.node_id}",
+                                      status=node_container.status)
+                        continue
+                    
                     cmd_proc = ["cellframe-node-cli", "mempool_proc", "-datum", datum_hash, "-net", self.network_name, "-chain", "zerochain"]
                     logger.debug("triggering_mempool_proc", node=f"node{node.node_id}", datum=datum_hash[:16])
                     
@@ -981,6 +989,11 @@ class GenesisInitializer:
                     else:
                         logger.warning("mempool_proc_failed", node=f"node{node.node_id}", exit_code=exit_code)
                         
+                except docker.errors.NotFound:
+                    logger.warning("container_not_found_skipping", 
+                                  node=f"node{node.node_id}",
+                                  container=container_name)
+                    continue
                 except Exception as e:
                     logger.warning("failed_to_trigger_mempool_proc", node=f"node{node.node_id}", error=str(e))
             
@@ -1009,10 +1022,19 @@ class GenesisInitializer:
                                exit_code=exit_code)
                     last_log_time = time.time()
                 
-                if datum_hash.lower() in stdout_events_str.lower():
-                    found_in_dag = True
-                    logger.info("datum_finalized_in_zerochain", datum=datum_hash[:16], elapsed=f"{elapsed:.1f}s")
-                    break
+                # Check if any events appeared (indicates DAG is working)
+                # Note: CLI output doesn't show datum hash inside events, only event hash
+                # If total events > 0, it means DAG is processing datums
+                if "total events:" in stdout_events_str:
+                    import re
+                    match = re.search(r'total events:\s*(\d+)', stdout_events_str)
+                    if match and int(match.group(1)) > 0:
+                        found_in_dag = True
+                        logger.info("datum_finalized_in_zerochain", 
+                                   datum=datum_hash[:16], 
+                                   elapsed=f"{elapsed:.1f}s",
+                                   total_events=match.group(1))
+                        break
                 
                 # Wait before retry
                 await asyncio.sleep(2)

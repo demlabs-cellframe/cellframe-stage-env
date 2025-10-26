@@ -284,12 +284,11 @@ class NetworkManager:
                 # Expected - node list empty, continue to register nodes
                 logger.info("root_nodes_online_but_node_list_empty_as_expected")
             
-            # Register ALL nodes (root, master, full) in node1's node list immediately
-            # This pre-populates the node list so new nodes see full topology on startup
-            logger.info("pre_registering_all_planned_nodes_in_node1")
-            all_nodes_for_registration = root_nodes + master_nodes + full_nodes
-            await self.genesis.register_all_nodes_via_cli(all_nodes_for_registration)
-            logger.info("all_nodes_pre_registered_in_node1_list", total=len(all_nodes_for_registration))
+            # Register ONLY ROOT nodes (first 3) in node1's node list immediately
+            # This pre-populates the essential validators; other nodes will self-discover
+            logger.info("pre_registering_root_nodes_in_node1")
+            await self.genesis.register_all_nodes_via_cli(root_nodes)
+            logger.info("root_nodes_pre_registered_in_node1", count=len(root_nodes))
             
             # Generate fee wallet
             logger.info("generating_fee_wallet")
