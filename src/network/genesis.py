@@ -610,7 +610,17 @@ class GenesisInitializer:
                               node_id=node.node_id,
                               error=str(e))
         
-        logger.info("network_restarted_links_will_establish")
+        logger.info("network_restarted_waiting_for_links")
+        
+        # Wait for links to actually establish before proceeding
+        # This is CRITICAL - consensus won't work without active links!
+        from ..monitoring.network_consensus import NetworkConsensusMonitor
+        monitor = NetworkConsensusMonitor(
+            nodes={f"node{n.node_id}": n for n in nodes},
+            network_name=self.network_name
+        )
+        await monitor.wait_for_links_established(timeout=60.0)
+        logger.info("all_links_established_ready_for_consensus")
     
     async def generate_fee_wallet(self) -> str:
         """

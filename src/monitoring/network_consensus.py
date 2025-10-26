@@ -369,6 +369,82 @@ class NetworkConsensusMonitor:
         
         return state
     
+    async def wait_for_links_established(self, timeout: float = 60.0) -> None:
+        """
+        Wait for all nodes to establish required links.
+        
+        Checks that active links >= required links on each node.
+        This is critical before consensus operations!
+        
+        Args:
+            timeout: Maximum seconds to wait
+            
+        Raises:
+            TimeoutError: If links don't establish within timeout
+        """
+        logger.info("waiting_for_links_established", 
+                   nodes=self.expected_node_count,
+                   timeout=timeout)
+        
+        start_time = asyncio.get_event_loop().time()
+        last_log = start_time
+        
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            
+            if elapsed > timeout:
+                logger.error("links_establishment_timeout", 
+                           elapsed=f"{elapsed:.1f}s",
+                           timeout=timeout)
+                raise TimeoutError(f"Links did not establish within {timeout}s")
+            
+            # Check links on all nodes
+            ready_count = 0
+            for node_id in self.nodes.keys():
+                try:
+                    net_status = await self._exec_cli(
+                        node_id,
+                        f"net -net {self.network_name} get status"
+                    )
+                    
+                    # Parse YAML to get active and required links
+                    import re
+                    active_match = re.search(r'active:\s*(\d+)', net_status)
+                    required_match = re.search(r'required:\s*(\d+)', net_status)
+                    
+                    if active_match and required_match:
+                        active = int(active_match.group(1))
+                        required = int(required_match.group(1))
+                        
+                        if active >= required:
+                            ready_count += 1
+                            logger.debug("node_links_established",
+                                       node=node_id,
+                                       active=active,
+                                       required=required)
+                        
+                except Exception as e:
+                    logger.debug("failed_to_check_links",
+                               node=node_id,
+                               error=str(e)[:100])
+            
+            # Log progress periodically
+            if asyncio.get_event_loop().time() - last_log >= 5:
+                logger.info("links_establishment_progress",
+                           ready=ready_count,
+                           total=self.expected_node_count,
+                           elapsed=f"{elapsed:.1f}s")
+                last_log = asyncio.get_event_loop().time()
+            
+            # All nodes have required links?
+            if ready_count == self.expected_node_count:
+                logger.info("all_nodes_links_established",
+                           elapsed=f"{elapsed:.1f}s")
+                return
+            
+            # Wait before next check
+            await asyncio.sleep(self.check_interval)
+    
     async def wait_for_links_connecting_state(self, timeout: float = 60.0) -> None:
         """
         Wait for all nodes to reach NET_STATE_LINKS_CONNECTING AND register their state in GDB.
