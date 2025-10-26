@@ -486,15 +486,12 @@ class GenesisInitializer:
         """
         logger.info("registering_full_mesh_node_list", total_nodes=len(nodes))
         
-        # Prepare registration tasks: each node registers all others
+        # Prepare registration tasks: each node registers ALL nodes (including itself)
         async def register_node_on_target(current_node: NodeConfig, target_node: NodeConfig) -> bool:
             """
             Register target_node on current_node's node list.
             Returns True on success.
             """
-            # Skip self-registration
-            if current_node.node_id == target_node.node_id:
-                return True
             
             # Get target node address from its running container
             try:
