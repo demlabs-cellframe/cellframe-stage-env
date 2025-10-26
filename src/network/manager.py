@@ -339,14 +339,26 @@ class NetworkManager:
             logger.info("starting_master_nodes", services=master_services, seed_mode=True)
             self.compose.up(services=master_services, detach=True, wait=False)
             
-            # Wait for all ROOT+MASTER nodes to be ready
-            logger.info("waiting_for_root_and_master_ready")
-            all_validator_nodes_dict = {f"node{n.node_id}": n for n in root_nodes + master_nodes}
+            # Wait for MASTER nodes to reach LINKS_CONNECTING state
+            all_validator_nodes = root_nodes + master_nodes
+            all_validator_nodes_dict = {f"node{n.node_id}": n for n in all_validator_nodes}
             consensus_monitor_all = NetworkConsensusMonitor(
                 nodes=all_validator_nodes_dict,
                 node_cli_path=self.node_cli_path
             )
             
+            logger.info("waiting_for_all_validators_links_connecting")
+            await consensus_monitor_all.wait_for_links_connecting_state(timeout=60.0)
+            logger.info("all_validators_ready_for_registration")
+            
+            # Re-register full mesh node list (ROOT + MASTER)
+            # After restart, node list is cleared and needs repopulation
+            logger.info("re_registering_full_validator_mesh")
+            await self.genesis.register_all_nodes_via_cli(all_validator_nodes)
+            logger.info("validator_mesh_registered")
+            
+            # Wait for network consensus with full node list
+            logger.info("waiting_for_root_and_master_consensus")
             try:
                 await consensus_monitor_all.wait_for_network_ready(timeout=120.0)
                 logger.info("all_validator_nodes_ready")
