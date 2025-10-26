@@ -321,15 +321,18 @@ class NetworkManager:
             raise RuntimeError(f"ROOT nodes genesis failed: {e}") from e
         
         # =================================================================
-        # PHASE 2: START MASTER FOR ESBOCS GENESIS
+        # PHASE 2: RESTART ROOT + START MASTER FOR ESBOCS GENESIS
         # =================================================================
-        logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis) ===")
+        logger.info("=== PHASE 2: Restart ROOT + Start MASTER (ESBocs Genesis) ===")
         
         try:
-            # NOTE: Do NOT restart ROOT nodes here!
-            # Restart would kill the process and lose GDB (emission) from memory.
-            # ROOT nodes will continue running with seed_mode=true, which is fine
-            # (seed_mode only affects genesis creation, not normal operation)
+            # Disable seed_mode for ROOT nodes now (genesis events created)
+            logger.info("disabling_seed_mode_for_root_nodes_in_configs")
+            self.genesis.disable_seed_mode_in_configs(root_node_ids)
+            
+            # Restart ROOT nodes to apply seed_mode=false
+            logger.info("restarting_root_nodes_without_seed_mode")
+            self.compose.restart(services=root_services)
             
             # Start MASTER nodes (already have seed_mode=true in configs)
             master_services = [f"node-{nid}" for nid in master_node_ids]
@@ -385,11 +388,15 @@ class NetworkManager:
             logger.info("main_genesis_block_hash", hash=main_genesis_hash[:16])
             
             # Update static_genesis_block in ALL configs
-            # Note: This updates configs on disk for FULL nodes that will start in Phase 3
-            # ROOT/MASTER nodes keep running, they don't need static_genesis (already have data)
             logger.info("updating_static_genesis_block_in_all_configs")
             await self.genesis.update_static_genesis_in_config("main", main_genesis_hash, node_configs)
             logger.info("static_genesis_updated")
+            
+            # Disable seed_mode for ROOT + MASTER nodes (CRITICAL!)
+            # Genesis block created, seed_mode no longer needed
+            logger.info("disabling_seed_mode_for_all_validators")
+            self.genesis.disable_seed_mode_in_configs(root_node_ids + master_node_ids)
+            logger.info("seed_mode_disabled_in_all_validator_configs")
             
         except Exception as e:
             logger.error("master_nodes_genesis_failed", error=str(e))
@@ -397,16 +404,16 @@ class NetworkManager:
             raise RuntimeError(f"MASTER nodes genesis failed: {e}") from e
         
         # =================================================================
-        # PHASE 3: START FULL NODES
+        # PHASE 3: RESTART ALL + START FULL NODES
         # =================================================================
-        logger.info("=== PHASE 3: Start FULL Nodes ===")
+        logger.info("=== PHASE 3: Restart ALL + Start FULL Nodes ===")
         
         try:
-            # NOTE: Do NOT restart ROOT/MASTER nodes!
-            # They are running fine with genesis data in memory.
-            # Restart would lose GDB state (emission, tokens).
+            # Restart ROOT + MASTER with seed_mode=false and correct static_genesis_block
+            logger.info("restarting_root_and_master_with_final_configs")
+            self.compose.restart(services=root_services + master_services)
             
-            # Start FULL nodes (they will sync from validators)
+            # Start FULL nodes
             full_services = [f"node-{nid}" for nid in full_node_ids]
             logger.info("starting_full_nodes", services=full_services)
             self.compose.up(services=full_services, detach=True, wait=False)
