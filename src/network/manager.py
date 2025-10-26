@@ -366,6 +366,12 @@ class NetworkManager:
                 logger.error("validators_not_ready", error=str(e))
                 raise RuntimeError(f"Validator nodes failed to reach consensus: {e}")
             
+            # CRITICAL: Sync zerochain to MASTER nodes (emission was created in Phase 1!)
+            # Without this, master nodes can't see emission datum → tx_create fails
+            logger.info("syncing_zerochain_to_master_nodes")
+            await self.genesis.sync_network(all_validator_nodes, chain_name="zerochain")
+            logger.info("zerochain_synced_to_all_validators")
+            
             # Create first TX on main chain → genesis block
             logger.info("creating_first_transaction_main_chain")
             tx_hash = await self.genesis.create_first_transaction(emission_hash, master_nodes=master_nodes)

@@ -1046,7 +1046,7 @@ class GenesisInitializer:
             logger.error("zerochain_datum_processing_error", error=str(e))
             raise
     
-    async def sync_network(self, nodes: List[NodeConfig], timeout: int = 120) -> None:
+    async def sync_network(self, nodes: List[NodeConfig], chain_name: str = None, timeout: int = 120) -> None:
         """
         Synchronize all nodes in the network.
         
@@ -1055,12 +1055,14 @@ class GenesisInitializer:
         
         Args:
             nodes: List of all node configurations
+            chain_name: Specific chain to sync (e.g., "zerochain", "main"), or None for all chains
             timeout: Timeout in seconds for sync completion
             
         Raises:
             RuntimeError: If sync fails or times out
         """
-        logger.info("synchronizing_network", node_count=len(nodes), timeout=timeout)
+        sync_target = f"chain {chain_name}" if chain_name else "all"
+        logger.info("synchronizing_network", node_count=len(nodes), target=sync_target, timeout=timeout)
         
         try:
             # Trigger sync on all nodes
@@ -1069,11 +1071,14 @@ class GenesisInitializer:
                 try:
                     container = self.docker_client.containers.get(container_name)
                     
-                    logger.debug("triggering_sync", node=f"node{node.node_id}")
+                    logger.debug("triggering_sync", node=f"node{node.node_id}", target=sync_target)
+                    
+                    # Build sync command
+                    sync_cmd = f"net -net {self.network_name} sync {sync_target}"
                     
                     exit_code, stdout_str, stderr_str = self._exec_cli(
                         node.node_id,
-                        f"net -net {self.network_name} sync all",
+                        sync_cmd,
                         check_output=False
                     )
                     
