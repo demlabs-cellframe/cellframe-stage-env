@@ -594,6 +594,23 @@ class GenesisInitializer:
                    successful=success_count,
                    failed=failed_count,
                    total_pairs=len(registration_tasks))
+        
+        # CRITICAL: After node list population, restart network to establish links
+        # Without this, nodes won't connect (node list was empty during initial NET_STATE_ONLINE)
+        logger.info("restarting_network_to_establish_links")
+        for node in nodes:
+            try:
+                # Go offline then online to trigger reconnection
+                logger.debug("cycling_network_state", node_id=node.node_id)
+                self._exec_cli(node.node_id, f"net -net {self.network_name} go offline", check_output=False)
+                self._exec_cli(node.node_id, f"net -net {self.network_name} go online", check_output=False)
+                logger.debug("network_cycled", node_id=node.node_id)
+            except Exception as e:
+                logger.warning("failed_to_cycle_network",
+                              node_id=node.node_id,
+                              error=str(e))
+        
+        logger.info("network_restarted_links_will_establish")
     
     async def generate_fee_wallet(self) -> str:
         """
