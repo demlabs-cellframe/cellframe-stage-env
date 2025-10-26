@@ -368,7 +368,7 @@ class NetworkManager:
             
             # Create first TX on main chain → genesis block
             logger.info("creating_first_transaction_main_chain")
-            tx_hash = await self.genesis.create_first_transaction(emission_hash)
+            tx_hash = await self.genesis.create_first_transaction(emission_hash, master_nodes=master_nodes)
             logger.info("first_transaction_created", hash=tx_hash[:16])
             
             # Wait for genesis block

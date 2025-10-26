@@ -834,35 +834,47 @@ class GenesisInitializer:
             logger.error("native_token_emission_error", error=str(e))
             raise
     
-    async def create_first_transaction(self, emission_hash: str, master_cert_name: str = "pvt.stagenet.master.0") -> str:
+    async def create_first_transaction(
+        self, 
+        emission_hash: str, 
+        master_nodes: List[NodeConfig] = None,
+        master_cert_name: str = "pvt.stagenet.master.0"
+    ) -> str:
         """
         Create first TCELL transaction on main chain.
         
-        CRITICAL: Must execute on MASTER node (node4) with master certificate!
+        CRITICAL: Must execute on MASTER node with master certificate!
         ROOT nodes don't have pvt.stagenet.master.N certificates.
         
         Args:
             emission_hash: Emission datum hash to spend from
+            master_nodes: List of master node configs (uses first one)
             master_cert_name: Certificate name for signing (default: pvt.stagenet.master.0)
             
         Returns:
             Transaction datum hash
             
         Raises:
-            RuntimeError: If transaction creation fails
+            RuntimeError: If transaction creation fails or no master nodes provided
         """
         logger.info("creating_first_transaction", token="TCELL", chain="main", from_emission=emission_hash[:16])
         
+        if not master_nodes or len(master_nodes) == 0:
+            raise RuntimeError("No master nodes provided for tx_create")
+        
+        # Use first MASTER node (has pvt.stagenet.master.0)
+        first_master = master_nodes[0]
+        logger.debug("using_master_node_for_tx", node_id=first_master.node_id)
+        
         try:
-            # Execute on node4 (first MASTER node with pvt.stagenet.master.0)
-            container_name = f"cellframe-stage-node-4"
+            container_name = f"cellframe-stage-node-{first_master.node_id}"
             container = self.docker_client.containers.get(container_name)
             
             # Use unified CLI method (no -chain parameter for auto-detection)
             logger.debug("executing_tx_create")
             
             exit_code, stdout_str, stderr_str = self._exec_cli(
-                4,  # Execute on node4 (first MASTER node)
+                first_master.node_id,  # Execute on dynamically determined first MASTER node
                 f"tx_create -token TCELL -from_emission {emission_hash} -value 100000000 -fee 0.1 -cert {master_cert_name} -net {self.network_name}",
                 check_output=False
             )
