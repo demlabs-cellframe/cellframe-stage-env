@@ -522,9 +522,9 @@ class GenesisInitializer:
                                   stderr=stderr)
                     return False
                 
-                # Parse "Node address: XXXX::XXXX::XXXX::XXXX"
+                # Parse "Node addr: XXXX::XXXX::XXXX::XXXX" (note: "addr" not "address")
                 import re
-                addr_match = re.search(r'Node address:\s+([0-9A-Fa-f:]+)', stdout_str)
+                addr_match = re.search(r'Node addr:\s+([0-9A-Fa-f:]+)', stdout_str)
                 if not addr_match:
                     logger.warning("skipping_node_registration_no_address_in_dump",
                                   node_id=node.node_id,
