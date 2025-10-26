@@ -224,13 +224,14 @@ class NetworkConsensusMonitor:
                               error=str(e))
                 raise
             
-            # Get chain info
+            # Get chain info (block count and last hash)
             try:
-                chain_info = await self._exec_cli(
+                # Use 'block list' command to get chain state
+                block_info = await self._exec_cli(
                     node_id,
-                    f"chain -net {self.network_name} list"
+                    f"block list -net {self.network_name} -chain main -last 1"
                 )
-                blocks, last_hash = self._parse_chain_info(chain_info, "main")
+                blocks, last_hash = self._parse_chain_info(block_info, "main")
                 metrics.main_chain_blocks = blocks
                 metrics.main_chain_last_hash = last_hash
             except Exception as e:

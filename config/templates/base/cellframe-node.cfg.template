@@ -163,9 +163,9 @@ network_mask=255.255.255.0
 enabled=true
 # debug_more=false
 # debug-cli=false
-version=1
+#version=1
 # Allow node command for manual node list management  
-allowed_cmd=[node, ledger, wallet, mempool, srv_stake, poll, net_srv, net, chain, dag, token,tx_create, token, tx_history]
+allowed_cmd=[node, ledger, wallet, mempool, srv_stake, poll, net_srv, net, block, dag, token, tx_create, tx_history]
 listen-path=[/opt/cellframe-node/var/run/node_cli]
 listen-address=[0.0.0.0:12345]
 # IMPORTANT! Its accessible for all the users in system!
