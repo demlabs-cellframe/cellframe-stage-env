@@ -471,87 +471,75 @@ class GenesisInitializer:
     
     async def register_all_nodes_via_cli(self, nodes: List[NodeConfig]) -> None:
         """
-        Register ALL nodes in the network via CLI 'node add' command from node1.
+        Register ALL nodes on EACH node via CLI 'node add' command.
         
-        This ensures all nodes immediately know about each other without waiting
-        for natural P2P discovery.
+        CRITICAL: Each node must register ALL OTHER nodes locally!
+        This ensures:
+        - Full mesh node list on each node
+        - GDB sync works (nodes connected)
+        - Consensus can operate (all validators known)
         
         Uses parallel registration for speed.
         
         Args:
             nodes: List of all node configurations
         """
-        logger.info("registering_all_nodes_via_cli", total_nodes=len(nodes))
+        logger.info("registering_full_mesh_node_list", total_nodes=len(nodes))
         
-        # Get node-1 container (root node with admin rights)
-        container_name = "cellframe-stage-node-1"
-        try:
-            container = self.docker_client.containers.get(container_name)
-        except docker.errors.NotFound:
-            logger.error("node1_container_not_found", container=container_name)
-            raise RuntimeError(f"Container {container_name} not found")
-        
-        # Prepare registration tasks for all nodes (except node1)
-        async def register_single_node(node: NodeConfig) -> bool:
-            """Register a single node. Returns True on success."""
-            # Skip node1 itself
-            if node.node_id == 1:
+        # Prepare registration tasks: each node registers all others
+        async def register_node_on_target(current_node: NodeConfig, target_node: NodeConfig) -> bool:
+            """
+            Register target_node on current_node's node list.
+            Returns True on success.
+            """
+            # Skip self-registration
+            if current_node.node_id == target_node.node_id:
                 return True
             
-            # Get node address directly from running container via CLI
-            node_container_name = f"cellframe-stage-node-{node.node_id}"
-            try:
-                node_container = self.docker_client.containers.get(node_container_name)
-            except docker.errors.NotFound:
-                logger.warning("skipping_node_registration_container_not_found",
-                              node_id=node.node_id,
-                              container=node_container_name)
-                return False
-            
-            # Get node address from running container via CLI
+            # Get target node address from its running container
             try:
                 exit_code, stdout_str, stderr = self._exec_cli(
-                    node.node_id,
+                    target_node.node_id,
                     f"node dump -net {self.network_name}",
                     check_output=False
                 )
                 
                 if exit_code != 0:
-                    logger.warning("skipping_node_registration_cli_failed",
-                                  node_id=node.node_id,
+                    logger.warning("skipping_registration_target_dump_failed",
+                                  current=current_node.node_id,
+                                  target=target_node.node_id,
                                   stderr=stderr)
                     return False
                 
-                # Parse "Node addr: XXXX::XXXX::XXXX::XXXX" (note: "addr" not "address")
+                # Parse target node address
                 import re
                 addr_match = re.search(r'Node addr:\s+([0-9A-Fa-f:]+)', stdout_str)
                 if not addr_match:
-                    logger.warning("skipping_node_registration_no_address_in_dump",
-                                  node_id=node.node_id,
+                    logger.warning("skipping_registration_no_target_address",
+                                  current=current_node.node_id,
+                                  target=target_node.node_id,
                                   dump_output=stdout_str[:200])
                     return False
                 
-                node_addr = addr_match.group(1)
-                logger.debug("fetched_node_address_from_container",
-                           node_id=node.node_id,
-                           node_addr=node_addr[:20] + "...")
+                target_addr = addr_match.group(1)
                 
             except Exception as e:
-                logger.warning("failed_to_fetch_node_address",
-                              node_id=node.node_id,
+                logger.warning("failed_to_fetch_target_address",
+                              current=current_node.node_id,
+                              target=target_node.node_id,
                               error=str(e))
                 return False
             
-            # Use unified CLI method from node1
-            logger.info("registering_node_via_cli",
-                       node_id=node.node_id,
-                       node_addr=node_addr[:20] + "...",
-                       endpoint=f"{node.ip_address}:{node.node_port}")
+            # Register target_node on current_node's node list
+            logger.debug("registering_node_on_peer",
+                       current=current_node.node_id,
+                       target=target_node.node_id,
+                       target_addr=target_addr[:20] + "...")
             
             try:
                 exit_code, stdout_str, stderr_str = self._exec_cli(
-                    1,  # Always register from node1
-                    f"node add -net {self.network_name} -addr {node_addr} -host {node.ip_address} -port {node.node_port}",
+                    current_node.node_id,  # Register ON this node
+                    f"node add -net {self.network_name} -addr {target_addr} -host {target_node.ip_address} -port {target_node.node_port}",
                     check_output=False
                 )
                 
@@ -559,59 +547,56 @@ class GenesisInitializer:
                     # Check for common success/warning messages
                     if "You have no access rights" in stdout_str:
                         logger.warning("node_add_no_rights",
-                                      node_id=node.node_id)
+                                      current=current_node.node_id,
+                                      target=target_node.node_id)
                         return False
                     elif "already" in stdout_str.lower():
-                        logger.debug("node_already_registered",
-                                    node_id=node.node_id,
-                                    output=stdout_str)
+                        logger.debug("node_already_in_list",
+                                    current=current_node.node_id,
+                                    target=target_node.node_id)
                         return True
                     else:
-                        logger.info("node_registered_via_cli",
-                                  node_id=node.node_id,
-                                  output=stdout_str if stdout_str else "success")
+                        logger.info("node_registered_on_peer",
+                                  current=current_node.node_id,
+                                  target=target_node.node_id,
+                                  output=stdout_str[:50] if stdout_str else "success")
                         return True
                 else:
-                    logger.warning("node_add_failed",
-                                  node_id=node.node_id,
+                    logger.warning("node_add_failed_on_peer",
+                                  current=current_node.node_id,
+                                  target=target_node.node_id,
                                   exit_code=exit_code,
-                                  stderr=stderr_str,
-                                  stdout=stdout_str)
+                                  stderr=stderr_str[:100])
                     return False
                     
             except Exception as e:
                 logger.exception("node_add_exception",
-                               node_id=node.node_id,
+                               current=current_node.node_id,
+                               target=target_node.node_id,
                                error=str(e))
                 return False
         
-        # Run all registrations in parallel
-        logger.info("starting_parallel_node_registration", node_count=len(nodes) - 1)
-        registration_tasks = [register_single_node(node) for node in nodes]
+        # Create full mesh: each node registers all others
+        # Tasks: (node1→node2), (node1→node3), (node2→node1), (node2→node3), (node3→node1), (node3→node2)
+        registration_tasks = []
+        for current_node in nodes:
+            for target_node in nodes:
+                registration_tasks.append(register_node_on_target(current_node, target_node))
+        
+        logger.info("starting_full_mesh_registration", 
+                   total_pairs=len(registration_tasks),
+                   nodes=len(nodes))
+        
         results = await asyncio.gather(*registration_tasks, return_exceptions=True)
         
-        # Count successes and log details
-        registered_count = 0
-        failed_nodes = []
-        for i, (node, result) in enumerate(zip(nodes, results)):
-            if node.node_id == 1:
-                continue  # Skip node1
-            
-            if isinstance(result, Exception):
-                failed_nodes.append(f"node{node.node_id}(exception: {result})")
-                logger.error("node_registration_exception",
-                           node_id=node.node_id,
-                           error=str(result))
-            elif result is True:
-                registered_count += 1
-            else:
-                failed_nodes.append(f"node{node.node_id}(failed)")
+        # Count successes
+        success_count = sum(1 for r in results if r is True)
+        failed_count = len(results) - success_count
         
-        logger.info("node_registration_via_cli_complete",
-                   registered=registered_count,
-                   total=len(nodes) - 1,
-                   failed=len(failed_nodes),
-                   failed_nodes=", ".join(failed_nodes) if failed_nodes else "none")
+        logger.info("full_mesh_registration_complete",
+                   successful=success_count,
+                   failed=failed_count,
+                   total_pairs=len(registration_tasks))
     
     async def generate_fee_wallet(self) -> str:
         """
