@@ -1404,7 +1404,7 @@ class GenesisInitializer:
         
         for node in node_configs:
             try:
-                container_name = f"cellframe-stage-{node.name}"
+                container_name = f"cellframe-stage-node-{node.node_id}"
                 container = self.docker_client.containers.get(container_name)
                 
                 config_path = f"/opt/cellframe-node/etc/network/{self.network_name}/{chain_name}.cfg"
@@ -1419,17 +1419,17 @@ class GenesisInitializer:
                 result = container.exec_run(cmd)
                 if result.exit_code != 0:
                     logger.warning("failed_to_update_genesis_hash", 
-                                  node=node.name,
+                                  node=f"node{node.node_id}",
                                   parameter=param_name,
                                   error=result.output)
                 else:
                     logger.debug("genesis_hash_updated", 
-                                node=node.name,
+                                node=f"node{node.node_id}",
                                 parameter=param_name,
                                 hash=genesis_hash[:16])
                     
             except Exception as e:
-                logger.error("update_genesis_hash_error", node=node.name, error=str(e))
+                logger.error("update_genesis_hash_error", node=f"node{node.node_id}", error=str(e))
         
         logger.info("genesis_hash_updated_on_all_nodes", chain=chain_name, parameter=param_name)
 

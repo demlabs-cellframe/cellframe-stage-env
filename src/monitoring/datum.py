@@ -262,9 +262,8 @@ class DatumMonitor:
                     datum_hash=datum_hash,
                     elapsed_time=elapsed,
                     details={
-                        "item_type": item_type,
-                        "block_number": block_number,  # Also used for event count
-                        "block_hash": block_hash,      # Also used for event hash
+                        "block_number": block_number,
+                        "block_hash": block_hash,
                         "mempool_time": (verification_start - mempool_start) if (verification_start and mempool_start) else 0,
                         "verification_time": (blocks_start - verification_start) if (blocks_start and verification_start) else 0,
                         "total_time": elapsed
