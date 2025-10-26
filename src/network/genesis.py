@@ -281,16 +281,7 @@ class GenesisInitializer:
             target_port: Port of target node
             is_self: Whether adding the node itself
         """
-        # Command: node add -net <net> -addr <node_addr>
-        # Note: Cellframe Node uses "node add" not "nodelist add"
-        cmd = [
-            "cellframe-node-cli",
-            "-c", "/opt/cellframe-node/etc/cellframe-node.cfg",
-            "node", "add",
-            "-net", self.network_name,
-            "-addr", target_node_addr
-        ]
-        
+        # Use unified CLI method
         logger.info("adding_to_nodelist",
                    current_node_id=current_node.node_id,
                    target_addr=target_node_addr,
@@ -298,12 +289,11 @@ class GenesisInitializer:
                    is_self=is_self)
         
         try:
-            result = container.exec_run(cmd, demux=True)
-            exit_code = result.exit_code
-            stdout, stderr = result.output
-            
-            stdout_str = stdout.decode() if stdout else ""
-            stderr_str = stderr.decode() if stderr else ""
+            exit_code, stdout_str, stderr_str = self._exec_cli(
+                current_node.node_id,
+                f"node add -net {self.network_name} -addr {target_node_addr}",
+                check_output=False
+            )
             
             if exit_code != 0:
                 # Some errors are expected (e.g., node already in list)
@@ -365,32 +355,18 @@ class GenesisInitializer:
         value_max = "10000000000000000000000"  # 10000 tokens
         tax = "10.0"  # 10.0% tax (must be float с точкой)
         
-        # Build CLI command
-        cmd = [
-            "cellframe-node-cli",
-            "srv_stake", "order", "create", "validator",
-            "-net", self.network_name,
-            "-value_min", value_min,
-            "-value_max", value_max,
-            "-tax", tax,
-            "-cert", cert_name,
-            "-node_addr", node_addr,
-            "-H", "hex"
-        ]
-        
+        # Use unified CLI method
         logger.info("creating_validator_order",
                    node_id=node.node_id,
                    cert=cert_name,
                    node_addr=node_addr)
         
         try:
-            # Execute command in container
-            result = container.exec_run(cmd, demux=True)
-            exit_code = result.exit_code
-            stdout, stderr = result.output
-            
-            stdout_str = stdout.decode() if stdout else ""
-            stderr_str = stderr.decode() if stderr else ""
+            exit_code, stdout_str, stderr_str = self._exec_cli(
+                node.node_id,
+                f"srv_stake order create validator -net {self.network_name} -value_min {value_min} -value_max {value_max} -tax {tax} -cert {cert_name} -node_addr {node_addr} -H hex",
+                check_output=False
+            )
             
             if exit_code != 0:
                 logger.error("order_creation_failed",
@@ -442,28 +418,20 @@ class GenesisInitializer:
                               node_id=node.node_id)
                 continue
             
-            # GDB command to register node_alias
-            # Format: global_db set -net <net> node_alias.<node_addr> <ip:port>
-            cmd = [
-                "cellframe-node-cli",
-                "global_db", "set",
-                "-net", self.network_name,
-                f"node_alias.{node_addr}",
-                f"{node.ip_address}:{node.node_port}"
-            ]
-            
+            # Use unified CLI method for GDB set
             logger.info("registering_node_alias",
                        node_id=node.node_id,
                        node_addr=node_addr,
                        endpoint=f"{node.ip_address}:{node.node_port}")
             
             try:
-                result = container.exec_run(cmd, demux=True)
-                exit_code = result.exit_code
+                exit_code, stdout_str, stderr_str = self._exec_cli(
+                    node.node_id,
+                    f"global_db set -net {self.network_name} node_alias.{node_addr} {node.ip_address}:{node.node_port}",
+                    check_output=False
+                )
                 
                 if exit_code != 0:
-                    stdout, stderr = result.output
-                    stderr_str = stderr.decode() if stderr else ""
                     logger.warning("node_alias_registration_failed",
                                   node_id=node.node_id,
                                   exit_code=exit_code,
@@ -574,29 +542,18 @@ class GenesisInitializer:
                               error=str(e))
                 return False
             
-            # CLI command: node add -net <net> -addr <node_addr> -host <ip> -port <p2p_port>
-            # Note: using node_port (8079) for P2P, not cf_port
-            cmd = [
-                "cellframe-node-cli",
-                "node", "add",
-                "-net", self.network_name,
-                "-addr", node_addr,
-                "-host", node.ip_address,
-                "-port", str(node.node_port)  # P2P port (8079)
-            ]
-            
+            # Use unified CLI method from node1
             logger.info("registering_node_via_cli",
                        node_id=node.node_id,
                        node_addr=node_addr[:20] + "...",
                        endpoint=f"{node.ip_address}:{node.node_port}")
             
             try:
-                result = container.exec_run(cmd, demux=True)
-                exit_code = result.exit_code
-                stdout, stderr = result.output
-                
-                stdout_str = stdout.decode('utf-8').strip() if stdout else ""
-                stderr_str = stderr.decode('utf-8').strip() if stderr else ""
+                exit_code, stdout_str, stderr_str = self._exec_cli(
+                    1,  # Always register from node1
+                    f"node add -net {self.network_name} -addr {node_addr} -host {node.ip_address} -port {node.node_port}",
+                    check_output=False
+                )
                 
                 if exit_code == 0:
                     # Check for common success/warning messages
@@ -672,46 +629,22 @@ class GenesisInitializer:
         logger.info("generating_fee_wallet", node="node1")
         
         try:
-            # Get node1 container
-            container_name = f"cellframe-stage-node-1"
-            container = self.docker_client.containers.get(container_name)
-            
-            # Create wallet
-            cmd = ["cellframe-node-cli", "wallet", "new", "-w", "fee_collector", "-net", self.network_name]
-            logger.debug("creating_fee_wallet", command=" ".join(cmd))
-            
-            result = container.exec_run(cmd, demux=True)
-            exit_code = result.exit_code
-            stdout, stderr = result.output
-            
-            stdout_str = stdout.decode('utf-8') if stdout else ""
-            stderr_str = stderr.decode('utf-8') if stderr else ""
-            
-            if exit_code != 0:
-                error_msg = f"Failed to create fee wallet: exit code {exit_code}"
-                if stderr_str:
-                    error_msg += f", stderr: {stderr_str}"
-                logger.error("fee_wallet_creation_failed", error=error_msg)
-                raise RuntimeError(error_msg)
-            
+            # Create wallet via unified CLI method
+            logger.debug("creating_fee_wallet")
+            exit_code, stdout_str, stderr_str = self._exec_cli(
+                1,
+                f"wallet new -w fee_collector -net {self.network_name}",
+                check_output=True
+            )
             logger.debug("fee_wallet_created", output=stdout_str[:200])
             
             # Get wallet address
-            cmd_info = ["cellframe-node-cli", "wallet", "info", "-w", "fee_collector", "-net", self.network_name]
-            logger.debug("getting_fee_wallet_address", command=" ".join(cmd_info))
-            
-            result_info = container.exec_run(cmd_info, demux=True)
-            exit_code_info = result_info.exit_code
-            stdout_info, stderr_info = result_info.output
-            
-            stdout_info_str = stdout_info.decode('utf-8') if stdout_info else ""
-            stderr_info_str = stderr_info.decode('utf-8') if stderr_info else ""
-            
-            if exit_code_info != 0:
-                error_msg = f"Failed to get wallet address: exit code {exit_code_info}"
-                if stderr_info_str:
-                    error_msg += f", stderr: {stderr_info_str}"
-                logger.error("fee_wallet_info_failed", error=error_msg)
+            logger.debug("getting_fee_wallet_address")
+            exit_code_info, stdout_info_str, stderr_info_str = self._exec_cli(
+                1,
+                f"wallet info -w fee_collector -net {self.network_name}",
+                check_output=True
+            )
                 raise RuntimeError(error_msg)
             
             # Extract address from wallet info output
@@ -758,27 +691,14 @@ class GenesisInitializer:
             container_name = f"cellframe-stage-node-1"
             container = self.docker_client.containers.get(container_name)
             
-            # Create TCELL token on zerochain
-            cmd = [
-                "cellframe-node-cli", "token_decl",
-                "-token", "TCELL",
-                "-total_supply", "1000000000",
-                "-decimals", "18",
-                "-signs_total", "1",
-                "-signs_emission", "1",
-                "-certs", root_cert_name,
-                "-net", self.network_name,
-                "-chain", "zerochain"
-            ]
+            # Create TCELL token on zerochain via unified CLI method
+            logger.debug("executing_token_decl")
             
-            logger.debug("executing_token_decl", command=" ".join(cmd))
-            
-            result = container.exec_run(cmd, demux=True)
-            exit_code = result.exit_code
-            stdout, stderr = result.output
-            
-            stdout_str = stdout.decode('utf-8') if stdout else ""
-            stderr_str = stderr.decode('utf-8') if stderr else ""
+            exit_code, stdout_str, stderr_str = self._exec_cli(
+                1,
+                f"token_decl -token TCELL -total_supply 1000000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs {root_cert_name} -net {self.network_name} -chain zerochain",
+                check_output=False
+            )
             
             # Parse YAML output to check for errors
             import yaml
@@ -850,24 +770,13 @@ class GenesisInitializer:
             container_name = f"cellframe-stage-node-1"
             container = self.docker_client.containers.get(container_name)
             
-            cmd = [
-                "cellframe-node-cli", "token_emit",
-                "-token", "TCELL",
-                "-emission_value", "1000000000",
-                "-addr", fee_addr,
-                "-certs", root_cert_name,
-                "-net", self.network_name,
-                "-chain", "zerochain"
-            ]
+            logger.debug("executing_token_emit")
             
-            logger.debug("executing_token_emit", command=" ".join(cmd))
-            
-            result = container.exec_run(cmd, demux=True)
-            exit_code = result.exit_code
-            stdout, stderr = result.output
-            
-            stdout_str = stdout.decode('utf-8') if stdout else ""
-            stderr_str = stderr.decode('utf-8') if stderr else ""
+            exit_code, stdout_str, stderr_str = self._exec_cli(
+                1,
+                f"token_emit -token TCELL -emission_value 1000000000 -addr {fee_addr} -certs {root_cert_name} -net {self.network_name} -chain zerochain",
+                check_output=False
+            )
             
             logger.info("token_emit_raw_output", exit_code=exit_code, stdout_preview=stdout_str[:500], stderr_preview=stderr_str[:200])
             
@@ -940,24 +849,14 @@ class GenesisInitializer:
             container_name = f"cellframe-stage-node-1"
             container = self.docker_client.containers.get(container_name)
             
-            cmd = [
-                "cellframe-node-cli", "tx_create",
-                "-token", "TCELL",
-                "-from_emission", emission_hash,
-                "-value", "100000000",
-                "-fee", "0.1",
-                "-cert", root_cert_name,
-                "-net", self.network_name
-                # NOTE: No -chain parameter! Let SDK auto-detect based on emission location
-            ]
+            # Use unified CLI method (no -chain parameter for auto-detection)
+            logger.debug("executing_tx_create")
             
-            logger.debug("executing_tx_create", command=" ".join(cmd))
-            
-            result = container.exec_run(cmd, demux=True)
-            exit_code = result.exit_code
-            stdout, stderr = result.output
-            
-            stdout_str = stdout.decode('utf-8') if stdout else ""
+            exit_code, stdout_str, stderr_str = self._exec_cli(
+                1,
+                f"tx_create -token TCELL -from_emission {emission_hash} -value 100000000 -fee 0.1 -cert {root_cert_name} -net {self.network_name}",
+                check_output=False
+            )
             
             logger.info("tx_create_raw_output", exit_code=exit_code, stdout_preview=stdout_str[:500])
             
@@ -1039,10 +938,11 @@ class GenesisInitializer:
             found = False
             
             while time.time() - start_time < timeout:
-                cmd = ["cellframe-node-cli", "mempool_list", "-net", self.network_name, "-chain", "zerochain"]
-                result = container.exec_run(cmd, demux=True)
-                stdout, _ = result.output
-                stdout_str = stdout.decode('utf-8') if stdout else ""
+                exit_code, stdout_str, stderr_str = self._exec_cli(
+                    first_node.node_id,
+                    f"mempool_list -net {self.network_name} -chain zerochain",
+                    check_output=False
+                )
                 
                 if datum_hash.lower() in stdout_str.lower():
                     found = True
@@ -1098,11 +998,11 @@ class GenesisInitializer:
             
             while time.time() - dag_check_start < timeout:
                 # For DAG-PoA, check if datum is in events (not blocks!)
-                cmd_events = ["cellframe-node-cli", "dag", "event", "list", "-net", self.network_name, "-chain", "zerochain", "-from", "events", "-limit", "20"]
-                result_events = container.exec_run(cmd_events, demux=True)
-                exit_code = result_events.exit_code
-                stdout_events, _ = result_events.output
-                stdout_events_str = stdout_events.decode('utf-8') if stdout_events else ""
+                exit_code, stdout_events_str, _ = self._exec_cli(
+                    1,
+                    f"dag event list -net {self.network_name} -chain zerochain -from events -limit 20",
+                    check_output=False
+                )
                 
                 # Log progress every 10 seconds
                 elapsed = time.time() - dag_check_start
@@ -1166,11 +1066,13 @@ class GenesisInitializer:
                 try:
                     container = self.docker_client.containers.get(container_name)
                     
-                    cmd_sync = ["cellframe-node-cli", "net", "-net", self.network_name, "sync", "all"]
                     logger.debug("triggering_sync", node=f"node{node.node_id}")
                     
-                    result = container.exec_run(cmd_sync, demux=True)
-                    exit_code = result.exit_code
+                    exit_code, stdout_str, stderr_str = self._exec_cli(
+                        node.node_id,
+                        f"net -net {self.network_name} sync all",
+                        check_output=False
+                    )
                     
                     if exit_code == 0:
                         logger.debug("sync_triggered", node=f"node{node.node_id}")
@@ -1194,10 +1096,11 @@ class GenesisInitializer:
                     try:
                         container = self.docker_client.containers.get(container_name)
                         
-                        cmd_status = ["cellframe-node-cli", "net", "-net", self.network_name, "get", "status"]
-                        result = container.exec_run(cmd_status, demux=True)
-                        stdout, _ = result.output
-                        stdout_str = stdout.decode('utf-8') if stdout else ""
+                        exit_code_status, stdout_str, stderr_str = self._exec_cli(
+                            node.node_id,
+                            f"net -net {self.network_name} get status",
+                            check_output=False
+                        )
                         
                         # Check for "synced" status
                         import re
@@ -1308,14 +1211,13 @@ class GenesisInitializer:
             container_name = f"cellframe-stage-node-1"
             container = self.docker_client.containers.get(container_name)
             
-            cmd = ["cellframe-node-cli", "block", "list", "-net", self.network_name, "-chain", chain_name, "-first", "1"]
             logger.debug("fetching_first_block", chain=chain_name)
             
-            result = container.exec_run(cmd, demux=True)
-            exit_code = result.exit_code
-            stdout, _ = result.output
-            
-            stdout_str = stdout.decode('utf-8') if stdout else ""
+            exit_code, stdout_str, stderr_str = self._exec_cli(
+                1,
+                f"block list -net {self.network_name} -chain {chain_name} -first 1",
+                check_output=False
+            )
             
             if exit_code != 0:
                 logger.warning("block_list_failed", chain=chain_name, exit_code=exit_code)
