@@ -834,16 +834,16 @@ class GenesisInitializer:
             logger.error("native_token_emission_error", error=str(e))
             raise
     
-    async def create_first_transaction(self, emission_hash: str, root_cert_name: str = "pvt.stagenet.master.0") -> str:
+    async def create_first_transaction(self, emission_hash: str, master_cert_name: str = "pvt.stagenet.master.0") -> str:
         """
         Create first TCELL transaction on main chain.
         
-        Creates a transaction from emission to initiate main chain.
-        Uses main chain (transactions chain).
+        CRITICAL: Must execute on MASTER node (node4) with master certificate!
+        ROOT nodes don't have pvt.stagenet.master.N certificates.
         
         Args:
             emission_hash: Emission datum hash to spend from
-            root_cert_name: Certificate name for signing (default: pvt.stagenet.master.0)
+            master_cert_name: Certificate name for signing (default: pvt.stagenet.master.0)
             
         Returns:
             Transaction datum hash
@@ -854,15 +854,16 @@ class GenesisInitializer:
         logger.info("creating_first_transaction", token="TCELL", chain="main", from_emission=emission_hash[:16])
         
         try:
-            container_name = f"cellframe-stage-node-1"
+            # Execute on node4 (first MASTER node with pvt.stagenet.master.0)
+            container_name = f"cellframe-stage-node-4"
             container = self.docker_client.containers.get(container_name)
             
             # Use unified CLI method (no -chain parameter for auto-detection)
             logger.debug("executing_tx_create")
             
             exit_code, stdout_str, stderr_str = self._exec_cli(
-                1,
-                f"tx_create -token TCELL -from_emission {emission_hash} -value 100000000 -fee 0.1 -cert {root_cert_name} -net {self.network_name}",
+                4,  # Execute on node4 (first MASTER node)
+                f"tx_create -token TCELL -from_emission {emission_hash} -value 100000000 -fee 0.1 -cert {master_cert_name} -net {self.network_name}",
                 check_output=False
             )
             
