@@ -601,21 +601,42 @@ blocks-sign-cert=pvt.{network_name}.master.{validator_idx}
         # Copy ONLY PUBLIC validator certificates (WITHOUT pvt. prefix) to shared directory
         # CRITICAL: Private certificates (pvt.stagenet.master.N) should NEVER be in /share/ca!
         # Only public certificates (stagenet.master.N) for verification
-        for val_node_idx in range(1, node_count + 1):
-            validator_idx = val_node_idx - 1
-            # Use PUBLIC cert (without pvt. prefix) as source
-            src_public_cert = self.certs_cache / f"node{val_node_idx}" / f"{network_name}.master.{validator_idx}.dcert"
+        # NOTE: We generate only 3 master certs (0,1,2) and 3 root certs (0,1,2)
+        master_nodes = [n for n in nodes if n.consensus_participation and not n.is_seed_node]
+        root_nodes = [n for n in nodes if n.is_seed_node]
+        
+        # Copy public ROOT certs (for DAG-PoA verification)
+        for idx, node in enumerate(root_nodes):
+            src_public_cert = self.certs_cache / f"node{node.node_id}" / f"{network_name}.root.{idx}.dcert"
             
             if src_public_cert.exists():
-                dst_cert = shared_certs_dir / f"{network_name}.master.{validator_idx}.dcert"
-                # Copy ONLY public cert to shared directory
+                dst_cert = shared_certs_dir / f"{network_name}.root.{idx}.dcert"
                 shutil.copy2(src_public_cert, dst_cert)
-                logger.debug("copied_public_validator_cert_to_shared",
-                           validator_idx=validator_idx,
+                logger.debug("copied_public_root_cert_to_shared",
+                           node_id=node.node_id,
+                           cert_idx=idx,
                            dst=str(dst_cert))
             else:
-                logger.warning("public_validator_cert_not_found",
-                             validator_idx=validator_idx,
+                logger.warning("public_root_cert_not_found",
+                             node_id=node.node_id,
+                             cert_idx=idx,
+                             expected=str(src_public_cert))
+        
+        # Copy public MASTER certs (for ESBocs verification)
+        for idx, node in enumerate(master_nodes):
+            src_public_cert = self.certs_cache / f"node{node.node_id}" / f"{network_name}.master.{idx}.dcert"
+            
+            if src_public_cert.exists():
+                dst_cert = shared_certs_dir / f"{network_name}.master.{idx}.dcert"
+                shutil.copy2(src_public_cert, dst_cert)
+                logger.debug("copied_public_master_cert_to_shared",
+                           node_id=node.node_id,
+                           cert_idx=idx,
+                           dst=str(dst_cert))
+            else:
+                logger.warning("public_master_cert_not_found",
+                             node_id=node.node_id,
+                             cert_idx=idx,
                              expected=str(src_public_cert))
         
         # Copy node-addr.dcert to ALL nodes FIRST (CRITICAL - must exist before node starts!)
