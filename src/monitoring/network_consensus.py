@@ -405,15 +405,19 @@ class NetworkConsensusMonitor:
             ready_count = 0
             for node_id in self.nodes.keys():
                 try:
-                    net_state = await self._exec_cli(
+                    net_status = await self._exec_cli(
                         node_id,
-                        f"net -net {self.network_name} get state"
+                        f"net -net {self.network_name} get status"
                     )
                     
-                    # Check for NET_STATE_LINKS_CONNECTING or higher
+                    # Check for NET_STATE_LINKS_CONNECTING or higher in YAML output
                     # States: OFFLINE(0), LINKS_PREPARE(1), LINKS_CONNECTING(2), LINKS_ESTABLISHED(3), ONLINE(4)
-                    if any(state in net_state for state in ['NET_STATE_LINKS_CONNECTING', 'NET_STATE_LINKS_ESTABLISHED', 'NET_STATE_ONLINE']):
+                    # Output format: "current: NET_STATE_LINKS_CONNECTING"
+                    if any(state in net_status for state in ['NET_STATE_LINKS_CONNECTING', 'NET_STATE_LINKS_ESTABLISHED', 'NET_STATE_ONLINE']):
                         ready_count += 1
+                        logger.debug("node_reached_links_connecting", 
+                                   node=node_id,
+                                   state_preview=net_status[:100])
                         
                 except Exception as e:
                     logger.debug("failed_to_check_net_state",
