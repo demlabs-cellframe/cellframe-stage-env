@@ -284,10 +284,12 @@ class NetworkManager:
                 # Expected - node list empty, continue to register nodes
                 logger.info("root_nodes_online_but_node_list_empty_as_expected")
             
-            # Register ROOT nodes with each other via CLI
-            logger.info("registering_root_nodes_via_cli")
-            await self.genesis.register_all_nodes_via_cli(root_nodes)
-            logger.info("root_nodes_registered_in_node_list")
+            # Register ALL nodes (root, master, full) in node1's node list immediately
+            # This pre-populates the node list so new nodes see full topology on startup
+            logger.info("pre_registering_all_planned_nodes_in_node1")
+            all_nodes_for_registration = root_nodes + master_nodes + full_nodes
+            await self.genesis.register_all_nodes_via_cli(all_nodes_for_registration)
+            logger.info("all_nodes_pre_registered_in_node1_list", total=len(all_nodes_for_registration))
             
             # Generate fee wallet
             logger.info("generating_fee_wallet")
@@ -424,21 +426,18 @@ class NetworkManager:
             raise RuntimeError(f"FULL nodes startup failed: {e}") from e
         
         # =================================================================
-        # PHASE 4: NODE REGISTRATION & NETWORK TOPOLOGY
+        # PHASE 4: NODE ALIASES REGISTRATION
         # =================================================================
-        logger.info("=== PHASE 4: Node Registration & Topology ===")
+        logger.info("=== PHASE 4: Node Aliases Registration ===")
         
         try:
             # Register node aliases in GDB
+            # Node registration via CLI already done in PHASE 1 (pre-populated for all nodes)
             await self.genesis.register_node_aliases(node_configs)
-            
-            # CRITICAL: Register all nodes via CLI from node1
-            # This immediately populates node lists without waiting for P2P discovery
-            logger.info("registering_all_nodes_via_cli")
-            await self.genesis.register_all_nodes_via_cli(node_configs)
+            logger.info("node_aliases_registered")
         except Exception as e:
-            logger.error("node_registration_failed", error=str(e))
-            # Non-critical - continue, nodes may self-discover
+            logger.error("node_alias_registration_failed", error=str(e))
+            # Non-critical - continue
         
         # PHASE 5: Wait for network consensus
         logger.info("=== PHASE 5: Network Consensus Verification ===")

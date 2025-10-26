@@ -165,9 +165,9 @@ enabled=true
 # debug-cli=false
 version=1
 # Allow node command for manual node list management  
-allowed_cmd=[node, ledger, wallet, mempool, srv_stake, poll, net_srv, net]
+allowed_cmd=[node, ledger, wallet, mempool, srv_stake, poll, net_srv, net, chain, dag, token]
 listen-path=[../var/run/node_cli]
-listen-address=[127.0.0.1:12345]
+listen-address=[0.0.0.1:12345]
 # IMPORTANT! Its accessible for all the users in system!
 listen_unix_socket_permissions=777
 
