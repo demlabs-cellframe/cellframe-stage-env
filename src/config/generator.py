@@ -601,7 +601,6 @@ blocks-sign-cert=pvt.{network_name}.master.{validator_idx}
         # Copy ONLY PUBLIC validator certificates (WITHOUT pvt. prefix) to shared directory
         # CRITICAL: Private certificates (pvt.stagenet.master.N) should NEVER be in /share/ca!
         # Only public certificates (stagenet.master.N) for verification
-        # NOTE: We generate only 3 master certs (0,1,2) and 3 root certs (0,1,2)
         master_nodes = [n for n in nodes if n.consensus_participation and not n.is_seed_node]
         root_nodes = [n for n in nodes if n.is_seed_node]
         
