@@ -111,46 +111,35 @@ class GenesisInitializer:
         """
         Initialize genesis state.
         
-        Creates validator orders for all validator nodes (root nodes).
+        For TCELL genesis, we only need certificates to be in place.
+        Validator orders are NOT needed - certificates are configured in chain configs.
         
         Args:
             nodes: List of node configurations
         """
         logger.info("starting_genesis_initialization", nodes=len(nodes))
         
-        # Find root nodes (validators)
-        validator_nodes = [n for n in nodes if n.is_seed_node]
+        # Find root nodes (for DAG-PoA on zerochain)
+        root_nodes = [n for n in nodes if n.is_seed_node]
         
-        if not validator_nodes:
-            logger.warning("no_validator_nodes_found")
+        if not root_nodes:
+            logger.warning("no_root_nodes_found")
             return
         
-        logger.info("found_validator_nodes", count=len(validator_nodes))
+        logger.info("found_root_nodes_for_dag_poa", count=len(root_nodes))
         
-        # Use first node to create orders (any node can do this)
-        admin_node = nodes[0]
-        container_name = f"cellframe-stage-node-{admin_node.node_id}"
-        
-        try:
-            container = self.docker_client.containers.get(container_name)
-        except docker.errors.NotFound:
-            logger.error("admin_node_container_not_found", container=container_name)
-            raise RuntimeError(f"Container {container_name} not found")
-        
-        # Wait a bit for node to initialize
+        # Wait a bit for nodes to initialize
         logger.info("waiting_for_node_initialization")
         await asyncio.sleep(5)
         
         # Root nodes will connect to each other via seed_nodes_hosts configuration
-        # No need to manually add them to nodelist - standard bootstrap mechanism will handle it
+        # DAG-PoA consensus is configured via auth_certs_prefix in zerochain.cfg
+        # Certificates (stagenet.master.N.dcert) are already in place from CertGenerator
         logger.info("root_nodes_will_connect_via_seed_nodes_hosts",
-                   seed_nodes=len(validator_nodes))
+                   seed_nodes=len(root_nodes))
         
-        # Create validator orders for each validator node
-        for node in validator_nodes:
-            await self._create_validator_order(container, node)
-        
-        logger.info("genesis_initialization_complete", orders_created=len(validator_nodes))
+        logger.info("genesis_initialization_complete", 
+                   note="DAG-PoA certificates configured via chain config")
     
     async def _setup_root_nodelists(self, root_nodes: List[NodeConfig]) -> None:
         """
@@ -298,10 +287,9 @@ class GenesisInitializer:
             node: Node configuration
         """
         # Certificate name for this validator
-        # NOTE: DAG-PoA expects cert name WITHOUT 'pvt.' prefix!
-        # For validator_create command we use full certificate name (stagenet.master.X)
+        # NOTE: Must use pvt. prefix for private key! Both validator_create and CLI commands need it.
         validator_idx = node.node_id - 1
-        cert_name = f"{self.network_name}.master.{validator_idx}"
+        cert_name = f"pvt.{self.network_name}.master.{validator_idx}"
         
         # Read node address with retry logic
         node_addr = self._read_node_addr_with_retry(node.node_id)
