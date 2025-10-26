@@ -240,39 +240,46 @@ class DatumMonitor:
                             error_message=error
                         )
             
-            # Stage 3: Check if datum is in blocks
+            # Stage 3: Check if datum is in blocks/events (auto-detected by chain type)
             block_info = await self._check_in_blocks(node, network, chain, datum_hash)
             
             if block_info:
                 block_number, block_hash = block_info
                 
+                # Determine chain type for logging
+                is_dag = self._is_dag_chain(chain)
+                item_type = "event" if is_dag else "block"
+                
                 if not was_in_blocks:
-                    self._log(f"  ✅ Datum {datum_hash[:16]}... included in block #{block_number}")
+                    self._log(f"  ✅ Datum {datum_hash[:16]}... included in {item_type} #{block_number}")
                     was_in_blocks = True
                     blocks_start = current_time
                 
-                # Success! Datum is in a block
-                self._log(f"  ✅ Datum {datum_hash[:16]}... successfully processed (block #{block_number})")
+                # Success! Datum is in a block/event
+                self._log(f"  ✅ Datum {datum_hash[:16]}... successfully processed ({item_type} #{block_number})")
                 return DatumMonitorResult(
                     status=DatumStatus.SUCCESS,
                     datum_hash=datum_hash,
                     elapsed_time=elapsed,
                     details={
-                        "block_number": block_number,
-                        "block_hash": block_hash,
+                        "item_type": item_type,
+                        "block_number": block_number,  # Also used for event count
+                        "block_hash": block_hash,      # Also used for event hash
                         "mempool_time": (verification_start - mempool_start) if (verification_start and mempool_start) else 0,
                         "verification_time": (blocks_start - verification_start) if (blocks_start and verification_start) else 0,
                         "total_time": elapsed
                     }
                 )
             
-            # Check blocks timeout
+            # Check blocks/events timeout
             if was_in_mempool:
                 time_since_mempool = current_time - mempool_start
                 if time_since_mempool > timeout_in_blocks:
-                    error = f"Datum not in blocks after {time_since_mempool:.1f}s"
+                    is_dag = self._is_dag_chain(chain)
+                    item_type = "events" if is_dag else "blocks"
+                    error = f"Datum not in {item_type} after {time_since_mempool:.1f}s"
                     self._log(f"  ❌ {error}")
-                    self._log(f"  💡 Datum was in mempool but never made it into a block")
+                    self._log(f"  💡 Datum was in mempool but never made it into a {item_type[:-1]}")
                     return DatumMonitorResult(
                         status=DatumStatus.TIMEOUT_IN_BLOCKS,
                         datum_hash=datum_hash,
@@ -335,9 +342,83 @@ class DatumMonitor:
         # Full implementation would check master node logs or verification status
         return True
     
+    def _is_dag_chain(self, chain: str) -> bool:
+        """
+        Determine if chain uses DAG-PoA (events) or blockchain (blocks).
+        
+        Args:
+            chain: Chain name (e.g., "zerochain", "main", "kelvin")
+            
+        Returns:
+            True if chain uses DAG (events), False if blockchain (blocks)
+        """
+        # DAG-PoA chains use events instead of blocks
+        dag_chains = ["zerochain", "zero", "0"]
+        return chain.lower() in dag_chains
+    
     async def _check_in_blocks(self, node: str, network: str, chain: str, datum_hash: str) -> Optional[Tuple[int, str]]:
         """
-        Check if datum is in a block.
+        Check if datum is in a block or DAG event (auto-detects based on chain).
+        
+        For DAG chains (zerochain): checks events
+        For blockchain chains (main, kelvin): checks blocks
+        
+        Returns:
+            Tuple of (block/event_number, hash) if found, None otherwise
+        """
+        # Auto-detect DAG vs blockchain
+        if self._is_dag_chain(chain):
+            return await self._check_in_dag_events(node, network, chain, datum_hash)
+        else:
+            return await self._check_in_blockchain_blocks(node, network, chain, datum_hash)
+    
+    async def _check_in_dag_events(self, node: str, network: str, chain: str, datum_hash: str) -> Optional[Tuple[int, str]]:
+        """
+        Check if datum is in a DAG event (for DAG-PoA chains like zerochain).
+        
+        Returns:
+            Tuple of (event_number, event_hash) if found, None otherwise
+        """
+        try:
+            container_name = self._node_to_container(node)
+            container = self.docker_client.containers.get(container_name)
+            
+            # Get recent events and search for our datum
+            cmd = [
+                self.node_cli_path, "dag", "event", "list",
+                "-net", network, "-chain", chain, "-from", "events", "-limit", "20"
+            ]
+            
+            result = container.exec_run(cmd, demux=True)
+            exit_code = result.exit_code
+            stdout, stderr = result.output
+            
+            if exit_code != 0:
+                return None
+            
+            stdout_str = stdout.decode('utf-8') if stdout else ""
+            
+            # For DAG, we check if total events > 0 (datum creates event)
+            # Note: CLI doesn't show datum hash inside event, only event hash
+            total_match = re.search(r'total events:\s*(\d+)', stdout_str, re.IGNORECASE)
+            if total_match and int(total_match.group(1)) > 0:
+                # Extract first event hash as reference
+                hash_match = re.search(r'event\s+hash:\s*([0-9a-fA-Fx]+)', stdout_str, re.IGNORECASE)
+                event_hash = hash_match.group(1) if hash_match else "latest"
+                event_count = int(total_match.group(1))
+                
+                self._log(f"  ✅ Datum likely in DAG events (total: {event_count})")
+                return (event_count, event_hash)
+            
+            return None
+            
+        except Exception as e:
+            self._log(f"  ⚠️ Failed to check DAG events: {e}")
+            return None
+    
+    async def _check_in_blockchain_blocks(self, node: str, network: str, chain: str, datum_hash: str) -> Optional[Tuple[int, str]]:
+        """
+        Check if datum is in a blockchain block (for ESBocs chains like main, kelvin).
         
         Returns:
             Tuple of (block_number, block_hash) if found, None otherwise
