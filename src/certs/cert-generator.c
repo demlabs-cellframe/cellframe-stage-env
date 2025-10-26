@@ -81,7 +81,7 @@ static int s_create_directory(const char *a_path);
 static int s_validator_address_generate(dap_cert_t *a_cert, char *a_addr_out, size_t a_addr_size, uint64_t a_network_id);
 static int s_copy_file(const char *a_src_path, const char *a_dst_path);
 static int s_save_to_file(const char *a_file_path, const char *a_content);
-static int s_node_certificate_generate(dap_cert_generator_node_t *a_node, const char *a_output_dir, const char *a_network_name, uint64_t a_network_id);
+static int s_node_certificate_generate(dap_cert_generator_node_t *a_node, const char *a_output_dir, const char *a_network_name, uint64_t a_network_id, bool a_is_root_node, int a_cert_idx);
 static int s_pki_config_generate(const dap_cert_generator_node_t *a_nodes, int a_node_count, const char *a_output_dir);
 
 /* === Helper Functions === */
@@ -266,8 +266,14 @@ static int s_save_to_file(const char *file_path, const char *content) {
 
 /**
  * @brief Generate node certificate using DAP SDK crypto
+ * @param node Node structure
+ * @param output_dir Output directory
+ * @param network_name Network name (stagenet)
+ * @param network_id Network ID
+ * @param is_root_node true for ROOT nodes (DAG-PoA), false for MASTER nodes (ESBocs)
+ * @param cert_idx Local certificate index (0,1,2 for each type)
  */
-static int s_node_certificate_generate(dap_cert_generator_node_t *node, const char *output_dir, const char *network_name, uint64_t network_id) {
+static int s_node_certificate_generate(dap_cert_generator_node_t *node, const char *output_dir, const char *network_name, uint64_t network_id, bool is_root_node, int cert_idx) {
     if (!node || !output_dir) {
         log_it(L_ERROR, "Invalid parameters for certificate generation");
         return DAP_CERT_GEN_RET_ERROR;
@@ -353,19 +359,23 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     dap_cert_delete(node->cert);
     node->cert = NULL;
     
-    /* Create SEPARATE VALIDATOR certificate for ESBocs (not related to node-addr!) */
-    /* ESBOCS expects certificates named as: {network}.master.{index} (auth_certs_prefix in chain config) */
-    /* Private cert: pvt.stagenet.master.0.dcert (with private key, only for this node) */
-    /* Public cert: stagenet.master.0.dcert (without private key, for all nodes) */
-    /* Note: Only root/seed nodes (first N nodes) get validator certificates */
+    /* Create SEPARATE CONSENSUS certificate (not related to node-addr!) */
+    /* ROOT nodes: stagenet.root.N for DAG-PoA on zerochain */
+    /* MASTER nodes: stagenet.master.N for ESBocs on main */
+    /* Private cert: pvt.stagenet.{root|master}.N.dcert (with private key, only for this node) */
+    /* Public cert: stagenet.{root|master}.N.dcert (without private key, for all nodes) */
     
-    log_it(L_INFO, "Generating SEPARATE validator certificate for %s", node->node_name);
+    const char *cert_type = is_root_node ? "root" : "master";
+    const char *consensus = is_root_node ? "DAG-PoA" : "ESBocs";
     
-    /* Generate NEW certificate for validator (separate from node-addr!) */
+    log_it(L_INFO, "Generating %s consensus certificate for %s", consensus, node->node_name);
+    
+    /* Generate NEW certificate for consensus (separate from node-addr!) */
     /* CRITICAL: Use UNIQUE name with index to avoid "already present in memory" errors */
+    /* Use cert_idx (local index 0,1,2 for each type), NOT node_id! */
     char l_validator_cert_name[DAP_CERT_GEN_MAX_CERT_NAME_LEN];
     snprintf(l_validator_cert_name, sizeof(l_validator_cert_name), 
-             "pvt.%s.master.%d", network_name, node->node_id - 1);
+             "pvt.%s.%s.%d", network_name, cert_type, cert_idx);
     
     dap_cert_t *l_validator_cert = dap_cert_generate_mem(l_validator_cert_name, DAP_ENC_KEY_TYPE_SIG_DILITHIUM);
     if (!l_validator_cert) {
@@ -393,12 +403,12 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
         log_it(L_INFO, "Validator address (= node address) saved: %s", node->validator_addr);
     }
     
-    log_it(L_INFO, "About to save l_validator_cert to: %s (cert pointer=%p)", cert_file_esbocs, (void*)l_validator_cert);
-    /* Save private validator certificate with pvt. prefix */
+    log_it(L_INFO, "About to save consensus cert to: %s/pvt.%s.%s.%d.dcert", node_dir, network_name, cert_type, cert_idx);
+    /* Save private consensus certificate with pvt. prefix */
     if (s_safe_snprintf(cert_file_esbocs, sizeof(cert_file_esbocs), 
-                      "%s/pvt.%s.master.%d.dcert", node_dir, network_name, node->node_id - 1) == DAP_CERT_GEN_RET_SUCCESS) {
+                      "%s/pvt.%s.%s.%d.dcert", node_dir, network_name, cert_type, cert_idx) == DAP_CERT_GEN_RET_SUCCESS) {
         if (dap_cert_file_save(l_validator_cert, cert_file_esbocs) == 0) {
-            log_it(L_INFO, "ESBocs private validator certificate saved: pvt.%s.master.%d", network_name, node->node_id - 1);
+            log_it(L_INFO, "%s private consensus certificate saved: pvt.%s.%s.%d", consensus, network_name, cert_type, cert_idx);
         }
     }
     
@@ -411,7 +421,7 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     } else {
         /* Create new certificate with only public key */
         char l_pub_cert_name[DAP_CERT_GEN_MAX_CERT_NAME_LEN];
-        snprintf(l_pub_cert_name, sizeof(l_pub_cert_name), "%s.master.%d", network_name, node->node_id - 1);
+        snprintf(l_pub_cert_name, sizeof(l_pub_cert_name), "%s.%s.%d", network_name, cert_type, cert_idx);
         
         /* Create encryption key from public key only */
         dap_enc_key_t *l_pub_key = dap_enc_key_new(l_validator_cert->enc_key->type);
@@ -433,7 +443,7 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
                         if (s_safe_snprintf(cert_file_esbocs, sizeof(cert_file_esbocs), 
                                           "%s/%s.dcert", node_dir, l_pub_cert_name) == DAP_CERT_GEN_RET_SUCCESS) {
                             if (dap_cert_file_save(l_pub_cert, cert_file_esbocs) == 0) {
-                                log_it(L_INFO, "ESBocs public validator certificate: %s", l_pub_cert_name);
+                                log_it(L_INFO, "%s public consensus certificate: %s", consensus, l_pub_cert_name);
                             } else {
                                 log_it(L_ERROR, "Failed to save public certificate");
                             }
@@ -644,14 +654,21 @@ int main(int argc, char *argv[]) {
         
         nodes[i].node_id = i + 1;
         
-        log_it(L_INFO, "Generating certificate for %s...", nodes[i].node_name);
-        if (s_node_certificate_generate(&nodes[i], output_dir, network_name, network_id) != DAP_CERT_GEN_RET_SUCCESS) {
+        /* Determine node type: first 3 nodes are ROOT (DAG-PoA), rest are MASTER (ESBocs) */
+        bool is_root_node = (i < 3);
+        const char *node_type = is_root_node ? "ROOT" : "MASTER";
+        
+        /* Calculate LOCAL certificate index (0,1,2 for each type separately) */
+        int cert_idx = is_root_node ? i : (i - 3);  /* ROOT: 0,1,2  MASTER: 0,1,2 */
+        
+        log_it(L_INFO, "Generating %s node certificate for %s (cert_idx=%d)...", node_type, nodes[i].node_name, cert_idx);
+        if (s_node_certificate_generate(&nodes[i], output_dir, network_name, network_id, is_root_node, cert_idx) != DAP_CERT_GEN_RET_SUCCESS) {
             log_it(L_ERROR, "Failed to generate certificate for %s", nodes[i].node_name);
             ret = DAP_CERT_GEN_RET_ERROR;
             goto cleanup;
         }
         
-        log_it(L_NOTICE, "Certificate generated successfully for %s", nodes[i].node_name);
+        log_it(L_NOTICE, "%s certificate generated successfully for %s (cert_idx=%d)", node_type, nodes[i].node_name, cert_idx);
     }
     
     /* Generate PKI configuration */

@@ -235,110 +235,201 @@ class NetworkManager:
             logger.info("rebuilding_images")
             self.compose.build(no_cache=rebuild)
         
-        # Start services
-        logger.info("starting_docker_services")
-        self.compose.up(detach=True, wait=False)
+        # Separate nodes by role for phased startup
+        root_nodes = [n for n in node_configs if n.role == 'root']
+        master_nodes = [n for n in node_configs if n.role == 'master']
+        full_nodes = [n for n in node_configs if n.role == 'full']
         
-        # Wait for nodes to be ready
-        if wait_ready:
-            await self._wait_for_network_ready()
+        root_node_ids = [n.node_id for n in root_nodes]
+        master_node_ids = [n.node_id for n in master_nodes]
+        full_node_ids = [n.node_id for n in full_nodes]
         
-        # PHASE 0: Initialize genesis state (create validator certificates FIRST)
-        # Root certificates are required for TCELL token signing
-        logger.info("=== PHASE 0: Genesis Initialization (Certificates) ===")
+        logger.info("node_distribution", 
+                   root=len(root_nodes), 
+                   master=len(master_nodes), 
+                   full=len(full_nodes))
+        
+        # =================================================================
+        # PHASE 1: START ROOT NODES WITH SEED_MODE FOR DAG GENESIS
+        # =================================================================
+        logger.info("=== PHASE 1: ROOT Nodes Startup (DAG-PoA Genesis) ===")
+        
         try:
-            await self.genesis.initialize(node_configs)
-            logger.info("genesis_certificates_created")
-        except Exception as e:
-            logger.error("genesis_initialization_failed", error=str(e))
-            # Critical - stop network
+            # ROOT nodes already have seed_mode=true in configs (set during config generation)
+            # This allows creation of first DAG events without parent hashes
+            
+            # Start ONLY root nodes
+            root_services = [f"node-{nid}" for nid in root_node_ids]
+            logger.info("starting_root_nodes_only", services=root_services, seed_mode=True)
+            self.compose.up(services=root_services, detach=True, wait=False)
+            
+            # Wait for root nodes to be fully initialized with intelligent monitoring
+            logger.info("waiting_for_root_nodes_ready")
+            from ..monitoring.network_consensus import NetworkConsensusMonitor
+            
+            # Create temporary nodes dict for root nodes only
+            # IMPORTANT: keys must be "node1", "node2", "node3" (without dash!)
+            root_nodes_dict = {f"node{n.node_id}": n for n in root_nodes}
+            consensus_monitor = NetworkConsensusMonitor(
+                nodes=root_nodes_dict,
+                node_cli_path=self.node_cli_path
+            )
+            
+            # Wait for ROOT nodes to be online (basic init)
+            # Note: node list will be empty initially - we'll populate it via CLI
             try:
-                self.compose.down(volumes=False, remove_images=False)
-            except Exception as stop_error:
-                logger.warning("failed_to_stop_network", error=str(stop_error))
-            raise RuntimeError(f"Genesis initialization failed: {e}") from e
-        
-        # PHASE 1: Generate fee wallet and native token (TCELL)
-        # This creates the foundational economic layer for the network
-        logger.info("=== PHASE 1: Fee Wallet & Native Token Generation ===")
-        
-        try:
-            # Step 1: Generate fee collection wallet on node1
-            logger.info("step_1_generating_fee_wallet")
+                await consensus_monitor.wait_for_network_ready(timeout=90.0)
+                logger.info("root_nodes_ready_and_online")
+            except TimeoutError:
+                # Expected - node list empty, continue to register nodes
+                logger.info("root_nodes_online_but_node_list_empty_as_expected")
+            
+            # Register ROOT nodes with each other via CLI
+            logger.info("registering_root_nodes_via_cli")
+            await self.genesis.register_all_nodes_via_cli(root_nodes)
+            logger.info("root_nodes_registered_in_node_list")
+            
+            # Generate fee wallet
+            logger.info("generating_fee_wallet")
             fee_addr = await self.genesis.generate_fee_wallet()
             logger.info("fee_wallet_created", address=fee_addr)
             
-            # Step 2: Create TCELL token on zerochain
-            logger.info("step_2_creating_tcell_token")
+            # Create TCELL token on zerochain
+            logger.info("creating_tcell_token_on_zerochain")
             token_hash = await self.genesis.create_native_token()
             logger.info("tcell_token_created", hash=token_hash[:16])
             
-            # Step 3: Process token declaration through zerochain DAG-PoA
-            logger.info("step_3_processing_token_decl_zerochain")
-            root_nodes = [n for n in node_configs if n.role == 'root']
+            # Process token_decl through DAG-PoA (with seed_mode!)
+            logger.info("processing_token_decl_dag_poa")
             await self.genesis.process_zerochain_datum(token_hash, root_nodes)
-            logger.info("token_decl_finalized")
+            logger.info("token_decl_finalized_in_dag")
             
-            # Step 4: Emit TCELL to fee wallet on zerochain
-            logger.info("step_4_emitting_tcell")
+            # Emit TCELL
+            logger.info("emitting_tcell_tokens")
             emission_hash = await self.genesis.emit_native_token(fee_addr)
-            logger.info("tcell_emitted", hash=emission_hash[:16])
+            logger.info("tcell_emission_created", hash=emission_hash[:16])
             
-            # Step 5: Process emission through zerochain DAG-PoA
-            logger.info("step_5_processing_emission_zerochain")
+            # Process emission through DAG-PoA (with seed_mode!)
+            logger.info("processing_emission_dag_poa")
             await self.genesis.process_zerochain_datum(emission_hash, root_nodes)
-            logger.info("emission_finalized")
+            logger.info("emission_finalized_in_dag")
             
-            # Step 6: Create first transaction on main chain
-            logger.info("step_6_creating_first_transaction")
+            # Genesis events created successfully with seed_mode!
+            # seed_mode will be disabled in PHASE 2 before ROOT restart
+            
+        except Exception as e:
+            logger.error("root_nodes_genesis_failed", error=str(e))
+            self.compose.down(volumes=False, remove_images=False)
+            raise RuntimeError(f"ROOT nodes genesis failed: {e}") from e
+        
+        # =================================================================
+        # PHASE 2: RESTART ROOT + START MASTER FOR ESBOCS GENESIS
+        # =================================================================
+        logger.info("=== PHASE 2: Restart ROOT + Start MASTER (ESBocs Genesis) ===")
+        
+        try:
+            # Disable seed_mode for ROOT nodes now (genesis events created)
+            logger.info("disabling_seed_mode_for_root_nodes_in_configs")
+            self.genesis.disable_seed_mode_in_configs(root_node_ids)
+            
+            # Restart ROOT nodes to apply seed_mode=false
+            logger.info("restarting_root_nodes_without_seed_mode")
+            self.compose.restart(services=root_services)
+            
+            # Start MASTER nodes (already have seed_mode=true in configs)
+            master_services = [f"node-{nid}" for nid in master_node_ids]
+            logger.info("starting_master_nodes", services=master_services, seed_mode=True)
+            self.compose.up(services=master_services, detach=True, wait=False)
+            
+            # Wait for all ROOT+MASTER nodes to be ready
+            logger.info("waiting_for_root_and_master_ready")
+            all_validator_nodes_dict = {f"node{n.node_id}": n for n in root_nodes + master_nodes}
+            consensus_monitor_all = NetworkConsensusMonitor(
+                nodes=all_validator_nodes_dict,
+                node_cli_path=self.node_cli_path
+            )
+            
+            try:
+                await consensus_monitor_all.wait_for_network_ready(timeout=120.0)
+                logger.info("all_validator_nodes_ready")
+            except TimeoutError as e:
+                logger.error("validators_not_ready", error=str(e))
+                raise RuntimeError(f"Validator nodes failed to reach consensus: {e}")
+            
+            # Create first TX on main chain → genesis block
+            logger.info("creating_first_transaction_main_chain")
             tx_hash = await self.genesis.create_first_transaction(emission_hash)
             logger.info("first_transaction_created", hash=tx_hash[:16])
             
-            # Step 7: Synchronize network after TCELL genesis
-            logger.info("step_7_synchronizing_network")
-            await self.genesis.sync_network(node_configs)
-            logger.info("network_synchronized_after_tcell")
+            # Wait for genesis block
+            logger.info("waiting_for_main_genesis_block")
+            await asyncio.sleep(15)
+            
+            # Get genesis block hash
+            main_genesis_hash = await self.genesis.get_genesis_block_hash("main")
+            if not main_genesis_hash:
+                raise RuntimeError("Failed to retrieve main genesis block hash")
+            logger.info("main_genesis_block_hash", hash=main_genesis_hash[:16])
+            
+            # Update static_genesis_block in ALL configs
+            logger.info("updating_static_genesis_block_in_all_configs")
+            await self.genesis.update_static_genesis_in_config("main", main_genesis_hash, node_configs)
+            logger.info("static_genesis_updated")
+            
+            # Disable seed_mode for ROOT + MASTER nodes (CRITICAL!)
+            # Genesis block created, seed_mode no longer needed
+            logger.info("disabling_seed_mode_for_all_validators")
+            self.genesis.disable_seed_mode_in_configs(root_node_ids + master_node_ids)
+            logger.info("seed_mode_disabled_in_all_validator_configs")
             
         except Exception as e:
-            logger.error("tcell_genesis_failed", error=str(e))
-            logger.error("stopping_network_due_to_genesis_failure")
+            logger.error("master_nodes_genesis_failed", error=str(e))
+            self.compose.down(volumes=False, remove_images=False)
+            raise RuntimeError(f"MASTER nodes genesis failed: {e}") from e
+        
+        # =================================================================
+        # PHASE 3: RESTART ALL + START FULL NODES
+        # =================================================================
+        logger.info("=== PHASE 3: Restart ALL + Start FULL Nodes ===")
+        
+        try:
+            # Restart ROOT + MASTER with seed_mode=false and correct static_genesis_block
+            logger.info("restarting_root_and_master_with_final_configs")
+            self.compose.restart(services=root_services + master_services)
+            
+            # Start FULL nodes
+            full_services = [f"node-{nid}" for nid in full_node_ids]
+            logger.info("starting_full_nodes", services=full_services)
+            self.compose.up(services=full_services, detach=True, wait=False)
+            
+            # Wait for ALL nodes to be ready (ROOT + MASTER + FULL)
+            logger.info("waiting_for_all_nodes_ready")
+            
+            # Use existing self.nodes (should include all nodes)
+            final_consensus_monitor = NetworkConsensusMonitor(
+                nodes=self.nodes,
+                node_cli_path=self.node_cli_path
+            )
+            
             try:
-                self.compose.down(volumes=False, remove_images=False)
-            except Exception as stop_error:
-                logger.warning("failed_to_stop_network", error=str(stop_error))
-            raise RuntimeError(f"TCELL genesis failed: {e}") from e
-        
-        # PHASE 2: Capture genesis blocks for both chains
-        logger.info("=== PHASE 2: Genesis Block Capture ===")
-        
-        try:
-            # Step 8: Get genesis block hashes from both chains
-            logger.info("step_8_capturing_genesis_blocks")
-            zerochain_genesis = await self.genesis.get_genesis_block_hash("zerochain")
-            main_genesis = await self.genesis.get_genesis_block_hash("main")
-            
-            if zerochain_genesis:
-                logger.info("zerochain_genesis_captured", hash=zerochain_genesis[:16])
-            else:
-                logger.warning("zerochain_genesis_not_found")
-            
-            if main_genesis:
-                logger.info("main_genesis_captured", hash=main_genesis[:16])
-            else:
-                logger.warning("main_genesis_not_found")
-            
-            # TODO: Update chain configs with genesis blocks
-            # This would require modifying config files and reloading
-            # For now, we log the hashes for manual configuration
+                await final_consensus_monitor.wait_for_network_ready(timeout=150.0)
+                logger.info("all_nodes_ready_for_snapshot")
+            except TimeoutError as e:
+                logger.error("full_network_not_ready", error=str(e))
+                raise RuntimeError(f"Full network failed to reach consensus: {e}")
             
         except Exception as e:
-            logger.warning("genesis_block_capture_failed", error=str(e))
-            # Non-critical - continue without genesis blocks
+            logger.error("full_nodes_startup_failed", error=str(e))
+            self.compose.down(volumes=False, remove_images=False)
+            raise RuntimeError(f"FULL nodes startup failed: {e}") from e
         
-        # PHASE 3: Node Registration & Aliases
-        # Register node aliases and populate node lists
-        logger.info("=== PHASE 3: Node Registration & Aliases ===")
+        # =================================================================
+        # PHASE 4: NODE REGISTRATION & NETWORK TOPOLOGY
+        # =================================================================
+        logger.info("=== PHASE 4: Node Registration & Topology ===")
+        
         try:
+            # Register node aliases in GDB
             await self.genesis.register_node_aliases(node_configs)
             
             # CRITICAL: Register all nodes via CLI from node1
@@ -349,8 +440,8 @@ class NetworkManager:
             logger.error("node_registration_failed", error=str(e))
             # Non-critical - continue, nodes may self-discover
         
-        # PHASE 4: Wait for network consensus
-        logger.info("=== PHASE 4: Network Consensus Verification ===")
+        # PHASE 5: Wait for network consensus
+        logger.info("=== PHASE 5: Network Consensus Verification ===")
         from ..monitoring.network_consensus import NetworkConsensusMonitor
         
         consensus_monitor = NetworkConsensusMonitor(
@@ -413,6 +504,11 @@ class NetworkManager:
                     logger.info("pausing_containers_for_snapshot")
                     self.compose.pause()
                     containers_paused = True
+                    
+                    # =================================================================
+                    # PHASE 6: CREATE CLEAN SNAPSHOT
+                    # =================================================================
+                    logger.info("=== PHASE 6: Creating Clean Snapshot ===")
                     
                     # Create snapshot of paused state
                     await self.create_clean_snapshot()

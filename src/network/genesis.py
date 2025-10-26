@@ -645,7 +645,7 @@ class GenesisInitializer:
             logger.error("fee_wallet_generation_error", error=str(e))
             raise
     
-    async def create_native_token(self, root_cert_name: str = "pvt.stagenet.master.0") -> str:
+    async def create_native_token(self, root_cert_name: str = "pvt.stagenet.root.0") -> str:
         """
         Create TCELL native token on zerochain.
         
@@ -737,7 +737,7 @@ class GenesisInitializer:
             logger.error("native_token_creation_error", error=str(e))
             raise
     
-    async def emit_native_token(self, fee_addr: str, root_cert_name: str = "pvt.stagenet.master.0") -> str:
+    async def emit_native_token(self, fee_addr: str, root_cert_name: str = "pvt.stagenet.root.0") -> str:
         """
         Emit TCELL native token to fee wallet on zerochain.
         
@@ -915,7 +915,7 @@ class GenesisInitializer:
             logger.error("first_transaction_creation_error", error=str(e))
             raise
     
-    async def process_zerochain_datum(self, datum_hash: str, root_nodes: List[NodeConfig], timeout: int = 60) -> None:
+    async def process_zerochain_datum(self, datum_hash: str, root_nodes: List[NodeConfig], timeout: int = 120) -> None:
         """
         Process datum through zerochain DAG-PoA consensus.
         
@@ -989,24 +989,40 @@ class GenesisInitializer:
             logger.info("waiting_for_datum_in_dag", datum=datum_hash[:16], timeout=timeout)
             dag_check_start = time.time()
             found_in_dag = False
+            last_log_time = time.time()
             
             while time.time() - dag_check_start < timeout:
                 # For DAG-PoA, check if datum is in events (not blocks!)
-                cmd_events = ["cellframe-node-cli", "event", "list", "-net", self.network_name, "-chain", "zerochain", "-last", "20"]
+                cmd_events = ["cellframe-node-cli", "dag", "event", "list", "-net", self.network_name, "-chain", "zerochain", "-from", "events", "-limit", "20"]
                 result_events = container.exec_run(cmd_events, demux=True)
+                exit_code = result_events.exit_code
                 stdout_events, _ = result_events.output
                 stdout_events_str = stdout_events.decode('utf-8') if stdout_events else ""
                 
+                # Log progress every 10 seconds
+                elapsed = time.time() - dag_check_start
+                if time.time() - last_log_time >= 10:
+                    logger.info("dag_finalization_progress", 
+                               datum=datum_hash[:16],
+                               elapsed=f"{elapsed:.1f}s",
+                               event_list_preview=stdout_events_str[:300] if stdout_events_str else "empty",
+                               exit_code=exit_code)
+                    last_log_time = time.time()
+                
                 if datum_hash.lower() in stdout_events_str.lower():
                     found_in_dag = True
-                    logger.info("datum_finalized_in_zerochain", datum=datum_hash[:16], elapsed=f"{time.time() - dag_check_start:.1f}s")
+                    logger.info("datum_finalized_in_zerochain", datum=datum_hash[:16], elapsed=f"{elapsed:.1f}s")
                     break
                 
                 # Wait before retry
                 await asyncio.sleep(2)
             
             if not found_in_dag:
-                logger.error("datum_not_finalized_in_dag", datum=datum_hash[:16], elapsed=f"{time.time() - dag_check_start:.1f}s")
+                # Final diagnostic
+                logger.error("datum_not_finalized_in_dag", 
+                           datum=datum_hash[:16], 
+                           elapsed=f"{time.time() - dag_check_start:.1f}s",
+                           last_event_list=stdout_events_str[:500] if 'stdout_events_str' in locals() else "N/A")
                 raise RuntimeError(f"Datum {datum_hash[:16]}... was not finalized in DAG within {timeout}s")
                 
         except Exception as e:
@@ -1097,6 +1113,67 @@ class GenesisInitializer:
             logger.error("network_sync_error", error=str(e))
             raise
     
+    def enable_seed_mode_in_configs(self, node_ids: List[int]) -> None:
+        """
+        Enable seed_mode in node configs BEFORE container start.
+        
+        Modifies cellframe-node.cfg on HOST filesystem.
+        Must be called BEFORE compose.up().
+        
+        Args:
+            node_ids: List of node IDs to enable seed_mode for
+        """
+        logger.info("enabling_seed_mode_in_configs", node_ids=node_ids)
+        
+        for node_id in node_ids:
+            try:
+                node_config_file = self.base_path / ".." / "testing" / "cache" / "configs" / f"node{node_id}" / "cellframe-node.cfg"
+                node_config_file = node_config_file.resolve()
+                
+                if not node_config_file.exists():
+                    logger.warning("config_file_not_found", node_id=node_id, path=str(node_config_file))
+                    continue
+                
+                # Read, replace, write
+                config_content = node_config_file.read_text()
+                config_content = config_content.replace("seed_mode=false", "seed_mode=true")
+                node_config_file.write_text(config_content)
+                logger.debug("seed_mode_enabled_in_config_file", node_id=node_id)
+                    
+            except Exception as e:
+                logger.error("enable_seed_mode_error", node_id=node_id, error=str(e))
+    
+    def disable_seed_mode_in_configs(self, node_ids: List[int]) -> None:
+        """
+        Disable seed_mode in node configs BEFORE container restart.
+        
+        Modifies cellframe-node.cfg on HOST filesystem.
+        
+        CRITICAL: Ensures seed_mode=false in final snapshot!
+        
+        Args:
+            node_ids: List of node IDs to disable seed_mode for
+        """
+        logger.info("disabling_seed_mode_in_configs", node_ids=node_ids)
+        
+        for node_id in node_ids:
+            try:
+                node_config_file = self.base_path / ".." / "testing" / "cache" / "configs" / f"node{node_id}" / "cellframe-node.cfg"
+                node_config_file = node_config_file.resolve()
+                
+                if not node_config_file.exists():
+                    logger.warning("config_file_not_found", node_id=node_id, path=str(node_config_file))
+                    continue
+                
+                # Read, replace, write
+                config_content = node_config_file.read_text()
+                config_content = config_content.replace("seed_mode=true", "seed_mode=false")
+                node_config_file.write_text(config_content)
+                logger.debug("seed_mode_disabled_in_config_file", node_id=node_id)
+                    
+            except Exception as e:
+                logger.error("disable_seed_mode_error", node_id=node_id, error=str(e))
+    
     async def get_genesis_block_hash(self, chain_name: str) -> Optional[str]:
         """
         Get genesis block hash from specified chain.
@@ -1152,4 +1229,48 @@ class GenesisInitializer:
         except Exception as e:
             logger.error("genesis_block_retrieval_error", chain=chain_name, error=str(e))
             return None
+    
+    async def update_static_genesis_in_config(self, chain_name: str, genesis_hash: str, node_configs: List[NodeConfig]) -> None:
+        """
+        Update static_genesis_block in chain config files on ALL nodes.
+        
+        CRITICAL: Must be done after genesis creation and seed_mode disabling
+        to ensure all nodes validate the same genesis.
+        
+        Args:
+            chain_name: Chain name (main or zerochain)
+            genesis_hash: Genesis block hash (0x...)
+            node_configs: List of all node configurations
+        """
+        logger.info("updating_static_genesis_in_configs", 
+                   chain=chain_name, 
+                   hash=genesis_hash[:16],
+                   nodes=len(node_configs))
+        
+        for node in node_configs:
+            try:
+                container_name = f"cellframe-stage-{node.name}"
+                container = self.docker_client.containers.get(container_name)
+                
+                config_path = f"/opt/cellframe-node/etc/network/{self.network_name}/{chain_name}.cfg"
+                
+                # Update static_genesis_block in chain config
+                cmd = [
+                    "sed", "-i",
+                    f"s|^static_genesis_block=.*|static_genesis_block={genesis_hash}|g",
+                    config_path
+                ]
+                
+                result = container.exec_run(cmd)
+                if result.exit_code != 0:
+                    logger.warning("failed_to_update_genesis_hash", 
+                                  node=node.name, 
+                                  error=result.output)
+                else:
+                    logger.debug("genesis_hash_updated", node=node.name, hash=genesis_hash[:16])
+                    
+            except Exception as e:
+                logger.error("update_genesis_hash_error", node=node.name, error=str(e))
+        
+        logger.info("genesis_hash_updated_on_all_nodes", chain=chain_name)
 

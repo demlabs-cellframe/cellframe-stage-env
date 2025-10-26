@@ -343,6 +343,26 @@ class DockerComposeManager:
         run_command(cmd, cwd=self.project_dir)
         logger.info("services_stopped")
     
+    def restart(self, services: Optional[List[str]] = None) -> None:
+        """
+        Restart services (stop + start).
+        
+        Args:
+            services: List of service names (None = all)
+        """
+        logger.info("restarting_services", services=services or "all")
+        
+        from ..utils.cli import run_command
+        
+        cmd = ["docker", "compose", "-f", str(self.compose_file),
+               "-p", self.project_name, "restart"]
+        
+        if services:
+            cmd.extend(services)
+        
+        run_command(cmd, cwd=self.project_dir)
+        logger.info("services_restarted")
+    
     def pause(self, services: Optional[List[str]] = None) -> None:
         """
         Pause running containers (freeze processes).

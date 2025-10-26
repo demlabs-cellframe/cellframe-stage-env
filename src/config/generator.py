@@ -126,6 +126,14 @@ class ConfigGenerator:
                 # Replace placeholders with node-specific values
                 node_cfg_content = base_cfg_content.replace("NODE_IP_PLACEHOLDER", node.ip_address)
                 
+                # CRITICAL: Enable seed_mode for ROOT and MASTER nodes for genesis creation
+                # ROOT nodes need seed_mode for DAG-PoA genesis events (first events without parent hashes)
+                # MASTER nodes need seed_mode for ESBocs genesis block (first block without prev_block)
+                # seed_mode will be disabled AFTER genesis and configs regenerated
+                if node.role in ['root', 'master']:
+                    node_cfg_content = node_cfg_content.replace("seed_mode=false", "seed_mode=true")
+                    logger.debug("seed_mode_enabled_for_genesis", node_id=node.node_id, role=node.role)
+                
                 node_etc_base = self.configs_cache / f"node{node.node_id}"
                 node_etc_base.mkdir(parents=True, exist_ok=True)
                 base_cfg_path = node_etc_base / "cellframe-node.cfg"
@@ -202,18 +210,42 @@ class ConfigGenerator:
             
             # Replace placeholders with node-specific values
             config_content = template_content
-            # Root nodes should be root_master for automatic GDB registration
-            # NODE_ROLE_ROOT (0x01) < NODE_ROLE_MASTER (0x20), so dap_chain_net_announce_addr skips them
-            node_role = "root_master" if node.role == "root" else node.role
+            # Root nodes are just "root" - they participate only in DAG-PoA consensus
+            # Master nodes are "master" - they participate only in ESBocs consensus
+            node_role = node.role
             config_content = config_content.replace("NODE_ROLE_PLACEHOLDER", node_role)
             config_content = config_content.replace("SEED_NODES_PLACEHOLDER", seed_nodes_hosts)
             config_content = config_content.replace("PERMANENT_NODES_HOSTS_PLACEHOLDER", permanent_nodes_hosts)
             
-            # Remove BLOCKS_SIGN_CERT_PLACEHOLDER if present (not used in network config)
-            # blocks-sign-cert should be in node-specific config, not network config
-            lines = config_content.split('\n')
-            filtered_lines = [line for line in lines if "BLOCKS_SIGN_CERT_PLACEHOLDER" not in line]
-            config_content = '\n'.join(filtered_lines)
+            # Replace EVENTS_SIGN_CERT_PLACEHOLDER for root nodes
+            # SDK loads events-sign-cert from network config, not chain config!
+            # callback_created receives l_net->pub.config (network config), not chain config
+            # ROOT nodes use stagenet.root.N (DAG-PoA), MASTER nodes use stagenet.master.N (ESBocs)
+            if "EVENTS_SIGN_CERT_PLACEHOLDER" in config_content:
+                if node.is_seed_node:  # ROOT nodes only
+                    root_idx = node.node_id - 1  # ROOT nodes: 0, 1, 2
+                    events_sign_cert = f"events-sign-cert=pvt.{network_name}.root.{root_idx}"
+                    config_content = config_content.replace("EVENTS_SIGN_CERT_PLACEHOLDER", events_sign_cert)
+                    logger.debug("events_sign_cert_set", node_id=node.node_id, cert=f"pvt.{network_name}.root.{root_idx}")
+                else:
+                    # Remove placeholder for non-root nodes
+                    lines = config_content.split('\n')
+                    filtered_lines = [line for line in lines if "EVENTS_SIGN_CERT_PLACEHOLDER" not in line]
+                    config_content = '\n'.join(filtered_lines)
+            
+            # Replace BLOCKS_SIGN_CERT_PLACEHOLDER for master nodes
+            # MASTER nodes (node4,5,6) use stagenet.master.{0,1,2} (sequential!)
+            if "BLOCKS_SIGN_CERT_PLACEHOLDER" in config_content:
+                if node.consensus_participation and not node.is_seed_node:  # MASTER nodes only
+                    master_idx = node.node_id - 4  # node4→0, node5→1, node6→2
+                    blocks_sign_cert = f"blocks-sign-cert=pvt.{network_name}.master.{master_idx}"
+                    config_content = config_content.replace("BLOCKS_SIGN_CERT_PLACEHOLDER", blocks_sign_cert)
+                    logger.debug("blocks_sign_cert_set", node_id=node.node_id, cert=f"pvt.{network_name}.master.{master_idx}")
+                else:
+                    # Remove placeholder for non-master nodes
+                    lines = config_content.split('\n')
+                    filtered_lines = [line for line in lines if "BLOCKS_SIGN_CERT_PLACEHOLDER" not in line]
+                    config_content = '\n'.join(filtered_lines)
             
             # Write network config to /etc/network/{network_name}.cfg (Cellframe expects this!)
             dst_file = node_network_base / f"{network_name}.cfg"
@@ -265,18 +297,12 @@ class ConfigGenerator:
                             str(auth_certs_number_verify)
                         )
                     
-                    # Replace EVENTS_SIGN_CERT_PLACEHOLDER (for dag-poa, only for root nodes)
+                    # EVENTS_SIGN_CERT_PLACEHOLDER is now in network config (stagenet.cfg), not chain config
+                    # Remove placeholder from chain configs if present
                     if "EVENTS_SIGN_CERT_PLACEHOLDER" in chain_content:
-                        if node.is_seed_node and node.node_id in node_id_to_validator_idx:
-                            # Root nodes use their private certificate (with pvt. prefix)
-                            validator_idx = node_id_to_validator_idx[node.node_id]
-                            events_sign_cert = f"events-sign-cert=pvt.{network_name}.master.{validator_idx}"
-                            chain_content = chain_content.replace("EVENTS_SIGN_CERT_PLACEHOLDER", events_sign_cert)
-                        else:
-                            # Remove placeholder line for non-root nodes
-                            lines = chain_content.split('\n')
-                            filtered_lines = [line for line in lines if "EVENTS_SIGN_CERT_PLACEHOLDER" not in line]
-                            chain_content = '\n'.join(filtered_lines)
+                        lines = chain_content.split('\n')
+                        filtered_lines = [line for line in lines if "EVENTS_SIGN_CERT_PLACEHOLDER" not in line]
+                        chain_content = '\n'.join(filtered_lines)
                     
                     # Write processed chain config
                     dst_chain_cfg = node_network_dir / chain_cfg.name
@@ -572,21 +598,25 @@ blocks-sign-cert=pvt.{network_name}.master.{validator_idx}
         shared_certs_dir = self.configs_cache / "shared" / "ca"
         shared_certs_dir.mkdir(parents=True, exist_ok=True)
         
-        # Copy validator certificates (FULL, with private keys) to shared directory
-        # All nodes need to see all validator certs for consensus
-        # Each node will also have its OWN cert in /var/lib/ca which takes priority
+        # Copy ONLY PUBLIC validator certificates (WITHOUT pvt. prefix) to shared directory
+        # CRITICAL: Private certificates (pvt.stagenet.master.N) should NEVER be in /share/ca!
+        # Only public certificates (stagenet.master.N) for verification
         for val_node_idx in range(1, node_count + 1):
             validator_idx = val_node_idx - 1
-            # Use PRIVATE cert (full version with private key) as source
-            src_private_cert = self.certs_cache / f"node{val_node_idx}" / f"pvt.{network_name}.master.{validator_idx}.dcert"
+            # Use PUBLIC cert (without pvt. prefix) as source
+            src_public_cert = self.certs_cache / f"node{val_node_idx}" / f"{network_name}.master.{validator_idx}.dcert"
             
-            if src_private_cert.exists():
+            if src_public_cert.exists():
                 dst_cert = shared_certs_dir / f"{network_name}.master.{validator_idx}.dcert"
-                # Copy full cert to shared directory
-                shutil.copy2(src_private_cert, dst_cert)
-                logger.debug("copied_validator_cert_to_shared",
+                # Copy ONLY public cert to shared directory
+                shutil.copy2(src_public_cert, dst_cert)
+                logger.debug("copied_public_validator_cert_to_shared",
                            validator_idx=validator_idx,
                            dst=str(dst_cert))
+            else:
+                logger.warning("public_validator_cert_not_found",
+                             validator_idx=validator_idx,
+                             expected=str(src_public_cert))
         
         # Copy node-addr.dcert to ALL nodes FIRST (CRITICAL - must exist before node starts!)
         # This certificate is used for node identification and MUST match authorized_nodes_addrs
@@ -603,48 +633,70 @@ blocks-sign-cert=pvt.{network_name}.master.{validator_idx}
                            node_id=node.node_id,
                            dst=str(dst_node_cert))
         
-        # Copy PRIVATE validator certificates to /var/lib/ca for validator nodes
+        # Copy PRIVATE consensus certificates to /var/lib/ca for validator nodes
         # Each node gets ONLY its OWN PRIVATE certificate (with pvt. prefix)
-        # This certificate is used for signing (blocks/events)
-        # Public certificates (without pvt.) are in /share/ca for verification
-        validator_nodes = [n for n in nodes if n.is_seed_node or n.consensus_participation]
-        # Validator index is sequential: 0, 1, 2, ... NOT node_id - 1!
-        for validator_seq_idx, node in enumerate(validator_nodes):
+        # ROOT nodes (1,2,3): pvt.stagenet.root.{0,1,2} for DAG-PoA events
+        # MASTER nodes (4,5,6): pvt.stagenet.master.{0,1,2} for ESBocs blocks
+        for node in nodes:
+            if not (node.is_seed_node or node.consensus_participation):
+                continue  # Skip FULL nodes
+            
             node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
             node_data_cert_dir.mkdir(parents=True, exist_ok=True)
             
+            # Determine certificate type and index
+            if node.is_seed_node:  # ROOT nodes
+                cert_type = "root"
+                cert_idx = node.node_id - 1  # node1→0, node2→1, node3→2
+            else:  # MASTER nodes
+                cert_type = "master"
+                cert_idx = node.node_id - 4  # node4→0, node5→1, node6→2
+            
             # Copy PRIVATE certificate (keeps pvt. prefix for signing operations)
-            validator_idx = validator_seq_idx
-            src_cert = self.certs_cache / f"node{node.node_id}" / f"pvt.{network_name}.master.{validator_idx}.dcert"
+            src_cert = self.certs_cache / f"node{node.node_id}" / f"pvt.{network_name}.{cert_type}.{cert_idx}.dcert"
             if src_cert.exists():
-                # Keep pvt. prefix in destination name!
-                dst_cert = node_data_cert_dir / f"pvt.{network_name}.master.{validator_idx}.dcert"
+                dst_cert = node_data_cert_dir / f"pvt.{network_name}.{cert_type}.{cert_idx}.dcert"
                 shutil.copy2(src_cert, dst_cert)
-                logger.debug("copied_private_validator_cert",
+                logger.debug("copied_private_consensus_cert",
                            node_id=node.node_id,
-                           validator_seq_idx=validator_seq_idx,
-                           validator_idx=validator_idx,
-                           is_seed=node.is_seed_node,
-                           is_consensus=node.consensus_participation,
+                           cert_type=cert_type,
+                           cert_idx=cert_idx,
                            dst=str(dst_cert))
+            else:
+                logger.warning("private_consensus_cert_not_found", 
+                             node_id=node.node_id,
+                             expected=str(src_cert))
         
-        # Copy ALL PUBLIC validator certificates to EVERY node's /var/lib/ca
-        # ESBocs consensus requires ALL validator certs in /var/lib/ca
+        # Copy ALL PUBLIC consensus certificates to EVERY node's /var/lib/ca
+        # All nodes need all public certs for signature verification:
+        # - stagenet.root.{0,1,2} for DAG-PoA event verification
+        # - stagenet.master.{0,1,2} for ESBocs block verification
         for node in nodes:
             node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
             node_data_cert_dir.mkdir(parents=True, exist_ok=True)
             
-            # Copy all public validator certs (stagenet.master.N.dcert)
-            # IMPORTANT: Use validator_nodes list, not sequential val_idx + 1
-            for val_idx, val_node in enumerate(validator_nodes):
-                src_pub_cert = self.certs_cache / f"node{val_node.node_id}" / f"{network_name}.master.{val_idx}.dcert"
+            # Copy all ROOT public certs (stagenet.root.{0,1,2})
+            for root_idx in range(3):
+                root_node_id = root_idx + 1
+                src_pub_cert = self.certs_cache / f"node{root_node_id}" / f"{network_name}.root.{root_idx}.dcert"
                 if src_pub_cert.exists():
-                    dst_pub_cert = node_data_cert_dir / f"{network_name}.master.{val_idx}.dcert"
+                    dst_pub_cert = node_data_cert_dir / f"{network_name}.root.{root_idx}.dcert"
                     shutil.copy2(src_pub_cert, dst_pub_cert)
-                    logger.debug("copied_public_validator_cert_to_node",
+                    logger.debug("copied_public_root_cert",
                                node_id=node.node_id,
-                               validator_node_id=val_node.node_id,
-                               validator_idx=val_idx,
+                               root_idx=root_idx,
+                               dst=str(dst_pub_cert))
+            
+            # Copy all MASTER public certs (stagenet.master.{0,1,2})
+            for master_idx in range(3):
+                master_node_id = master_idx + 4
+                src_pub_cert = self.certs_cache / f"node{master_node_id}" / f"{network_name}.master.{master_idx}.dcert"
+                if src_pub_cert.exists():
+                    dst_pub_cert = node_data_cert_dir / f"{network_name}.master.{master_idx}.dcert"
+                    shutil.copy2(src_pub_cert, dst_pub_cert)
+                    logger.debug("copied_public_master_cert",
+                               node_id=node.node_id,
+                               master_idx=master_idx,
                                dst=str(dst_pub_cert))
         
         logger.info("certificates_generated", count=node_count)
