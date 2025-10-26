@@ -584,7 +584,8 @@ class GenesisInitializer:
         # First: bring all offline
         for node in nodes:
             try:
-                logger.debug("bringing_offline", node_id=node.node_id)
+                # Go offline then online to trigger reconnection
+                logger.debug("cycling_network_state", node_id=node.node_id)
                 self._exec_cli(node.node_id, f"net -net {self.network_name} go offline", check_output=False)
             except Exception as e:
                 logger.warning("failed_to_go_offline", node_id=node.node_id, error=str(e))
@@ -1159,6 +1160,14 @@ class GenesisInitializer:
                                 total_match = re.search(r'total events:\s*(\d+)', stdout_check, re.IGNORECASE) if stdout_check else None
                                 total_events = int(total_match.group(1)) if total_match else 0
                                 has_data = exit_code_check == 0 and total_events > 0
+                                
+                                # DIAGNOSTIC: Log full output for first check to debug
+                                if time.time() - start_time < 10 and node == nodes[0]:
+                                    logger.info("dag_event_list_diagnostic",
+                                               node=f"node{node.node_id}",
+                                               exit_code=exit_code_check,
+                                               total_events=total_events,
+                                               full_output=stdout_check if stdout_check else "EMPTY")
                             else:
                                 # For blockchain: check if any blocks exist
                                 exit_code_check, stdout_check, _ = self._exec_cli(
@@ -1176,6 +1185,12 @@ class GenesisInitializer:
                                            node=f"node{node.node_id}",
                                            chain=chain_name,
                                            preview=stdout_check[:100] if stdout_check else "empty")
+                            else:
+                                # Log why node doesn't have data
+                                logger.debug("node_missing_chain_data",
+                                           node=f"node{node.node_id}",
+                                           exit_code=exit_code_check,
+                                           output_preview=stdout_check[:200] if stdout_check else "EMPTY")
                                 
                         except Exception as e:
                             logger.debug("failed_to_check_chain_data", node=f"node{node.node_id}", error=str(e)[:100])
