@@ -8,10 +8,10 @@
     "root_nodes": {
       "count": {{ root_nodes_count | default(3) }},
       "role": "root",
-      "consensus_participation": true,
+      "consensus_participation": false,
       "is_seed_node": true,
       "balancer_enabled": {{ balancer_enabled | default('true') | lower }},
-      "description": "Root seed nodes - DAG-PoA validators for zerochain + ESBocs validators for main chain"
+      "description": "Root seed nodes - DAG-PoA validators for zerochain only (NOT ESBocs validators)"
     },
     "master_nodes": {
       "count": {{ master_nodes_count | default(3) }},
