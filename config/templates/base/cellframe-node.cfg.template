@@ -1,7 +1,7 @@
 # General section
 [general]
 # General debug mode
-debug_mode=true
+debug_mode=false
 # Debug stream packets
 debug_dump_stream_headers=false
 # Debug I/O reactor, false by default

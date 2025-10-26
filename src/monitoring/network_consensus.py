@@ -172,6 +172,11 @@ class NetworkConsensusMonitor:
         self.check_interval = check_interval
         
         self.expected_node_count = len(nodes)
+        
+        # Import Docker SDK for container access
+        import docker
+        self.docker_client = docker.from_env()
+        
         logger.info("network_consensus_monitor_initialized",
                    nodes=self.expected_node_count,
                    network=network_name)
@@ -529,7 +534,7 @@ class NetworkConsensusMonitor:
     
     async def _exec_cli(self, node_id: str, command: str) -> str:
         """
-        Execute CLI command in node container.
+        Execute CLI command in node container using Docker SDK.
         
         Args:
             node_id: Node identifier (e.g., "node1")
@@ -545,19 +550,26 @@ class NetworkConsensusMonitor:
         else:
             container_name = f"cellframe-stage-{node_id}"
         
-        proc = await asyncio.create_subprocess_exec(
-            "docker", "exec", container_name,
-            self.node_cli_path, *command.split(),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
+        try:
+            container = self.docker_client.containers.get(container_name)
+        except Exception as e:
+            raise RuntimeError(f"Container {container_name} not found: {e}")
         
-        stdout, stderr = await proc.communicate()
+        # Build CLI command array
+        cmd_array = [self.node_cli_path] + command.split()
         
-        if proc.returncode != 0:
-            raise RuntimeError(f"CLI command failed: {stderr.decode()}")
+        # Execute using Docker SDK (synchronous, but we're in async context)
+        result = container.exec_run(cmd_array, demux=True)
+        exit_code = result.exit_code
+        stdout, stderr = result.output
         
-        return stdout.decode()
+        stdout_str = stdout.decode('utf-8') if stdout else ""
+        stderr_str = stderr.decode('utf-8') if stderr else ""
+        
+        if exit_code != 0:
+            raise RuntimeError(f"CLI command failed: {stderr_str}")
+        
+        return stdout_str
     
     def _parse_node_list(self, output: str) -> Set[str]:
         """
