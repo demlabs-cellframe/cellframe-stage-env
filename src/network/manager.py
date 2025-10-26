@@ -284,6 +284,12 @@ class NetworkManager:
                 # Expected - node list empty, continue to register nodes
                 logger.info("root_nodes_online_but_node_list_empty_as_expected")
             
+            # CRITICAL: Wait for nodes to fully initialize network subsystems
+            # Before registration: chains must load, GDB clusters created, roles assigned
+            logger.info("waiting_for_network_subsystems_init", delay=10)
+            await asyncio.sleep(10)
+            logger.info("network_subsystems_init_complete")
+            
             # Register ONLY ROOT nodes (first 3) in node1's node list immediately
             # This pre-populates the essential validators; other nodes will self-discover
             logger.info("pre_registering_root_nodes_in_node1")
