@@ -399,10 +399,3 @@ class GenesisInitializer:
                            error=str(e))
             raise
     
-    async def create_first_transaction(
-        self, 
-        emission_hash: str, 
-        master_nodes: List[NodeConfig] = None,
-        master_cert_name: str = "pvt.stagenet.master.0"
-        return await self.config_mgr.update_static_genesis_in_config(chain_name, genesis_hash, node_configs)
-
