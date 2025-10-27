@@ -424,20 +424,47 @@ class NetworkManager:
                                   node_id=master_node.node_id,
                                   error=str(e))
             
+            # CRITICAL: HARD RESTART MASTER nodes after order creation
+            # Orders are created but not yet loaded by ESBocs consensus
+            # Full restart is required for nodes to discover and load orders
+            logger.info("=== HARD RESTART MASTER: Load validator orders ===")
+            self.genesis.config_mgr.disable_seed_mode_in_configs(master_node_ids)
+            lifecycle_mgr = NodeLifecycleManager(project_name=self.compose.project_name)
+            await lifecycle_mgr.hard_restart_with_config_reload(
+                service_names=master_services,
+                compose_manager=self.compose,
+                flush_timeout=60
+            )
+            logger.info("master_nodes_restarted_with_orders")
+            
+            # Wait for MASTER nodes to reinitialize
+            await consensus_monitor_all.wait_for_links_connecting_state(timeout=60.0)
+            logger.info("master_nodes_reinitialized")
+            
             # Re-register full mesh node list (ROOT + MASTER)
             # After restart, node list is cleared and needs repopulation
             logger.info("re_registering_full_validator_mesh")
             await self.genesis.registration_mgr.register_all_nodes_via_cli(all_validator_nodes)
             logger.info("validator_mesh_registered")
             
-            # Wait for network consensus with full node list
-            logger.info("waiting_for_root_and_master_consensus")
+            # Soft reconnect to establish links quickly
+            logger.info("soft_reconnect_after_order_restart")
+            await self.genesis.registration_mgr.soft_network_reconnect(all_validator_nodes, wait_for_links=True)
+            logger.info("links_established_after_order_restart")
+            
+            # Wait for network consensus with full node list AND loaded orders
+            logger.info("waiting_for_root_and_master_consensus_with_orders")
             try:
                 await consensus_monitor_all.wait_for_network_ready(timeout=120.0)
-                logger.info("all_validator_nodes_ready")
+                logger.info("all_validator_nodes_ready_with_orders")
             except TimeoutError as e:
                 logger.error("validators_not_ready", error=str(e))
                 raise RuntimeError(f"Validator nodes failed to reach consensus: {e}")
+            
+            # Verify that all nodes see all validator orders
+            logger.info("verifying_validator_orders_visibility")
+            await self.genesis._verify_validator_orders(all_validator_nodes, expected_count=len(master_nodes))
+            logger.info("validator_orders_verified_on_all_nodes")
             
             # CRITICAL: Sync zerochain to MASTER nodes (emission was created in Phase 1!)
             # Without this, master nodes can't see emission datum → tx_create fails
