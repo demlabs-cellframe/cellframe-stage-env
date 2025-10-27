@@ -11,7 +11,7 @@ from typing import List, Optional
 import docker
 
 from ..config.loader import NodeConfig
-from ..logging.logger import get_logger
+from ..utils.logger import get_logger
 
 
 logger = get_logger(__name__)
@@ -169,7 +169,8 @@ class GenesisConfigManager:
         
         for node in node_configs:
             try:
-                config_file = self.base_path / ".." / "testing" / "cache" / "configs" / f"node{node.node_id}" / self.network_name / "main.cfg"
+                # Path: cache/configs/nodeN/network/NETWORK_NAME/main.cfg
+                config_file = self.base_path / ".." / "testing" / "cache" / "configs" / f"node{node.node_id}" / "network" / self.network_name / "main.cfg"
                 config_file = config_file.resolve()
                 
                 if not config_file.exists():
@@ -224,8 +225,8 @@ class GenesisConfigManager:
         for node in node_configs:
             try:
                 # Update config on HOST filesystem (works for both running and stopped containers)
-                # Configs are mounted from cache/configs/nodeN/ into containers
-                config_file = self.base_path / ".." / "testing" / "cache" / "configs" / f"node{node.node_id}" / self.network_name / f"{chain_name}.cfg"
+                # Configs are mounted from cache/configs/nodeN/network/NETWORK_NAME/ into containers
+                config_file = self.base_path / ".." / "testing" / "cache" / "configs" / f"node{node.node_id}" / "network" / self.network_name / f"{chain_name}.cfg"
                 config_file = config_file.resolve()
                 
                 if not config_file.exists():

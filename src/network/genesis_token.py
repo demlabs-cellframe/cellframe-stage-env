@@ -11,7 +11,7 @@ from typing import List
 import docker
 
 from ..config.loader import NodeConfig
-from ..logging.logger import get_logger
+from ..utils.logger import get_logger
 
 
 logger = get_logger(__name__)
