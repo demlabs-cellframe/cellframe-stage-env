@@ -287,6 +287,12 @@ class NetworkManager:
             await self.genesis.registration_mgr.register_all_nodes_via_cli(root_nodes)
             logger.info("root_nodes_pre_registered_in_node1", count=len(root_nodes))
             
+            # CRITICAL: First offline/online to establish links for DAG-PoA consensus
+            # Without links, DAG events cannot be created (consensus requires active validators)
+            logger.info("establishing_root_node_links_for_dag_consensus")
+            await self.genesis.registration_mgr.force_network_reconnection(root_nodes, wait_for_links=True)
+            logger.info("root_node_links_established")
+            
             # Generate fee wallet
             logger.info("generating_fee_wallet")
             fee_addr = await self.genesis.token_mgr.generate_fee_wallet()
@@ -316,12 +322,6 @@ class NetworkManager:
             logger.info("processing_emission_dag_poa")
             await self.genesis.sync_mgr.process_zerochain_datum(emission_hash, root_nodes)
             logger.info("emission_finalized_in_dag")
-            
-            # CRITICAL: FIRST offline/online cycle - Apply DAG genesis event to all ROOT nodes
-            # This forces nodes to re-read configs and establish links based on registered node list
-            logger.info("=== OFFLINE/ONLINE #1: After DAG Genesis Event ===")
-            await self.genesis.registration_mgr.force_network_reconnection(root_nodes, wait_for_links=True)
-            logger.info("dag_genesis_applied_to_root_nodes")
             
             # DIAGNOSTIC: Verify emission is visible on ROOT nodes BEFORE restart
             logger.info("verifying_emission_on_root_nodes", emission=emission_hash[:16])
