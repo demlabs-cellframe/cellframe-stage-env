@@ -331,49 +331,60 @@ class NodeRegistrationManager:
             logger.warning("node_list_gdb_sync_incomplete",
                           nodes_with_list=nodes_with_list,
                           total=len(nodes),
-                          note="GDB sync requires links - will propagate after initial link establishment")
+                          note="GDB sync requires links - will propagate after initial link establishment or offline/online cycle")
+    
+    async def force_network_reconnection(self, nodes: List[NodeConfig], wait_for_links: bool = True) -> None:
+        """
+        Force network reconnection via offline/online cycle.
         
-        # After node list propagation, wait for links to establish
-        logger.info("waiting_for_initial_links_before_network_reconnection")
+        This is CRITICAL for applying config changes (genesis blocks, seed_mode, etc).
+        Use ONLY at specific genesis milestones:
+        1. After DAG genesis event finalization (Phase 1)
+        2. After ESBocs genesis block creation (Phase 2)
         
-        from ..monitoring.network_consensus import NetworkConsensusMonitor
-        monitor = NetworkConsensusMonitor(
-            nodes={f"node{n.node_id}": n for n in nodes},
-            network_name=self.network_name
-        )
+        Args:
+            nodes: List of nodes to reconnect
+            wait_for_links: Whether to wait for links establishment after reconnection
+        """
+        logger.info("forcing_network_reconnection", nodes=len(nodes))
         
-        # Step 1: Wait for at least SOME links to appear (allows GDB sync to start)
-        logger.info("waiting_for_at_least_one_link_per_node")
-        await monitor.wait_for_links_connecting_state(timeout=90.0)
-        logger.info("initial_links_established_gdb_can_sync")
-        
-        # Step 2: NOW do offline/online to force full mesh establishment
-        # At this point: some links exist → GDB syncing → node lists propagating
-        logger.info("forcing_full_mesh_reconnection_with_updated_node_lists")
-        
-        # First: bring all offline
+        # Step 1: Bring all nodes offline
+        logger.info("bringing_all_nodes_offline")
         for node in nodes:
             try:
-                logger.debug("bringing_offline_for_refresh", node_id=node.node_id)
                 self._exec_cli(node.node_id, f"net -net {self.network_name} go offline", check_output=False)
+                logger.debug("node_offline", node_id=node.node_id)
             except Exception as e:
                 logger.warning("failed_to_go_offline", node_id=node.node_id, error=str(e))
         
-        # Small delay to ensure offline processed
-        await asyncio.sleep(1)
+        # Small delay to ensure offline processed on all nodes
+        await asyncio.sleep(2)
         
-        # Then: bring all online simultaneously → full mesh with complete node lists!
+        # Step 2: Bring all nodes online simultaneously
+        logger.info("bringing_all_nodes_online")
         for node in nodes:
             try:
-                logger.debug("bringing_online_for_full_mesh", node_id=node.node_id)
                 self._exec_cli(node.node_id, f"net -net {self.network_name} go online", check_output=False)
+                logger.debug("node_online", node_id=node.node_id)
             except Exception as e:
                 logger.warning("failed_to_go_online", node_id=node.node_id, error=str(e))
         
-        logger.info("all_nodes_online_with_full_node_lists")
+        logger.info("network_reconnection_initiated")
         
-        # Step 3: Wait for FULL links establishment (all nodes active >= required)
-        logger.info("waiting_for_full_links_establishment")
-        await monitor.wait_for_links_established(timeout=60.0)
-        logger.info("all_links_established_ready_for_consensus")
+        # Step 3: Wait for links establishment (if requested)
+        if wait_for_links:
+            logger.info("waiting_for_links_after_reconnection")
+            
+            from ..monitoring.network_consensus import NetworkConsensusMonitor
+            monitor = NetworkConsensusMonitor(
+                nodes={f"node{n.node_id}": n for n in nodes},
+                network_name=self.network_name
+            )
+            
+            try:
+                await monitor.wait_for_links_established(timeout=60.0)
+                logger.info("links_established_after_reconnection")
+            except TimeoutError:
+                logger.warning("links_establishment_timeout_after_reconnection",
+                              note="Some links may still be connecting")
 

@@ -317,6 +317,12 @@ class NetworkManager:
             await self.genesis.sync_mgr.process_zerochain_datum(emission_hash, root_nodes)
             logger.info("emission_finalized_in_dag")
             
+            # CRITICAL: FIRST offline/online cycle - Apply DAG genesis event to all ROOT nodes
+            # This forces nodes to re-read configs and establish links based on registered node list
+            logger.info("=== OFFLINE/ONLINE #1: After DAG Genesis Event ===")
+            await self.genesis.registration_mgr.force_network_reconnection(root_nodes, wait_for_links=True)
+            logger.info("dag_genesis_applied_to_root_nodes")
+            
             # DIAGNOSTIC: Verify emission is visible on ROOT nodes BEFORE restart
             logger.info("verifying_emission_on_root_nodes", emission=emission_hash[:16])
             for root_node in root_nodes[:1]:  # Check first ROOT node
@@ -464,6 +470,12 @@ class NetworkManager:
             logger.info("disabling_seed_mode_for_all_validators")
             self.genesis.config_mgr.disable_seed_mode_in_configs(root_node_ids + master_node_ids)
             logger.info("seed_mode_disabled_in_all_validator_configs")
+            
+            # CRITICAL: SECOND offline/online cycle - Apply ESBocs genesis block to all validators
+            # This forces nodes to re-read configs with static_genesis_block and seed_mode=false
+            logger.info("=== OFFLINE/ONLINE #2: After ESBocs Genesis Block ===")
+            await self.genesis.registration_mgr.force_network_reconnection(all_validator_nodes, wait_for_links=True)
+            logger.info("esbocs_genesis_applied_to_all_validators")
             
         except Exception as e:
             logger.error("master_nodes_genesis_failed", error=str(e))
