@@ -127,6 +127,23 @@ class NodeRegistrationManager:
             Returns True on success.
             """
             
+            # First check if node has loaded the network (ready for commands)
+            try:
+                exit_code_status, stdout_status, _ = self._exec_cli(
+                    target_node.node_id,
+                    f"net -net {self.network_name} get status",
+                    check_output=False
+                )
+                
+                # If network not found, node hasn't loaded network config yet
+                if "Network stagenet not found" in stdout_status or "code: 103" in stdout_status:
+                    logger.warning("node_network_not_loaded_yet",
+                                  target=target_node.node_id,
+                                  note="Node needs more time to load network config")
+                    return False
+            except Exception as e:
+                logger.debug("node_status_check_failed", target=target_node.node_id, error=str(e)[:100])
+            
             # Get target node address from its running container
             try:
                 exit_code, stdout_str, stderr = self._exec_cli(
@@ -170,20 +187,29 @@ class NodeRegistrationManager:
                 )
                 
                 if exit_code == 0:
-                    # Check for success/warning messages
+                    # Parse response to verify registration
                     if "You have no access rights" in stdout_str:
                         logger.warning("node_add_no_rights",
-                                      target=target_node.node_id)
+                                      target=target_node.node_id,
+                                      output=stdout_str[:100])
                         return False
                     elif "already" in stdout_str.lower():
-                        logger.debug("node_already_in_list",
-                                    target=target_node.node_id)
+                        logger.info("node_already_in_list",
+                                   target=target_node.node_id,
+                                   output=stdout_str[:100])
                         return True
-                    else:
+                    elif "Successfully added" in stdout_str or "added node" in stdout_str.lower():
                         logger.info("node_registered_via_cli",
                                   target=target_node.node_id,
-                                  output=stdout_str[:50] if stdout_str else "success")
+                                  output=stdout_str[:100])
                         return True
+                    else:
+                        # Unknown response - log full output
+                        logger.warning("unknown_node_add_response",
+                                      target=target_node.node_id,
+                                      exit_code=exit_code,
+                                      output=stdout_str[:200])
+                        return False
                 else:
                     logger.warning("node_add_failed",
                                   target=target_node.node_id,
@@ -214,6 +240,32 @@ class NodeRegistrationManager:
                    successful=success_count,
                    failed=failed_count,
                    total=len(nodes))
+        
+        # VERIFICATION: Check node list on node1 immediately after registration
+        logger.info("verifying_node_list_on_node1_after_registration")
+        try:
+            exit_code, stdout, _ = self._exec_cli(
+                1,
+                f"node list -net {self.network_name}",
+                check_output=False
+            )
+            
+            if exit_code == 0:
+                # Count nodes in list
+                match = re.search(r'Got\s+(\d+)\s+nodes', stdout, re.IGNORECASE)
+                if match:
+                    node_count = int(match.group(1))
+                    logger.info("node1_list_verification",
+                               registered=node_count,
+                               expected=len(nodes),
+                               status="OK" if node_count >= len(nodes) else "INCOMPLETE",
+                               output_preview=stdout[:200])
+                else:
+                    logger.warning("could_not_parse_node_list", output=stdout[:200])
+            else:
+                logger.warning("node_list_command_failed", exit_code=exit_code)
+        except Exception as e:
+            logger.warning("node_list_verification_error", error=str(e))
         
         # CRITICAL: Wait for GDB to propagate node list to ALL nodes
         # Node1 added all nodes locally, but GDB sync takes time (1-5s)
