@@ -197,6 +197,45 @@ class ConfigGenerator:
         validator_nodes = [n for n in nodes if n.is_seed_node or n.consensus_participation]
         node_id_to_validator_idx = {n.node_id: idx for idx, n in enumerate(validator_nodes)}
         
+        # PRE-RENDER chain configs (same for all nodes!)
+        # Chain configs don't depend on individual node - only on network topology
+        rendered_chain_configs = {}
+        chains_template_dir = self.templates_dir / "chains"
+        if chains_template_dir.exists():
+            # Collect validator addresses
+            validator_addrs = self._collect_validator_addresses(nodes, network_name)
+            root_nodes_addrs = self._collect_root_node_addresses(nodes, network_name)
+            
+            # Calculate consensus parameters
+            root_nodes_count = len([n for n in nodes if n.is_seed_node])
+            auth_certs_number = root_nodes_count
+            auth_certs_number_verify = max(1, root_nodes_count // 2 + 1)
+            
+            # Prepare Jinja2 context
+            chain_context = {
+                'validators_addrs': validator_addrs,
+                'root_nodes_addrs': root_nodes_addrs,
+                'auth_certs_number': auth_certs_number,
+                'auth_certs_number_verify': auth_certs_number_verify,
+                'static_genesis_event': '',
+                'is_static_genesis_event': 'false',
+                'static_genesis_block': '',
+                'is_static_genesis_block': 'false',
+                'fee_addr': ''
+            }
+            
+            # Render all chain templates ONCE
+            from jinja2 import Template
+            for chain_template in chains_template_dir.glob("*.cfg.j2"):
+                template_content = chain_template.read_text()
+                template = Template(template_content)
+                chain_content = template.render(**chain_context)
+                output_name = chain_template.stem  # main.cfg, zerochain.cfg
+                rendered_chain_configs[output_name] = chain_content
+                logger.debug("chain_config_pre_rendered",
+                           chain=output_name,
+                           has_jinja_tags="{{ " in chain_content)
+        
         # Generate network config for each node
         # Cellframe Node expects:
         # 1. /etc/{cellframe-node,network}.cfg - main configs  
@@ -257,55 +296,20 @@ class ConfigGenerator:
                         first_line=config_content.split('\n')[0] if config_content else "EMPTY",
                         has_general_section="[general]" in config_content)
             
-            # Generate chain configs using Jinja2 templates
-            chains_template_dir = self.templates_dir / "chains"
-            if chains_template_dir.exists():
+            # Write pre-rendered chain configs for this node
+            if rendered_chain_configs:
                 # Create chain configs directory: network/{network_name}/
                 node_chains_dir = node_network_base / network_name
                 node_chains_dir.mkdir(parents=True, exist_ok=True)
                 
-                # Collect validator addresses from certificates (for ESBocs consensus)
-                validator_addrs = self._collect_validator_addresses(nodes, network_name)
-                
-                # Collect root node addresses from certificates (for zerochain authorized_nodes_addrs)
-                root_nodes_addrs = self._collect_root_node_addresses(nodes, network_name)
-                
-                # Calculate auth_certs_number for dag-poa consensus
-                root_nodes_count = len([n for n in nodes if n.is_seed_node])
-                auth_certs_number = root_nodes_count
-                auth_certs_number_verify = max(1, root_nodes_count // 2 + 1)  # N/2 + 1
-                
-                # Prepare Jinja2 context for chain configs
-                chain_context = {
-                    'validators_addrs': validator_addrs,
-                    'root_nodes_addrs': root_nodes_addrs,
-                    'auth_certs_number': auth_certs_number,
-                    'auth_certs_number_verify': auth_certs_number_verify,
-                    # Genesis parameters (empty initially, filled after genesis creation)
-                    'static_genesis_event': '',
-                    'is_static_genesis_event': 'false',
-                    'static_genesis_block': '',
-                    'is_static_genesis_block': 'false',
-                    'fee_addr': ''
-                }
-                
-                # Process chain config templates
-                for chain_template in chains_template_dir.glob("*.cfg.j2"):
-                    # Render Jinja2 template
-                    from jinja2 import Template
-                    template_content = chain_template.read_text()
-                    template = Template(template_content)
-                    chain_content = template.render(**chain_context)
-                    
-                    # Write to .cfg file in network/{network_name}/ directory
-                    output_name = chain_template.stem  # Removes .j2, keeps .cfg
-                    dst_chain_cfg = node_chains_dir / output_name
+                # Write all pre-rendered chain configs
+                for chain_name, chain_content in rendered_chain_configs.items():
+                    dst_chain_cfg = node_chains_dir / chain_name
                     dst_chain_cfg.write_text(chain_content)
                     
-                    logger.debug("chain_config_rendered",
+                    logger.debug("chain_config_written",
                                node_id=node.node_id,
-                               chain=output_name,
-                               template=chain_template.name,
+                               chain=chain_name,
                                path=str(dst_chain_cfg),
                                first_line=chain_content.split('\n')[0] if chain_content else "EMPTY",
                                has_jinja_tags="{{ " in chain_content)
