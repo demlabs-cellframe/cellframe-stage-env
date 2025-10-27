@@ -618,6 +618,14 @@ class GenesisInitializer:
                 all_have_list = True
                 break
             
+            # Log progress
+            elapsed = time.time() - start_wait
+            logger.info("node_list_propagation_progress",
+                       elapsed=f"{elapsed:.1f}s",
+                       nodes_with_list=nodes_with_list,
+                       total=len(nodes),
+                       missing=len(nodes) - nodes_with_list)
+            
             await asyncio.sleep(2)
         
         if not all_have_list:
