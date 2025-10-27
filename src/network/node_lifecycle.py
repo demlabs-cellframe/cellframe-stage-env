@@ -207,4 +207,65 @@ class NodeLifecycleManager:
                           missing=missing_count,
                           total=len(node_ids))
             return False
+    
+    async def hard_restart_with_config_reload(
+        self,
+        service_names: List[str],
+        compose_manager,
+        flush_timeout: int = 60,
+        startup_timeout: int = 60
+    ) -> None:
+        """
+        Hard restart: Full container restart WITH config reload (stops → starts).
+        
+        This is used to apply config changes that require full node restart:
+        - seed_mode changes
+        - static_genesis_block/event updates
+        - Network topology changes
+        
+        Process:
+        1. Graceful shutdown with GDB flush (preserves node list, GDB state)
+        2. Verify GDB files on disk
+        3. Restart containers (Docker compose up)
+        4. Containers reload ALL configs from disk
+        
+        Args:
+            service_names: List of Docker Compose service names
+            compose_manager: DockerComposeManager instance for container control
+            flush_timeout: Timeout for graceful shutdown (seconds)
+            startup_timeout: Timeout for container startup (seconds)
+        """
+        logger.info("hard_restart_with_config_reload", 
+                   services=service_names,
+                   flush_timeout=flush_timeout)
+        
+        # Step 1: Graceful shutdown with GDB flush
+        logger.info("gracefully_shutting_down_for_config_reload")
+        await self.graceful_shutdown_with_gdb_flush(
+            service_names=service_names,
+            flush_timeout=flush_timeout
+        )
+        logger.info("shutdown_complete_gdb_flushed")
+        
+        # Step 2: Verify GDB persistence
+        # Extract node IDs from service names (e.g., "node-1" → 1)
+        node_ids = []
+        for service in service_names:
+            try:
+                node_id = int(service.split('-')[-1])
+                node_ids.append(node_id)
+            except (ValueError, IndexError):
+                logger.warning("could_not_extract_node_id", service=service)
+        
+        if node_ids:
+            gdb_verified = await self.verify_gdb_files_exist(node_ids)
+            if gdb_verified:
+                logger.info("gdb_persistence_verified", nodes=len(node_ids))
+            else:
+                logger.warning("some_gdb_files_missing_continuing_anyway")
+        
+        # Step 3: Restart containers (configs will be reloaded)
+        logger.info("restarting_containers_config_reload")
+        compose_manager.up(services=service_names, detach=True, wait=False)
+        logger.info("containers_restarted_configs_reloaded")
 

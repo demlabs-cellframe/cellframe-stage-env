@@ -333,20 +333,21 @@ class NodeRegistrationManager:
                           total=len(nodes),
                           note="GDB sync requires links - will propagate after initial link establishment or offline/online cycle")
     
-    async def force_network_reconnection(self, nodes: List[NodeConfig], wait_for_links: bool = True) -> None:
+    async def soft_network_reconnect(self, nodes: List[NodeConfig], wait_for_links: bool = True) -> None:
         """
-        Force network reconnection via offline/online cycle.
+        Soft network reconnection via offline/online cycle (WITHOUT container restart).
         
-        This is CRITICAL for applying config changes (genesis blocks, seed_mode, etc).
-        Use ONLY at specific genesis milestones:
-        1. After DAG genesis event finalization (Phase 1)
-        2. After ESBocs genesis block creation (Phase 2)
+        This quickly re-establishes network links without losing in-memory state.
+        Use cases:
+        - After node registration to establish initial links
+        - After container restart to speed up link re-establishment
+        - Any time when you need to refresh network connections without config reload
         
         Args:
             nodes: List of nodes to reconnect
             wait_for_links: Whether to wait for links establishment after reconnection
         """
-        logger.info("forcing_network_reconnection", nodes=len(nodes))
+        logger.info("soft_network_reconnect", nodes=len(nodes))
         
         # Step 1: Bring all nodes offline
         logger.info("bringing_all_nodes_offline")

@@ -287,11 +287,11 @@ class NetworkManager:
             await self.genesis.registration_mgr.register_all_nodes_via_cli(root_nodes)
             logger.info("root_nodes_pre_registered_in_node1", count=len(root_nodes))
             
-            # CRITICAL: First offline/online to establish links for DAG-PoA consensus
+            # CRITICAL: SOFT reconnect to establish links for DAG-PoA consensus
             # Without links, DAG events cannot be created (consensus requires active validators)
-            logger.info("establishing_root_node_links_for_dag_consensus")
-            await self.genesis.registration_mgr.force_network_reconnection(root_nodes, wait_for_links=True)
-            logger.info("root_node_links_established")
+            logger.info("soft_reconnect_for_dag_consensus")
+            await self.genesis.registration_mgr.soft_network_reconnect(root_nodes, wait_for_links=True)
+            logger.info("dag_consensus_links_established")
             
             # Generate fee wallet
             logger.info("generating_fee_wallet")
@@ -350,46 +350,31 @@ class NetworkManager:
             await self.genesis.config_mgr.update_static_genesis_in_config("zerochain", zerochain_genesis_hash, node_configs)
             logger.info("zerochain_static_genesis_updated")
             
-            # CRITICAL: FIRST RESTART - Apply DAG genesis event + disable seed_mode
-            # After DAG genesis event finalization:
-            # 1. Disable seed_mode (genesis event created, no longer needed)
-            # 2. Graceful shutdown with GDB flush (save node list + GDB state)
-            # 3. Restart ROOT nodes with updated configs
-            # 4. Wait for links re-establishment
-            logger.info("=== RESTART #1: After DAG Genesis Event ===")
+            # CRITICAL: HARD RESTART #1 - Apply DAG genesis event + disable seed_mode
+            # Full container restart to reload configs from disk
+            logger.info("=== HARD RESTART #1: After DAG Genesis Event ===")
             
-            # Step 1: Disable seed_mode in ROOT configs
+            # Step 1: Disable seed_mode in ROOT configs (write to disk)
             logger.info("disabling_seed_mode_for_root_nodes")
             self.genesis.config_mgr.disable_seed_mode_in_configs(root_node_ids)
             
-            # Step 2: Graceful shutdown with GDB flush
+            # Step 2: Hard restart ROOT nodes with config reload
             from .node_lifecycle import NodeLifecycleManager
             lifecycle_mgr = NodeLifecycleManager(project_name=self.compose.project_name)
             
-            logger.info("gracefully_shutting_down_root_nodes_with_gdb_flush")
-            await lifecycle_mgr.graceful_shutdown_with_gdb_flush(
+            logger.info("hard_restarting_root_nodes_for_config_reload")
+            await lifecycle_mgr.hard_restart_with_config_reload(
                 service_names=root_services,
+                compose_manager=self.compose,
                 flush_timeout=60
             )
-            logger.info("root_nodes_shutdown_complete_gdb_flushed")
             
-            # Verify GDB files exist on disk (node list saved!)
-            gdb_verified = await lifecycle_mgr.verify_gdb_files_exist(root_node_ids)
-            if gdb_verified:
-                logger.info("gdb_files_verified_on_disk", nodes=len(root_node_ids))
-            else:
-                logger.warning("some_gdb_files_missing_but_continuing")
-            
-            # Step 3: Restart ROOT nodes with seed_mode=false + static_genesis_event
-            logger.info("restarting_root_nodes_with_genesis_event")
-            self.compose.up(services=root_services, detach=True, wait=False)
-            
-            # Step 4: Wait for ROOT nodes to come back online and establish links
-            logger.info("waiting_for_root_nodes_after_restart")
+            # Step 3: Wait for ROOT nodes to come back online and establish links
+            logger.info("waiting_for_root_nodes_after_hard_restart")
             await consensus_monitor.wait_for_links_connecting_state(timeout=60.0)
-            logger.info("root_nodes_restarted_with_genesis_event")
+            logger.info("root_nodes_restarted_with_genesis_event_config")
             
-            # Node list is preserved in GDB, no need to re-register!
+            # Node list preserved in GDB, no re-registration needed!
             
         except Exception as e:
             logger.error("root_nodes_genesis_failed", error=str(e))
@@ -481,53 +466,35 @@ class NetworkManager:
             await self.genesis.config_mgr.update_static_genesis_in_config("main", main_genesis_hash, node_configs)
             logger.info("static_genesis_updated")
             
-            # Disable seed_mode for ROOT + MASTER nodes (CRITICAL!)
-            # Genesis block created, seed_mode no longer needed
+            # CRITICAL: HARD RESTART #2 - Apply ESBocs genesis block + disable seed_mode
+            # Full container restart to reload configs from disk
+            logger.info("=== HARD RESTART #2: After ESBocs Genesis Block ===")
+            
+            # Step 1: Disable seed_mode in ALL validator configs (write to disk)
             logger.info("disabling_seed_mode_for_all_validators")
             self.genesis.config_mgr.disable_seed_mode_in_configs(root_node_ids + master_node_ids)
-            logger.info("seed_mode_disabled_in_all_validator_configs")
             
-            # CRITICAL: SECOND RESTART - Apply ESBocs genesis block + disable seed_mode
-            # After ESBocs genesis block creation:
-            # 1. Disable seed_mode (genesis block created, no longer needed)
-            # 2. Graceful shutdown ALL validators with GDB flush
-            # 3. Restart ALL validators with updated configs
-            # 4. Wait for links re-establishment
-            logger.info("=== RESTART #2: After ESBocs Genesis Block ===")
-            
-            # Step 1: Graceful shutdown ALL validators (ROOT + MASTER) with GDB flush
+            # Step 2: Hard restart ALL validators with config reload
             all_validator_services = root_services + master_services
-            logger.info("gracefully_shutting_down_all_validators_with_gdb_flush")
-            await lifecycle_mgr.graceful_shutdown_with_gdb_flush(
+            logger.info("hard_restarting_all_validators_for_config_reload")
+            await lifecycle_mgr.hard_restart_with_config_reload(
                 service_names=all_validator_services,
+                compose_manager=self.compose,
                 flush_timeout=60
             )
-            logger.info("all_validators_shutdown_complete_gdb_flushed")
             
-            # Verify GDB files exist on disk
-            all_validator_ids = root_node_ids + master_node_ids
-            gdb_verified = await lifecycle_mgr.verify_gdb_files_exist(all_validator_ids)
-            if gdb_verified:
-                logger.info("gdb_files_verified_on_disk", nodes=len(all_validator_ids))
-            else:
-                logger.warning("some_gdb_files_missing_but_continuing")
-            
-            # Step 2: Restart ALL validators with seed_mode=false + static_genesis_block
-            logger.info("restarting_all_validators_with_genesis_block")
-            self.compose.up(services=all_validator_services, detach=True, wait=False)
-            
-            # Step 3: Wait for ALL validators to come back online and establish links
-            logger.info("waiting_for_all_validators_after_restart")
+            # Step 3: Wait for ALL validators to come back online
+            logger.info("waiting_for_all_validators_after_hard_restart")
             await consensus_monitor_all.wait_for_links_connecting_state(timeout=60.0)
-            logger.info("all_validators_restarted_with_genesis_block")
+            logger.info("all_validators_restarted_with_genesis_block_config")
             
-            # Node list is preserved in GDB, no need to re-register!
+            # Node list preserved in GDB, no re-registration needed!
             
-            # Step 4: Soft reconnection (offline/online) to ensure full mesh connectivity
-            # After container restart, a soft offline/online helps re-establish links faster
-            logger.info("soft_reconnection_after_restart")
-            await self.genesis.registration_mgr.force_network_reconnection(all_validator_nodes, wait_for_links=True)
-            logger.info("all_validators_fully_connected")
+            # Step 4: SOFT reconnect to quickly establish full mesh connectivity
+            # After hard restart, soft offline/online helps links re-establish faster
+            logger.info("soft_reconnect_after_hard_restart")
+            await self.genesis.registration_mgr.soft_network_reconnect(all_validator_nodes, wait_for_links=True)
+            logger.info("full_mesh_connectivity_established")
             
         except Exception as e:
             logger.error("master_nodes_genesis_failed", error=str(e))
