@@ -251,6 +251,12 @@ class ConfigGenerator:
             dst_file = node_network_base / f"{network_name}.cfg"
             dst_file.write_text(config_content)
             
+            logger.debug("network_config_written",
+                        node_id=node.node_id,
+                        path=str(dst_file),
+                        first_line=config_content.split('\n')[0] if config_content else "EMPTY",
+                        has_general_section="[general]" in config_content)
+            
             # Generate chain configs using Jinja2 templates
             chains_template_dir = self.templates_dir / "chains"
             if chains_template_dir.exists():
@@ -299,7 +305,10 @@ class ConfigGenerator:
                     logger.debug("chain_config_rendered",
                                node_id=node.node_id,
                                chain=output_name,
-                               template=chain_template.name)
+                               template=chain_template.name,
+                               path=str(dst_chain_cfg),
+                               first_line=chain_content.split('\n')[0] if chain_content else "EMPTY",
+                               has_jinja_tags="{{ " in chain_content)
             
             logger.debug("network_config_generated",
                        node_id=node.node_id,
