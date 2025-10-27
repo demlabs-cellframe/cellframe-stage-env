@@ -399,68 +399,10 @@ class GenesisInitializer:
                            error=str(e))
             raise
     
-    async def register_node_aliases(self, nodes: List[NodeConfig]) -> None:
-        """Delegate to NodeRegistrationManager."""
-        return await self.registration_mgr.register_node_aliases(nodes)
-
-    async def register_all_nodes_via_cli(self, nodes: List[NodeConfig]) -> None:
-        """Delegate to NodeRegistrationManager."""
-        return await self.registration_mgr.register_all_nodes_via_cli(nodes)
-
-    async def generate_fee_wallet(self) -> str:
-        """Delegate to TokenGenesisManager."""
-        return await self.token_mgr.generate_fee_wallet()
-    
-    async def create_native_token(self, root_cert_name: str = "pvt.stagenet.root.0") -> str:
-        """Delegate to TokenGenesisManager."""
-        return await self.token_mgr.create_native_token(root_cert_name)
-    
-    async def emit_native_token(self, fee_addr: str, root_cert_name: str = "pvt.stagenet.root.0") -> str:
-        """Delegate to TokenGenesisManager."""
-        return await self.token_mgr.emit_native_token(fee_addr, root_cert_name)
-    
     async def create_first_transaction(
         self, 
         emission_hash: str, 
         master_nodes: List[NodeConfig] = None,
         master_cert_name: str = "pvt.stagenet.master.0"
-    ) -> str:
-        """Delegate to TokenGenesisManager."""
-        return await self.token_mgr.create_first_transaction(emission_hash, master_nodes, master_cert_name)
-
-    async def process_zerochain_datum(self, datum_hash: str, root_nodes: List[NodeConfig], timeout: int = 120) -> None:
-        """Delegate to SyncMgr."""
-        return await self.sync_mgr.process_zerochain_datum(datum_hash, root_nodes, timeout)
-
-    async def sync_network(self, nodes: List[NodeConfig], chain_name: str = None, timeout: int = 120) -> None:
-        """Delegate to SyncMgr."""
-        return await self.sync_mgr.sync_network(nodes, chain_name, timeout)
-
-    def enable_seed_mode_in_configs(self, node_ids: List[int]) -> None:
-        """Delegate to GenesisConfigManager."""
-        return self.config_mgr.enable_seed_mode_in_configs(node_ids)
-    
-    def disable_seed_mode_in_configs(self, node_ids: List[int]) -> None:
-        """Delegate to GenesisConfigManager."""
-        return self.config_mgr.disable_seed_mode_in_configs(node_ids)
-    
-    async def wait_for_first_block(self, chain_name: str, timeout: int = 60) -> None:
-        """Delegate to SyncMgr."""
-        return await self.sync_mgr.wait_for_first_block(chain_name, timeout)
-
-    async def get_genesis_event_hash(self, chain_name: str) -> Optional[str]:
-        """Delegate to GenesisConfigManager."""
-        return await self.config_mgr.get_genesis_event_hash(chain_name)
-    
-    async def get_genesis_block_hash(self, chain_name: str) -> Optional[str]:
-        """Delegate to GenesisConfigManager."""
-        return await self.config_mgr.get_genesis_block_hash(chain_name)
-    
-    async def update_fee_addr_in_config(self, fee_addr: str, node_configs: List[NodeConfig]) -> None:
-        """Delegate to GenesisConfigManager."""
-        return await self.config_mgr.update_fee_addr_in_config(fee_addr, node_configs)
-    
-    async def update_static_genesis_in_config(self, chain_name: str, genesis_hash: str, node_configs: List[NodeConfig]) -> None:
-        """Delegate to GenesisConfigManager."""
         return await self.config_mgr.update_static_genesis_in_config(chain_name, genesis_hash, node_configs)
 

@@ -284,37 +284,37 @@ class NetworkManager:
             # Register ONLY ROOT nodes (first 3) in node1's node list immediately
             # This pre-populates the essential validators; other nodes will self-discover
             logger.info("pre_registering_root_nodes_in_node1")
-            await self.genesis.register_all_nodes_via_cli(root_nodes)
+            await self.genesis.registration_mgr.register_all_nodes_via_cli(root_nodes)
             logger.info("root_nodes_pre_registered_in_node1", count=len(root_nodes))
             
             # Generate fee wallet
             logger.info("generating_fee_wallet")
-            fee_addr = await self.genesis.generate_fee_wallet()
+            fee_addr = await self.genesis.token_mgr.generate_fee_wallet()
             logger.info("fee_wallet_created", address=fee_addr)
             
             # Update fee_addr in main.cfg on ALL nodes
             logger.info("updating_fee_addr_in_all_configs")
-            await self.genesis.update_fee_addr_in_config(fee_addr, node_configs)
+            await self.genesis.config_mgr.update_fee_addr_in_config(fee_addr, node_configs)
             logger.info("fee_addr_updated_in_configs")
             
             # Create TCELL token on zerochain
             logger.info("creating_tcell_token_on_zerochain")
-            token_hash = await self.genesis.create_native_token()
+            token_hash = await self.genesis.token_mgr.create_native_token()
             logger.info("tcell_token_created", hash=token_hash[:16])
             
             # Process token_decl through DAG-PoA (with seed_mode!)
             logger.info("processing_token_decl_dag_poa")
-            await self.genesis.process_zerochain_datum(token_hash, root_nodes)
+            await self.genesis.sync_mgr.process_zerochain_datum(token_hash, root_nodes)
             logger.info("token_decl_finalized_in_dag")
             
             # Emit TCELL
             logger.info("emitting_tcell_tokens")
-            emission_hash = await self.genesis.emit_native_token(fee_addr)
+            emission_hash = await self.genesis.token_mgr.emit_native_token(fee_addr)
             logger.info("tcell_emission_created", hash=emission_hash[:16])
             
             # Process emission through DAG-PoA (with seed_mode!)
             logger.info("processing_emission_dag_poa")
-            await self.genesis.process_zerochain_datum(emission_hash, root_nodes)
+            await self.genesis.sync_mgr.process_zerochain_datum(emission_hash, root_nodes)
             logger.info("emission_finalized_in_dag")
             
             # DIAGNOSTIC: Verify emission is visible on ROOT nodes BEFORE restart
@@ -334,14 +334,14 @@ class NetworkManager:
             
             # CRITICAL: Get genesis EVENT hash from zerochain and update configs!
             logger.info("getting_zerochain_genesis_event_hash")
-            zerochain_genesis_hash = await self.genesis.get_genesis_event_hash("zerochain")
+            zerochain_genesis_hash = await self.genesis.config_mgr.get_genesis_event_hash("zerochain")
             if not zerochain_genesis_hash:
                 raise RuntimeError("Failed to retrieve zerochain genesis event hash")
             logger.info("zerochain_genesis_event_hash", hash=zerochain_genesis_hash[:16])
             
             # Update static_genesis_event_hash in zerochain.cfg for ALL nodes
             logger.info("updating_static_genesis_event_in_all_configs")
-            await self.genesis.update_static_genesis_in_config("zerochain", zerochain_genesis_hash, node_configs)
+            await self.genesis.config_mgr.update_static_genesis_in_config("zerochain", zerochain_genesis_hash, node_configs)
             logger.info("zerochain_static_genesis_updated")
             
             # Genesis events created successfully with seed_mode!
@@ -360,7 +360,7 @@ class NetworkManager:
         try:
             # Disable seed_mode for ROOT nodes now (genesis events created + configs updated)
             logger.info("disabling_seed_mode_for_root_nodes_in_configs")
-            self.genesis.disable_seed_mode_in_configs(root_node_ids)
+            self.genesis.config_mgr.disable_seed_mode_in_configs(root_node_ids)
             
             # CRITICAL: Graceful shutdown with GDB flush verification
             # Sends 'exit' command → monitors shutdown → verifies GDB on disk
@@ -405,7 +405,7 @@ class NetworkManager:
             # Re-register full mesh node list (ROOT + MASTER)
             # After restart, node list is cleared and needs repopulation
             logger.info("re_registering_full_validator_mesh")
-            await self.genesis.register_all_nodes_via_cli(all_validator_nodes)
+            await self.genesis.registration_mgr.register_all_nodes_via_cli(all_validator_nodes)
             logger.info("validator_mesh_registered")
             
             # Wait for network consensus with full node list
@@ -420,34 +420,34 @@ class NetworkManager:
             # CRITICAL: Sync zerochain to MASTER nodes (emission was created in Phase 1!)
             # Without this, master nodes can't see emission datum → tx_create fails
             logger.info("syncing_zerochain_to_master_nodes")
-            await self.genesis.sync_network(all_validator_nodes, chain_name="zerochain")
+            await self.genesis.sync_mgr.sync_network(all_validator_nodes, chain_name="zerochain")
             logger.info("zerochain_synced_to_all_validators")
             
             # Create first TX on main chain → genesis block
             logger.info("creating_first_transaction_main_chain")
-            tx_hash = await self.genesis.create_first_transaction(emission_hash, master_nodes=master_nodes)
+            tx_hash = await self.genesis.token_mgr.create_first_transaction(emission_hash, master_nodes=master_nodes)
             logger.info("first_transaction_created", hash=tx_hash[:16])
             
             # Wait for genesis block to be created (ESBocs consensus needs time)
             logger.info("waiting_for_main_genesis_block_creation")
-            await self.genesis.wait_for_first_block("main", timeout=60)
+            await self.genesis.sync_mgr.wait_for_first_block("main", timeout=60)
             logger.info("main_genesis_block_created")
             
             # Get genesis block hash
-            main_genesis_hash = await self.genesis.get_genesis_block_hash("main")
+            main_genesis_hash = await self.genesis.config_mgr.get_genesis_block_hash("main")
             if not main_genesis_hash:
                 raise RuntimeError("Failed to retrieve main genesis block hash")
             logger.info("main_genesis_block_hash", hash=main_genesis_hash[:16])
             
             # Update static_genesis_block in ALL configs
             logger.info("updating_static_genesis_block_in_all_configs")
-            await self.genesis.update_static_genesis_in_config("main", main_genesis_hash, node_configs)
+            await self.genesis.config_mgr.update_static_genesis_in_config("main", main_genesis_hash, node_configs)
             logger.info("static_genesis_updated")
             
             # Disable seed_mode for ROOT + MASTER nodes (CRITICAL!)
             # Genesis block created, seed_mode no longer needed
             logger.info("disabling_seed_mode_for_all_validators")
-            self.genesis.disable_seed_mode_in_configs(root_node_ids + master_node_ids)
+            self.genesis.config_mgr.disable_seed_mode_in_configs(root_node_ids + master_node_ids)
             logger.info("seed_mode_disabled_in_all_validator_configs")
             
         except Exception as e:
@@ -499,7 +499,7 @@ class NetworkManager:
         try:
             # Register node aliases in GDB
             # Node registration via CLI already done in PHASE 1 (pre-populated for all nodes)
-            await self.genesis.register_node_aliases(node_configs)
+            await self.genesis.registration_mgr.register_node_aliases(node_configs)
             logger.info("node_aliases_registered")
         except Exception as e:
             logger.error("node_alias_registration_failed", error=str(e))
