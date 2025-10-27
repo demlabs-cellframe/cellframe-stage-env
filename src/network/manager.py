@@ -350,26 +350,19 @@ class NetworkManager:
             await self.genesis.config_mgr.update_static_genesis_in_config("zerochain", zerochain_genesis_hash, node_configs)
             logger.info("zerochain_static_genesis_updated")
             
-            # Genesis events created successfully with seed_mode!
-            # seed_mode will be disabled in PHASE 2 before ROOT restart
+            # CRITICAL: FIRST RESTART - Apply DAG genesis event + disable seed_mode
+            # After DAG genesis event finalization:
+            # 1. Disable seed_mode (genesis event created, no longer needed)
+            # 2. Graceful shutdown with GDB flush (save node list + GDB state)
+            # 3. Restart ROOT nodes with updated configs
+            # 4. Wait for links re-establishment
+            logger.info("=== RESTART #1: After DAG Genesis Event ===")
             
-        except Exception as e:
-            logger.error("root_nodes_genesis_failed", error=str(e))
-            self.compose.down(volumes=False, remove_images=False)
-            raise RuntimeError(f"ROOT nodes genesis failed: {e}") from e
-        
-        # =================================================================
-        # PHASE 2: RESTART ROOT + START MASTER FOR ESBOCS GENESIS
-        # =================================================================
-        logger.info("=== PHASE 2: Restart ROOT + Start MASTER (ESBocs Genesis) ===")
-        
-        try:
-            # Disable seed_mode for ROOT nodes now (genesis events created + configs updated)
-            logger.info("disabling_seed_mode_for_root_nodes_in_configs")
+            # Step 1: Disable seed_mode in ROOT configs
+            logger.info("disabling_seed_mode_for_root_nodes")
             self.genesis.config_mgr.disable_seed_mode_in_configs(root_node_ids)
             
-            # CRITICAL: Graceful shutdown with GDB flush verification
-            # Sends 'exit' command → monitors shutdown → verifies GDB on disk
+            # Step 2: Graceful shutdown with GDB flush
             from .node_lifecycle import NodeLifecycleManager
             lifecycle_mgr = NodeLifecycleManager(project_name=self.compose.project_name)
             
@@ -380,18 +373,41 @@ class NetworkManager:
             )
             logger.info("root_nodes_shutdown_complete_gdb_flushed")
             
-            # Verify GDB files exist on disk
+            # Verify GDB files exist on disk (node list saved!)
             gdb_verified = await lifecycle_mgr.verify_gdb_files_exist(root_node_ids)
             if gdb_verified:
                 logger.info("gdb_files_verified_on_disk", nodes=len(root_node_ids))
             else:
                 logger.warning("some_gdb_files_missing_but_continuing")
             
-            # Start ROOT nodes with seed_mode=false (will read from updated config on host)
-            logger.info("starting_root_nodes_with_seed_mode_false")
+            # Step 3: Restart ROOT nodes with seed_mode=false + static_genesis_event
+            logger.info("restarting_root_nodes_with_genesis_event")
             self.compose.up(services=root_services, detach=True, wait=False)
             
-            # Start MASTER nodes (already have seed_mode=true in configs)
+            # Step 4: Wait for ROOT nodes to come back online and establish links
+            logger.info("waiting_for_root_nodes_after_restart")
+            await consensus_monitor.wait_for_links_connecting_state(timeout=60.0)
+            logger.info("root_nodes_restarted_with_genesis_event")
+            
+            # Node list is preserved in GDB, no need to re-register!
+            
+        except Exception as e:
+            logger.error("root_nodes_genesis_failed", error=str(e))
+            self.compose.down(volumes=False, remove_images=False)
+            raise RuntimeError(f"ROOT nodes genesis failed: {e}") from e
+        
+        # =================================================================
+        # PHASE 2: START MASTER NODES FOR ESBOCS GENESIS
+        # =================================================================
+        logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis) ===")
+        
+        try:
+            # ROOT nodes already restarted in PHASE 1 with:
+            # - seed_mode=false
+            # - static_genesis_event_hash set
+            # - GDB node list preserved
+            
+            # Start MASTER nodes (have seed_mode=true in configs)
             master_services = [f"node-{nid}" for nid in master_node_ids]
             logger.info("starting_master_nodes", services=master_services, seed_mode=True)
             self.compose.up(services=master_services, detach=True, wait=False)
@@ -471,11 +487,41 @@ class NetworkManager:
             self.genesis.config_mgr.disable_seed_mode_in_configs(root_node_ids + master_node_ids)
             logger.info("seed_mode_disabled_in_all_validator_configs")
             
-            # CRITICAL: SECOND offline/online cycle - Apply ESBocs genesis block to all validators
-            # This forces nodes to re-read configs with static_genesis_block and seed_mode=false
-            logger.info("=== OFFLINE/ONLINE #2: After ESBocs Genesis Block ===")
-            await self.genesis.registration_mgr.force_network_reconnection(all_validator_nodes, wait_for_links=True)
-            logger.info("esbocs_genesis_applied_to_all_validators")
+            # CRITICAL: SECOND RESTART - Apply ESBocs genesis block + disable seed_mode
+            # After ESBocs genesis block creation:
+            # 1. Disable seed_mode (genesis block created, no longer needed)
+            # 2. Graceful shutdown ALL validators with GDB flush
+            # 3. Restart ALL validators with updated configs
+            # 4. Wait for links re-establishment
+            logger.info("=== RESTART #2: After ESBocs Genesis Block ===")
+            
+            # Step 1: Graceful shutdown ALL validators (ROOT + MASTER) with GDB flush
+            all_validator_services = root_services + master_services
+            logger.info("gracefully_shutting_down_all_validators_with_gdb_flush")
+            await lifecycle_mgr.graceful_shutdown_with_gdb_flush(
+                service_names=all_validator_services,
+                flush_timeout=60
+            )
+            logger.info("all_validators_shutdown_complete_gdb_flushed")
+            
+            # Verify GDB files exist on disk
+            all_validator_ids = root_node_ids + master_node_ids
+            gdb_verified = await lifecycle_mgr.verify_gdb_files_exist(all_validator_ids)
+            if gdb_verified:
+                logger.info("gdb_files_verified_on_disk", nodes=len(all_validator_ids))
+            else:
+                logger.warning("some_gdb_files_missing_but_continuing")
+            
+            # Step 2: Restart ALL validators with seed_mode=false + static_genesis_block
+            logger.info("restarting_all_validators_with_genesis_block")
+            self.compose.up(services=all_validator_services, detach=True, wait=False)
+            
+            # Step 3: Wait for ALL validators to come back online and establish links
+            logger.info("waiting_for_all_validators_after_restart")
+            await consensus_monitor_all.wait_for_links_connecting_state(timeout=60.0)
+            logger.info("all_validators_restarted_with_genesis_block")
+            
+            # Node list is preserved in GDB, no need to re-register!
             
         except Exception as e:
             logger.error("master_nodes_genesis_failed", error=str(e))
@@ -483,14 +529,15 @@ class NetworkManager:
             raise RuntimeError(f"MASTER nodes genesis failed: {e}") from e
         
         # =================================================================
-        # PHASE 3: RESTART ALL + START FULL NODES
+        # PHASE 3: START FULL NODES
         # =================================================================
-        logger.info("=== PHASE 3: Restart ALL + Start FULL Nodes ===")
+        logger.info("=== PHASE 3: Start FULL Nodes ===")
         
         try:
-            # Restart ROOT + MASTER with seed_mode=false and correct static_genesis_block
-            logger.info("restarting_root_and_master_with_final_configs")
-            self.compose.restart(services=root_services + master_services)
+            # ROOT + MASTER already restarted in PHASE 2 with:
+            # - seed_mode=false
+            # - static_genesis_block set
+            # - GDB node list preserved
             
             # Start FULL nodes
             full_services = [f"node-{nid}" for nid in full_node_ids]
