@@ -629,18 +629,37 @@ class GenesisInitializer:
             await asyncio.sleep(2)
         
         if not all_have_list:
-            logger.warning("node_list_gdb_sync_incomplete_but_continuing",
-                          timeout=30)
+            logger.warning("node_list_gdb_sync_incomplete",
+                          nodes_with_list=nodes_with_list,
+                          total=len(nodes),
+                          note="GDB sync requires links - will propagate after initial link establishment")
         
-        # CRITICAL: After node list population, force network to establish links IMMEDIATELY
-        # Without this, nodes wait for timeout before trying to connect
-        logger.info("forcing_network_reconnection_after_node_list_update")
+        # CRITICAL INSIGHT from logs:
+        # GDB cluster sync requires ESTABLISHED LINKS to propagate node list
+        # Chicken-and-egg: need links for GDB sync, need node list for links
+        # Solution: Wait for INITIAL links (P2P discovery) → THEN offline/online to refresh
+        
+        logger.info("waiting_for_initial_links_before_network_reconnection")
+        
+        from ..monitoring.network_consensus import NetworkConsensusMonitor
+        monitor = NetworkConsensusMonitor(
+            nodes={f"node{n.node_id}": n for n in nodes},
+            network_name=self.network_name
+        )
+        
+        # Step 1: Wait for at least SOME links to appear (allows GDB sync to start)
+        logger.info("waiting_for_at_least_one_link_per_node")
+        await monitor.wait_for_links_connecting_state(timeout=90.0)
+        logger.info("initial_links_established_gdb_can_sync")
+        
+        # Step 2: NOW do offline/online to force full mesh establishment
+        # At this point: some links exist → GDB syncing → node lists propagating
+        logger.info("forcing_full_mesh_reconnection_with_updated_node_lists")
         
         # First: bring all offline
         for node in nodes:
             try:
-                # Go offline then online to trigger reconnection
-                logger.debug("cycling_network_state", node_id=node.node_id)
+                logger.debug("bringing_offline_for_refresh", node_id=node.node_id)
                 self._exec_cli(node.node_id, f"net -net {self.network_name} go offline", check_output=False)
             except Exception as e:
                 logger.warning("failed_to_go_offline", node_id=node.node_id, error=str(e))
@@ -648,23 +667,18 @@ class GenesisInitializer:
         # Small delay to ensure offline processed
         await asyncio.sleep(1)
         
-        # Then: bring all online simultaneously → immediate link establishment!
+        # Then: bring all online simultaneously → full mesh with complete node lists!
         for node in nodes:
             try:
-                logger.debug("bringing_online", node_id=node.node_id)
+                logger.debug("bringing_online_for_full_mesh", node_id=node.node_id)
                 self._exec_cli(node.node_id, f"net -net {self.network_name} go online", check_output=False)
             except Exception as e:
                 logger.warning("failed_to_go_online", node_id=node.node_id, error=str(e))
         
-        logger.info("all_nodes_forced_online_links_will_establish_immediately")
+        logger.info("all_nodes_online_with_full_node_lists")
         
-        # Wait for links to actually establish before proceeding
-        # This is CRITICAL - consensus won't work without active links!
-        from ..monitoring.network_consensus import NetworkConsensusMonitor
-        monitor = NetworkConsensusMonitor(
-            nodes={f"node{n.node_id}": n for n in nodes},
-            network_name=self.network_name
-        )
+        # Step 3: Wait for FULL links establishment (all nodes active >= required)
+        logger.info("waiting_for_full_links_establishment")
         await monitor.wait_for_links_established(timeout=60.0)
         logger.info("all_links_established_ready_for_consensus")
     
