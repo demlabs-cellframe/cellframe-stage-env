@@ -297,6 +297,18 @@ class ConfigGenerator:
                             str(auth_certs_number_verify)
                         )
                     
+                    # Replace genesis placeholders with empty values (will be filled after genesis creation)
+                    # Zerochain DAG-PoA genesis event
+                    chain_content = chain_content.replace("STATIC_GENESIS_EVENT_PLACEHOLDER", "")
+                    chain_content = chain_content.replace("IS_STATIC_GENESIS_EVENT_PLACEHOLDER", "false")
+                    
+                    # Mainchain ESBocs genesis block
+                    chain_content = chain_content.replace("STATIC_GENESIS_BLOCK_PLACEHOLDER", "")
+                    chain_content = chain_content.replace("IS_STATIC_GENESIS_BLOCK_PLACEHOLDER", "false")
+                    
+                    # Fee collection address
+                    chain_content = chain_content.replace("FEE_ADDR_PLACEHOLDER", "")
+                    
                     # EVENTS_SIGN_CERT_PLACEHOLDER is now in network config (stagenet.cfg), not chain config
                     # Remove placeholder from chain configs if present
                     if "EVENTS_SIGN_CERT_PLACEHOLDER" in chain_content:

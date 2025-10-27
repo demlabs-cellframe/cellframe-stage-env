@@ -358,14 +358,13 @@ class NetworkManager:
         logger.info("=== PHASE 2: Restart ROOT + Start MASTER (ESBocs Genesis) ===")
         
         try:
-            # CRITICAL: Do NOT restart ROOT nodes!
-            # Restart causes Docker to kill cellframe-node process
-            # DAG events are lost even though GDB is on disk (events not flushed in time)
-            # Evidence: 'total events: 0' on node1 after restart in Phase 2
-            # 
-            # It's OK to keep seed_mode=true - it only affects genesis creation logic
-            # After genesis exists, seed_mode doesn't interfere with normal operation
-            logger.info("keeping_root_nodes_running_no_restart_to_preserve_events")
+            # Disable seed_mode for ROOT nodes now (genesis events created)
+            logger.info("disabling_seed_mode_for_root_nodes_in_configs")
+            self.genesis.disable_seed_mode_in_configs(root_node_ids)
+            
+            # Restart ROOT nodes to apply seed_mode=false
+            logger.info("restarting_root_nodes_without_seed_mode")
+            self.compose.restart(services=root_services)
             
             # Start MASTER nodes (already have seed_mode=true in configs)
             master_services = [f"node-{nid}" for nid in master_node_ids]
@@ -426,10 +425,11 @@ class NetworkManager:
             await self.genesis.update_static_genesis_in_config("main", main_genesis_hash, node_configs)
             logger.info("static_genesis_updated")
             
-            # NOTE: Do NOT disable seed_mode or restart validators!
-            # Configs on host are updated, but running nodes keep seed_mode=true
-            # This is FINE - snapshot will be created with seed_mode=true in memory
-            # After snapshot restore, configs will have correct genesis hashes
+            # Disable seed_mode for ROOT + MASTER nodes (CRITICAL!)
+            # Genesis block created, seed_mode no longer needed
+            logger.info("disabling_seed_mode_for_all_validators")
+            self.genesis.disable_seed_mode_in_configs(root_node_ids + master_node_ids)
+            logger.info("seed_mode_disabled_in_all_validator_configs")
             
         except Exception as e:
             logger.error("master_nodes_genesis_failed", error=str(e))
@@ -437,14 +437,14 @@ class NetworkManager:
             raise RuntimeError(f"MASTER nodes genesis failed: {e}") from e
         
         # =================================================================
-        # PHASE 3: START FULL NODES (NO RESTART!)
+        # PHASE 3: RESTART ALL + START FULL NODES
         # =================================================================
-        logger.info("=== PHASE 3: Start FULL Nodes ===")
+        logger.info("=== PHASE 3: Restart ALL + Start FULL Nodes ===")
         
         try:
-            # CRITICAL: Do NOT restart ROOT/MASTER nodes!
-            # Restart would lose DAG events from memory
-            # Keep validators running with genesis data
+            # Restart ROOT + MASTER with seed_mode=false and correct static_genesis_block
+            logger.info("restarting_root_and_master_with_final_configs")
+            self.compose.restart(services=root_services + master_services)
             
             # Start FULL nodes
             full_services = [f"node-{nid}" for nid in full_node_ids]
