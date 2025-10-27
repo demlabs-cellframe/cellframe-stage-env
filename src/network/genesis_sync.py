@@ -373,7 +373,7 @@ class ChainSyncManager:
         """
         Wait for first block to be created in blockchain chain.
         
-        Polls 'block list' until at least one block appears.
+        First checks mempool, then polls 'block list' until block appears.
         
         Args:
             chain_name: Blockchain chain name (e.g., "main", "kelvin")
@@ -383,6 +383,21 @@ class ChainSyncManager:
             RuntimeError: If no block appears within timeout
         """
         logger.info("waiting_for_first_block", chain=chain_name, timeout=timeout)
+        
+        # First verify TX is in mempool
+        logger.info("checking_mempool_before_waiting_for_block")
+        try:
+            exit_code_mp, stdout_mp, _ = self._exec_cli(
+                1,
+                f"mempool_list -net {self.network_name} -chain {chain_name}",
+                check_output=False
+            )
+            logger.info("mempool_check",
+                       chain=chain_name,
+                       exit_code=exit_code_mp,
+                       output_preview=stdout_mp[:200] if stdout_mp else "EMPTY")
+        except Exception as e:
+            logger.warning("mempool_check_failed", error=str(e)[:100])
         
         import time
         start_time = time.time()
@@ -401,13 +416,14 @@ class ChainSyncManager:
                     logger.info("first_block_appeared", chain=chain_name, elapsed=f"{elapsed:.1f}s")
                     return
                 
-                # Log progress every 15s
+                # Log progress every 15s with MORE output
                 elapsed = time.time() - start_time
                 if int(elapsed) % 15 == 0 and elapsed > 1:
                     logger.info("waiting_for_block_progress", 
                                chain=chain_name,
                                elapsed=f"{elapsed:.1f}s",
-                               output_preview=stdout_str[:100] if stdout_str else "empty")
+                               exit_code=exit_code,
+                               output_full=stdout_str if stdout_str else "EMPTY")
                 
             except Exception as e:
                 logger.debug("block_check_error", error=str(e)[:100])
