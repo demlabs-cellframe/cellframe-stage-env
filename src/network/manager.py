@@ -523,6 +523,12 @@ class NetworkManager:
             
             # Node list is preserved in GDB, no need to re-register!
             
+            # Step 4: Soft reconnection (offline/online) to ensure full mesh connectivity
+            # After container restart, a soft offline/online helps re-establish links faster
+            logger.info("soft_reconnection_after_restart")
+            await self.genesis.registration_mgr.force_network_reconnection(all_validator_nodes, wait_for_links=True)
+            logger.info("all_validators_fully_connected")
+            
         except Exception as e:
             logger.error("master_nodes_genesis_failed", error=str(e))
             self.compose.down(volumes=False, remove_images=False)
