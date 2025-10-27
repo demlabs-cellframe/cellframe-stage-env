@@ -358,13 +358,35 @@ class NetworkManager:
         logger.info("=== PHASE 2: Restart ROOT + Start MASTER (ESBocs Genesis) ===")
         
         try:
-            # Disable seed_mode for ROOT nodes now (genesis events created)
+            # Disable seed_mode for ROOT nodes now (genesis events created + configs updated)
             logger.info("disabling_seed_mode_for_root_nodes_in_configs")
             self.genesis.disable_seed_mode_in_configs(root_node_ids)
             
-            # Restart ROOT nodes to apply seed_mode=false
-            logger.info("restarting_root_nodes_without_seed_mode")
-            self.compose.restart(services=root_services)
+            # CRITICAL: Graceful stop to flush GDB to disk BEFORE restart
+            # Docker restart is too fast, GDB doesn't have time to flush
+            logger.info("gracefully_stopping_root_nodes_to_flush_gdb")
+            
+            import docker
+            docker_client = docker.from_env()
+            
+            # Stop ROOT containers gracefully (30s timeout for SIGTERM before SIGKILL)
+            for service in root_services:
+                try:
+                    container_name = f"{self.compose.project_name}-{service}-1"
+                    container = docker_client.containers.get(container_name)
+                    logger.debug("stopping_container", container=container_name)
+                    container.stop(timeout=30)  # Graceful SIGTERM
+                    logger.debug("container_stopped", container=container_name)
+                except Exception as e:
+                    logger.warning("failed_to_stop_container", service=service, error=str(e))
+            
+            # Wait for GDB flush and filesystem sync
+            logger.info("waiting_for_gdb_flush_to_disk")
+            await asyncio.sleep(10)  # Generous time for GDB flush + fsync
+            
+            # Start ROOT nodes with seed_mode=false (will read from updated config on host)
+            logger.info("starting_root_nodes_with_seed_mode_false")
+            self.compose.up(services=root_services, detach=True, wait=False)
             
             # Start MASTER nodes (already have seed_mode=true in configs)
             master_services = [f"node-{nid}" for nid in master_node_ids]
