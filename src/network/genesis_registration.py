@@ -110,20 +110,21 @@ class NodeRegistrationManager:
     
     async def register_all_nodes_via_cli(self, nodes: List[NodeConfig]) -> None:
         """
-        Register ALL nodes via CLI 'node add' command from node1.
+        Register ALL nodes via CLI 'node add' command on ALL ROOT nodes.
         
-        Only ROOT nodes have rights to modify node list!
-        Node list propagates via GDB sync over established links.
+        CRITICAL: Each ROOT node must have full node list locally!
+        GDB sync is unreliable without links (chicken-and-egg).
+        Solution: Populate node list on EACH ROOT node directly.
         
         Args:
             nodes: List of all node configurations
         """
-        logger.info("registering_nodes_via_cli_from_node1", total_nodes=len(nodes))
+        logger.info("registering_nodes_on_all_root_nodes", total_nodes=len(nodes))
         
-        # Prepare registration tasks: node1 registers ALL nodes (including itself)
-        async def register_single_node(target_node: NodeConfig) -> bool:
+        # Prepare registration tasks: Each ROOT node registers ALL nodes locally
+        async def register_on_node(registrar_node: NodeConfig, target_node: NodeConfig) -> bool:
             """
-            Register target_node from node1 (admin node).
+            Register target_node on registrar_node's local node list.
             Returns True on success.
             """
             
@@ -174,14 +175,15 @@ class NodeRegistrationManager:
                               error=str(e))
                 return False
             
-            # Register target_node on node1's node list (will propagate via GDB)
-            logger.debug("registering_node_from_node1",
+            # Register target_node on registrar_node's local node list
+            logger.debug("registering_node_locally",
+                       registrar=registrar_node.node_id,
                        target=target_node.node_id,
                        target_addr=target_addr[:20] + "...")
             
             try:
                 exit_code, stdout_str, stderr_str = self._exec_cli(
-                    1,  # Always register FROM node1 (ROOT with admin rights)
+                    registrar_node.node_id,  # Execute on registrar node (each ROOT node)
                     f"node add -net {self.network_name} -addr {target_addr} -host {target_node.ip_address} -port {target_node.node_port}",
                     check_output=False
                 )
@@ -223,12 +225,20 @@ class NodeRegistrationManager:
                                error=str(e))
                 return False
         
-        # Node1 registers ALL nodes (including itself)
-        # GDB will sync node list to other nodes via established links
-        registration_tasks = [register_single_node(node) for node in nodes]
+        # Each ROOT node registers ALL nodes locally (including itself)
+        # This ensures every ROOT has full node list without relying on GDB sync
+        registration_tasks = []
         
-        logger.info("starting_node_registration_from_node1", 
-                   total_nodes=len(nodes))
+        # Only ROOT nodes have admin rights to modify node list
+        root_nodes = [n for n in nodes if n.role == 'root']
+        
+        for registrar in root_nodes:
+            for target in nodes:
+                registration_tasks.append(register_on_node(registrar, target))
+        
+        logger.info("starting_local_registration_on_all_roots",
+                   root_nodes=len(root_nodes),
+                   total_registrations=len(registration_tasks))
         
         results = await asyncio.gather(*registration_tasks, return_exceptions=True)
         
