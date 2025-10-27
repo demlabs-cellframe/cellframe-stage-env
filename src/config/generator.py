@@ -11,6 +11,8 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from jinja2 import Template
+
 from ..config.loader import ConfigLoader, NetworkTopology
 from ..certs.generator import CertGenerator
 from ..network.models import NodeConfig
@@ -232,7 +234,6 @@ class ConfigGenerator:
             }
             
             # Render all chain templates ONCE
-            from jinja2 import Template
             for chain_template in chains_template_dir.glob("*.cfg.j2"):
                 chain_template_content = chain_template.read_text()  # Use different variable name!
                 template = Template(chain_template_content)
