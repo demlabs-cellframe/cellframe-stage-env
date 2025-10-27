@@ -43,6 +43,14 @@ class GenesisInitializer:
         self.certs_cache = (base_path / cache_dir_relative / "certs").resolve()
         
         self.cli_config_path = "/opt/cellframe-node/etc/cellframe-node.cfg"
+        
+        # Initialize specialized managers for modular architecture
+        from .genesis_config import GenesisConfigManager
+        from .genesis_token import TokenGenesisManager
+        
+        self.config_mgr = GenesisConfigManager(base_path, network_name)
+        self.token_mgr = TokenGenesisManager(base_path, network_name)
+        
         logger.info("genesis_initializer_created", network=network_name)
     
     def _exec_cli(self, node_id: int, command: str, check_output: bool = True) -> tuple:
@@ -1329,6 +1337,10 @@ class GenesisInitializer:
         except Exception as e:
             logger.error("network_sync_error", error=str(e))
             raise
+    
+    # ========================================================================
+    # Config Management Methods (delegated to GenesisConfigManager)
+    # ========================================================================
     
     def enable_seed_mode_in_configs(self, node_ids: List[int]) -> None:
         """
