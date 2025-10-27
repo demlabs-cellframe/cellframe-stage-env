@@ -303,10 +303,16 @@ class ConfigGenerator:
                     if (chains_template_dir / f"{chain_cfg.name}.j2").exists():
                         continue
                     
+                    # Read and process legacy config
+                    chain_content_legacy = chain_cfg.read_text()
+                    chain_content_legacy = chain_content_legacy.replace("VALIDATORS_ADDRS_PLACEHOLDER", validator_addrs)
+                    chain_content_legacy = chain_content_legacy.replace("AUTHORIZED_NODES_ADDRS_PLACEHOLDER", root_nodes_addrs)
+                    chain_content_legacy = chain_content_legacy.replace("AUTH_CERTS_NUMBER_PLACEHOLDER", str(auth_certs_number))
+                    chain_content_legacy = chain_content_legacy.replace("AUTH_CERTS_NUMBER_VERIFY_PLACEHOLDER", str(auth_certs_number_verify))
                     
                     # Write processed chain config
                     dst_chain_cfg = node_network_dir / chain_cfg.name
-                    dst_chain_cfg.write_text(chain_content)
+                    dst_chain_cfg.write_text(chain_content_legacy)
                     
                     logger.debug("chain_config_copied",
                                node_id=node.node_id,
