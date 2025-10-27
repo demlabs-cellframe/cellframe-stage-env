@@ -251,7 +251,7 @@ class ConfigGenerator:
             dst_file = node_network_base / f"{network_name}.cfg"
             dst_file.write_text(config_content)
             
-            # Copy chain configs to /etc/network/{network_name}/ directory
+            # Generate chain configs using Jinja2 templates
             chains_template_dir = self.templates_dir / "chains"
             if chains_template_dir.exists():
                 # Collect validator addresses from certificates (for ESBocs consensus)
@@ -265,56 +265,50 @@ class ConfigGenerator:
                 auth_certs_number = root_nodes_count
                 auth_certs_number_verify = max(1, root_nodes_count // 2 + 1)  # N/2 + 1
                 
+                # Prepare Jinja2 context for chain configs
+                chain_context = {
+                    'validators_addrs': validator_addrs,
+                    'root_nodes_addrs': root_nodes_addrs,
+                    'auth_certs_number': auth_certs_number,
+                    'auth_certs_number_verify': auth_certs_number_verify,
+                    # Genesis parameters (empty initially, filled after genesis creation)
+                    'static_genesis_event': '',
+                    'is_static_genesis_event': 'false',
+                    'static_genesis_block': '',
+                    'is_static_genesis_block': 'false',
+                    'fee_addr': ''
+                }
+                
+                # Process chain config templates
+                for chain_template in chains_template_dir.glob("*.cfg.j2"):
+                    # Render Jinja2 template
+                    from jinja2 import Template
+                    template_content = chain_template.read_text()
+                    template = Template(template_content)
+                    chain_content = template.render(**chain_context)
+                    
+                    # Write to .cfg file (remove .j2 extension)
+                    output_name = chain_template.stem  # Removes .j2, keeps .cfg
+                    dst_chain_cfg = node_network_dir / output_name
+                    dst_chain_cfg.write_text(chain_content)
+                    
+                    logger.debug("chain_config_rendered",
+                               node_id=node.node_id,
+                               chain=output_name,
+                               template=chain_template.name)
+                
+                # Also process plain .cfg files (legacy, for backwards compatibility)
                 for chain_cfg in chains_template_dir.glob("*.cfg"):
-                    # Read template
+                    # Skip if corresponding .j2 exists
+                    if (chains_template_dir / f"{chain_cfg.name}.j2").exists():
+                        continue
+                    
+                    # Plain text replacement (legacy)
                     chain_content = chain_cfg.read_text()
-                    
-                    # Replace VALIDATORS_ADDRS_PLACEHOLDER if present (for ESBocs consensus)
-                    if "VALIDATORS_ADDRS_PLACEHOLDER" in chain_content:
-                        chain_content = chain_content.replace(
-                            "VALIDATORS_ADDRS_PLACEHOLDER",
-                            validator_addrs
-                        )
-                    
-                    # Replace AUTHORIZED_NODES_ADDRS_PLACEHOLDER if present (for zerochain DAG-PoA)
-                    if "AUTHORIZED_NODES_ADDRS_PLACEHOLDER" in chain_content:
-                        chain_content = chain_content.replace(
-                            "AUTHORIZED_NODES_ADDRS_PLACEHOLDER",
-                            root_nodes_addrs
-                        )
-                    
-                    # Replace AUTH_CERTS_NUMBER_PLACEHOLDER (for dag-poa)
-                    if "AUTH_CERTS_NUMBER_PLACEHOLDER" in chain_content:
-                        chain_content = chain_content.replace(
-                            "AUTH_CERTS_NUMBER_PLACEHOLDER",
-                            str(auth_certs_number)
-                        )
-                    
-                    # Replace AUTH_CERTS_NUMBER_VERIFY_PLACEHOLDER (for dag-poa)
-                    if "AUTH_CERTS_NUMBER_VERIFY_PLACEHOLDER" in chain_content:
-                        chain_content = chain_content.replace(
-                            "AUTH_CERTS_NUMBER_VERIFY_PLACEHOLDER",
-                            str(auth_certs_number_verify)
-                        )
-                    
-                    # Replace genesis placeholders with empty values (will be filled after genesis creation)
-                    # Zerochain DAG-PoA genesis event
-                    chain_content = chain_content.replace("STATIC_GENESIS_EVENT_PLACEHOLDER", "")
-                    chain_content = chain_content.replace("IS_STATIC_GENESIS_EVENT_PLACEHOLDER", "false")
-                    
-                    # Mainchain ESBocs genesis block
-                    chain_content = chain_content.replace("STATIC_GENESIS_BLOCK_PLACEHOLDER", "")
-                    chain_content = chain_content.replace("IS_STATIC_GENESIS_BLOCK_PLACEHOLDER", "false")
-                    
-                    # Fee collection address
-                    chain_content = chain_content.replace("FEE_ADDR_PLACEHOLDER", "")
-                    
-                    # EVENTS_SIGN_CERT_PLACEHOLDER is now in network config (stagenet.cfg), not chain config
-                    # Remove placeholder from chain configs if present
-                    if "EVENTS_SIGN_CERT_PLACEHOLDER" in chain_content:
-                        lines = chain_content.split('\n')
-                        filtered_lines = [line for line in lines if "EVENTS_SIGN_CERT_PLACEHOLDER" not in line]
-                        chain_content = '\n'.join(filtered_lines)
+                    chain_content = chain_content.replace("VALIDATORS_ADDRS_PLACEHOLDER", validator_addrs)
+                    chain_content = chain_content.replace("AUTHORIZED_NODES_ADDRS_PLACEHOLDER", root_nodes_addrs)
+                    chain_content = chain_content.replace("AUTH_CERTS_NUMBER_PLACEHOLDER", str(auth_certs_number))
+                    chain_content = chain_content.replace("AUTH_CERTS_NUMBER_VERIFY_PLACEHOLDER", str(auth_certs_number_verify))
                     
                     # Write processed chain config
                     dst_chain_cfg = node_network_dir / chain_cfg.name
