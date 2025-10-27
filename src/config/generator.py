@@ -254,6 +254,10 @@ class ConfigGenerator:
             # Generate chain configs using Jinja2 templates
             chains_template_dir = self.templates_dir / "chains"
             if chains_template_dir.exists():
+                # Create chain configs directory: network/{network_name}/
+                node_chains_dir = node_network_base / network_name
+                node_chains_dir.mkdir(parents=True, exist_ok=True)
+                
                 # Collect validator addresses from certificates (for ESBocs consensus)
                 validator_addrs = self._collect_validator_addresses(nodes, network_name)
                 
@@ -287,38 +291,15 @@ class ConfigGenerator:
                     template = Template(template_content)
                     chain_content = template.render(**chain_context)
                     
-                    # Write to .cfg file (remove .j2 extension)
+                    # Write to .cfg file in network/{network_name}/ directory
                     output_name = chain_template.stem  # Removes .j2, keeps .cfg
-                    dst_chain_cfg = node_network_dir / output_name
+                    dst_chain_cfg = node_chains_dir / output_name
                     dst_chain_cfg.write_text(chain_content)
                     
                     logger.debug("chain_config_rendered",
                                node_id=node.node_id,
                                chain=output_name,
                                template=chain_template.name)
-                
-                # Also process plain .cfg files (legacy, for backwards compatibility)
-                for chain_cfg in chains_template_dir.glob("*.cfg"):
-                    # Skip if corresponding .j2 exists
-                    if (chains_template_dir / f"{chain_cfg.name}.j2").exists():
-                        continue
-                    
-                    # Read and process legacy config
-                    chain_content_legacy = chain_cfg.read_text()
-                    chain_content_legacy = chain_content_legacy.replace("VALIDATORS_ADDRS_PLACEHOLDER", validator_addrs)
-                    chain_content_legacy = chain_content_legacy.replace("AUTHORIZED_NODES_ADDRS_PLACEHOLDER", root_nodes_addrs)
-                    chain_content_legacy = chain_content_legacy.replace("AUTH_CERTS_NUMBER_PLACEHOLDER", str(auth_certs_number))
-                    chain_content_legacy = chain_content_legacy.replace("AUTH_CERTS_NUMBER_VERIFY_PLACEHOLDER", str(auth_certs_number_verify))
-                    
-                    # Write processed chain config
-                    dst_chain_cfg = node_network_dir / chain_cfg.name
-                    dst_chain_cfg.write_text(chain_content_legacy)
-                    
-                    logger.debug("chain_config_copied",
-                               node_id=node.node_id,
-                               chain=chain_cfg.name,
-                               validators=validator_addrs if "VALIDATORS_ADDRS_PLACEHOLDER" in chain_cfg.read_text() else "N/A",
-                               root_nodes=root_nodes_addrs if "AUTHORIZED_NODES_ADDRS_PLACEHOLDER" in chain_cfg.read_text() else "N/A")
             
             logger.debug("network_config_generated",
                        node_id=node.node_id,
