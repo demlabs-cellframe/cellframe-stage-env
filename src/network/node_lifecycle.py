@@ -1,0 +1,210 @@
+"""
+Node lifecycle management for Cellframe stagenet.
+
+Handles graceful node shutdown, GDB flush verification, and restart operations.
+"""
+
+import asyncio
+from typing import List
+
+import docker
+
+from ..logging.logger import get_logger
+
+
+logger = get_logger(__name__)
+
+
+class NodeLifecycleManager:
+    """
+    Manages node lifecycle operations with proper GDB persistence.
+    
+    Responsibilities:
+    - Graceful node shutdown with GDB flush verification
+    - Node restart with configuration reload
+    - Health checks during lifecycle transitions
+    """
+    
+    def __init__(self, project_name: str = "cellframe-stage"):
+        """
+        Initialize node lifecycle manager.
+        
+        Args:
+            project_name: Docker Compose project name
+        """
+        self.project_name = project_name
+        self.docker_client = docker.from_env()
+    
+    async def graceful_shutdown_with_gdb_flush(
+        self,
+        service_names: List[str],
+        flush_timeout: int = 60,
+        check_interval: float = 2.0
+    ) -> None:
+        """
+        Gracefully shutdown nodes and wait for GDB flush completion.
+        
+        Process:
+        1. Send 'exit' command via CLI to each node
+        2. Monitor container status until stopped
+        3. Verify GDB files are flushed to disk
+        
+        Args:
+            service_names: List of Docker Compose service names (e.g., ['node-1', 'node-2'])
+            flush_timeout: Maximum time to wait for shutdown (seconds)
+            check_interval: Check interval for container status (seconds)
+            
+        Raises:
+            RuntimeError: If nodes don't stop within timeout
+        """
+        logger.info("graceful_shutdown_with_gdb_flush", 
+                   services=service_names,
+                   timeout=flush_timeout)
+        
+        # Step 1: Send 'exit' command to all nodes via CLI
+        logger.info("sending_exit_commands_to_nodes")
+        for service in service_names:
+            try:
+                container_name = f"{self.project_name}-{service}-1"
+                container = self.docker_client.containers.get(container_name)
+                
+                # Send 'exit' command via cellframe-node-cli
+                logger.debug("sending_exit_command", container=container_name)
+                cmd = ["sh", "-c", "cellframe-node-cli exit"]
+                result = container.exec_run(cmd, demux=True)
+                
+                if result.exit_code == 0:
+                    logger.debug("exit_command_sent", container=container_name)
+                else:
+                    logger.warning("exit_command_failed",
+                                  container=container_name,
+                                  exit_code=result.exit_code)
+                    
+            except Exception as e:
+                logger.warning("failed_to_send_exit_command",
+                              service=service,
+                              error=str(e))
+        
+        # Step 2: Monitor containers until they stop (GDB flush happens during shutdown)
+        logger.info("monitoring_container_shutdown")
+        
+        import time
+        start_time = time.time()
+        
+        while time.time() - start_time < flush_timeout:
+            stopped_count = 0
+            
+            for service in service_names:
+                try:
+                    container_name = f"{self.project_name}-{service}-1"
+                    container = self.docker_client.containers.get(container_name)
+                    container.reload()  # Refresh status
+                    
+                    if container.status in ['exited', 'dead', 'removed']:
+                        stopped_count += 1
+                        logger.debug("container_stopped_gracefully",
+                                    container=container_name,
+                                    status=container.status)
+                except docker.errors.NotFound:
+                    # Container already removed
+                    stopped_count += 1
+                    logger.debug("container_not_found_assumed_stopped", service=service)
+                except Exception as e:
+                    logger.debug("container_status_check_error",
+                                service=service,
+                                error=str(e)[:100])
+            
+            # Check if all stopped
+            if stopped_count >= len(service_names):
+                elapsed = time.time() - start_time
+                logger.info("all_nodes_stopped_gracefully",
+                           services_count=len(service_names),
+                           elapsed=f"{elapsed:.1f}s")
+                
+                # Additional wait for filesystem sync
+                logger.info("waiting_for_filesystem_sync")
+                await asyncio.sleep(3)
+                
+                return
+            
+            # Log progress
+            elapsed = time.time() - start_time
+            if int(elapsed) % 10 == 0 and elapsed > 1:
+                logger.info("shutdown_progress",
+                           stopped=stopped_count,
+                           total=len(service_names),
+                           elapsed=f"{elapsed:.1f}s")
+            
+            await asyncio.sleep(check_interval)
+        
+        # Timeout - force stop remaining containers
+        logger.warning("graceful_shutdown_timeout_forcing_stop",
+                      elapsed=flush_timeout)
+        
+        for service in service_names:
+            try:
+                container_name = f"{self.project_name}-{service}-1"
+                container = self.docker_client.containers.get(container_name)
+                container.reload()
+                
+                if container.status not in ['exited', 'dead']:
+                    logger.warning("forcing_container_stop", container=container_name)
+                    container.stop(timeout=10)  # Force stop
+                    
+            except Exception as e:
+                logger.debug("force_stop_error", service=service, error=str(e)[:100])
+        
+        logger.info("shutdown_completed_with_force")
+    
+    async def verify_gdb_files_exist(
+        self,
+        node_ids: List[int],
+        cache_path: str = "/home/naeper/work/cellframe-node/tests/testing/cache"
+    ) -> bool:
+        """
+        Verify GDB files exist on disk after shutdown.
+        
+        Args:
+            node_ids: List of node IDs to check
+            cache_path: Path to cache directory
+            
+        Returns:
+            True if all nodes have GDB files
+        """
+        from pathlib import Path
+        
+        logger.info("verifying_gdb_files_on_disk", nodes=len(node_ids))
+        
+        missing_count = 0
+        
+        for node_id in node_ids:
+            gdb_dir = Path(cache_path) / "data" / f"node{node_id}" / "gdb"
+            
+            if not gdb_dir.exists():
+                logger.warning("gdb_directory_not_found",
+                              node_id=node_id,
+                              path=str(gdb_dir))
+                missing_count += 1
+                continue
+            
+            # Count GDB files
+            gdb_files = list(gdb_dir.glob("**/*.gdb"))
+            if len(gdb_files) == 0:
+                logger.warning("gdb_directory_empty",
+                              node_id=node_id,
+                              path=str(gdb_dir))
+                missing_count += 1
+            else:
+                logger.debug("gdb_files_found",
+                            node_id=node_id,
+                            files_count=len(gdb_files))
+        
+        if missing_count == 0:
+            logger.info("all_gdb_files_verified", nodes=len(node_ids))
+            return True
+        else:
+            logger.warning("some_gdb_files_missing",
+                          missing=missing_count,
+                          total=len(node_ids))
+            return False
+

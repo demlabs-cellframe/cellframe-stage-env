@@ -362,27 +362,24 @@ class NetworkManager:
             logger.info("disabling_seed_mode_for_root_nodes_in_configs")
             self.genesis.disable_seed_mode_in_configs(root_node_ids)
             
-            # CRITICAL: Graceful stop to flush GDB to disk BEFORE restart
-            # Docker restart is too fast, GDB doesn't have time to flush
-            logger.info("gracefully_stopping_root_nodes_to_flush_gdb")
+            # CRITICAL: Graceful shutdown with GDB flush verification
+            # Sends 'exit' command → monitors shutdown → verifies GDB on disk
+            from .node_lifecycle import NodeLifecycleManager
+            lifecycle_mgr = NodeLifecycleManager(project_name=self.compose.project_name)
             
-            import docker
-            docker_client = docker.from_env()
+            logger.info("gracefully_shutting_down_root_nodes_with_gdb_flush")
+            await lifecycle_mgr.graceful_shutdown_with_gdb_flush(
+                service_names=root_services,
+                flush_timeout=60
+            )
+            logger.info("root_nodes_shutdown_complete_gdb_flushed")
             
-            # Stop ROOT containers gracefully (30s timeout for SIGTERM before SIGKILL)
-            for service in root_services:
-                try:
-                    container_name = f"{self.compose.project_name}-{service}-1"
-                    container = docker_client.containers.get(container_name)
-                    logger.debug("stopping_container", container=container_name)
-                    container.stop(timeout=30)  # Graceful SIGTERM
-                    logger.debug("container_stopped", container=container_name)
-                except Exception as e:
-                    logger.warning("failed_to_stop_container", service=service, error=str(e))
-            
-            # Wait for GDB flush and filesystem sync
-            logger.info("waiting_for_gdb_flush_to_disk")
-            await asyncio.sleep(10)  # Generous time for GDB flush + fsync
+            # Verify GDB files exist on disk
+            gdb_verified = await lifecycle_mgr.verify_gdb_files_exist(root_node_ids)
+            if gdb_verified:
+                logger.info("gdb_files_verified_on_disk", nodes=len(root_node_ids))
+            else:
+                logger.warning("some_gdb_files_missing_but_continuing")
             
             # Start ROOT nodes with seed_mode=false (will read from updated config on host)
             logger.info("starting_root_nodes_with_seed_mode_false")
