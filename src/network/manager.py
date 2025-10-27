@@ -402,6 +402,21 @@ class NetworkManager:
             await consensus_monitor_all.wait_for_links_connecting_state(timeout=60.0)
             logger.info("all_validators_ready_for_registration")
             
+            # CRITICAL: Create validator orders for MASTER nodes IMMEDIATELY
+            # Must be done BEFORE consensus tries to create blocks
+            # ESBocs checks for orders at startup and periodically
+            logger.info("creating_validator_orders_for_master_nodes")
+            for master_node in master_nodes:
+                try:
+                    container_name = f"cellframe-stage-node-{master_node.node_id}"
+                    container = self.genesis.docker_client.containers.get(container_name)
+                    await self.genesis._create_validator_order(container, master_node)
+                    logger.info("master_validator_order_created", node_id=master_node.node_id)
+                except Exception as e:
+                    logger.warning("failed_to_create_validator_order",
+                                  node_id=master_node.node_id,
+                                  error=str(e))
+            
             # Re-register full mesh node list (ROOT + MASTER)
             # After restart, node list is cleared and needs repopulation
             logger.info("re_registering_full_validator_mesh")
@@ -416,20 +431,6 @@ class NetworkManager:
             except TimeoutError as e:
                 logger.error("validators_not_ready", error=str(e))
                 raise RuntimeError(f"Validator nodes failed to reach consensus: {e}")
-            
-            # CRITICAL: Create validator orders for MASTER nodes
-            # ESBocs requires orders even with poa_mode=true (bug or feature?)
-            logger.info("creating_validator_orders_for_master_nodes")
-            for master_node in master_nodes:
-                try:
-                    container_name = f"cellframe-stage-node-{master_node.node_id}"
-                    container = self.genesis.docker_client.containers.get(container_name)
-                    await self.genesis._create_validator_order(container, master_node)
-                    logger.info("master_validator_order_created", node_id=master_node.node_id)
-                except Exception as e:
-                    logger.warning("failed_to_create_validator_order",
-                                  node_id=master_node.node_id,
-                                  error=str(e))
             
             # CRITICAL: Sync zerochain to MASTER nodes (emission was created in Phase 1!)
             # Without this, master nodes can't see emission datum → tx_create fails
