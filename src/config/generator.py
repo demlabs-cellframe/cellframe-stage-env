@@ -117,21 +117,27 @@ class ConfigGenerator:
         
         network_name = topology.network.name
         
-        # Generate base cellframe-node.cfg for each node first
-        base_cfg_template = self.templates_dir / "base" / "cellframe-node.cfg.template"
+        # Generate base cellframe-node.cfg for each node first using Jinja2
+        base_cfg_template = self.templates_dir / "base" / "cellframe-node.cfg.j2"
         if base_cfg_template.exists():
-            base_cfg_content = base_cfg_template.read_text()
+            template_content = base_cfg_template.read_text()
+            template = Template(template_content)
             
             for node in nodes:
-                # Replace placeholders with node-specific values
-                node_cfg_content = base_cfg_content.replace("NODE_IP_PLACEHOLDER", node.ip_address)
-                
                 # CRITICAL: Enable seed_mode for ROOT and MASTER nodes for genesis creation
                 # ROOT nodes need seed_mode for DAG-PoA genesis events (first events without parent hashes)
                 # MASTER nodes need seed_mode for ESBocs genesis block (first block without prev_block)
                 # seed_mode will be disabled AFTER genesis and configs regenerated
+                seed_mode = 'true' if node.role in ['root', 'master'] else 'false'
+                
+                # Render template with node-specific context
+                context = {
+                    'node_ip': node.ip_address,
+                    'seed_mode': seed_mode
+                }
+                node_cfg_content = template.render(**context)
+                
                 if node.role in ['root', 'master']:
-                    node_cfg_content = node_cfg_content.replace("seed_mode=false", "seed_mode=true")
                     logger.debug("seed_mode_enabled_for_genesis", node_id=node.node_id, role=node.role)
                 
                 node_etc_base = self.configs_cache / f"node{node.node_id}"
@@ -158,7 +164,7 @@ class ConfigGenerator:
         
         if not src_network_cfg.exists():
             # Try with 'stagenet' as fallback
-            src_network_cfg = self.templates_dir / "stagenet.cfg"
+            src_network_cfg = self.templates_dir / "stagenet.cfg.j2"
             
         if not src_network_cfg.exists():
             logger.warning("network_config_template_not_found",
@@ -168,8 +174,9 @@ class ConfigGenerator:
         
         logger.debug("network_config_source", path=str(src_network_cfg))
         
-        # Read template content
+        # Read template content and prepare for Jinja2 rendering
         template_content = src_network_cfg.read_text()
+        network_template = Template(template_content)
         
         # Prepare network-wide variables
         # Collect seed nodes (root nodes) and permanent nodes (masters)
@@ -236,7 +243,7 @@ class ConfigGenerator:
                            chain=output_name,
                            has_jinja_tags="{{ " in chain_content)
         
-        # Generate network config for each node
+        # Generate network config for each node using Jinja2
         # Cellframe Node expects:
         # 1. /etc/{cellframe-node,network}.cfg - main configs  
         # 2. /etc/network/{network_name}.cfg - network config file
@@ -247,44 +254,32 @@ class ConfigGenerator:
             node_network_dir = node_network_base / network_name
             node_network_dir.mkdir(parents=True, exist_ok=True)
             
-            # Replace placeholders with node-specific values
-            config_content = template_content
-            # Root nodes are just "root" - they participate only in DAG-PoA consensus
-            # Master nodes are "master" - they participate only in ESBocs consensus
-            node_role = node.role
-            config_content = config_content.replace("NODE_ROLE_PLACEHOLDER", node_role)
-            config_content = config_content.replace("SEED_NODES_PLACEHOLDER", seed_nodes_hosts)
-            config_content = config_content.replace("PERMANENT_NODES_HOSTS_PLACEHOLDER", permanent_nodes_hosts)
+            # Prepare node-specific context for Jinja2
+            node_role = node.role  # 'root', 'master', or 'full'
             
-            # Replace EVENTS_SIGN_CERT_PLACEHOLDER for root nodes
-            # SDK loads events-sign-cert from network config, not chain config!
-            # callback_created receives l_net->pub.config (network config), not chain config
-            # ROOT nodes use stagenet.root.N (DAG-PoA), MASTER nodes use stagenet.master.N (ESBocs)
-            if "EVENTS_SIGN_CERT_PLACEHOLDER" in config_content:
-                if node.is_seed_node:  # ROOT nodes only
-                    root_idx = node.node_id - 1  # ROOT nodes: 0, 1, 2
-                    events_sign_cert = f"events-sign-cert=pvt.{network_name}.root.{root_idx}"
-                    config_content = config_content.replace("EVENTS_SIGN_CERT_PLACEHOLDER", events_sign_cert)
-                    logger.debug("events_sign_cert_set", node_id=node.node_id, cert=f"pvt.{network_name}.root.{root_idx}")
-                else:
-                    # Remove placeholder for non-root nodes
-                    lines = config_content.split('\n')
-                    filtered_lines = [line for line in lines if "EVENTS_SIGN_CERT_PLACEHOLDER" not in line]
-                    config_content = '\n'.join(filtered_lines)
+            # Calculate certificate indices for ROOT and MASTER nodes
+            events_sign_cert = None
+            blocks_sign_cert = None
             
-            # Replace BLOCKS_SIGN_CERT_PLACEHOLDER for master nodes
-            # MASTER nodes (node4,5,6) use stagenet.master.{0,1,2} (sequential!)
-            if "BLOCKS_SIGN_CERT_PLACEHOLDER" in config_content:
-                if node.consensus_participation and not node.is_seed_node:  # MASTER nodes only
-                    master_idx = node.node_id - 4  # node4→0, node5→1, node6→2
-                    blocks_sign_cert = f"blocks-sign-cert=pvt.{network_name}.master.{master_idx}"
-                    config_content = config_content.replace("BLOCKS_SIGN_CERT_PLACEHOLDER", blocks_sign_cert)
-                    logger.debug("blocks_sign_cert_set", node_id=node.node_id, cert=f"pvt.{network_name}.master.{master_idx}")
-                else:
-                    # Remove placeholder for non-master nodes
-                    lines = config_content.split('\n')
-                    filtered_lines = [line for line in lines if "BLOCKS_SIGN_CERT_PLACEHOLDER" not in line]
-                    config_content = '\n'.join(filtered_lines)
+            if node.is_seed_node:  # ROOT nodes
+                root_idx = node.node_id - 1  # node1→0, node2→1, node3→2
+                events_sign_cert = f"pvt.{network_name}.root.{root_idx}"
+                logger.debug("events_sign_cert_prepared", node_id=node.node_id, cert=events_sign_cert)
+            
+            if node.consensus_participation and not node.is_seed_node:  # MASTER nodes
+                master_idx = node.node_id - 4  # node4→0, node5→1, node6→2
+                blocks_sign_cert = f"pvt.{network_name}.master.{master_idx}"
+                logger.debug("blocks_sign_cert_prepared", node_id=node.node_id, cert=blocks_sign_cert)
+            
+            # Render template with node-specific context
+            network_context = {
+                'node_role': node_role,
+                'seed_nodes_hosts': seed_nodes_hosts,
+                'permanent_nodes_hosts': permanent_nodes_hosts,
+                'events_sign_cert': events_sign_cert,
+                'blocks_sign_cert': blocks_sign_cert
+            }
+            config_content = network_template.render(**network_context)
             
             # Write network config to /etc/network/{network_name}.cfg (Cellframe expects this!)
             dst_file = node_network_base / f"{network_name}.cfg"

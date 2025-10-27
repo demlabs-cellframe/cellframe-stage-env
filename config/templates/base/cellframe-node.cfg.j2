@@ -1,7 +1,7 @@
 # General section
 [general]
 # General debug mode
-debug_mode=false
+debug_mode=true
 # Debug stream packets
 debug_dump_stream_headers=false
 # Debug I/O reactor, false by default
@@ -11,7 +11,7 @@ debug_dump_stream_headers=false
 # debug-config=false
 
 # seed mode. WARNING. Used true only when you start the new network
-seed_mode=false
+seed_mode={{ seed_mode | default('false', true) }}
 
 # Auto bring up links and sync everything over them
 auto_online=true
@@ -29,7 +29,7 @@ listen-address=[0.0.0.0:8079]
 # External port for node registration in Global DB (required for announce)
 ext_port=8079
 # External IPv4 address (node IP in Docker network)
-ext_address=NODE_IP_PLACEHOLDER
+ext_address={{ node_ip }}
 
 # External IPv6 address
 #ext_address6=aaaa:bbbb:deee:96ff:feee:3fff
@@ -163,11 +163,11 @@ network_mask=255.255.255.0
 enabled=true
 # debug_more=false
 # debug-cli=false
-#version=1
+version=1
 # Allow node command for manual node list management  
-allowed_cmd=[node, ledger, wallet, mempool, srv_stake, poll, net_srv, net, block, dag, token, tx_create, tx_history]
+allowed_cmd=[node, ledger, wallet, mempool, srv_stake, poll, net_srv, net, block, dag, token, tx_create, tx_history, chain]
 listen-path=[/opt/cellframe-node/var/run/node_cli]
-listen-address=[0.0.0.0:12345]
+listen-address=[127.0.0.1:12345]
 # IMPORTANT! Its accessible for all the users in system!
 # listen_unix_socket_permissions=777
 
@@ -202,3 +202,4 @@ py_path=../var/lib/plugins
 
 # Path to Pyhon-based plugins
 #py_path=../var/lib/plugins
+
