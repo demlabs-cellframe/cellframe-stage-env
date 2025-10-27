@@ -577,18 +577,87 @@ class GenesisInitializer:
                    failed=failed_count,
                    total=len(nodes))
         
-        # After node list population, wait for links to establish
-        # Network will establish links automatically after node list update
-        logger.info("waiting_for_network_links_to_establish_after_registration")
+        # CRITICAL: Wait for GDB to propagate node list to ALL nodes
+        # Node1 added all nodes locally, but GDB sync takes time (1-5s)
+        # Without this, offline/online happens before other nodes see the list
+        logger.info("waiting_for_node_list_gdb_propagation")
         
+        import time
+        start_wait = time.time()
+        all_have_list = False
+        
+        while time.time() - start_wait < 30:  # Max 30s for GDB sync
+            nodes_with_list = 0
+            
+            for node in nodes:
+                try:
+                    exit_code, stdout, _ = self._exec_cli(
+                        node.node_id,
+                        f"node list -net {self.network_name}",
+                        check_output=False
+                    )
+                    
+                    # Check if node has full list (should see len(nodes) nodes)
+                    if exit_code == 0:
+                        import re
+                        # Count "Got N nodes:"
+                        match = re.search(r'Got\s+(\d+)\s+nodes', stdout, re.IGNORECASE)
+                        if match:
+                            node_count = int(match.group(1))
+                            if node_count >= len(nodes):
+                                nodes_with_list += 1
+                except Exception as e:
+                    logger.debug("node_list_check_error", node=node.node_id, error=str(e)[:100])
+            
+            if nodes_with_list >= len(nodes):
+                elapsed = time.time() - start_wait
+                logger.info("all_nodes_have_node_list",
+                           nodes=nodes_with_list,
+                           total=len(nodes),
+                           elapsed=f"{elapsed:.1f}s")
+                all_have_list = True
+                break
+            
+            await asyncio.sleep(2)
+        
+        if not all_have_list:
+            logger.warning("node_list_gdb_sync_incomplete_but_continuing",
+                          timeout=30)
+        
+        # CRITICAL: After node list population, force network to establish links IMMEDIATELY
+        # Without this, nodes wait for timeout before trying to connect
+        logger.info("forcing_network_reconnection_after_node_list_update")
+        
+        # First: bring all offline
+        for node in nodes:
+            try:
+                # Go offline then online to trigger reconnection
+                logger.debug("cycling_network_state", node_id=node.node_id)
+                self._exec_cli(node.node_id, f"net -net {self.network_name} go offline", check_output=False)
+            except Exception as e:
+                logger.warning("failed_to_go_offline", node_id=node.node_id, error=str(e))
+        
+        # Small delay to ensure offline processed
+        await asyncio.sleep(1)
+        
+        # Then: bring all online simultaneously → immediate link establishment!
+        for node in nodes:
+            try:
+                logger.debug("bringing_online", node_id=node.node_id)
+                self._exec_cli(node.node_id, f"net -net {self.network_name} go online", check_output=False)
+            except Exception as e:
+                logger.warning("failed_to_go_online", node_id=node.node_id, error=str(e))
+        
+        logger.info("all_nodes_forced_online_links_will_establish_immediately")
+        
+        # Wait for links to actually establish before proceeding
+        # This is CRITICAL - consensus won't work without active links!
         from ..monitoring.network_consensus import NetworkConsensusMonitor
         monitor = NetworkConsensusMonitor(
             nodes={f"node{n.node_id}": n for n in nodes},
             network_name=self.network_name
         )
-        
-        # Give more time for initial link establishment (P2P discovery + handshake)
-        await monitor.wait_for_links_established(timeout=120.0)
+        await monitor.wait_for_links_established(timeout=60.0)
         logger.info("all_links_established_ready_for_consensus")
     
     async def generate_fee_wallet(self) -> str:
