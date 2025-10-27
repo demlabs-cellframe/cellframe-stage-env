@@ -10,7 +10,7 @@ from typing import List, Optional
 
 import docker
 
-from ..config.loader import NodeConfig
+from .models import NodeConfig
 from ..utils.logger import get_logger
 
 
