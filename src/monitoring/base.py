@@ -22,12 +22,16 @@ logger = get_logger(__name__)
 
 @dataclass
 class MonitorConfig:
-    """Configuration for monitoring behavior."""
-    enabled: bool = True
-    poll_interval: float = 2.0  # seconds between checks
-    log_interval: float = 5.0   # seconds between progress logs
+    """
+    Configuration for monitoring behavior.
+    
+    Note: Monitors always WORK when called - log_enabled only controls LOGGING.
+    """
+    log_enabled: bool = True    # enable periodic progress logging
+    poll_interval: float = 2.0  # seconds between condition checks
+    log_interval: float = 5.0   # seconds between progress logs (if log_enabled)
     timeout: float = 60.0       # total timeout
-    verbose: bool = True        # detailed logging
+    verbose: bool = True        # detailed per-node logging
 
 
 class BaseMonitor(ABC):
@@ -110,12 +114,15 @@ class BaseMonitor(ABC):
         Returns:
             True if enough time has passed since last log
         """
-        if not self.config.verbose:
+        # Logging disabled entirely
+        if not self.config.log_enabled:
             return False
         
+        # First log always shown (if logging enabled)
         if last_log_time is None:
             return True
         
+        # Check if enough time passed since last log
         return (time.time() - last_log_time) >= self.config.log_interval
     
     async def wait_until_ready(
@@ -136,19 +143,18 @@ class BaseMonitor(ABC):
         Raises:
             TimeoutError: If condition not met within timeout
         """
-        if not self.config.enabled:
-            logger.warning("monitoring_disabled", name=name)
-            return {}
+        # Monitor always works - just might not log progress
         
         timeout = timeout or self.config.timeout
         start_time = time.time()
         last_log_time = None
         iteration = 0
         
-        logger.info(f"{name}_started",
-                   timeout=timeout,
-                   poll_interval=self.config.poll_interval,
-                   log_interval=self.config.log_interval)
+        if self.config.log_enabled:
+            logger.info(f"{name}_started",
+                       timeout=timeout,
+                       poll_interval=self.config.poll_interval,
+                       log_interval=self.config.log_interval)
         
         while True:
             iteration += 1
@@ -175,10 +181,11 @@ class BaseMonitor(ABC):
                 
                 # Check if done
                 if condition_met:
-                    logger.info(f"{name}_completed",
-                               elapsed=f"{elapsed:.1f}s",
-                               iterations=iteration,
-                               final_state=state)
+                    if self.config.log_enabled:
+                        logger.info(f"{name}_completed",
+                                   elapsed=f"{elapsed:.1f}s",
+                                   iterations=iteration,
+                                   final_state=state)
                     return state
                 
             except Exception as e:

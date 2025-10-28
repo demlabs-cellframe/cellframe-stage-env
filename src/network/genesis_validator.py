@@ -140,7 +140,7 @@ class ValidatorManager(BaseGenesisManager):
         monitoring_cfg = config_loader.config.get("monitoring", {})
         
         monitor_config = MonitorConfig(
-            enabled=monitoring_cfg.get("validator_monitor_enabled", True),
+            log_enabled=monitoring_cfg.get("validator_log_enabled", True),
             poll_interval=float(monitoring_cfg.get("validator_poll_interval", 2.0)),
             log_interval=float(monitoring_cfg.get("validator_log_interval", 5.0)),
             timeout=float(monitoring_cfg.get("validator_timeout", timeout)),
