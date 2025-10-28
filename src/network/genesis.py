@@ -45,7 +45,7 @@ class GenesisInitializer(BaseGenesisManager):
             network_name: Network name (default: stagenet)
             config_path: Optional path to config file
         """
-        super().__init__(base_path, network_name)
+        super().__init__(base_path, network_name, config_path)
         
         # Load cache dir from config
         from ..config.loader import ConfigLoader
@@ -57,12 +57,12 @@ class GenesisInitializer(BaseGenesisManager):
         
         self.cli_config_path = "/opt/cellframe-node/etc/cellframe-node.cfg"
         
-        # Initialize specialized managers for modular architecture
-        self.config_mgr = GenesisConfigManager(base_path, network_name)
-        self.token_mgr = TokenGenesisManager(base_path, network_name)
-        self.sync_mgr = ChainSyncManager(base_path, network_name)
-        self.registration_mgr = NodeRegistrationManager(base_path, network_name, self.certs_cache)
-        self.validator_mgr = ValidatorManager(base_path, network_name)
+        # Initialize specialized managers for modular architecture (pass config_path!)
+        self.config_mgr = GenesisConfigManager(base_path, network_name, config_path)
+        self.token_mgr = TokenGenesisManager(base_path, network_name, config_path)
+        self.sync_mgr = ChainSyncManager(base_path, network_name, config_path)
+        self.registration_mgr = NodeRegistrationManager(base_path, network_name, config_path, self.certs_cache)
+        self.validator_mgr = ValidatorManager(base_path, network_name, config_path)
         
         logger.info("genesis_initializer_created", network=network_name)
     

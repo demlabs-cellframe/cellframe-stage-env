@@ -34,16 +34,17 @@ class NodeRegistrationManager(BaseGenesisManager):
     - _read_node_addr_from_cli(): Node address retrieval
     """
     
-    def __init__(self, base_path: Path, network_name: str = "stagenet", certs_cache: Path = None):
+    def __init__(self, base_path: Path, network_name: str = "stagenet", config_path: Path = None, certs_cache: Path = None):
         """
         Initialize node registration manager.
         
         Args:
             base_path: Base path to stage-env directory
             network_name: Network name (default: stagenet)
+            config_path: Optional path to stage-env.cfg
             certs_cache: Path to certificates cache
         """
-        super().__init__(base_path, network_name)
+        super().__init__(base_path, network_name, config_path)
         self.certs_cache = certs_cache or (base_path / ".." / "testing" / "cache" / "certs").resolve()
     
     async def register_node_aliases(self, nodes: List[NodeConfig]) -> None:

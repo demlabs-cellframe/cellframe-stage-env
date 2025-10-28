@@ -136,7 +136,7 @@ class ValidatorManager(BaseGenesisManager):
         
         # Load monitoring config from stage-env.cfg
         from ..config.loader import ConfigLoader
-        config_loader = ConfigLoader(self.base_path)
+        config_loader = ConfigLoader(self.base_path, self.config_path)
         stage_config = config_loader.load_stage_config()
         
         # Extract monitoring settings (keys are flattened)

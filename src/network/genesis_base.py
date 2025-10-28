@@ -26,16 +26,18 @@ class BaseGenesisManager:
     - Docker client management
     """
     
-    def __init__(self, base_path: Path, network_name: str = "stagenet"):
+    def __init__(self, base_path: Path, network_name: str = "stagenet", config_path: Path = None):
         """
         Initialize base genesis manager.
         
         Args:
             base_path: Base path to stage-env directory
             network_name: Network name (default: stagenet)
+            config_path: Optional path to stage-env.cfg
         """
         self.base_path = base_path
         self.network_name = network_name
+        self.config_path = config_path
         self.docker_client = docker.from_env()
     
     def _exec_cli(self, node_id: int, command: str, check_output: bool = True) -> tuple:
