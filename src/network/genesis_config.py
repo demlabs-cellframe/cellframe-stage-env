@@ -236,11 +236,60 @@ class GenesisConfigManager(BaseGenesisManager):
         
         logger.info("genesis_hash_updated_on_all_nodes", chain=chain_name, parameter=param_name)
     
+    def _regenerate_base_config(self, node_id: int, seed_mode: str) -> None:
+        """
+        Regenerate base config for a node using ConfigGenerator with updated context.
+        
+        This is the UNIFIED method for all config modifications - always regenerates
+        from template with new context instead of manual string replacement.
+        
+        Args:
+            node_id: Node ID to regenerate config for
+            seed_mode: New seed_mode value ('true' or 'false')
+        """
+        from ..config.generator import ConfigGenerator
+        
+        # Get node IP from existing config
+        node_config_file = self.base_path / ".." / "testing" / "cache" / "configs" / f"node{node_id}" / "cellframe-node.cfg"
+        node_config_file = node_config_file.resolve()
+        
+        if not node_config_file.exists():
+            logger.warning("config_not_found_for_regeneration", node_id=node_id)
+            return
+        
+        # Extract node_ip from current config
+        current_config = node_config_file.read_text()
+        node_ip = None
+        for line in current_config.split('\n'):
+            if line.startswith('ext_address='):
+                node_ip = line.split('=')[1].strip()
+                break
+        
+        if not node_ip:
+            logger.warning("node_ip_not_found_cannot_regenerate", node_id=node_id)
+            return
+        
+        # Use ConfigGenerator to regenerate with new context
+        config_gen = ConfigGenerator(self.base_path)
+        
+        from jinja2 import Template
+        template_path = self.base_path / "config" / "templates" / "base" / "cellframe-node.cfg.j2"
+        template_content = template_path.read_text()
+        template = Template(template_content)
+        
+        # Render with updated context
+        context = {
+            'node_ip': node_ip,
+            'seed_mode': seed_mode
+        }
+        new_config_content = template.render(**context)
+        node_config_file.write_text(new_config_content)
+        
+        logger.debug("base_config_regenerated", node_id=node_id, seed_mode=seed_mode)
+    
     def enable_seed_mode_in_configs(self, node_ids: List[int]) -> None:
         """
-        Enable seed_mode in node configs on HOST filesystem.
-        
-        Must be called BEFORE container start.
+        Enable seed_mode by regenerating configs through unified generation system.
         
         Args:
             node_ids: List of node IDs to enable seed_mode for
@@ -249,24 +298,13 @@ class GenesisConfigManager(BaseGenesisManager):
         
         for node_id in node_ids:
             try:
-                node_config_file = self.base_path / ".." / "testing" / "cache" / "configs" / f"node{node_id}" / "cellframe-node.cfg"
-                node_config_file = node_config_file.resolve()
-                
-                if not node_config_file.exists():
-                    logger.warning("config_file_not_found", node_id=node_id, path=str(node_config_file))
-                    continue
-                
-                config_content = node_config_file.read_text()
-                config_content = config_content.replace("seed_mode=false", "seed_mode=true")
-                node_config_file.write_text(config_content)
-                logger.debug("seed_mode_enabled_in_config_file", node_id=node_id)
-                    
+                self._regenerate_base_config(node_id, seed_mode='true')
             except Exception as e:
                 logger.error("enable_seed_mode_error", node_id=node_id, error=str(e))
     
     def disable_seed_mode_in_configs(self, node_ids: List[int]) -> None:
         """
-        Disable seed_mode in node configs on HOST filesystem.
+        Disable seed_mode by regenerating configs through unified generation system.
         
         Args:
             node_ids: List of node IDs to disable seed_mode for
@@ -275,18 +313,7 @@ class GenesisConfigManager(BaseGenesisManager):
         
         for node_id in node_ids:
             try:
-                node_config_file = self.base_path / ".." / "testing" / "cache" / "configs" / f"node{node_id}" / "cellframe-node.cfg"
-                node_config_file = node_config_file.resolve()
-                
-                if not node_config_file.exists():
-                    logger.warning("config_file_not_found", node_id=node_id, path=str(node_config_file))
-                    continue
-                
-                config_content = node_config_file.read_text()
-                config_content = config_content.replace("seed_mode=true", "seed_mode=false")
-                node_config_file.write_text(config_content)
-                logger.debug("seed_mode_disabled_in_config_file", node_id=node_id)
-                    
+                self._regenerate_base_config(node_id, seed_mode='false')
             except Exception as e:
                 logger.error("disable_seed_mode_error", node_id=node_id, error=str(e))
 
