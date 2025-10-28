@@ -117,6 +117,8 @@ class ValidatorManager(BaseGenesisManager):
         """
         Verify that all nodes can see all validator orders.
         
+        Uses ValidatorMonitor service for periodic checking with structured logging.
+        
         This is critical for ESBocs consensus - if nodes don't see orders,
         they will switch off validator mode and refuse to create blocks.
         
@@ -128,80 +130,33 @@ class ValidatorManager(BaseGenesisManager):
         Raises:
             RuntimeError: If orders are not visible after timeout
         """
-        from time import time
+        from ..monitoring.validator import ValidatorMonitor
+        from ..monitoring.base import MonitorConfig
         
-        logger.info("verifying_orders_on_all_nodes",
-                   node_count=len(nodes),
-                   expected_orders=expected_count)
+        # Load monitoring config from stage-env.cfg
+        from ..config.loader import ConfigLoader
+        config_loader = ConfigLoader(self.base_path)
+        monitoring_cfg = config_loader.config.get("monitoring", {})
         
-        start_time = time()
-        all_nodes_ready = False
+        monitor_config = MonitorConfig(
+            enabled=monitoring_cfg.get("validator_monitor_enabled", True),
+            poll_interval=float(monitoring_cfg.get("validator_poll_interval", 2.0)),
+            log_interval=float(monitoring_cfg.get("validator_log_interval", 5.0)),
+            timeout=float(monitoring_cfg.get("validator_timeout", timeout)),
+            verbose=monitoring_cfg.get("verbose", True)
+        )
         
-        while time() - start_time < timeout:
-            nodes_with_orders = 0
-            
-            for node in nodes:
-                try:
-                    # Query orders list on this node
-                    exit_code, stdout_str, stderr_str = self._exec_cli(
-                        node.node_id,
-                        f"srv_stake order list -net {self.network_name}",
-                        check_output=False
-                    )
-                    
-                    if exit_code == 0:
-                        # Count orders in output (simple heuristic: count "Order" keyword)
-                        order_count = stdout_str.count("Order")
-                        
-                        # DETAILED LOGGING: Show actual output for debugging
-                        logger.info("order_list_output",
-                                   node_id=node.node_id,
-                                   order_count=order_count,
-                                   output_preview=stdout_str[:500] if stdout_str else "EMPTY")
-                        
-                        if order_count >= expected_count:
-                            nodes_with_orders += 1
-                            logger.debug("node_sees_all_orders",
-                                       node_id=node.node_id,
-                                       order_count=order_count)
-                        else:
-                            logger.warning("node_missing_orders",
-                                       node_id=node.node_id,
-                                       found=order_count,
-                                       expected=expected_count,
-                                       full_output=stdout_str)
-                    else:
-                        logger.warning("order_list_failed",
-                                     node_id=node.node_id,
-                                     exit_code=exit_code,
-                                     stderr=stderr_str[:200],
-                                     stdout=stdout_str[:200])
-                
-                except Exception as e:
-                    logger.warning("order_check_exception",
-                                 node_id=node.node_id,
-                                 error=str(e))
-            
-            # Check if all nodes see all orders
-            if nodes_with_orders == len(nodes):
-                all_nodes_ready = True
-                logger.info("all_nodes_see_all_orders",
-                          elapsed=f"{time() - start_time:.1f}s")
-                break
-            
-            # Log progress
-            logger.info("order_visibility_progress",
-                       elapsed=f"{time() - start_time:.1f}s",
-                       nodes_ready=nodes_with_orders,
-                       total=len(nodes))
-            
-            await asyncio.sleep(2.0)
+        monitor = ValidatorMonitor(
+            nodes=nodes,
+            network_name=self.network_name,
+            expected_order_count=expected_count,
+            config=monitor_config
+        )
         
-        if not all_nodes_ready:
-            raise RuntimeError(
-                f"Not all nodes see validator orders after {timeout}s. "
-                f"Only {nodes_with_orders}/{len(nodes)} nodes ready."
-            )
+        try:
+            await monitor.wait_until_ready(name="validator_orders_verification")
+        except TimeoutError as e:
+            raise RuntimeError(str(e)) from e
     
     async def sync_orders_across_network(self, nodes: List[NodeConfig]) -> None:
         """
