@@ -429,11 +429,6 @@ class NetworkManager:
                 logger.error("validators_not_ready", error=str(e))
                 raise RuntimeError(f"Validator nodes failed to reach consensus: {e}")
             
-            # Disable seed_mode for MASTER nodes before creating orders
-            # seed_mode=true can interfere with order creation
-            logger.info("disabling_seed_mode_for_master_nodes")
-            self.genesis.config_mgr.disable_seed_mode_in_configs(master_node_ids)
-            
             # CRITICAL: Create validator orders for MASTER nodes
             # Must be done AFTER network is ready but BEFORE block creation
             # Orders are stored in GDB and automatically propagated

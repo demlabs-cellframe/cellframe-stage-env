@@ -137,7 +137,16 @@ class ValidatorManager(BaseGenesisManager):
         # Load monitoring config from stage-env.cfg
         from ..config.loader import ConfigLoader
         config_loader = ConfigLoader(self.base_path)
-        monitoring_cfg = config_loader.config.get("monitoring", {})
+        stage_config = config_loader.load_stage_config()
+        
+        # Extract monitoring settings (keys are flattened)
+        monitoring_cfg = {
+            'validator_log_enabled': stage_config.get('validator_log_enabled', True),
+            'validator_poll_interval': stage_config.get('validator_poll_interval', 2.0),
+            'validator_log_interval': stage_config.get('validator_log_interval', 5.0),
+            'validator_timeout': stage_config.get('validator_timeout', 60.0),
+            'verbose': stage_config.get('verbose', True)
+        }
         
         monitor_config = MonitorConfig(
             log_enabled=monitoring_cfg.get("validator_log_enabled", True),
