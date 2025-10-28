@@ -417,7 +417,7 @@ class NetworkManager:
                 try:
                     container_name = f"cellframe-stage-node-{master_node.node_id}"
                     container = self.genesis.docker_client.containers.get(container_name)
-                    await self.genesis._create_validator_order(container, master_node)
+                    await self.genesis.validator_mgr.create_validator_order(container, master_node)
                     logger.info("master_validator_order_created", node_id=master_node.node_id)
                 except Exception as e:
                     logger.warning("failed_to_create_validator_order",
@@ -461,9 +461,15 @@ class NetworkManager:
                 logger.error("validators_not_ready", error=str(e))
                 raise RuntimeError(f"Validator nodes failed to reach consensus: {e}")
             
+            # CRITICAL: Sync GDB to propagate validator orders across network
+            # Orders are stored in local GDB but need sync to be visible on all nodes
+            logger.info("syncing_validator_orders_across_network")
+            await self.genesis.validator_mgr.sync_orders_across_network(all_validator_nodes)
+            logger.info("gdb_synced_orders_propagated")
+            
             # Verify that all nodes see all validator orders
             logger.info("verifying_validator_orders_visibility")
-            await self.genesis._verify_validator_orders(all_validator_nodes, expected_count=len(master_nodes))
+            await self.genesis.validator_mgr.verify_validator_orders(all_validator_nodes, expected_count=len(master_nodes))
             logger.info("validator_orders_verified_on_all_nodes")
             
             # CRITICAL: Sync zerochain to MASTER nodes (emission was created in Phase 1!)

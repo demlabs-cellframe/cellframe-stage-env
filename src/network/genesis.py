@@ -15,6 +15,11 @@ import time
 
 from ..utils.logger import get_logger
 from .models import NodeConfig
+from .genesis_config import GenesisConfigManager
+from .genesis_token import TokenGenesisManager
+from .genesis_sync import ChainSyncManager
+from .genesis_registration import NodeRegistrationManager
+from .genesis_validator import ValidatorManager
 
 logger = get_logger(__name__)
 
@@ -45,15 +50,11 @@ class GenesisInitializer:
         self.cli_config_path = "/opt/cellframe-node/etc/cellframe-node.cfg"
         
         # Initialize specialized managers for modular architecture
-        from .genesis_config import GenesisConfigManager
-        from .genesis_token import TokenGenesisManager
-        from .genesis_sync import ChainSyncManager
-        from .genesis_registration import NodeRegistrationManager
-        
         self.config_mgr = GenesisConfigManager(base_path, network_name)
         self.token_mgr = TokenGenesisManager(base_path, network_name)
         self.sync_mgr = ChainSyncManager(base_path, network_name)
         self.registration_mgr = NodeRegistrationManager(base_path, network_name, self.certs_cache)
+        self.validator_mgr = ValidatorManager(base_path, network_name)
         
         logger.info("genesis_initializer_created", network=network_name)
     
@@ -330,168 +331,4 @@ class GenesisInitializer:
                            current_node_id=current_node.node_id,
                            target_addr=target_node_addr,
                            error=str(e))
-    
-    async def _create_validator_order(
-        self,
-        container: docker.models.containers.Container,
-        node: NodeConfig
-    ) -> None:
-        """
-        Create validator order for a node.
-        
-        Args:
-            container: Docker container to execute commands in
-            node: Node configuration
-        """
-        # Certificate name for this validator
-        # NOTE: Must use pvt. prefix for private key! Both validator_create and CLI commands need it.
-        # CRITICAL: MASTER nodes are node4,5,6 but cert indices are 0,1,2
-        # Match cert-generator.c logic: cert_idx = is_root_node ? i : (i - 3)
-        if node.node_id <= 3:
-            # ROOT nodes: node1,2,3 → cert indices 0,1,2
-            validator_idx = node.node_id - 1
-            cert_name = f"pvt.{self.network_name}.root.{validator_idx}"
-        else:
-            # MASTER nodes: node4,5,6 → cert indices 0,1,2
-            validator_idx = node.node_id - 4  # node4→0, node5→1, node6→2
-            cert_name = f"pvt.{self.network_name}.master.{validator_idx}"
-        
-        # Read node address with retry logic
-        node_addr = self._read_node_addr_with_retry(node.node_id)
-        
-        if not node_addr:
-            logger.error("cannot_create_order_no_node_addr",
-                        node_id=node.node_id)
-            return
-        
-        logger.info("read_node_address",
-                   node_id=node.node_id,
-                   node_addr=node_addr)
-        
-        # Order parameters
-        # value_min and value_max in datoshi (1 token = 10^18 datoshi)
-        # For testing, use 100 tokens min, 10000 tokens max
-        value_min = "100000000000000000000"  # 100 tokens
-        value_max = "10000000000000000000000"  # 10000 tokens
-        tax = "10.0"  # 10.0% tax (must be float с точкой)
-        
-        # Use unified CLI method
-        logger.info("creating_validator_order",
-                   node_id=node.node_id,
-                   cert=cert_name,
-                   node_addr=node_addr)
-        
-        try:
-            exit_code, stdout_str, stderr_str = self._exec_cli(
-                node.node_id,
-                f"srv_stake order create validator -net {self.network_name} -value_min {value_min} -value_max {value_max} -tax {tax} -cert {cert_name} -node_addr {node_addr} -H hex",
-                check_output=False
-            )
-            
-            if exit_code != 0:
-                logger.error("order_creation_failed",
-                           node_id=node.node_id,
-                           exit_code=exit_code,
-                           stdout=stdout_str,
-                           stderr=stderr_str)
-                raise RuntimeError(f"Failed to create order for node {node.node_id}: {stderr_str}")
-            
-            logger.info("validator_order_created",
-                       node_id=node.node_id,
-                       cert=cert_name,
-                       output=stdout_str.strip())
-            
-        except Exception as e:
-            logger.exception("order_creation_exception",
-                           node_id=node.node_id,
-                           error=str(e))
-            raise
-    
-    async def _verify_validator_orders(
-        self,
-        nodes: List,
-        expected_count: int,
-        timeout: float = 30.0
-    ) -> None:
-        """
-        Verify that all nodes can see all validator orders.
-        
-        This is critical for ESBocs consensus - if nodes don't see orders,
-        they will switch off validator mode and refuse to create blocks.
-        
-        Args:
-            nodes: List of NodeConfig objects to check
-            expected_count: Expected number of validator orders
-            timeout: Maximum time to wait for orders to appear
-        
-        Raises:
-            RuntimeError: If orders are not visible after timeout
-        """
-        import asyncio
-        from time import time
-        
-        logger.info("verifying_orders_on_all_nodes",
-                   node_count=len(nodes),
-                   expected_orders=expected_count)
-        
-        start_time = time()
-        all_nodes_ready = False
-        
-        while time() - start_time < timeout:
-            nodes_with_orders = 0
-            
-            for node in nodes:
-                try:
-                    # Query orders list on this node
-                    exit_code, stdout_str, stderr_str = self._exec_cli(
-                        node.node_id,
-                        f"srv_stake order list -net {self.network_name}",
-                        check_output=False
-                    )
-                    
-                    if exit_code == 0:
-                        # Count orders in output (simple heuristic: count "Order" keyword)
-                        order_count = stdout_str.count("Order")
-                        
-                        if order_count >= expected_count:
-                            nodes_with_orders += 1
-                            logger.debug("node_sees_all_orders",
-                                       node_id=node.node_id,
-                                       order_count=order_count)
-                        else:
-                            logger.debug("node_missing_orders",
-                                       node_id=node.node_id,
-                                       found=order_count,
-                                       expected=expected_count)
-                    else:
-                        logger.warning("order_list_failed",
-                                     node_id=node.node_id,
-                                     exit_code=exit_code,
-                                     stderr=stderr_str[:200])
-                
-                except Exception as e:
-                    logger.warning("order_check_exception",
-                                 node_id=node.node_id,
-                                 error=str(e))
-            
-            # Check if all nodes see all orders
-            if nodes_with_orders == len(nodes):
-                all_nodes_ready = True
-                logger.info("all_nodes_see_all_orders",
-                          elapsed=f"{time() - start_time:.1f}s")
-                break
-            
-            # Log progress
-            logger.info("order_visibility_progress",
-                       elapsed=f"{time() - start_time:.1f}s",
-                       nodes_ready=nodes_with_orders,
-                       total=len(nodes))
-            
-            await asyncio.sleep(2.0)
-        
-        if not all_nodes_ready:
-            raise RuntimeError(
-                f"Not all nodes see validator orders after {timeout}s. "
-                f"Only {nodes_with_orders}/{len(nodes)} nodes ready."
-            )
     
