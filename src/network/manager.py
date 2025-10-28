@@ -388,13 +388,18 @@ class NetworkManager:
         
         try:
             # ROOT nodes already restarted in PHASE 1 with:
-            # - seed_mode=false
+            # - seed_mode=false (disabled after DAG genesis)
             # - static_genesis_event_hash set
             # - GDB node list preserved
             
-            # Start MASTER nodes (have seed_mode=true in configs)
+            # MASTER nodes start with seed_mode=true (untouched since initial config generation)
+            # This allows them to create genesis block (first block without prev_block)
             master_services = [f"node-{nid}" for nid in master_node_ids]
-            logger.info("starting_master_nodes", services=master_services, seed_mode=True)
+            logger.info("starting_master_nodes", 
+                       services=master_services, 
+                       master_seed_mode=True,
+                       root_seed_mode=False,
+                       note="MASTER seed_mode=true for genesis block creation")
             self.compose.up(services=master_services, detach=True, wait=False)
             
             # Wait for MASTER nodes to reach LINKS_CONNECTING state
