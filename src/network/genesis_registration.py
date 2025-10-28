@@ -19,7 +19,7 @@ from ..utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-class NodeRegistrationManager:
+class NodeRegistrationManager(BaseGenesisManager):
     """
     Manages node registration and topology setup.
     
@@ -28,6 +28,10 @@ class NodeRegistrationManager:
     - Populate node lists via CLI
     - Setup root node topology
     - Add nodes to nodelists
+    
+    Inherits from BaseGenesisManager:
+    - _exec_cli(): CLI command execution
+    - _read_node_addr_from_cli(): Node address retrieval
     """
     
     def __init__(self, base_path: Path, network_name: str = "stagenet", certs_cache: Path = None):
@@ -39,9 +43,7 @@ class NodeRegistrationManager:
             network_name: Network name (default: stagenet)
             certs_cache: Path to certificates cache
         """
-        self.base_path = base_path
-        self.network_name = network_name
-        self.docker_client = docker.from_env()
+        super().__init__(base_path, network_name)
         self.certs_cache = certs_cache or (base_path / ".." / "testing" / "cache" / "certs").resolve()
     
     async def register_node_aliases(self, nodes: List[NodeConfig]) -> None:

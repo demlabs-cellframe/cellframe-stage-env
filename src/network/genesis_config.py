@@ -18,7 +18,7 @@ from ..utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-class GenesisConfigManager:
+class GenesisConfigManager(BaseGenesisManager):
     """
     Manages genesis-related configuration updates.
     
@@ -27,6 +27,10 @@ class GenesisConfigManager:
     - Update static_genesis_* parameters in chain configs
     - Update fee_addr in mainchain config
     - Manage seed_mode configuration
+    
+    Inherits from BaseGenesisManager:
+    - _exec_cli(): CLI command execution
+    - _read_node_addr_from_cli(): Node address retrieval
     """
     
     async def get_genesis_event_hash(self, chain_name: str) -> Optional[str]:

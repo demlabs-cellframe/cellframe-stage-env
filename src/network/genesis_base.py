@@ -74,9 +74,11 @@ class BaseGenesisManager:
             logger.error("cli_exec_error", container=container_name, error=str(e))
             return 1, "", str(e)
     
-    def _read_node_addr_with_retry(self, node_id: int, max_retries: int = 3) -> str:
+    def _read_node_addr_from_cli(self, node_id: int, max_retries: int = 3) -> str:
         """
-        Read node address from running container with retry logic.
+        Read node address from running container via CLI with retry logic.
+        
+        Executes 'node dump -net {network}' and parses node address from output.
         
         Args:
             node_id: Node ID (1-8)

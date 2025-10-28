@@ -30,7 +30,7 @@ class TokenGenesisManager(BaseGenesisManager):
     
     Inherits from BaseGenesisManager:
     - _exec_cli(): CLI command execution
-    - _read_node_addr_with_retry(): Node address retrieval
+    - _read_node_addr_from_cli(): Node address retrieval
     """
     
     async def generate_fee_wallet(self) -> str:

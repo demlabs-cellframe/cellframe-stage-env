@@ -29,10 +29,8 @@ class ValidatorManager(BaseGenesisManager):
     
     Inherits from BaseGenesisManager:
     - _exec_cli(): CLI command execution
-    - _read_node_addr_with_retry(): Node address retrieval
+    - _read_node_addr_from_cli(): Node address retrieval via CLI
     """
-    
-    # Methods _exec_cli() and _read_node_addr_with_retry() inherited from BaseGenesisManager
     
     async def create_validator_order(
         self,
@@ -60,7 +58,7 @@ class ValidatorManager(BaseGenesisManager):
             cert_name = f"pvt.{self.network_name}.master.{validator_idx}"
         
         # Read node address with retry logic
-        node_addr = self._read_node_addr_with_retry(node.node_id)
+        node_addr = self._read_node_addr_from_cli(node.node_id)
         
         if not node_addr:
             logger.error("cannot_create_order_no_node_addr",

@@ -19,7 +19,7 @@ from ..utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-class ChainSyncManager:
+class ChainSyncManager(BaseGenesisManager):
     """
     Manages chain synchronization and datum processing.
     
@@ -27,6 +27,10 @@ class ChainSyncManager:
     - Network synchronization (all chains or specific chain)
     - Zerochain datum processing through DAG-PoA
     - Waiting for block creation
+    
+    Inherits from BaseGenesisManager:
+    - _exec_cli(): CLI command execution
+    - _read_node_addr_from_cli(): Node address retrieval
     """
     
     async def process_zerochain_datum(self, datum_hash: str, root_nodes: List[NodeConfig], timeout: int = 120) -> None:

@@ -15,6 +15,7 @@ import time
 
 from ..utils.logger import get_logger
 from .models import NodeConfig
+from .genesis_base import BaseGenesisManager
 from .genesis_config import GenesisConfigManager
 from .genesis_token import TokenGenesisManager
 from .genesis_sync import ChainSyncManager
@@ -24,8 +25,16 @@ from .genesis_validator import ValidatorManager
 logger = get_logger(__name__)
 
 
-class GenesisInitializer:
-    """Initialize genesis state for stagenet."""
+class GenesisInitializer(BaseGenesisManager):
+    """
+    Initialize genesis state for stagenet.
+    
+    Orchestrates genesis initialization by delegating to specialized managers.
+    
+    Inherits from BaseGenesisManager:
+    - _exec_cli(): CLI command execution
+    - _read_node_addr_with_retry(): Node address retrieval
+    """
     
     def __init__(self, base_path: Path, network_name: str = "stagenet", config_path: Path = None):
         """
@@ -36,9 +45,8 @@ class GenesisInitializer:
             network_name: Network name (default: stagenet)
             config_path: Optional path to config file
         """
-        self.base_path = base_path
-        self.network_name = network_name
-        self.docker_client = docker.from_env()
+        super().__init__(base_path, network_name)
+        
         # Load cache dir from config
         from ..config.loader import ConfigLoader
         config_loader = ConfigLoader(base_path, config_path)
