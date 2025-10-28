@@ -10,6 +10,7 @@ from typing import List, Optional
 
 import docker
 
+from .genesis_base import BaseGenesisManager
 from .models import NodeConfig
 from ..utils.logger import get_logger
 
@@ -27,45 +28,6 @@ class GenesisConfigManager:
     - Update fee_addr in mainchain config
     - Manage seed_mode configuration
     """
-    
-    def __init__(self, base_path: Path, network_name: str = "stagenet"):
-        """
-        Initialize genesis config manager.
-        
-        Args:
-            base_path: Base path to stage-env directory
-            network_name: Network name (default: stagenet)
-        """
-        self.base_path = base_path
-        self.network_name = network_name
-        self.docker_client = docker.from_env()
-    
-    def _exec_cli(self, node_id: int, command: str, check_output: bool = True) -> tuple:
-        """
-        Execute CLI command inside container.
-        
-        Args:
-            node_id: Node ID (1-8)
-            command: CLI command without 'cellframe-node-cli' prefix
-            check_output: Whether to check for errors in output
-            
-        Returns:
-            Tuple of (exit_code, stdout_str, stderr_str)
-        """
-        container_name = f"cellframe-stage-node-{node_id}"
-        container = self.docker_client.containers.get(container_name)
-        
-        full_cmd = f"cellframe-node-cli {command}"
-        cmd_array = ["sh", "-c", full_cmd]
-        
-        result = container.exec_run(cmd_array, demux=True)
-        exit_code = result.exit_code
-        stdout, stderr = result.output
-        
-        stdout_str = stdout.decode('utf-8') if stdout else ""
-        stderr_str = stderr.decode('utf-8') if stderr else ""
-        
-        return (exit_code, stdout_str, stderr_str)
     
     async def get_genesis_event_hash(self, chain_name: str) -> Optional[str]:
         """

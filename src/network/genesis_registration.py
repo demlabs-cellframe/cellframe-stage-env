@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 
 import docker
 
+from .genesis_base import BaseGenesisManager
 from .models import NodeConfig
 from ..utils.logger import get_logger
 
@@ -42,33 +43,6 @@ class NodeRegistrationManager:
         self.network_name = network_name
         self.docker_client = docker.from_env()
         self.certs_cache = certs_cache or (base_path / ".." / "testing" / "cache" / "certs").resolve()
-    
-    def _exec_cli(self, node_id: int, command: str, check_output: bool = True) -> tuple:
-        """
-        Execute CLI command inside container.
-        
-        Args:
-            node_id: Node ID (1-8)
-            command: CLI command without 'cellframe-node-cli' prefix
-            check_output: Whether to check for errors in output
-            
-        Returns:
-            Tuple of (exit_code, stdout_str, stderr_str)
-        """
-        container_name = f"cellframe-stage-node-{node_id}"
-        container = self.docker_client.containers.get(container_name)
-        
-        full_cmd = f"cellframe-node-cli {command}"
-        cmd_array = ["sh", "-c", full_cmd]
-        
-        result = container.exec_run(cmd_array, demux=True)
-        exit_code = result.exit_code
-        stdout, stderr = result.output
-        
-        stdout_str = stdout.decode('utf-8') if stdout else ""
-        stderr_str = stderr.decode('utf-8') if stderr else ""
-        
-        return (exit_code, stdout_str, stderr_str)
     
     async def register_node_aliases(self, nodes: List[NodeConfig]) -> None:
         """
