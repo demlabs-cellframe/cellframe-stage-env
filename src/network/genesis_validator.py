@@ -117,7 +117,8 @@ class ValidatorManager(BaseGenesisManager):
         """
         Verify that all nodes can see all validator orders.
         
-        Uses ValidatorMonitor service for periodic checking with structured logging.
+        Creates ValidatorMonitor on-demand for this specific verification.
+        Monitor is SILENT after this call completes - no background tasks!
         
         This is critical for ESBocs consensus - if nodes don't see orders,
         they will switch off validator mode and refuse to create blocks.
@@ -146,6 +147,8 @@ class ValidatorManager(BaseGenesisManager):
             verbose=monitoring_cfg.get("verbose", True)
         )
         
+        # Create monitor ON-DEMAND for this verification only
+        # It will be garbage collected after wait_until_ready() completes
         monitor = ValidatorMonitor(
             nodes=nodes,
             network_name=self.network_name,
@@ -155,6 +158,7 @@ class ValidatorManager(BaseGenesisManager):
         
         try:
             await monitor.wait_until_ready(name="validator_orders_verification")
+            # Monitor is now SILENT - no more logging until next call
         except TimeoutError as e:
             raise RuntimeError(str(e)) from e
     

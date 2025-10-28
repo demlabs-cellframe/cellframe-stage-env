@@ -34,11 +34,20 @@ class BaseMonitor(ABC):
     """
     Base class for all monitoring services.
     
+    Stateless monitor - creates fresh state for each wait_until_ready() call.
+    Monitor is SILENT when not actively waiting for a condition.
+    
     Provides:
     - Periodic polling with configurable intervals
-    - Progress logging at regular intervals
+    - Progress logging at regular intervals (ONLY during active wait)
     - Timeout handling
     - Structured state tracking
+    
+    Key Design:
+    - Monitors don't run in background - they wait synchronously
+    - Each wait_until_ready() call is independent
+    - No persistent state between calls
+    - Logging only happens during active waiting
     
     Usage:
         class MyMonitor(BaseMonitor):
@@ -52,6 +61,7 @@ class BaseMonitor(ABC):
         
         monitor = MyMonitor(config)
         result = await monitor.wait_until_ready(name="my_check")
+        # Monitor is now SILENT until next wait_until_ready() call
     """
     
     def __init__(self, config: MonitorConfig):
@@ -62,9 +72,6 @@ class BaseMonitor(ABC):
             config: Monitor configuration
         """
         self.config = config
-        self._start_time: Optional[float] = None
-        self._last_log_time: Optional[float] = None
-        self._iteration = 0
     
     @abstractmethod
     async def _check_condition(self) -> tuple[bool, Dict[str, Any]]:
@@ -93,9 +100,12 @@ class BaseMonitor(ABC):
         """
         pass
     
-    def _should_log(self) -> bool:
+    def _should_log(self, last_log_time: Optional[float]) -> bool:
         """
         Check if it's time to log progress.
+        
+        Args:
+            last_log_time: Timestamp of last log, or None for first log
         
         Returns:
             True if enough time has passed since last log
@@ -103,10 +113,10 @@ class BaseMonitor(ABC):
         if not self.config.verbose:
             return False
         
-        if self._last_log_time is None:
+        if last_log_time is None:
             return True
         
-        return (time.time() - self._last_log_time) >= self.config.log_interval
+        return (time.time() - last_log_time) >= self.config.log_interval
     
     async def wait_until_ready(
         self,
@@ -131,9 +141,9 @@ class BaseMonitor(ABC):
             return {}
         
         timeout = timeout or self.config.timeout
-        self._start_time = time.time()
-        self._last_log_time = None
-        self._iteration = 0
+        start_time = time.time()
+        last_log_time = None
+        iteration = 0
         
         logger.info(f"{name}_started",
                    timeout=timeout,
@@ -141,17 +151,17 @@ class BaseMonitor(ABC):
                    log_interval=self.config.log_interval)
         
         while True:
-            self._iteration += 1
-            elapsed = time.time() - self._start_time
+            iteration += 1
+            elapsed = time.time() - start_time
             
             # Check timeout
             if elapsed >= timeout:
                 logger.error(f"{name}_timeout",
                            elapsed=f"{elapsed:.1f}s",
-                           iterations=self._iteration)
+                           iterations=iteration)
                 raise TimeoutError(
                     f"{name} timeout after {elapsed:.1f}s "
-                    f"({self._iteration} iterations)"
+                    f"({iteration} iterations)"
                 )
             
             # Check condition
@@ -159,15 +169,15 @@ class BaseMonitor(ABC):
                 condition_met, state = await self._check_condition()
                 
                 # Log progress if needed
-                if self._should_log():
+                if self._should_log(last_log_time):
                     self._log_progress(elapsed, state)
-                    self._last_log_time = time.time()
+                    last_log_time = time.time()
                 
                 # Check if done
                 if condition_met:
                     logger.info(f"{name}_completed",
                                elapsed=f"{elapsed:.1f}s",
-                               iterations=self._iteration,
+                               iterations=iteration,
                                final_state=state)
                     return state
                 
