@@ -100,8 +100,8 @@ class ValidatorMonitor(BaseMonitor):
                 )
                 
                 if exit_code == 0:
-                    # Count orders in output
-                    order_count = stdout_str.count("Order")
+                    # Count orders in output (look for "order:" prefix, case-insensitive)
+                    order_count = stdout_str.lower().count("order:")
                     has_all_orders = order_count >= self.expected_order_count
                     
                     self.node_states[node.node_id] = {
