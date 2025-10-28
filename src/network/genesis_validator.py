@@ -153,21 +153,29 @@ class ValidatorManager(BaseGenesisManager):
                         # Count orders in output (simple heuristic: count "Order" keyword)
                         order_count = stdout_str.count("Order")
                         
+                        # DETAILED LOGGING: Show actual output for debugging
+                        logger.info("order_list_output",
+                                   node_id=node.node_id,
+                                   order_count=order_count,
+                                   output_preview=stdout_str[:500] if stdout_str else "EMPTY")
+                        
                         if order_count >= expected_count:
                             nodes_with_orders += 1
                             logger.debug("node_sees_all_orders",
                                        node_id=node.node_id,
                                        order_count=order_count)
                         else:
-                            logger.debug("node_missing_orders",
+                            logger.warning("node_missing_orders",
                                        node_id=node.node_id,
                                        found=order_count,
-                                       expected=expected_count)
+                                       expected=expected_count,
+                                       full_output=stdout_str)
                     else:
                         logger.warning("order_list_failed",
                                      node_id=node.node_id,
                                      exit_code=exit_code,
-                                     stderr=stderr_str[:200])
+                                     stderr=stderr_str[:200],
+                                     stdout=stdout_str[:200])
                 
                 except Exception as e:
                     logger.warning("order_check_exception",
