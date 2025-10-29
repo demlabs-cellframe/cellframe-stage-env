@@ -162,5 +162,6 @@ class ValidatorMonitor(BaseMonitor):
                                  found=node_state["order_count"],
                                  expected=expected,
                                  error=node_state.get("error"),
+                                 stderr=node_state.get("stderr"),
                                  output=node_state.get("output_preview"))
 

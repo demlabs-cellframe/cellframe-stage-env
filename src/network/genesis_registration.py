@@ -34,7 +34,14 @@ class NodeRegistrationManager(BaseGenesisManager):
     - _read_node_addr_from_cli(): Node address retrieval
     """
     
-    def __init__(self, base_path: Path, network_name: str = "stagenet", config_path: Path = None, certs_cache: Path = None):
+    def __init__(
+        self, 
+        base_path: Path, 
+        network_name: str = "stagenet", 
+        config_path: Path = None, 
+        certs_cache: Path = None,
+        state_manager = None
+    ):
         """
         Initialize node registration manager.
         
@@ -43,9 +50,11 @@ class NodeRegistrationManager(BaseGenesisManager):
             network_name: Network name (default: stagenet)
             config_path: Optional path to stage-env.cfg
             certs_cache: Path to certificates cache
+            state_manager: Optional NodeStateManager for intelligent state waiting
         """
         super().__init__(base_path, network_name, config_path)
         self.certs_cache = certs_cache or (base_path / ".." / "testing" / "cache" / "certs").resolve()
+        self.state_manager = state_manager
     
     async def register_node_aliases(self, nodes: List[NodeConfig]) -> None:
         """
@@ -310,6 +319,85 @@ class NodeRegistrationManager(BaseGenesisManager):
                           total=len(nodes),
                           note="GDB sync requires links - will propagate after initial link establishment or offline/online cycle")
     
+    async def wait_for_node_list_propagation(
+        self,
+        nodes: List[NodeConfig],
+        expected_count: int,
+        timeout: float = 60.0,
+        poll_interval: float = 2.0
+    ) -> None:
+        """
+        Wait until all specified nodes have received the node list from GDB.
+        
+        This is critical to prevent MDBX assertion crashes when nodes try to create
+        DB contexts before the node list is available.
+        
+        Args:
+            nodes: List of nodes to check
+            expected_count: Expected number of nodes in the list
+            timeout: Maximum time to wait (seconds)
+            poll_interval: Time between checks (seconds)
+            
+        Raises:
+            TimeoutError: If not all nodes receive the list within timeout
+        """
+        import time
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            nodes_with_list = 0
+            
+            for node in nodes:
+                try:
+                    exit_code, stdout, _ = self._exec_cli(
+                        node.node_id,
+                        f"node list -net {self.network_name}",
+                        check_output=False
+                    )
+                    
+                    # Check if node has full list
+                    if exit_code == 0:
+                        # Count "Got N nodes:"
+                        match = re.search(r'Got\s+(\d+)\s+nodes', stdout, re.IGNORECASE)
+                        if match:
+                            node_count = int(match.group(1))
+                            if node_count >= expected_count:
+                                nodes_with_list += 1
+                                logger.debug("node_has_full_list",
+                                           node_id=node.node_id,
+                                           count=node_count)
+                except Exception as e:
+                    logger.debug("node_list_check_error",
+                               node=node.node_id,
+                               error=str(e)[:100])
+            
+            # All nodes have the list?
+            if nodes_with_list >= len(nodes):
+                elapsed = time.time() - start_time
+                logger.info("all_nodes_received_node_list",
+                           nodes=nodes_with_list,
+                           total=len(nodes),
+                           expected_count=expected_count,
+                           elapsed=round(elapsed, 1))
+                return
+            
+            # Log progress
+            elapsed = time.time() - start_time
+            if elapsed > 5.0:  # Only log after 5 seconds
+                logger.info("node_list_propagation_progress",
+                           ready=nodes_with_list,
+                           total=len(nodes),
+                           missing=len(nodes) - nodes_with_list,
+                           elapsed=round(elapsed, 1))
+            
+            await asyncio.sleep(poll_interval)
+        
+        # Timeout
+        raise TimeoutError(
+            f"Nodes failed to receive node list after {timeout}s. "
+            f"Only {nodes_with_list}/{len(nodes)} nodes have full list."
+        )
+    
     async def soft_network_reconnect(self, nodes: List[NodeConfig], wait_for_links: bool = True) -> None:
         """
         Soft network reconnection via offline/online cycle (WITHOUT container restart).
@@ -331,23 +419,48 @@ class NodeRegistrationManager(BaseGenesisManager):
         for node in nodes:
             try:
                 self._exec_cli(node.node_id, f"net -net {self.network_name} go offline", check_output=False)
-                logger.debug("node_offline", node_id=node.node_id)
+                logger.debug("node_offline_command_sent", node_id=node.node_id)
             except Exception as e:
                 logger.warning("failed_to_go_offline", node_id=node.node_id, error=str(e))
         
-        # Small delay to ensure offline processed on all nodes
-        await asyncio.sleep(2)
+        # Intelligent waiting for OFFLINE state if state_manager is available
+        # NOTE: We check NETWORK state via CLI, not container state via Docker API
+        # If "go offline" stops containers, this will gracefully handle UNKNOWN states
+        if self.state_manager:
+            try:
+                await self.state_manager.wait_for_nodes_offline(nodes, timeout=30.0)
+                logger.info("nodes_confirmed_offline", count=len(nodes))
+            except TimeoutError as e:
+                # Some nodes may not reach offline (e.g., if containers stop)
+                # This is acceptable - we continue anyway
+                logger.warning("offline_timeout_continuing_anyway", 
+                             nodes=len(nodes), error=str(e))
+        else:
+            # Fallback: simple delay if state_manager not available
+            await asyncio.sleep(2)
         
         # Step 2: Bring all nodes online simultaneously
         logger.info("bringing_all_nodes_online")
         for node in nodes:
             try:
                 self._exec_cli(node.node_id, f"net -net {self.network_name} go online", check_output=False)
-                logger.debug("node_online", node_id=node.node_id)
+                logger.debug("node_online_command_sent", node_id=node.node_id)
             except Exception as e:
                 logger.warning("failed_to_go_online", node_id=node.node_id, error=str(e))
         
-        logger.info("network_reconnection_initiated")
+        # Intelligent waiting for ONLINE state
+        if self.state_manager:
+            try:
+                await self.state_manager.wait_for_nodes_online(nodes, timeout=60.0)
+                logger.info("all_nodes_confirmed_online", count=len(nodes))
+            except TimeoutError as e:
+                logger.warning("online_timeout_continuing_anyway", 
+                             nodes=len(nodes), error=str(e))
+        else:
+            # Fallback: simple delay
+            await asyncio.sleep(2)
+        
+        logger.info("network_reconnection_complete", nodes=len(nodes))
         
         # Step 3: Wait for links establishment (if requested)
         if wait_for_links:

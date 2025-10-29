@@ -61,7 +61,7 @@ x-cf-node-template: &cf-node-template
     NETWORK_NAME: ${NETWORK_NAME:-stagenet}
     DAP_DEBUG: ${DAP_DEBUG:-1}
     CELLFRAME_DEBUG: ${CELLFRAME_DEBUG:-1}
-  restart: unless-stopped
+  restart: "no"  # Disabled for testing - if container crashes, we need to see it
   healthcheck:
     test: ["CMD", "sh", "-c", "pgrep -f cellframe-node > /dev/null"]
     interval: 10s

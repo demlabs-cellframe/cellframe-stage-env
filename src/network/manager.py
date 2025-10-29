@@ -17,11 +17,14 @@ from ..config.loader import ConfigLoader, NetworkTopology
 from ..config.generator import ConfigGenerator
 from ..docker.compose import DockerComposeManager
 from ..monitoring.health import HealthChecker, HealthStatus
+from ..monitoring.network_consensus import NetworkConsensusMonitor
 from ..utils.logger import get_logger
 from ..utils.artifacts import ArtifactsManager
 from ..snapshots.manager import SnapshotManager, SnapshotMode
 from .models import NodeConfig
 from .genesis import GenesisInitializer
+from .node_lifecycle import NodeLifecycleManager
+from .node_states import NodeStateManager
 
 logger = get_logger(__name__)
 
@@ -67,6 +70,20 @@ class NetworkManager:
             network_name=self.topology.network.name,
             config_path=config_path
         )
+        
+        # Node lifecycle manager for graceful restarts
+        self.lifecycle = NodeLifecycleManager(project_name=self.compose.project_name)
+        
+        # Node state manager for intelligent waiting
+        self.state_manager = NodeStateManager(
+            docker_client=self.genesis.docker_client,
+            project_name=self.compose.project_name,
+            cli_path=self.node_cli_path,
+            network_name=self.topology.network.name
+        )
+        
+        # Inject state_manager into genesis managers for intelligent state waiting
+        self.genesis.registration_mgr.state_manager = self.state_manager
         
         # Node configurations
         self.nodes: Dict[str, NodeConfig] = {}
@@ -359,11 +376,8 @@ class NetworkManager:
             self.genesis.config_mgr.disable_seed_mode_in_configs(root_node_ids)
             
             # Step 2: Hard restart ROOT nodes with config reload
-            from .node_lifecycle import NodeLifecycleManager
-            lifecycle_mgr = NodeLifecycleManager(project_name=self.compose.project_name)
-            
             logger.info("hard_restarting_root_nodes_for_config_reload")
-            await lifecycle_mgr.hard_restart_with_config_reload(
+            await self.lifecycle.hard_restart_with_config_reload(
                 service_names=root_services,
                 compose_manager=self.compose,
                 flush_timeout=60
@@ -394,39 +408,80 @@ class NetworkManager:
             
             # MASTER nodes start with seed_mode=true (untouched since initial config generation)
             # This allows them to create genesis block (first block without prev_block)
+            
+            # Use PHASED STARTUP: MASTER nodes start AFTER ROOT nodes are stable
+            # This ensures proper network topology formation
+            logger.info("using_phased_startup_for_master_nodes")
             master_services = [f"node-{nid}" for nid in master_node_ids]
             logger.info("starting_master_nodes", 
                        services=master_services, 
                        master_seed_mode=True,
                        root_seed_mode=False,
                        note="MASTER seed_mode=true for genesis block creation")
+            
+            # Start MASTER nodes and wait for them to reach ONLINE state
             self.compose.up(services=master_services, detach=True, wait=False)
+            await self.state_manager.wait_for_nodes_online(master_nodes, timeout=60.0)
+            logger.info("master_nodes_online_and_ready")
             
-            # Wait for MASTER nodes to reach LINKS_CONNECTING state
+            # Now both ROOT and MASTER nodes are online and stable
             all_validator_nodes = root_nodes + master_nodes
-            all_validator_nodes_dict = {f"node{n.node_id}": n for n in all_validator_nodes}
-            consensus_monitor_all = NetworkConsensusMonitor(
-                nodes=all_validator_nodes_dict,
-                node_cli_path=self.node_cli_path
-            )
             
-            logger.info("waiting_for_all_validators_links_connecting")
-            await consensus_monitor_all.wait_for_links_connecting_state(timeout=60.0)
-            logger.info("all_validators_ready_for_registration")
+            # Register ONLY MASTER nodes (4,5,6) in the node list
+            # ROOT nodes (1,2,3) were already registered in Phase 1 and are in GDB
+            # MASTER nodes are NEW and need to be registered now
+            logger.info("registering_master_nodes_in_node_list")
             
-            # Re-register full mesh node list (ROOT + MASTER)
-            # Needed to ensure all 6 nodes are in each node's list before order creation
-            logger.info("re_registering_full_validator_mesh")
+            # Give MASTER nodes time to initialize network subsystems
+            # Node addresses are generated automatically during network init
+            # The registration process will read addresses via CLI when needed
+            logger.info("waiting_for_master_nodes_network_init")
+            await asyncio.sleep(10.0)
+            logger.info("master_nodes_network_initialized")
+            
+            # Register MASTER nodes in the network
+            # IMPORTANT: Pass ALL validator nodes (ROOT + MASTER) so ROOT nodes can register MASTER nodes
+            # ROOT nodes have admin rights and will register all nodes from the list
             await self.genesis.registration_mgr.register_all_nodes_via_cli(all_validator_nodes)
-            logger.info("validator_mesh_registered")
+            logger.info("master_nodes_registered")
             
-            # Soft reconnect to establish links quickly
-            logger.info("soft_reconnect_for_consensus")
-            await self.genesis.registration_mgr.soft_network_reconnect(all_validator_nodes, wait_for_links=True)
-            logger.info("links_established_for_consensus")
+            # CRITICAL: Trigger GDB sync IMMEDIATELY after registration
+            # This propagates node list BEFORE nodes try to create DB contexts
+            # Prevents MDBX assertion fail when nodes access empty node list
+            logger.info("triggering_gdb_sync_for_node_list")
+            await self.genesis.validator_mgr.sync_orders_across_network(all_validator_nodes)
+            logger.info("gdb_sync_triggered")
+            
+            # Give GDB time to propagate node list (2-5 seconds usually enough)
+            logger.info("waiting_for_gdb_propagation")
+            await asyncio.sleep(5.0)
+            logger.info("gdb_propagation_complete")
+            
+            # CRITICAL ORDERING: GDB sync requires active links!
+            # First establish links via offline/online cycle
+            logger.info("soft_reconnect_master_nodes_to_establish_links")
+            await self.genesis.registration_mgr.soft_network_reconnect(master_nodes, wait_for_links=True)
+            logger.info("master_links_established")
+            
+            # NOW wait for node list to propagate via GDB over established links
+            # Without this, MASTER nodes crash with MDBX assertion fail when creating DB contexts
+            logger.info("waiting_for_master_nodes_to_receive_node_list_via_gdb")
+            await self.genesis.registration_mgr.wait_for_node_list_propagation(
+                master_nodes, 
+                expected_count=len(all_validator_nodes),
+                timeout=60.0
+            )
+            logger.info("master_nodes_have_full_node_list")
             
             # Wait for network consensus with full node list
             logger.info("waiting_for_root_and_master_consensus")
+            all_validator_nodes_dict = {f"node{n.node_id}": n for n in all_validator_nodes}
+            consensus_monitor_all = NetworkConsensusMonitor(
+                nodes=all_validator_nodes_dict,
+                node_cli_path=self.node_cli_path,
+                network_name=self.topology.network.name
+            )
+            
             try:
                 await consensus_monitor_all.wait_for_network_ready(timeout=120.0)
                 logger.info("all_validator_nodes_ready")
@@ -459,6 +514,42 @@ class NetworkManager:
             logger.info("verifying_validator_orders_visibility")
             await self.genesis.validator_mgr.verify_validator_orders(all_validator_nodes, expected_count=len(master_nodes))
             logger.info("validator_orders_verified_on_all_nodes")
+            
+            # CRITICAL: HARD RESTART MASTER nodes to reload validator orders
+            # ESBocs consensus loads orders only at initialization, so we must restart
+            # to enable validator mode with newly created orders
+            logger.info("=== HARD RESTART MASTER: Loading Validator Orders ===")
+            logger.info("hard_restart_master_nodes_for_orders")
+            await self.lifecycle.hard_restart_with_config_reload(
+                service_names=master_services,
+                compose_manager=self.compose,
+                flush_timeout=60,
+                startup_timeout=60
+            )
+            logger.info("master_nodes_restarted_with_orders")
+            
+            # Wait for MASTER nodes to come back online and re-establish consensus
+            logger.info("waiting_for_master_consensus_after_restart")
+            
+            # Create nodes dict for master nodes (keys must be "node4", "node5", "node6")
+            master_nodes_dict = {f"node{n.node_id}": n for n in master_nodes}
+            consensus_monitor_master = NetworkConsensusMonitor(
+                nodes=master_nodes_dict,
+                node_cli_path=self.node_cli_path,
+                network_name=self.topology.network.name
+            )
+            try:
+                await consensus_monitor_master.wait_for_network_ready(timeout=120.0)
+                logger.info("master_nodes_ready_with_validator_mode")
+            except TimeoutError as e:
+                logger.error("master_consensus_failed_after_restart", error=str(e))
+                raise RuntimeError(f"Master nodes failed to reach consensus after restart: {e}")
+            
+            # Soft reconnect ONLY master nodes to quickly re-establish connectivity
+            # ROOT nodes are already online and stable, no need to restart them
+            logger.info("soft_reconnect_master_nodes_only")
+            await self.genesis.registration_mgr.soft_network_reconnect(master_nodes, wait_for_links=True)
+            logger.info("master_links_reestablished")
             
             # CRITICAL: Sync zerochain to MASTER nodes (emission was created in Phase 1!)
             # Without this, master nodes can't see emission datum → tx_create fails
@@ -498,10 +589,11 @@ class NetworkManager:
             # Step 2: Hard restart ALL validators with config reload
             all_validator_services = root_services + master_services
             logger.info("hard_restarting_all_validators_for_config_reload")
-            await lifecycle_mgr.hard_restart_with_config_reload(
+            await self.lifecycle.hard_restart_with_config_reload(
                 service_names=all_validator_services,
                 compose_manager=self.compose,
-                flush_timeout=60
+                flush_timeout=60,
+                startup_timeout=60
             )
             
             # Step 3: Wait for ALL validators to come back online

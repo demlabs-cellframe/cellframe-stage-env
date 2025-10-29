@@ -61,11 +61,11 @@ class NodeLifecycleManager:
                    services=service_names,
                    timeout=flush_timeout)
         
-        # Step 1: Send 'exit' command to all nodes via CLI
+        # Step 1: Send 'exit' command to all nodes via CLI for graceful shutdown
         logger.info("sending_exit_commands_to_nodes")
         for service in service_names:
             try:
-                container_name = f"{self.project_name}-{service}-1"
+                container_name = f"{self.project_name}-{service}"
                 container = self.docker_client.containers.get(container_name)
                 
                 # Send 'exit' command via cellframe-node-cli
@@ -73,10 +73,13 @@ class NodeLifecycleManager:
                 cmd = ["sh", "-c", "cellframe-node-cli exit"]
                 result = container.exec_run(cmd, demux=True)
                 
-                if result.exit_code == 0:
-                    logger.debug("exit_command_sent", container=container_name)
+                # Exit codes: 0=clean, 137=SIGKILL, 252=graceful shutdown - all are OK
+                if result.exit_code in (0, 137, 252):
+                    logger.debug("exit_command_sent", 
+                                container=container_name,
+                                exit_code=result.exit_code)
                 else:
-                    logger.warning("exit_command_failed",
+                    logger.warning("exit_command_unexpected_code",
                                   container=container_name,
                                   exit_code=result.exit_code)
                     
@@ -96,7 +99,7 @@ class NodeLifecycleManager:
             
             for service in service_names:
                 try:
-                    container_name = f"{self.project_name}-{service}-1"
+                    container_name = f"{self.project_name}-{service}"
                     container = self.docker_client.containers.get(container_name)
                     container.reload()  # Refresh status
                     
@@ -143,7 +146,7 @@ class NodeLifecycleManager:
         
         for service in service_names:
             try:
-                container_name = f"{self.project_name}-{service}-1"
+                container_name = f"{self.project_name}-{service}"
                 container = self.docker_client.containers.get(container_name)
                 container.reload()
                 
@@ -178,26 +181,28 @@ class NodeLifecycleManager:
         missing_count = 0
         
         for node_id in node_ids:
-            gdb_dir = Path(cache_path) / "data" / f"node{node_id}" / "gdb"
+            # Correct path: .../nodeX/lib/global_db/gdb-mdbx/mdbx.dat
+            gdb_file = Path(cache_path) / "data" / f"node{node_id}" / "lib" / "global_db" / "gdb-mdbx" / "mdbx.dat"
             
-            if not gdb_dir.exists():
-                logger.warning("gdb_directory_not_found",
+            if not gdb_file.exists():
+                logger.warning("gdb_file_not_found",
                               node_id=node_id,
-                              path=str(gdb_dir))
+                              path=str(gdb_file))
                 missing_count += 1
                 continue
             
-            # Count GDB files
-            gdb_files = list(gdb_dir.glob("**/*.gdb"))
-            if len(gdb_files) == 0:
-                logger.warning("gdb_directory_empty",
+            # Check file size to ensure it's not just an empty placeholder
+            file_size = gdb_file.stat().st_size
+            if file_size < 1024:  # Less than 1KB is likely empty/corrupt
+                logger.warning("gdb_file_too_small",
                               node_id=node_id,
-                              path=str(gdb_dir))
+                              size_bytes=file_size,
+                              path=str(gdb_file))
                 missing_count += 1
             else:
-                logger.debug("gdb_files_found",
+                logger.debug("gdb_file_verified",
                             node_id=node_id,
-                            files_count=len(gdb_files))
+                            size_mb=round(file_size / 1024 / 1024, 2))
         
         if missing_count == 0:
             logger.info("all_gdb_files_verified", nodes=len(node_ids))
@@ -266,6 +271,8 @@ class NodeLifecycleManager:
         
         # Step 3: Restart containers (configs will be reloaded)
         logger.info("restarting_containers_config_reload")
+        logger.info("starting_services", services=service_names)
         compose_manager.up(services=service_names, detach=True, wait=False)
+        logger.info("services_started")
         logger.info("containers_restarted_configs_reloaded")
 

@@ -269,9 +269,7 @@ class GenesisConfigManager(BaseGenesisManager):
             logger.warning("node_ip_not_found_cannot_regenerate", node_id=node_id)
             return
         
-        # Use ConfigGenerator to regenerate with new context
-        config_gen = ConfigGenerator(self.base_path)
-        
+        # Regenerate config from Jinja2 template with updated context
         from jinja2 import Template
         template_path = self.base_path / "config" / "templates" / "base" / "cellframe-node.cfg.j2"
         template_content = template_path.read_text()
