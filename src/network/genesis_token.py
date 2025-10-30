@@ -310,6 +310,32 @@ class TokenGenesisManager(BaseGenesisManager):
             if hash_match:
                 tx_hash = hash_match.group(1)
                 logger.info("first_transaction_created", token="TCELL", hash=tx_hash, format="plain_text")
+                
+                # CRITICAL DIAGNOSTIC: Verify TX is actually in mempool
+                logger.info("verifying_tx_in_mempool", tx_hash=tx_hash[:16])
+                import asyncio
+                await asyncio.sleep(2.0)  # Give time for mempool placement
+                
+                exit_code_mempool, stdout_mempool, _ = self._exec_cli(
+                    first_master.node_id,
+                    f"mempool_list -net {self.network_name} -chain main",
+                    check_output=False
+                )
+                
+                if exit_code_mempool == 0 and stdout_mempool:
+                    # Check if TX is in mempool
+                    if tx_hash in stdout_mempool:
+                        logger.info("tx_confirmed_in_mempool", tx_hash=tx_hash[:16])
+                    else:
+                        # Count total TX in mempool
+                        total_match = re.search(r'total:\s*stagenet\.main:\s*(\d+)', stdout_mempool, re.IGNORECASE)
+                        total_tx = int(total_match.group(1)) if total_match else 0
+                        
+                        logger.error("tx_not_in_mempool",
+                                   tx_hash=tx_hash[:16],
+                                   total_tx_in_mempool=total_tx,
+                                   mempool_output=stdout_mempool[:500])
+                
                 return tx_hash
             
             logger.error("tx_hash_not_found", output=stdout_str[:200])

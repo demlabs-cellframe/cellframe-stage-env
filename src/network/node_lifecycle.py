@@ -275,4 +275,108 @@ class NodeLifecycleManager:
         compose_manager.up(services=service_names, detach=True, wait=False)
         logger.info("services_started")
         logger.info("containers_restarted_configs_reloaded")
+    
+    async def sequential_restart_with_config_reload(
+        self,
+        service_groups: List[List[str]],
+        compose_manager,
+        state_manager,
+        flush_timeout: int = 60,
+        startup_timeout: int = 60,
+        inter_group_delay: float = 5.0
+    ) -> None:
+        """
+        Sequential hard restart: Restart nodes group-by-group to maintain GDB sync.
+        
+        This prevents MDBX assertion crashes by ensuring at least some nodes
+        are always online to provide GDB sync for node list.
+        
+        Critical for scenarios where:
+        - All nodes need config reload (seed_mode, static_genesis_*)
+        - Node list must be preserved via GDB
+        - Simultaneous restart would cause empty node list → MDBX crash
+        
+        Process:
+        1. Restart first group → wait online
+        2. Wait for GDB sync (ensures next group can get node list)
+        3. Restart next group → previous groups provide GDB sync
+        4. Repeat until all groups restarted
+        
+        Args:
+            service_groups: List of service groups [[root nodes], [master nodes]]
+                           e.g., [["node-1"], ["node-2"], ["node-3"], ["node-4", "node-5", "node-6"]]
+            compose_manager: DockerComposeManager instance
+            state_manager: NodeStateManager for waiting nodes online
+            flush_timeout: Timeout for graceful shutdown (seconds)
+            startup_timeout: Timeout for container startup (seconds)
+            inter_group_delay: Delay between groups for GDB sync (seconds)
+        """
+        logger.info("sequential_restart_with_config_reload",
+                   groups=len(service_groups),
+                   total_services=sum(len(g) for g in service_groups))
+        
+        for group_idx, service_group in enumerate(service_groups, 1):
+            logger.info("restarting_group",
+                       group=group_idx,
+                       total_groups=len(service_groups),
+                       services=service_group)
+            
+            # Restart this group using standard hard restart
+            await self.hard_restart_with_config_reload(
+                service_names=service_group,
+                compose_manager=compose_manager,
+                flush_timeout=flush_timeout,
+                startup_timeout=startup_timeout
+            )
+            
+            # Extract node configs for state waiting
+            from ..config.models import NodeConfig
+            nodes_in_group = []
+            for service in service_group:
+                try:
+                    node_id = int(service.split('-')[-1])
+                    # Create minimal NodeConfig for state checking
+                    node_config = NodeConfig(
+                        node_id=node_id,
+                        role="ROOT",  # Role doesn't matter for state checking
+                        ip=f"172.20.0.{10 + node_id}",
+                        port=8079
+                    )
+                    nodes_in_group.append(node_config)
+                except (ValueError, IndexError) as e:
+                    logger.warning("could_not_parse_service_name",
+                                 service=service,
+                                 error=str(e))
+            
+            # Wait for this group to come online
+            if nodes_in_group and state_manager:
+                logger.info("waiting_for_group_online",
+                           group=group_idx,
+                           nodes=len(nodes_in_group))
+                try:
+                    await state_manager.wait_for_nodes_online(
+                        nodes_in_group,
+                        timeout=startup_timeout
+                    )
+                    logger.info("group_online",
+                               group=group_idx,
+                               nodes=len(nodes_in_group))
+                except TimeoutError as e:
+                    logger.error("group_online_timeout",
+                               group=group_idx,
+                               error=str(e))
+                    # Continue anyway - maybe nodes are initializing slowly
+            
+            # Wait for GDB sync before restarting next group
+            # This ensures next group can get node list from already running nodes
+            if group_idx < len(service_groups):
+                logger.info("waiting_for_gdb_sync_before_next_group",
+                           current_group=group_idx,
+                           delay=inter_group_delay)
+                await asyncio.sleep(inter_group_delay)
+                logger.info("gdb_sync_delay_complete")
+        
+        logger.info("sequential_restart_complete",
+                   groups=len(service_groups),
+                   total_services=sum(len(g) for g in service_groups))
 

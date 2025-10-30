@@ -419,8 +419,64 @@ class NetworkManager:
                        root_seed_mode=False,
                        note="MASTER seed_mode=true for genesis block creation")
             
-            # Start MASTER nodes and wait for them to reach ONLINE state
+            # Start MASTER nodes
             self.compose.up(services=master_services, detach=True, wait=False)
+            logger.info("master_nodes_containers_started")
+            
+            # CRITICAL: ROOT nodes already have node list in GDB from Phase 1
+            # MASTER nodes need to sync node list from ROOT via bootstrap balancer
+            # This must happen BEFORE MASTER nodes try to create DB contexts (prevents MDBX crash)
+            # Bootstrap balancer allows GDB sync WITHOUT active links!
+            # We call sync IMMEDIATELY after container start (before SDK initialization creates DB contexts)
+            # Give containers 1 second to start CLI server, then trigger sync with retry
+            logger.info("waiting_for_cli_server_ready")
+            await asyncio.sleep(1.0)  # CLI server needs ~1 second to start
+            
+            logger.info("syncing_node_list_from_root_nodes_via_bootstrap")
+            for master_node in master_nodes:
+                # Retry logic: CLI may not be ready immediately after container start
+                for attempt in range(3):
+                    try:
+                        exit_code, stdout, stderr = self.genesis._exec_cli(
+                            master_node.node_id,
+                            f"net -net {self.topology.network.name} go sync",
+                            check_output=False
+                        )
+                        if exit_code == 0:
+                            logger.debug("master_node_gdb_sync_triggered", 
+                                       node_id=master_node.node_id,
+                                       attempt=attempt + 1)
+                            break
+                        else:
+                            if attempt < 2:  # Not last attempt
+                                logger.debug("master_node_gdb_sync_retry",
+                                           node_id=master_node.node_id,
+                                           attempt=attempt + 1,
+                                           exit_code=exit_code)
+                                await asyncio.sleep(1.0)
+                            else:
+                                logger.warning("master_node_gdb_sync_failed",
+                                            node_id=master_node.node_id,
+                                            exit_code=exit_code,
+                                            stderr=stderr[:200] if stderr else "")
+                    except Exception as e:
+                        if attempt < 2:  # Not last attempt
+                            logger.debug("master_node_gdb_sync_retry_exception",
+                                       node_id=master_node.node_id,
+                                       attempt=attempt + 1,
+                                       error=str(e)[:100])
+                            await asyncio.sleep(1.0)
+                        else:
+                            logger.warning("master_node_gdb_sync_exception",
+                                         node_id=master_node.node_id,
+                                         error=str(e)[:100])
+            
+            # Give GDB sync time to propagate node list from ROOT to MASTER
+            logger.info("waiting_for_node_list_gdb_sync_propagation")
+            await asyncio.sleep(3.0)
+            logger.info("node_list_gdb_sync_complete")
+            
+            # Now wait for nodes to reach ONLINE state (after sync, so they have node list)
             await self.state_manager.wait_for_nodes_online(master_nodes, timeout=60.0)
             logger.info("master_nodes_online_and_ready")
             
@@ -436,7 +492,7 @@ class NetworkManager:
             # Node addresses are generated automatically during network init
             # The registration process will read addresses via CLI when needed
             logger.info("waiting_for_master_nodes_network_init")
-            await asyncio.sleep(10.0)
+            await asyncio.sleep(5.0)  # Reduced from 10.0 - node list already synced above
             logger.info("master_nodes_network_initialized")
             
             # Register MASTER nodes in the network
@@ -510,10 +566,11 @@ class NetworkManager:
             await self.genesis.validator_mgr.sync_orders_across_network(all_validator_nodes)
             logger.info("gdb_synced_orders_propagated")
             
-            # Verify that all nodes see all validator orders
-            logger.info("verifying_validator_orders_visibility")
-            await self.genesis.validator_mgr.verify_validator_orders(all_validator_nodes, expected_count=len(master_nodes))
-            logger.info("validator_orders_verified_on_all_nodes")
+            # Verify that MASTER nodes see all validator orders
+            # NOTE: ROOT nodes run DAG-PoA, they don't need validator orders (ESBocs-specific)
+            logger.info("verifying_validator_orders_visibility_on_master_nodes")
+            await self.genesis.validator_mgr.verify_validator_orders(master_nodes, expected_count=len(master_nodes))
+            logger.info("validator_orders_verified_on_master_nodes")
             
             # CRITICAL: HARD RESTART MASTER nodes to reload validator orders
             # ESBocs consensus loads orders only at initialization, so we must restart
@@ -540,16 +597,38 @@ class NetworkManager:
             )
             try:
                 await consensus_monitor_master.wait_for_network_ready(timeout=120.0)
-                logger.info("master_nodes_ready_with_validator_mode")
+                logger.info("master_nodes_network_consensus_achieved")
             except TimeoutError as e:
                 logger.error("master_consensus_failed_after_restart", error=str(e))
                 raise RuntimeError(f"Master nodes failed to reach consensus after restart: {e}")
             
-            # Soft reconnect ONLY master nodes to quickly re-establish connectivity
-            # ROOT nodes are already online and stable, no need to restart them
-            logger.info("soft_reconnect_master_nodes_only")
-            await self.genesis.registration_mgr.soft_network_reconnect(master_nodes, wait_for_links=True)
-            logger.info("master_links_reestablished")
+            # CRITICAL: Wait for ESBocs to load validator orders and activate validator mode
+            # Without this, TX creation will fail with "Can't place TX datum in mempool"
+            logger.info("waiting_for_esbocs_validator_mode_activation")
+            try:
+                await self.genesis.validator_mgr.wait_for_validator_mode_active(
+                    master_nodes,
+                    timeout=60.0
+                )
+                logger.info("esbocs_validator_mode_active_on_all_masters")
+            except TimeoutError as e:
+                logger.error("validator_mode_activation_failed", error=str(e))
+                raise RuntimeError(f"ESBocs validator mode failed to activate: {e}")
+            
+            # DO NOT soft reconnect here! Hard restart already established network connections
+            # soft_network_reconnect would do go offline → STOPS ESBocs consensus timer!
+            # Links will be established automatically as nodes come online
+            logger.info("waiting_for_master_links_after_restart")
+            consensus_monitor_master_links = NetworkConsensusMonitor(
+                nodes=master_nodes_dict,
+                node_cli_path=self.node_cli_path,
+                network_name=self.topology.network.name
+            )
+            try:
+                await consensus_monitor_master_links.wait_for_links_established(timeout=60.0)
+                logger.info("master_links_established_after_restart")
+            except TimeoutError as e:
+                logger.warning("master_links_timeout_continuing", error=str(e))
             
             # CRITICAL: Sync zerochain to MASTER nodes (emission was created in Phase 1!)
             # Without this, master nodes can't see emission datum → tx_create fails
@@ -586,14 +665,31 @@ class NetworkManager:
             logger.info("disabling_seed_mode_for_all_validators")
             self.genesis.config_mgr.disable_seed_mode_in_configs(root_node_ids + master_node_ids)
             
-            # Step 2: Hard restart ALL validators with config reload
-            all_validator_services = root_services + master_services
-            logger.info("hard_restarting_all_validators_for_config_reload")
-            await self.lifecycle.hard_restart_with_config_reload(
-                service_names=all_validator_services,
+            # Step 2: SEQUENTIAL Hard restart to prevent MDBX crash
+            # ROOT nodes first (one by one) → they provide GDB sync for node list
+            # Then MASTER nodes (one by one) → they get node list from ROOT nodes
+            # This prevents "Node list is empty" → MDBX assertion fail
+            logger.info("sequential_hard_restart_all_validators")
+            logger.info("restart_sequence", 
+                       order="ROOT nodes individually → MASTER nodes individually",
+                       reason="Prevent MDBX crash from empty node list")
+            
+            # Create service groups: each ROOT individually, then all MASTER together
+            # ROOT nodes restart one-by-one to maintain GDB sync availability
+            service_groups = [
+                [f"node-{root_node_ids[0]}"],  # ROOT node 1
+                [f"node-{root_node_ids[1]}"],  # ROOT node 2
+                [f"node-{root_node_ids[2]}"],  # ROOT node 3
+                master_services  # All MASTER nodes together (can do this safely now)
+            ]
+            
+            await self.lifecycle.sequential_restart_with_config_reload(
+                service_groups=service_groups,
                 compose_manager=self.compose,
+                state_manager=self.state_manager,
                 flush_timeout=60,
-                startup_timeout=60
+                startup_timeout=60,
+                inter_group_delay=5.0  # Wait for GDB sync between groups
             )
             
             # Step 3: Wait for ALL validators to come back online

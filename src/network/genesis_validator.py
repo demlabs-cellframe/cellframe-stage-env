@@ -207,4 +207,87 @@ class ValidatorManager(BaseGenesisManager):
         logger.info("waiting_for_gdb_sync_propagation")
         await asyncio.sleep(5.0)
         logger.info("gdb_sync_completed")
+    
+    async def wait_for_validator_mode_active(
+        self,
+        nodes: List[NodeConfig],
+        timeout: float = 60.0,
+        poll_interval: float = 2.0
+    ) -> None:
+        """
+        Wait until ESBocs consensus loads validator orders and activates validator mode.
+        
+        After hard restart, ESBocs needs time to:
+        1. Initialize consensus
+        2. Load validator orders from GDB
+        3. Activate validator mode
+        
+        This prevents TX creation attempts before validator mode is ready.
+        
+        Args:
+            nodes: List of master nodes to check
+            timeout: Maximum time to wait (seconds)
+            poll_interval: Time between checks (seconds)
+            
+        Raises:
+            TimeoutError: If validator mode doesn't activate within timeout
+        """
+        import time
+        
+        start_time = time.time()
+        logger.info("waiting_for_validator_mode_activation", nodes=len(nodes), timeout=timeout)
+        
+        while time.time() - start_time < timeout:
+            nodes_with_validator_mode = 0
+            
+            for node in nodes:
+                try:
+                    # Check if validator orders are visible (= validator mode can be active)
+                    exit_code, stdout, stderr = self._exec_cli(
+                        node.node_id,
+                        f"srv_stake order list -net {self.network_name}",
+                        check_output=False
+                    )
+                    
+                    if exit_code == 0 and stdout:
+                        stdout_lower = stdout.lower()
+                        # Count orders (order: prefix)
+                        order_count = stdout_lower.count("order:")
+                        
+                        if order_count >= len(nodes):  # Should see all validator orders
+                            nodes_with_validator_mode += 1
+                            logger.debug("validator_orders_loaded",
+                                       node_id=node.node_id,
+                                       order_count=order_count)
+                
+                except Exception as e:
+                    logger.debug("validator_mode_check_error",
+                               node=node.node_id,
+                               error=str(e)[:100])
+            
+            # All nodes have validator mode ready?
+            if nodes_with_validator_mode >= len(nodes):
+                elapsed = time.time() - start_time
+                logger.info("all_validators_ready_for_consensus",
+                          nodes=nodes_with_validator_mode,
+                          total=len(nodes),
+                          elapsed=round(elapsed, 1))
+                return
+            
+            # Log progress
+            elapsed = time.time() - start_time
+            if elapsed > 5.0:  # Only log after 5 seconds
+                logger.info("validator_mode_activation_progress",
+                          ready=nodes_with_validator_mode,
+                          total=len(nodes),
+                          missing=len(nodes) - nodes_with_validator_mode,
+                          elapsed=round(elapsed, 1))
+            
+            await asyncio.sleep(poll_interval)
+        
+        # Timeout
+        raise TimeoutError(
+            f"Validator mode failed to activate after {timeout}s. "
+            f"Only {nodes_with_validator_mode}/{len(nodes)} nodes are ready for consensus."
+        )
 
