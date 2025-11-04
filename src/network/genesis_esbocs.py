@@ -1329,35 +1329,29 @@ class ESBocsGenesisManager(BaseGenesisManager):
                            amount=transfer_amount)
                 
                 # Transfer from fee_collector wallet on zerochain
-                try:
-                    tx_hash = await self.genesis.transfer_tokens(
-                        from_node_id=first_root_node.node_id,
-                        from_wallet="fee_collector",
-                        to_address=wallet_addr,
-                        amount=transfer_amount,
-                        fee="0.1",
-                        chain="zerochain"
-                    )
-                    
-                    logger.info("transfer_to_master_created_in_phase2",
-                               node_id=master_node.node_id,
-                               tx_hash=tx_hash[:16],
-                               to_wallet=wallet_name,
-                               amount=transfer_amount)
-                    
-                    # Process transfer through DAG-PoA
-                    await self.genesis.sync_mgr.process_zerochain_datum(tx_hash, root_nodes)
-                    
-                    logger.info("transfer_to_master_finalized_in_phase2",
-                               node_id=master_node.node_id,
-                               tx_hash=tx_hash[:16])
-                except Exception as transfer_err:
-                    logger.error("failed_to_transfer_to_master_in_phase2",
-                               node_id=master_node.node_id,
-                               wallet_name=wallet_name,
-                               error=str(transfer_err),
-                               note="Transfer failed - master wallet will be empty")
-                    # Continue with other wallets instead of failing completely
+                # CRITICAL: Fail-fast on transfer errors - if UTXO are not indexed, test must fail immediately
+                # DO NOT catch exceptions here - let RuntimeError propagate to stop test execution
+                tx_hash = await self.genesis.transfer_tokens(
+                    from_node_id=first_root_node.node_id,
+                    from_wallet="fee_collector",
+                    to_address=wallet_addr,
+                    amount=transfer_amount,
+                    fee="0.1",
+                    chain="zerochain"
+                )
+                
+                logger.info("transfer_to_master_created_in_phase2",
+                           node_id=master_node.node_id,
+                           tx_hash=tx_hash[:16],
+                           to_wallet=wallet_name,
+                           amount=transfer_amount)
+                
+                # Process transfer through DAG-PoA
+                await self.genesis.sync_mgr.process_zerochain_datum(tx_hash, root_nodes)
+                
+                logger.info("transfer_to_master_finalized_in_phase2",
+                           node_id=master_node.node_id,
+                           tx_hash=tx_hash[:16])
             
             logger.info("all_master_transfers_created_in_phase2",
                        master_count=len(master_nodes),
