@@ -126,11 +126,12 @@ class ConfigGenerator:
             template = Template(template_content)
             
             for node in nodes:
-                # CRITICAL: Enable seed_mode for ROOT and MASTER nodes for genesis creation
-                # ROOT nodes need seed_mode for DAG-PoA genesis events (first events without parent hashes)
-                # MASTER nodes need seed_mode for ESBocs genesis block (first block without prev_block)
-                # seed_mode will be disabled AFTER genesis and configs regenerated
-                seed_mode = 'true' if node.role in ['root', 'master'] else 'false'
+                # CRITICAL: seed_mode management per phase:
+                # - PHASE 1: Only ROOT nodes need seed_mode=true (for zerochain genesis event)
+                # - After genesis event: seed_mode will be disabled for ROOT nodes
+                # - PHASE 2: Only MASTER nodes need seed_mode=true (for mainchain genesis block)
+                # MASTER nodes will get seed_mode=true later via enable_seed_mode_in_configs()
+                seed_mode = 'true' if node.role == 'root' else 'false'
                 
                 # Render template with node-specific context
                 context = {
@@ -139,8 +140,11 @@ class ConfigGenerator:
                 }
                 node_cfg_content = template.render(**context)
                 
-                if node.role in ['root', 'master']:
-                    logger.debug("seed_mode_enabled_for_genesis", node_id=node.node_id, role=node.role)
+                if node.role == 'root':
+                    logger.debug("seed_mode_enabled_for_root_nodes_genesis_event", node_id=node.node_id)
+                elif node.role == 'master':
+                    logger.debug("seed_mode_disabled_for_master_nodes_initial", node_id=node.node_id,
+                               note="seed_mode will be enabled in PHASE 2 for genesis block creation")
                 
                 node_etc_base = self.configs_cache / f"node{node.node_id}"
                 node_etc_base.mkdir(parents=True, exist_ok=True)
@@ -194,9 +198,10 @@ class ConfigGenerator:
             seed_nodes_hosts = f"[{hosts_list}]"
         else:
             seed_nodes_hosts = "[]"
-            
-        if master_nodes:
-            hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in master_nodes])
+        
+        # Permanent nodes hosts - only root nodes (network infrastructure)
+        if root_nodes:
+            hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in root_nodes])
             permanent_nodes_hosts = f"[{hosts_list}]"
         else:
             permanent_nodes_hosts = "[]"
@@ -206,43 +211,76 @@ class ConfigGenerator:
         validator_nodes = [n for n in nodes if n.is_seed_node or n.consensus_participation]
         node_id_to_validator_idx = {n.node_id: idx for idx, n in enumerate(validator_nodes)}
         
-        # PRE-RENDER chain configs (same for all nodes!)
-        # Chain configs don't depend on individual node - only on network topology
-        rendered_chain_configs = {}
+        # Prepare chain configs context (shared for all nodes)
+        # Chain configs are generated per-node but share common context
         chains_template_dir = self.templates_dir / "chains"
+        base_chain_context = None
+        chain_templates = {}
+        
         if chains_template_dir.exists():
-            # Collect validator addresses
+            # Collect validator addresses (only for zerochain - mainchain uses PoS without explicit validators list)
             validator_addrs = self._collect_validator_addresses(nodes, network_name)
             root_nodes_addrs = self._collect_root_node_addresses(nodes, network_name)
+            
+            # Collect MASTER node addresses for mainchain ESBocs validators
+            # CRITICAL: Mainchain ESBocs requires validators_addrs for initialization
+            # Even though we use PoS, SDK still checks validators_addrs if min_validators_count > 0
+            # We collect MASTER nodes (consensus_participation but not seed_node) as validators
+            master_validator_nodes = [n for n in nodes if n.consensus_participation and not n.is_seed_node]
+            master_validator_addrs = self._collect_validator_addresses(master_validator_nodes, network_name) if master_validator_nodes else "[]"
+            
+            # CRITICAL: If no master validators yet (first phase), we still need min_validators_count
+            # for genesis block creation, but validators_addrs can be empty (will be filled in PHASE 2)
+            # SDK will allow initialization with min_validators_count > 0 if validators_addrs is empty
+            # only if genesis_mode=true, but genesis_mode should be false for root nodes
+            # CRITICAL: Always use master validator addresses in mainchain validators_addrs
+            # Even in Phase 1 when master nodes are not yet started, we pre-configure their addresses
+            # This satisfies SDK validation requirement: validators_addrs must contain >= min_validators_count addresses
+            # When master nodes start in Phase 2, they will already be configured as validators
+            master_validators_count = len(master_validator_nodes)
+            
+            if master_validators_count > 0:
+                # Master nodes exist - use their addresses
+                mainchain_min_validators_count = max(2, master_validators_count // 2 + 1)  # 2/3 consensus
+                logger.info("mainchain_validators_configured",
+                           master_validators_count=master_validators_count,
+                           min_validators_count=mainchain_min_validators_count,
+                           note="Using master node addresses in validators_addrs for mainchain")
+            else:
+                # No master nodes configured - this should not happen in normal flow
+                # But if it does, use root nodes as fallback
+                logger.warning("no_master_nodes_configured_using_root_fallback",
+                             note="No master nodes found - using root nodes as fallback validators")
+                master_validator_addrs = root_nodes_addrs
+                root_nodes_count_for_fallback = len([n for n in nodes if n.is_seed_node])
+                mainchain_min_validators_count = max(1, root_nodes_count_for_fallback // 2 + 1)
             
             # Calculate consensus parameters
             root_nodes_count = len([n for n in nodes if n.is_seed_node])
             auth_certs_number = root_nodes_count
             auth_certs_number_verify = max(1, root_nodes_count // 2 + 1)
             
-            # Prepare Jinja2 context
-            chain_context = {
-                'validators_addrs': validator_addrs,
+            # Prepare base chain context (shared for all nodes)
+            # CRITICAL: genesis_mode, static_genesis_event, fee_addr will be set per-node
+            base_chain_context = {
+                'validators_addrs': validator_addrs,  # Used for zerochain (all validators: root + master)
+                'mainchain_validators_addrs': master_validator_addrs,  # Used for mainchain (master node addresses)
                 'root_nodes_addrs': root_nodes_addrs,
                 'auth_certs_number': auth_certs_number,
                 'auth_certs_number_verify': auth_certs_number_verify,
-                'static_genesis_event': '',
-                'is_static_genesis_event': 'false',
-                'static_genesis_block': '',
-                'is_static_genesis_block': 'false',
-                'fee_addr': ''
+                'static_genesis_event': '',  # Will be set per-node after genesis event creation
+                'is_static_genesis_event': 'false',  # Will be set per-node after genesis event creation
+                'static_genesis_block': '',  # Will be set per-node after genesis block creation
+                'is_static_genesis_block': 'false',  # Will be set per-node after genesis block creation
+                'fee_addr': '',  # Will be set per-node after fee wallet creation
+                'min_validators_count': mainchain_min_validators_count,  # Set to 2 for 2/3 consensus
+                'poa_mode': 'true'  # CRITICAL: Always use PoA mode (validators specified in config)
             }
             
-            # Render all chain templates ONCE
+            # Load chain templates ONCE (shared for all nodes)
             for chain_template in chains_template_dir.glob("*.cfg.j2"):
-                chain_template_content = chain_template.read_text()  # Use different variable name!
-                template = Template(chain_template_content)
-                chain_content = template.render(**chain_context)
-                output_name = chain_template.stem  # main.cfg, zerochain.cfg
-                rendered_chain_configs[output_name] = chain_content
-                logger.debug("chain_config_pre_rendered",
-                           chain=output_name,
-                           has_jinja_tags="{{ " in chain_content)
+                chain_template_content = chain_template.read_text()
+                chain_templates[chain_template.stem] = Template(chain_template_content)
         
         # Generate network config for each node using Jinja2
         # Cellframe Node expects:
@@ -276,7 +314,7 @@ class ConfigGenerator:
             network_context = {
                 'node_role': node_role,
                 'seed_nodes_hosts': seed_nodes_hosts,
-                'permanent_nodes_hosts': permanent_nodes_hosts,
+                'permanent_nodes_hosts': permanent_nodes_hosts,  # Root nodes only
                 'events_sign_cert': events_sign_cert,
                 'blocks_sign_cert': blocks_sign_cert
             }
@@ -292,22 +330,37 @@ class ConfigGenerator:
                         first_line=config_content.split('\n')[0] if config_content else "EMPTY",
                         has_general_section="[general]" in config_content)
             
-            # Write pre-rendered chain configs for this node
-            if rendered_chain_configs:
-                # Create chain configs directory: network/{network_name}/
+            # Generate chain configs INDIVIDUALLY for each node with node-specific settings
+            if base_chain_context and chain_templates:
                 node_chains_dir = node_network_base / network_name
                 node_chains_dir.mkdir(parents=True, exist_ok=True)
                 
-                # Write all pre-rendered chain configs
-                for chain_name, chain_content in rendered_chain_configs.items():
+                # CRITICAL: genesis_mode setting per node type
+                # ROOT nodes: genesis_mode=false (they don't create genesis block, only MASTER nodes do)
+                # MASTER nodes: genesis_mode=true (they create genesis block)
+                if node.is_seed_node:  # ROOT nodes
+                    node_genesis_mode = 'false'  # ROOT nodes don't create genesis block
+                elif node.consensus_participation and not node.is_seed_node:  # MASTER nodes
+                    node_genesis_mode = 'true'  # MASTER nodes create genesis block
+                else:  # FULL nodes
+                    node_genesis_mode = 'false'  # FULL nodes don't participate in consensus
+                
+                # Prepare node-specific chain context
+                node_chain_context = base_chain_context.copy()
+                node_chain_context['genesis_mode'] = node_genesis_mode
+                
+                # Render chain configs for this node
+                for chain_name, chain_template in chain_templates.items():
+                    chain_content = chain_template.render(**node_chain_context)
                     dst_chain_cfg = node_chains_dir / chain_name
                     dst_chain_cfg.write_text(chain_content)
                     
-                    logger.debug("chain_config_written",
+                    logger.debug("chain_config_written_per_node",
                                node_id=node.node_id,
+                               node_role=node.role,
                                chain=chain_name,
+                               genesis_mode=node_genesis_mode,
                                path=str(dst_chain_cfg),
-                               first_line=chain_content.split('\n')[0] if chain_content else "EMPTY",
                                has_jinja_tags="{{ " in chain_content)
             
             logger.debug("network_config_generated",
@@ -315,6 +368,135 @@ class ConfigGenerator:
                        role=node.role,
                        network=network_name,
                        dst=str(dst_file))
+    
+    def regenerate_chain_configs_with_custom_validators(
+        self,
+        nodes: List[NodeConfig],
+        network_name: str,
+        custom_validators_addrs: str,
+        min_validators_count: Optional[int] = None,
+        static_genesis_event: Optional[str] = None,
+        fee_addr: Optional[str] = None
+    ) -> None:
+        """
+        Regenerate chain configs with custom validators_addrs override.
+        
+        NOTE: This is primarily used for zerochain configuration.
+        Mainchain uses PoS and does NOT require validators_addrs in config.
+        
+        Args:
+            nodes: List of all nodes (for root_nodes_addrs calculation)
+            network_name: Network name
+            custom_validators_addrs: Custom validators addresses in format "[addr1,addr2]" (only used for zerochain)
+            min_validators_count: Optional override for min_validators_count (auto-calculated if None)
+            static_genesis_event: Optional static_genesis_event to preserve
+            fee_addr: Optional fee_addr to preserve
+        """
+        logger.info("regenerating_chain_configs_with_custom_validators",
+                   network=network_name,
+                   nodes=len(nodes),
+                   custom_validators=custom_validators_addrs[:50] + "..." if len(custom_validators_addrs) > 50 else custom_validators_addrs,
+                   min_validators_count=min_validators_count)
+        
+        # Collect root node addresses
+        root_nodes_addrs = self._collect_root_node_addresses(nodes, network_name)
+        
+        # Calculate consensus parameters
+        root_nodes_count = len([n for n in nodes if n.is_seed_node])
+        auth_certs_number = root_nodes_count
+        auth_certs_number_verify = max(1, root_nodes_count // 2 + 1)
+        
+        # Calculate min_validators_count based on custom_validators_addrs
+        # CRITICAL: min_validators_count must NOT be greater than actual validators count
+        # Otherwise SDK returns -2: "l_node_addrs_count < l_validators_count"
+        if min_validators_count is None:
+            # Auto-calculate from validators_addrs count
+            # Extract addresses from format "[addr1,addr2,addr3]"
+            validators_list = custom_validators_addrs.strip('[]').split(',')
+            validators_list = [v.strip() for v in validators_list if v.strip()]
+            calculated_min_validators = len(validators_list)
+            logger.debug("auto_calculated_min_validators_count",
+                        validators_count=calculated_min_validators,
+                        validators_list_preview=validators_list[:3])
+        else:
+            calculated_min_validators = min_validators_count
+        
+        # Prepare Jinja2 context with custom validators_addrs
+        chain_context = {
+            'validators_addrs': custom_validators_addrs,  # For zerochain compatibility
+            'mainchain_validators_addrs': custom_validators_addrs,  # CRITICAL: For main.cfg.j2 template
+            'min_validators_count': calculated_min_validators,  # CRITICAL: must match validators count
+            'poa_mode': 'true',  # CRITICAL: PoA mode when validators are specified
+            'root_nodes_addrs': root_nodes_addrs,
+            'auth_certs_number': auth_certs_number,
+            'auth_certs_number_verify': auth_certs_number_verify,
+            'static_genesis_event': static_genesis_event if static_genesis_event else '',
+            'is_static_genesis_event': 'true' if static_genesis_event else 'false',
+            'static_genesis_block': '',
+            'is_static_genesis_block': 'false',
+            'fee_addr': fee_addr if fee_addr else '',  # CRITICAL: Preserve fee_addr!
+            'genesis_mode': 'true'
+        }
+        
+        # Log what we're preserving
+        if static_genesis_event:
+            logger.info("preserving_static_genesis_event_in_regeneration",
+                      hash=static_genesis_event[:16],
+                      note="static_genesis_event will be preserved in regenerated configs")
+        if fee_addr:
+            logger.info("preserving_fee_addr_in_regeneration",
+                      fee_addr=fee_addr[:16],
+                      note="fee_addr will be preserved in regenerated configs")
+        
+        # Render all chain templates
+        chains_template_dir = self.templates_dir / "chains"
+        if not chains_template_dir.exists():
+            raise RuntimeError(f"Chain templates directory not found: {chains_template_dir}")
+        
+        rendered_chain_configs = {}
+        for chain_template in chains_template_dir.glob("*.cfg.j2"):
+            chain_template_content = chain_template.read_text()
+            template = Template(chain_template_content)
+            chain_content = template.render(**chain_context)
+            output_name = chain_template.stem  # main.cfg, zerochain.cfg
+            rendered_chain_configs[output_name] = chain_content
+            
+            # Debug: check if static_genesis_event is in rendered content
+            if output_name == 'zerochain.cfg' and static_genesis_event:
+                if static_genesis_event in chain_content:
+                    logger.info("static_genesis_event_verified_in_rendered_config",
+                              hash=static_genesis_event[:16],
+                              chain=output_name,
+                              note="static_genesis_event found in rendered zerochain config")
+                else:
+                    logger.error("static_genesis_event_missing_in_rendered_config",
+                               hash=static_genesis_event[:16],
+                               chain=output_name,
+                               content_preview=chain_content[:500],
+                               note="CRITICAL: static_genesis_event not found in rendered config!")
+            
+            logger.debug("chain_config_rendered",
+                       chain=output_name,
+                       validators=custom_validators_addrs[:30])
+        
+        # Write chain configs for ALL nodes
+        for node in nodes:
+            node_network_base = self.configs_cache / f"node{node.node_id}" / "network"
+            node_chains_dir = node_network_base / network_name
+            node_chains_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Write all rendered chain configs
+            for chain_name, chain_content in rendered_chain_configs.items():
+                dst_chain_cfg = node_chains_dir / chain_name
+                dst_chain_cfg.write_text(chain_content)
+                logger.debug("chain_config_written",
+                           node_id=node.node_id,
+                           chain=chain_name,
+                           path=str(dst_chain_cfg))
+        
+        logger.info("chain_configs_regenerated_with_custom_validators",
+                   nodes=len(nodes),
+                   chains=len(rendered_chain_configs))
     
     def _collect_validator_addresses(
         self,
@@ -508,12 +690,16 @@ events_sign_cert=node-{node.node_id}-cert
 
 """
         
-        # Add ESBocs blocks-sign-cert for validator nodes ONLY
-        if node.consensus_participation and validator_idx is not None and network_name:
+        # Add ESBocs blocks-sign-cert for MASTER nodes ONLY (not ROOT nodes)
+        # CRITICAL: Only MASTER nodes (4,5,6) participate in ESBocs consensus
+        # ROOT nodes (1,2,3) use DAG-PoA for zerochain, not ESBocs
+        if node.consensus_participation and not node.is_seed_node and network_name:
+            # MASTER nodes: node4→master.0, node5→master.1, node6→master.2
+            master_idx = node.node_id - 4
             config_content += f"""[esbocs]
 # Blocks signing certificate (validator-specific)
 # CRITICAL: Must use pvt. prefix (private key) for signing
-blocks-sign-cert=pvt.{network_name}.master.{validator_idx}
+blocks-sign-cert=pvt.{network_name}.master.{master_idx}
 
 """
         

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import os
+import stat
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import subprocess
@@ -137,7 +139,10 @@ class SquashfsSnapshot(BaseSnapshot):
     
     async def create(self, name: str) -> bool:
         """
-        Create squashfs snapshot.
+        Create squashfs snapshot including data and configs.
+        
+        CRITICAL: Includes both data (cache/data/) and configs (cache/configs/)
+        to preserve static_genesis_event and other genesis configuration.
         
         Args:
             name: Snapshot name
@@ -160,15 +165,47 @@ class SquashfsSnapshot(BaseSnapshot):
             logger.debug("squashfs_overwriting_existing", name=name)
             snapshot_file.unlink()
         
-        # Get source data directory
+        # Get source directories
         data_path = self.cache_path / "data"
+        configs_path = self.cache_path / "configs"
+        
         if not data_path.exists():
             logger.warning("squashfs_no_data_to_snapshot")
             return False
         
+        # Create temporary exclude file for mksquashfs
+        import tempfile
+        exclude_file = Path(tempfile.mkstemp(suffix='.exclude', prefix='squashfs_')[1])
+        
         try:
-            # Build mksquashfs command
-            cmd = ["mksquashfs", str(data_path), str(snapshot_file)]
+            # Write exclude patterns to file
+            # Exclude run/ directories (contain Unix sockets, symlinks and PID files that are runtime-specific)
+            # CRITICAL: Must exclude entire run/ directory to prevent Unix socket files from being included
+            exclude_patterns = [
+                "*/run/",  # Exclude entire run/ directory first (most specific)
+                "*/run/node_cli",  # Explicitly exclude Unix socket files
+                "*/run/*.pid",  # Exclude PID files
+            ]
+            exclude_file.write_text('\n'.join(exclude_patterns))
+            
+            # Build mksquashfs command - pass source directories directly
+            # mksquashfs handles symlinks correctly by itself
+            cmd = ["mksquashfs"]
+            
+            # Add data directory
+            cmd.append(str(data_path))
+            
+            # Add configs directory if it exists
+            if configs_path.exists():
+                logger.info("squashfs_snapshotting_configs",
+                           note="Including configs to preserve static_genesis_event")
+                cmd.append(str(configs_path))
+            
+            # Add destination file
+            cmd.append(str(snapshot_file))
+            
+            # Add exclude file option
+            cmd.extend(["-ef", str(exclude_file)])
             
             # Add compression
             if self.compression:
@@ -203,6 +240,7 @@ class SquashfsSnapshot(BaseSnapshot):
                 "type": "squashfs",
                 "compression": self.compression or "none",
                 "size_bytes": snapshot_file.stat().st_size,
+                "includes_configs": configs_path.exists(),
             }
             
             metadata_file = self.snapshots_path / f"{name}.metadata"
@@ -211,7 +249,8 @@ class SquashfsSnapshot(BaseSnapshot):
             logger.info("squashfs_create_complete",
                        name=name,
                        size=snapshot_file.stat().st_size,
-                       compression=self.compression or "none")
+                       compression=self.compression or "none",
+                       includes_configs=configs_path.exists())
             return True
             
         except Exception as e:
@@ -219,10 +258,97 @@ class SquashfsSnapshot(BaseSnapshot):
             if snapshot_file.exists():
                 snapshot_file.unlink()
             return False
+        finally:
+            # Cleanup exclude file
+            if exclude_file.exists():
+                exclude_file.unlink()
+    
+    def _copytree_skip_sockets(self, src: Path, dst: Path, dirs_exist_ok: bool = False):
+        """
+        Copy directory tree skipping Unix socket files and other special files.
+        
+        Args:
+            src: Source directory
+            dst: Destination directory
+            dirs_exist_ok: If True, allow destination to exist
+        """
+        if not src.exists():
+            return
+        
+        if dst.exists() and not dirs_exist_ok:
+            raise FileExistsError(f"Destination {dst} already exists")
+        
+        dst.mkdir(parents=True, exist_ok=True)
+        
+        for item in src.iterdir():
+            src_path = src / item.name
+            dst_path = dst / item.name
+            
+            try:
+                # Check if it's a Unix socket file - try multiple methods
+                is_socket = False
+                try:
+                    # Method 1: Use Path.is_socket() if available (Python 3.8+)
+                    if hasattr(src_path, 'is_socket'):
+                        is_socket = src_path.is_socket()
+                    # Method 2: Check via stat()
+                    if not is_socket and src_path.exists():
+                        file_stat = src_path.stat()
+                        is_socket = stat.S_ISSOCK(file_stat.st_mode)
+                except (OSError, AttributeError):
+                    # File might not exist or be inaccessible, skip check
+                    pass
+                
+                if is_socket:
+                    logger.debug("skipping_unix_socket_file",
+                               path=str(src_path),
+                               note="Unix sockets cannot be copied and will be recreated at runtime")
+                    continue
+                
+                # Check for FIFO files (named pipes)
+                try:
+                    if src_path.exists():
+                        file_stat = src_path.stat()
+                        if stat.S_ISFIFO(file_stat.st_mode):
+                            logger.debug("skipping_fifo_file",
+                                       path=str(src_path))
+                            continue
+                except OSError:
+                    pass
+                
+                # Copy directories recursively
+                if src_path.is_dir():
+                    self._copytree_skip_sockets(src_path, dst_path, dirs_exist_ok=True)
+                # Copy regular files
+                elif src_path.is_file():
+                    shutil.copy2(src_path, dst_path)
+                # Copy symlinks
+                elif src_path.is_symlink():
+                    link_target = src_path.readlink()
+                    dst_path.symlink_to(link_target)
+                else:
+                    logger.debug("skipping_special_file",
+                               path=str(src_path),
+                               note="Unknown file type")
+            except (OSError, shutil.Error) as e:
+                # Skip files that can't be copied (sockets, devices, etc.)
+                if hasattr(e, 'errno') and e.errno == 6:  # ENXIO - No such device or address (Unix sockets)
+                    logger.debug("skipping_unix_socket_during_copy",
+                               path=str(src_path),
+                               error=str(e))
+                    continue
+                else:
+                    logger.warning("copy_file_error",
+                                 path=str(src_path),
+                                 error=str(e))
+                    # Continue with other files
     
     async def restore(self, name: str) -> bool:
         """
-        Restore from squashfs snapshot using overlay.
+        Restore data and configs from squashfs snapshot.
+        
+        CRITICAL: Restores both data (cache/data/) and configs (cache/configs/)
+        to restore static_genesis_event and other genesis configuration.
         
         Args:
             name: Snapshot name
@@ -243,33 +369,20 @@ class SquashfsSnapshot(BaseSnapshot):
             return False
         
         data_path = self.cache_path / "data"
+        configs_path = self.cache_path / "configs"
+        
+        # Create temporary directory for extraction
+        import tempfile
+        import shutil
+        temp_extract_dir = Path(tempfile.mkdtemp(prefix="squashfs_extract_"))
         
         try:
-            # Clean existing data (use sudo rm -rf for bind-mounted volumes)
-            if data_path.exists():
-                logger.debug("squashfs_cleaning_existing_data")
-                # Use docker exec to clean from inside container if available
-                # Otherwise use sudo rm -rf as files are owned by root
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        "sudo", "rm", "-rf", str(data_path),
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    await proc.communicate()
-                except Exception:
-                    # Fallback to shutil with ignore_errors
-                    await asyncio.to_thread(shutil.rmtree, data_path, ignore_errors=True)
-            
-            data_path.mkdir(parents=True, exist_ok=True)
-            
-            # Extract squashfs - need sudo as files are owned by root
-            # Also add -no-xattrs to avoid permission issues
+            # Extract squashfs to temp directory - need sudo as files are owned by root
             proc = await asyncio.create_subprocess_exec(
                 "sudo", "unsquashfs",
                 "-f",  # force overwrite
                 "-no-xattrs",  # don't restore extended attributes
-                "-d", str(data_path),  # destination
+                "-d", str(temp_extract_dir),  # destination
                 str(snapshot_file),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
@@ -283,17 +396,76 @@ class SquashfsSnapshot(BaseSnapshot):
                             error=stderr.decode())
                 return False
             
+            # Restore data directory
+            data_snapshot_dir = temp_extract_dir / "data"
+            if data_snapshot_dir.exists():
+                # Clean existing data
+                if data_path.exists():
+                    logger.debug("squashfs_cleaning_existing_data")
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            "sudo", "rm", "-rf", str(data_path),
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        await proc.communicate()
+                    except Exception:
+                        await asyncio.to_thread(shutil.rmtree, data_path, ignore_errors=True)
+                
+                data_path.mkdir(parents=True, exist_ok=True)
+                # Use custom copy function that skips Unix socket files
+                await asyncio.to_thread(self._copytree_skip_sockets, data_snapshot_dir, data_path, dirs_exist_ok=True)
+            else:
+                # Legacy snapshot format - data directly in extract_dir
+                logger.debug("squashfs_legacy_snapshot_format")
+                if data_path.exists():
+                    await asyncio.to_thread(shutil.rmtree, data_path, ignore_errors=True)
+                data_path.mkdir(parents=True, exist_ok=True)
+                # Use custom copy function that skips Unix socket files
+                await asyncio.to_thread(self._copytree_skip_sockets, temp_extract_dir, data_path, dirs_exist_ok=True)
+            
+            # Restore configs directory if it exists in snapshot
+            # CRITICAL: MUST restore configs from snapshot!
+            # Snapshot contains configs with correct static_genesis_event
+            # After restore, configs will be preserved unless explicitly regenerated
+            configs_snapshot_dir = temp_extract_dir / "configs"
+            if configs_snapshot_dir.exists():
+                logger.info("squashfs_restoring_configs",
+                           note="Restoring configs from snapshot to get static_genesis_event")
+                
+                # Clean existing configs first (only for nodes in snapshot)
+                if configs_path.exists():
+                    config_dirs = [d for d in configs_snapshot_dir.iterdir() 
+                                  if d.is_dir() and not d.name.startswith('.')]
+                    for config_dir in config_dirs:
+                        target_config_dir = configs_path / config_dir.name
+                        if target_config_dir.exists():
+                            await asyncio.to_thread(shutil.rmtree, target_config_dir, ignore_errors=True)
+                else:
+                    configs_path.mkdir(parents=True, exist_ok=True)
+                
+                # Restore configs (use custom copy to skip any socket files)
+                await asyncio.to_thread(self._copytree_skip_sockets, configs_snapshot_dir, configs_path, dirs_exist_ok=True)
+                
+                logger.info("squashfs_configs_restored",
+                           note="Configs restored from snapshot with static_genesis_event")
+            else:
+                logger.debug("squashfs_no_configs_in_snapshot",
+                           note="Legacy snapshot or configs not included")
+            
             # Fix ownership to current user (files were extracted as root)
             import os
             uid = os.getuid()
             gid = os.getgid()
             
-            proc = await asyncio.create_subprocess_exec(
-                "sudo", "chown", "-R", f"{uid}:{gid}", str(data_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await proc.communicate()
+            for path in [data_path, configs_path]:
+                if path.exists():
+                    proc = await asyncio.create_subprocess_exec(
+                        "sudo", "chown", "-R", f"{uid}:{gid}", str(path),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    await proc.communicate()
             
             logger.info("squashfs_restore_complete", name=name)
             return True
@@ -301,6 +473,10 @@ class SquashfsSnapshot(BaseSnapshot):
         except Exception as e:
             logger.error("squashfs_restore_error", name=name, error=str(e))
             return False
+        finally:
+            # Cleanup temp directory
+            if temp_extract_dir.exists():
+                await asyncio.to_thread(shutil.rmtree, temp_extract_dir, ignore_errors=True)
     
     async def delete(self, name: str) -> bool:
         """
