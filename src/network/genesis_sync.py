@@ -7,13 +7,18 @@ Handles chain sync operations and datum processing.
 import asyncio
 import re
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import docker
 
 from .genesis_base import BaseGenesisManager
 from .models import NodeConfig
 from ..utils.logger import get_logger
+from ..monitoring.waiter.chain_waiters import (
+    ChainDataPropagationWaiter,
+    NetworkSyncWaiter,
+)
+from ..monitoring.waiter.dag_waiters import DAGEventWaiter
 
 
 logger = get_logger(__name__)
@@ -85,8 +90,9 @@ class ChainSyncManager(BaseGenesisManager):
             if not found:
                 raise RuntimeError(f"Datum {datum_hash[:16]}... did not appear in mempool within {timeout}s")
             
-            # Step 2: Trigger mempool_proc on remaining root nodes
-            for node in root_nodes[1:]:
+            # Step 2: Trigger mempool_proc on ALL root nodes (including first node)
+            # CRITICAL: For DAG-PoA, each node needs to process datum to create events
+            for node in root_nodes:
                 container_name = f"cellframe-stage-node-{node.node_id}"
                 try:
                     node_container = self.docker_client.containers.get(container_name)
@@ -99,7 +105,7 @@ class ChainSyncManager(BaseGenesisManager):
                                       status=node_container.status)
                         continue
                     
-                    logger.debug("triggering_mempool_proc", node=f"node{node.node_id}", datum=datum_hash[:16])
+                    logger.info("triggering_mempool_proc", node=f"node{node.node_id}", datum=datum_hash[:16])
                     
                     exit_code, stdout, stderr = self._exec_cli(
                         node.node_id,
@@ -107,10 +113,23 @@ class ChainSyncManager(BaseGenesisManager):
                         check_output=False
                     )
                     
+                    # CRITICAL: Log full output for debugging
+                    logger.info("mempool_proc_result",
+                               node=f"node{node.node_id}",
+                               datum=datum_hash[:16],
+                               exit_code=exit_code,
+                               stdout=stdout[:1000] if stdout else "empty",
+                               stderr=stderr[:1000] if stderr else "empty",
+                               note="Full mempool_proc output - check if datum was processed correctly")
+                    
                     if exit_code == 0:
-                        logger.info("mempool_proc_triggered", node=f"node{node.node_id}")
+                        logger.info("mempool_proc_success", node=f"node{node.node_id}", datum=datum_hash[:16])
                     else:
-                        logger.warning("mempool_proc_failed", node=f"node{node.node_id}", exit_code=exit_code, stderr=stderr)
+                        logger.warning("mempool_proc_failed", 
+                                     node=f"node{node.node_id}", 
+                                     exit_code=exit_code, 
+                                     stderr=stderr[:500] if stderr else "none",
+                                     stdout=stdout[:500] if stdout else "none")
                         
                 except docker.errors.NotFound:
                     logger.warning("container_not_found_skipping", 
@@ -120,44 +139,40 @@ class ChainSyncManager(BaseGenesisManager):
                 except Exception as e:
                     logger.warning("failed_to_trigger_mempool_proc", node=f"node{node.node_id}", error=str(e))
             
+            # CRITICAL: Wait a bit after mempool_proc to allow DAG event creation
+            # DAG-PoA needs time to process datum and create new event
+            logger.info("waiting_after_mempool_proc_for_dag_event_creation", datum=datum_hash[:16], wait_seconds=3)
+            await asyncio.sleep(3)
+            
             # Step 3: Wait for datum to be finalized in DAG (polling with timeout)
             logger.info("waiting_for_datum_in_dag", datum=datum_hash[:16], timeout=timeout)
-            dag_check_start = time.time()
-            found_in_dag = False
-            last_log_time = time.time()
             
-            while time.time() - dag_check_start < timeout:
-                # For DAG-PoA, check if datum is in events (not blocks!)
-                exit_code, stdout_events_str, _ = self._exec_cli(
-                    1,
-                    f"dag event list -net {self.network_name} -chain zerochain -from events -limit 20",
-                    check_output=False
-                )
-                
-                # Log progress every 10 seconds
-                elapsed = time.time() - dag_check_start
-                if time.time() - last_log_time >= 10:
-                    logger.info("dag_finalization_progress", 
-                               datum=datum_hash[:16],
-                               elapsed=f"{elapsed:.1f}s",
-                               event_list_preview=stdout_events_str[:300] if stdout_events_str else "empty",
-                               exit_code=exit_code)
-                    last_log_time = time.time()
-                
-                # Check if any events appeared (indicates DAG is working)
-                total_match = re.search(r'total events:\s*(\d+)', stdout_events_str, re.IGNORECASE)
-                if total_match and int(total_match.group(1)) > 0:
-                    found_in_dag = True
-                    logger.info("datum_finalized_in_dag", 
-                               datum=datum_hash[:16],
-                               total_events=int(total_match.group(1)),
-                               elapsed=f"{time.time() - dag_check_start:.1f}s")
-                    return
-                
-                await asyncio.sleep(5)
+            # CRITICAL: First check if datum is in mempool - if not, it will never be finalized
+            logger.info("checking_datum_in_mempool_before_dag_wait", datum=datum_hash[:16])
+            exit_code_mempool, stdout_mempool, _ = self._exec_cli(
+                1,
+                f"mempool list -net {self.network_name} -chain zerochain",
+                check_output=False
+            )
+            if exit_code_mempool == 0 and stdout_mempool:
+                if datum_hash.lower() in stdout_mempool.lower():
+                    logger.info("datum_found_in_mempool", datum=datum_hash[:16])
+                else:
+                    logger.warning("datum_not_in_mempool", 
+                                 datum=datum_hash[:16],
+                                 mempool_preview=stdout_mempool[:500],
+                                 note="Datum not in mempool - may not be created correctly")
             
-            if not found_in_dag:
-                raise RuntimeError(f"Datum {datum_hash[:16]}... was not finalized in DAG within {timeout}s")
+            # Wait for datum to appear in DAG events
+            waiter_dag_event = DAGEventWaiter(
+                exec_cli=self._exec_cli,
+                node_id=1,
+                datum_hash=datum_hash,
+                network_name=self.network_name,
+                chain="zerochain",
+                poll_interval=5.0
+            )
+            await waiter_dag_event.wait(timeout=float(timeout))
                 
         except Exception as e:
             logger.error("zerochain_datum_processing_error", error=str(e))
@@ -206,196 +221,29 @@ class ChainSyncManager(BaseGenesisManager):
                 except Exception as e:
                     logger.warning("failed_to_trigger_sync", node=f"node{node.node_id}", error=str(e))
             
-            # Monitor sync progress
-            import time
-            start_time = time.time()
-            check_interval = 5
-            
             # For chain-specific sync, verify by checking if chain has data
             if chain_name:
                 logger.info("waiting_for_chain_data_propagation", chain=chain_name, timeout=timeout)
                 
-                while time.time() - start_time < timeout:
-                    synced_count = 0
-                    
-                    for node in nodes:
-                        try:
-                            # Check if node has any data in the chain
-                            is_dag_chain = chain_name.lower() in ["zerochain", "zero", "0"]
-                            
-                            if is_dag_chain:
-                                # For DAG: check total events > 0
-                                exit_code_check, stdout_check, _ = self._exec_cli(
-                                    node.node_id,
-                                    f"dag event list -net {self.network_name} -chain {chain_name} -from events -limit 1",
-                                    check_output=False
-                                )
-                                
-                                # Parse "total events: N"
-                                total_match = re.search(r'total events:\s*(\d+)', stdout_check, re.IGNORECASE) if stdout_check else None
-                                total_events = int(total_match.group(1)) if total_match else 0
-                                has_data = exit_code_check == 0 and total_events > 0
-                                
-                                # DIAGNOSTIC: Log full output for first check to debug
-                                if time.time() - start_time < 10 and node == nodes[0]:
-                                    logger.info("dag_event_list_diagnostic",
-                                               node=f"node{node.node_id}",
-                                               exit_code=exit_code_check,
-                                               total_events=total_events,
-                                               full_output=stdout_check if stdout_check else "EMPTY")
-                            else:
-                                # For blockchain: check if any blocks exist
-                                exit_code_check, stdout_check, _ = self._exec_cli(
-                                    node.node_id,
-                                    f"block list -net {self.network_name} -chain {chain_name} -last 1",
-                                    check_output=False
-                                )
-                                
-                                # Look for "block #" in output
-                                has_data = exit_code_check == 0 and "block #" in stdout_check.lower()
-                            
-                            if has_data:
-                                synced_count += 1
-                                logger.debug("node_has_chain_data", 
-                                           node=f"node{node.node_id}",
-                                           chain=chain_name,
-                                           preview=stdout_check[:100] if stdout_check else "empty")
-                            else:
-                                # Log why node doesn't have data
-                                logger.debug("node_missing_chain_data",
-                                           node=f"node{node.node_id}",
-                                           exit_code=exit_code_check,
-                                           output_preview=stdout_check[:200] if stdout_check else "EMPTY")
-                                
-                        except Exception as e:
-                            logger.debug("failed_to_check_chain_data", node=f"node{node.node_id}", error=str(e)[:100])
-                    
-                    if synced_count >= len(nodes):  # All nodes have data
-                        logger.info("chain_data_propagated", chain=chain_name, synced=synced_count, total=len(nodes), elapsed=f"{time.time() - start_time:.1f}s")
-                        return
-                    
-                    # Log progress every iteration
-                    logger.info("chain_sync_progress", 
-                               chain=chain_name,
-                               synced=synced_count,
-                               total=len(nodes),
-                               elapsed=f"{time.time() - start_time:.1f}s",
-                               missing=len(nodes) - synced_count)
-                    await asyncio.sleep(check_interval)
-                
-                # Timeout reached - CRITICAL ERROR!
-                logger.error("chain_sync_timeout_critical",
-                            chain=chain_name,
-                            elapsed=timeout,
-                            synced=synced_count,
-                            total=len(nodes),
-                            missing=len(nodes) - synced_count)
-                raise RuntimeError(f"Chain {chain_name} sync timeout: only {synced_count}/{len(nodes)} nodes have data after {timeout}s")
+                waiter_chain_data = ChainDataPropagationWaiter(
+                    exec_cli=self._exec_cli,
+                    nodes=nodes,
+                    network_name=self.network_name,
+                    chain_name=chain_name,
+                    poll_interval=5.0
+                )
+                await waiter_chain_data.wait(timeout=float(timeout))
             
             # For full network sync (sync all), check general status
-            while time.time() - start_time < timeout:
-                all_synced = True
-                sync_status = {}
-                
-                for node in nodes:
-                    container_name = f"cellframe-stage-node-{node.node_id}"
-                    try:
-                        container = self.docker_client.containers.get(container_name)
-                        
-                        exit_code_status, stdout_str, stderr_str = self._exec_cli(
-                            node.node_id,
-                            f"net -net {self.network_name} get status",
-                            check_output=False
-                        )
-                        
-                        # Check for "synced" status
-                        synced = bool(re.search(r'status:\s*synced', stdout_str, re.IGNORECASE))
-                        sync_status[f"node{node.node_id}"] = "synced" if synced else "syncing"
-                        
-                        if not synced:
-                            all_synced = False
-                            
-                    except Exception as e:
-                        logger.warning("failed_to_check_sync_status", node=f"node{node.node_id}", error=str(e))
-                        all_synced = False
-                        sync_status[f"node{node.node_id}"] = "error"
-                
-                if all_synced:
-                    logger.info("network_synchronized", elapsed=f"{time.time() - start_time:.1f}s")
-                    return
-                
-                logger.debug("sync_progress", status=sync_status, elapsed=f"{time.time() - start_time:.1f}s")
-                await asyncio.sleep(check_interval)
-            
-            # Timeout reached
-            logger.warning("sync_timeout", elapsed=timeout, final_status=sync_status)
-            # Don't raise - sync may complete eventually
+            waiter_network_sync = NetworkSyncWaiter(
+                exec_cli=self._exec_cli,
+                docker_client=self.docker_client,
+                nodes=nodes,
+                network_name=self.network_name,
+                poll_interval=5.0
+            )
+            await waiter_network_sync.wait(timeout=float(timeout))
             
         except Exception as e:
             logger.error("network_sync_error", error=str(e))
             raise
-    
-    async def wait_for_first_block(self, chain_name: str, timeout: int = 60) -> None:
-        """
-        Wait for first block to be created in blockchain chain.
-        
-        First checks mempool, then polls 'block list' until block appears.
-        
-        Args:
-            chain_name: Blockchain chain name (e.g., "main", "kelvin")
-            timeout: Timeout in seconds
-            
-        Raises:
-            RuntimeError: If no block appears within timeout
-        """
-        logger.info("waiting_for_first_block", chain=chain_name, timeout=timeout)
-        
-        # First verify TX is in mempool
-        logger.info("checking_mempool_before_waiting_for_block")
-        try:
-            exit_code_mp, stdout_mp, _ = self._exec_cli(
-                1,
-                f"mempool_list -net {self.network_name} -chain {chain_name}",
-                check_output=False
-            )
-            logger.info("mempool_check",
-                       chain=chain_name,
-                       exit_code=exit_code_mp,
-                       output_preview=stdout_mp[:200] if stdout_mp else "EMPTY")
-        except Exception as e:
-            logger.warning("mempool_check_failed", error=str(e)[:100])
-        
-        import time
-        start_time = time.time()
-        check_interval = 3
-        
-        while time.time() - start_time < timeout:
-            try:
-                exit_code, stdout_str, _ = self._exec_cli(
-                    1,  # Check on node1
-                    f"block list -net {self.network_name} -chain {chain_name} -last 1",
-                    check_output=False
-                )
-                
-                if exit_code == 0 and "block #" in stdout_str.lower():
-                    elapsed = time.time() - start_time
-                    logger.info("first_block_appeared", chain=chain_name, elapsed=f"{elapsed:.1f}s")
-                    return
-                
-                # Log progress every 15s with MORE output
-                elapsed = time.time() - start_time
-                if int(elapsed) % 15 == 0 and elapsed > 1:
-                    logger.info("waiting_for_block_progress", 
-                               chain=chain_name,
-                               elapsed=f"{elapsed:.1f}s",
-                               exit_code=exit_code,
-                               output_full=stdout_str if stdout_str else "EMPTY")
-                
-            except Exception as e:
-                logger.debug("block_check_error", error=str(e)[:100])
-            
-            await asyncio.sleep(check_interval)
-        
-        # Timeout
-        raise RuntimeError(f"No blocks appeared in {chain_name} after {timeout}s")
-

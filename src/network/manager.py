@@ -10,6 +10,7 @@ Manages the lifecycle of test network:
 """
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -69,6 +70,20 @@ class NetworkManager:
             base_path,
             network_name=self.topology.network.name,
             config_path=config_path
+        )
+        
+        # Initialize specialized genesis managers
+        from .genesis_zerochain import ZerochainGenesisManager
+        from .genesis_esbocs import ESBocsGenesisManager
+        self.zerochain_genesis = ZerochainGenesisManager(
+            base_path, 
+            self.topology.network.name, 
+            config_path
+        )
+        self.esbocs_genesis = ESBocsGenesisManager(
+            base_path, 
+            self.topology.network.name, 
+            config_path
         )
         
         # Node lifecycle manager for graceful restarts
@@ -221,12 +236,60 @@ class NetworkManager:
         # Clean up any remaining stale resources
         self.compose.cleanup_stale_resources()
         
-        # CRITICAL: Clean node data AFTER stopping old network, BEFORE any generation
-        # This ensures clean slate before configs/certs generation
+        # CRITICAL: Check for phase1 snapshot BEFORE cleaning data
+        # If phase1 snapshot exists, restore it instead of starting from scratch
+        phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', 'phase1_zerochain_genesis')
+        phase1_snapshot_exists = False
+        
         if self.suite_isolation_config.get('auto_create_on_startup', True):
             if self.snapshot_manager.mode != SnapshotMode.DISABLED:
-                logger.info("cleaning_node_data_after_stop")
+                # Check if phase1 snapshot exists
+                if self.snapshot_manager.mode == SnapshotMode.SQUASHFS:
+                    snapshot_file = self.snapshot_manager.snapshot.snapshots_path / f"{phase1_snapshot_name}.sqfs"
+                    phase1_snapshot_exists = snapshot_file.exists()
+                elif self.snapshot_manager.mode == SnapshotMode.FILESYSTEM:
+                    snapshot_dir = self.snapshot_manager.snapshot.snapshots_path / phase1_snapshot_name
+                    phase1_snapshot_exists = snapshot_dir.exists()
+                elif self.snapshot_manager.mode == SnapshotMode.RECREATE:
+                    marker_path = self.snapshot_manager.snapshot.snapshots_path / f"{phase1_snapshot_name}.marker"
+                    phase1_snapshot_exists = marker_path.exists()
+                
+                if phase1_snapshot_exists:
+                    logger.info("phase1_snapshot_found_restoring",
+                               name=phase1_snapshot_name,
+                               mode=self.snapshot_manager.mode.value)
+                    # Restore phase1 snapshot instead of cleaning
+                    restore_result = await self.snapshot_manager.restore_snapshot(phase1_snapshot_name)
+                    if restore_result:
+                        logger.info("phase1_snapshot_restored_successfully",
+                                   name=phase1_snapshot_name,
+                                   note="Skipping full genesis, starting from phase1 state")
+                        # DO NOT clean data - snapshot already restored with data
+                        phase1_snapshot_exists = True  # Ensure flag is set
+                    else:
+                        logger.warning("phase1_snapshot_restore_failed_fallback_to_clean",
+                                     name=phase1_snapshot_name)
+                        # Fallback to clean if restore failed
+                        phase1_snapshot_exists = False
+                        logger.info("cleaning_node_data_after_snapshot_restore_failed")
+                        self._clean_node_data()
+                else:
+                    logger.info("no_phase1_snapshot_cleaning_data_for_fresh_start",
+                               name=phase1_snapshot_name)
+                    # No snapshot exists - clean data for fresh start
+                    phase1_snapshot_exists = False
+                    logger.info("cleaning_node_data_after_stop")
+                    self._clean_node_data()
+            else:
+                # Snapshot manager disabled or auto_create disabled - treat as no snapshot
+                phase1_snapshot_exists = False
+                logger.info("snapshot_system_disabled_or_auto_create_disabled_cleaning_data")
                 self._clean_node_data()
+        else:
+            # No snapshot isolation config - treat as no snapshot
+            phase1_snapshot_exists = False
+            logger.info("no_snapshot_isolation_config_cleaning_data")
+            self._clean_node_data()
         
         # Generate node configurations
         if not self.nodes:
@@ -234,13 +297,20 @@ class NetworkManager:
         else:
             node_configs = list(self.nodes.values())
         
-        # Generate configuration files and certificates
-        logger.info("generating_configs_and_certs")
-        self.config_generator.generate_all(
-            self.topology,
-            node_configs,
-            force=rebuild
-        )
+        # CRITICAL: Skip config generation if phase1 snapshot was restored
+        # Configs are restored from snapshot and should NOT be regenerated
+        # Regeneration would overwrite static_genesis_event and fee_addr from snapshot
+        if not phase1_snapshot_exists:
+            # Generate configuration files and certificates
+            logger.info("generating_configs_and_certs")
+            self.config_generator.generate_all(
+                self.topology,
+                node_configs,
+                force=rebuild
+            )
+        else:
+            logger.info("skipping_config_generation_after_snapshot_restore",
+                       note="Configs restored from snapshot - preserving static_genesis_event and fee_addr")
         
         # Generate dynamic docker-compose.yml for all nodes
         logger.info("generating_docker_compose")
@@ -266,271 +336,676 @@ class NetworkManager:
                    master=len(master_nodes), 
                    full=len(full_nodes))
         
+        # Initialize emission_hash variable (will be set in PHASE 1 or after snapshot restore)
+        emission_hash: Optional[str] = None
+        
         # =================================================================
         # PHASE 1: START ROOT NODES WITH SEED_MODE FOR DAG GENESIS
+        # (SKIP if phase1 snapshot was restored)
         # =================================================================
-        logger.info("=== PHASE 1: ROOT Nodes Startup (DAG-PoA Genesis) ===")
-        
-        try:
-            # ROOT nodes already have seed_mode=true in configs (set during config generation)
-            # This allows creation of first DAG events without parent hashes
+        if not phase1_snapshot_exists:
+            logger.info("=== PHASE 1: ROOT Nodes Startup (DAG-PoA Genesis) ===")
             
-            # Start ONLY root nodes
+            try:
+                # Create consensus monitor for root nodes
+                from ..monitoring.network_consensus import NetworkConsensusMonitor
+                root_nodes_dict = {f"node{n.node_id}": n for n in root_nodes}
+                consensus_monitor = NetworkConsensusMonitor(
+                    nodes=root_nodes_dict,
+                    node_cli_path=self.node_cli_path
+                )
+                
+                # Use zerochain genesis manager
+                root_services = [f"node-{nid}" for nid in root_node_ids]
+                emission_hash, fee_addr = await self.zerochain_genesis.initialize_zerochain_genesis(
+                    root_nodes=root_nodes,
+                    node_configs=node_configs,
+                    compose_manager=self.compose,
+                    state_manager=self.state_manager,
+                    lifecycle_manager=self.lifecycle,
+                    consensus_monitor=consensus_monitor
+                )
+                
+                logger.info("zerochain_genesis_complete",
+                           emission_hash=emission_hash[:16] if emission_hash else None,
+                           fee_addr=fee_addr,
+                           note="Token declaration created. Emission and transfer will be created after hard restart.")
+                
+                # =================================================================
+                # HARD RESTART: Disable seed_mode for root nodes
+                # =================================================================
+                # CRITICAL: Hard restart must happen BEFORE emission/transfer creation
+                # This ensures seed_mode is disabled before creating emission and transfer transactions
+                logger.info("=== HARD RESTART: Disable seed_mode for root nodes ===")
+                
+                # Hard restart ROOT nodes with config reload (seed_mode disabled)
+                logger.info("hard_restarting_root_nodes_to_disable_seed_mode")
+                await self.lifecycle.hard_restart_with_config_reload(
+                    service_names=root_services,
+                    compose_manager=self.compose,
+                    flush_timeout=60
+                )
+                
+                # Wait for ROOT nodes to be ONLINE after hard restart
+                # NOTE: Even if mainchain fails to initialize (ESBocs error), zerochain should still work
+                # We can create emission on zerochain even if mainchain is not initialized
+                logger.info("waiting_for_root_nodes_online_after_hard_restart")
+                try:
+                    await self.state_manager.wait_for_nodes_online(root_nodes, timeout=30.0)
+                    logger.info("root_nodes_online_after_hard_restart")
+                except TimeoutError:
+                    # If timeout, log warning but continue - emission creation will fail-fast if zerochain is not accessible
+                    logger.warning("nodes_online_timeout_after_hard_restart",
+                                 note="Nodes did not reach ONLINE state within timeout. "
+                                      "Will attempt emission creation anyway - it will fail-fast if zerochain is not accessible.")
+                
+                # =================================================================
+                # CREATE EMISSION AND TRANSFER TRANSACTION (after hard restart)
+                # =================================================================
+                # CRITICAL: Create emission and transfer transaction AFTER hard restart
+                # (seed_mode is now disabled, so emission and transfer are created without seed_mode)
+                logger.info("creating_emission_and_transfer_after_hard_restart",
+                           note="Emission and transfer will be created now (seed_mode disabled)")
+                
+                # Read fee_addr from config after hard restart
+                fee_addr_from_config = None
+                for root_node in root_nodes[:1]:  # Check first ROOT node
+                    fee_addr_from_config = self.genesis.config_mgr.read_fee_addr_from_config(
+                        node_id=root_node.node_id
+                    )
+                    break
+                
+                if fee_addr_from_config:
+                    fee_addr = fee_addr_from_config
+                    logger.info("using_fee_addr_from_config_for_emission",
+                               fee_addr=fee_addr[:16],
+                               note="Using fee_addr read from config after hard restart")
+                elif not fee_addr:
+                    raise RuntimeError(
+                        f"CRITICAL: fee_addr not found in configs after hard restart! "
+                        f"Cannot create emission and transfer transaction without fee address."
+                    )
+                
+                emission_hash = await self.zerochain_genesis.create_emission_and_transfer_after_restart(
+                    root_nodes=root_nodes,
+                    master_nodes=master_nodes,
+                    fee_addr=fee_addr,
+                    compose_manager=self.compose,
+                    state_manager=self.state_manager,
+                    lifecycle_manager=self.lifecycle
+                )
+                logger.info("emission_and_transfer_created_after_hard_restart",
+                           emission_hash=emission_hash[:16] if emission_hash else None,
+                           fee_addr=fee_addr[:16] if fee_addr else None,
+                           note="Emission and transfer transaction created successfully (seed_mode disabled)")
+                
+                # =================================================================
+                # PHASE 1.5: CREATE PHASE 1 SNAPSHOT (zerochain + genesis LN + emission + transfer)
+                # =================================================================
+                # Create snapshot after PHASE 1 completion (zerochain genesis ready)
+                # This allows fast restoration to phase1 state for different genesis scenarios
+                genesis_stage = self.suite_isolation_config.get('genesis_stage', 'full')
+                if genesis_stage in ['phase1', 'full']:
+                    if self.suite_isolation_config.get('auto_create_on_startup', True):
+                        if self.snapshot_manager.mode != SnapshotMode.DISABLED:
+                            logger.info("creating_phase1_snapshot_after_zerochain_genesis")
+                            containers_shutdown = False
+                            try:
+                                # CRITICAL: Gracefully shutdown ROOT containers before snapshot
+                                # This ensures all data (GDB, chain files, configs) are flushed to disk
+                                # Graceful shutdown ensures:
+                                # - GDB flush completes (node list, validator orders)
+                                # - Chain files are saved (zerochain events)
+                                # - Configs are written to disk (static_genesis_event)
+                                logger.info("gracefully_shutting_down_root_containers_for_phase1_snapshot")
+                                root_services = [f"node-{nid}" for nid in root_node_ids]
+                                await self.lifecycle.graceful_shutdown_with_gdb_flush(
+                                    service_names=root_services,
+                                    flush_timeout=60
+                                )
+                                containers_shutdown = True
+                                
+                                # CRITICAL: Verify that chain files and configs exist before creating snapshot
+                                logger.info("verifying_chain_files_and_configs_before_snapshot")
+                                from pathlib import Path
+                                cache_dir = (self.genesis.base_path / self.paths_config.get('cache_dir', 'cache')).resolve()
+                                
+                                chain_files_found = 0
+                                configs_found = 0
+                                for node_id in root_node_ids:
+                                    # Check chain files
+                                    # On host: cache/data/node{id}/lib/network/stagenet/zerochain/
+                                    # Inside container: /opt/cellframe-node/var/lib/network/stagenet/zerochain/
+                                    # (volume mount: cache/data/node{id} -> /opt/cellframe-node/var)
+                                    chain_files_path = cache_dir / "data" / f"node{node_id}" / "lib" / "network" / self.topology.network.name / "zerochain"
+                                    if chain_files_path.exists():
+                                        chain_files = list(chain_files_path.glob("*.dchaincell"))
+                                        if chain_files:
+                                            chain_files_found += 1
+                                            logger.info("chain_files_found_before_snapshot",
+                                                       node_id=node_id,
+                                                       count=len(chain_files),
+                                                       files=[f.name for f in chain_files[:3]])
+                                        else:
+                                            logger.warning("chain_files_directory_empty",
+                                                         node_id=node_id,
+                                                         path=str(chain_files_path))
+                                    else:
+                                        logger.error("chain_files_directory_missing",
+                                                   node_id=node_id,
+                                                   path=str(chain_files_path))
+                                    
+                                    # Check zerochain config
+                                    zerochain_config_path = cache_dir / "configs" / f"node{node_id}" / "network" / self.topology.network.name / "zerochain.cfg"
+                                    if zerochain_config_path.exists():
+                                        configs_found += 1
+                                        # Verify static_genesis_event is set
+                                        import configparser
+                                        config = configparser.ConfigParser()
+                                        config.read(zerochain_config_path)
+                                        static_genesis = config.get('dag', 'static_genesis_event', fallback='').strip() if 'dag' in config else ''
+                                        if static_genesis:
+                                            logger.info("zerochain_config_verified_before_snapshot",
+                                                       node_id=node_id,
+                                                       static_genesis_hash=static_genesis[:16],
+                                                       path=str(zerochain_config_path))
+                                        else:
+                                            logger.error("static_genesis_event_not_set_in_config",
+                                                       node_id=node_id,
+                                                       path=str(zerochain_config_path))
+                                    else:
+                                        logger.error("zerochain_config_missing_before_snapshot",
+                                                   node_id=node_id,
+                                                   path=str(zerochain_config_path))
+                                
+                                if chain_files_found == 0:
+                                    raise RuntimeError(
+                                        f"CRITICAL: No chain files found for any ROOT node before snapshot creation! "
+                                        f"This means zerochain events were not saved to disk. "
+                                        f"Chain files checked in: {[str(cache_dir / 'data' / f'node{nid}' / 'lib' / 'network' / self.topology.network.name / 'zerochain') for nid in root_node_ids]}. "
+                                        f"This is a critical error - cannot proceed with snapshot creation. "
+                                        f"Check if zerochain events were actually created and if storage_dir is correctly configured."
+                                    )
+                                if configs_found == 0:
+                                    raise RuntimeError(f"CRITICAL: No zerochain configs found for any ROOT node before snapshot creation! "
+                                                     f"This means configs were not written to disk.")
+                                
+                                logger.info("chain_files_and_configs_verified",
+                                          chain_files_nodes=chain_files_found,
+                                          configs_nodes=configs_found,
+                                          total_nodes=len(root_node_ids))
+                                
+                                # CRITICAL: Do NOT clean data before snapshot!
+                                # Squashfs snapshot automatically captures all mounted directories including GDB
+                                # Cleaning data would remove critical GDB data (node list) needed by MASTER nodes
+                                # Snapshot will preserve current state including all GDB data
+                                logger.info("preserving_data_for_phase1_snapshot",
+                                           note="Squashfs snapshot captures all mounted directories automatically")
+                                
+                                # Create snapshot of phase1 state (with GDB data preserved)
+                                phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', 'phase1_zerochain_genesis')
+                                await self.create_clean_snapshot(name=phase1_snapshot_name)
+                                logger.info("phase1_snapshot_created", 
+                                           name=phase1_snapshot_name,
+                                           note="zerochain genesis and LN ready")
+                                
+                                # CRITICAL: After graceful shutdown, containers are stopped
+                                # Need to restart them to continue with PHASE 2
+                                # They will use configs from snapshot (seed_mode=false, static_genesis_event set)
+                                logger.info("restarting_root_containers_after_snapshot_creation")
+                                root_services = [f"node-{nid}" for nid in root_node_ids]
+                                self.compose.up(services=root_services, detach=True, wait=False)
+                                
+                                # If genesis_stage is 'phase1', stop here (containers remain stopped)
+                                if genesis_stage == 'phase1':
+                                    logger.info("genesis_stage_phase1_complete",
+                                               snapshot=phase1_snapshot_name,
+                                               note="Network ready with zerochain genesis only. Containers stopped.")
+                                    return
+                                
+                                # CRITICAL: Containers are already running after restart (with configs from snapshot)
+                                # No need for another hard restart - seed_mode is already disabled
+                                # Wait for ROOT nodes to be ONLINE before proceeding to PHASE 2
+                                logger.info("waiting_for_root_nodes_online_for_phase2")
+                                await self.state_manager.wait_for_nodes_online(root_nodes, timeout=60.0)
+                                logger.info("root_nodes_online_for_phase2")
+                                
+                            except Exception as e:
+                                # CRITICAL: Check for fatal errors that require immediate exit
+                                error_msg = str(e)
+                                
+                                # Fatal errors - do NOT continue, do NOT restart containers
+                                fatal_errors = [
+                                    "No chain files found",
+                                    "zerochain events were not saved",
+                                    "Network not found",
+                                    "CRITICAL: Network not found",
+                                    "configs may be corrupted"
+                                ]
+                                
+                                is_fatal = any(pattern.lower() in error_msg.lower() for pattern in fatal_errors)
+                                if is_fatal:
+                                    logger.error("phase1_snapshot_creation_failed_critical",
+                                               error=error_msg,
+                                               note="FATAL ERROR: Cannot proceed - immediate exit required")
+                                    raise  # Re-raise the error - this is fatal
+                                
+                                # If containers were shutdown, they need to be restarted even on error
+                                # BUT only if error is NOT fatal
+                                if containers_shutdown:
+                                    try:
+                                        logger.info("restarting_containers_after_snapshot_error")
+                                        root_services = [f"node-{nid}" for nid in root_node_ids]
+                                        self.compose.up(services=root_services, detach=True, wait=False)
+                                        await self.state_manager.wait_for_nodes_online(root_nodes, timeout=60.0)
+                                    except Exception as restart_err:
+                                        logger.error("failed_to_restart_containers_after_error",
+                                                   error=str(restart_err))
+                                logger.warning("phase1_snapshot_creation_failed",
+                                              error=error_msg,
+                                              note="Continuing with PHASE 2, snapshot will be created at end")
+            
+            except Exception as e:
+                logger.error("root_nodes_genesis_failed", error=str(e))
+                self.compose.down(volumes=False, remove_images=False)
+                raise RuntimeError(f"ROOT nodes genesis failed: {e}") from e
+        else:
+            logger.info("=== PHASE 1 SKIPPED: Using restored phase1 snapshot ===",
+                       snapshot=phase1_snapshot_name,
+                       note="ROOT nodes already initialized with zerochain genesis")
+            
+            # CRITICAL: Read static_genesis_event and fee_addr from restored configs BEFORE starting containers
+            # These values MUST be in configs after snapshot restore for nodes to load network correctly
+            # If they are missing, nodes will fail to load network (error: "Network stagenet not found")
+            logger.info("reading_genesis_event_and_fee_addr_from_restored_configs_before_start")
+            
+            # CRITICAL: First, verify config files exist after snapshot restore
+            # This helps diagnose if configs were not restored correctly
+            from ..config.loader import ConfigLoader
+            config_loader = ConfigLoader(self.base_path, self.config_path)
+            paths_config = config_loader.get_paths_config()
+            cache_dir_relative = paths_config.get('cache_dir', 'cache')
+            cache_dir = (self.base_path / cache_dir_relative).resolve()
+            
+            first_root_node = root_nodes[0]
+            zerochain_config_path = cache_dir / "configs" / f"node{first_root_node.node_id}" / "network" / self.topology.network.name / "zerochain.cfg"
+            main_config_path = cache_dir / "configs" / f"node{first_root_node.node_id}" / "network" / self.topology.network.name / "main.cfg"
+            
+            # Diagnostic: Check if config files exist
+            if not zerochain_config_path.exists():
+                logger.error("zerochain_config_not_found_after_snapshot_restore",
+                           path=str(zerochain_config_path),
+                           note="CRITICAL: zerochain.cfg not found after snapshot restore! "
+                                "Configs may not have been restored correctly from snapshot.")
+                raise RuntimeError(
+                    f"CRITICAL: zerochain.cfg not found after snapshot restore! "
+                    f"Path: {zerochain_config_path}. "
+                    f"Configs may not have been restored correctly from snapshot. "
+                    f"Check snapshot restoration process."
+                )
+            
+            if not main_config_path.exists():
+                logger.error("main_config_not_found_after_snapshot_restore",
+                           path=str(main_config_path),
+                           note="CRITICAL: main.cfg not found after snapshot restore! "
+                                "Configs may not have been restored correctly from snapshot.")
+                raise RuntimeError(
+                    f"CRITICAL: main.cfg not found after snapshot restore! "
+                    f"Path: {main_config_path}. "
+                    f"Configs may not have been restored correctly from snapshot. "
+                    f"Check snapshot restoration process."
+                )
+            
+            logger.info("config_files_exist_after_snapshot_restore",
+                       zerochain_config=str(zerochain_config_path),
+                       main_config=str(main_config_path),
+                       note="Config files found after snapshot restore - proceeding to read values")
+            
+            # Read static_genesis_event from zerochain config
+            static_genesis_hash = None
+            fee_addr = None
+            
+            for root_node in root_nodes[:1]:  # Check first ROOT node (configs are same for all nodes)
+                # Read static_genesis_event from zerochain.cfg
+                static_genesis_hash = self.genesis.config_mgr.read_static_genesis_event_from_config(
+                    chain_name="zerochain",
+                    node_id=root_node.node_id
+                )
+                
+                # Read fee_addr from main.cfg
+                fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(
+                    node_id=root_node.node_id
+                )
+                
+                break  # Only need to check first node
+            
+            # CRITICAL: Verify values were read from configs BEFORE starting containers
+            # If these values are missing, nodes will fail to load network
+            if not static_genesis_hash:
+                logger.error("static_genesis_event_not_read_from_config_after_snapshot_restore",
+                           config_path=str(zerochain_config_path),
+                           note="CRITICAL: static_genesis_event could not be read from restored configs! "
+                                "This means configs were not properly restored or are missing genesis event hash. "
+                                "Nodes will fail to load network without this value. "
+                                "Check snapshot restoration process.")
+                # Diagnostic: Try to read config file directly to see what's in it
+                import configparser
+                try:
+                    config = configparser.ConfigParser()
+                    config.read(zerochain_config_path)
+                    logger.error("zerochain_config_diagnostic",
+                               sections=list(config.sections()),
+                               dag_section_exists='dag' in config,
+                               static_genesis_event_in_config=config.get('dag', 'static_genesis_event', fallback='EMPTY') if 'dag' in config else 'NO_DAG_SECTION',
+                               note="Config file exists but static_genesis_event is missing or empty")
+                except Exception as diag_err:
+                    logger.error("zerochain_config_diagnostic_failed",
+                               error=str(diag_err),
+                               note="Could not read config file for diagnostic")
+                
+                raise RuntimeError(
+                    f"CRITICAL: static_genesis_event not found in restored configs! "
+                    f"Config path: {zerochain_config_path}. "
+                    f"Snapshot may be corrupted or configs were not restored correctly. "
+                    f"Cannot start nodes without static_genesis_event - they will fail to load network."
+                )
+            
+            if not fee_addr:
+                logger.error("fee_addr_not_read_from_config_after_snapshot_restore",
+                           config_path=str(main_config_path),
+                           note="CRITICAL: fee_addr could not be read from restored configs! "
+                                "This means configs were not properly restored or are missing fee address. "
+                                "Check snapshot restoration process.")
+                # Diagnostic: Try to read config file directly to see what's in it
+                import configparser
+                try:
+                    config = configparser.ConfigParser()
+                    config.read(main_config_path)
+                    logger.error("main_config_diagnostic",
+                               sections=list(config.sections()),
+                               esbocs_section_exists='esbocs' in config,
+                               fee_addr_in_config=config.get('esbocs', 'fee_addr', fallback='EMPTY') if 'esbocs' in config else 'NO_ESBOCS_SECTION',
+                               note="Config file exists but fee_addr is missing or empty")
+                except Exception as diag_err:
+                    logger.error("main_config_diagnostic_failed",
+                               error=str(diag_err),
+                               note="Could not read config file for diagnostic")
+                
+                raise RuntimeError(
+                    f"CRITICAL: fee_addr not found in restored configs! "
+                    f"Config path: {main_config_path}. "
+                    f"Snapshot may be corrupted or configs were not restored correctly."
+                )
+            
+            logger.info("genesis_event_and_fee_addr_read_from_configs",
+                       static_genesis_hash=static_genesis_hash[:16],
+                       fee_addr=fee_addr[:16],
+                       zerochain_config=str(zerochain_config_path),
+                       main_config=str(main_config_path),
+                       note="Successfully read static_genesis_event and fee_addr from restored configs. "
+                            "Configs are validated - nodes should be able to load network.")
+            
+            # CRITICAL: Additional diagnostic - read and log full config contents to verify they are correct
+            try:
+                zerochain_config = configparser.ConfigParser()
+                zerochain_config.read(zerochain_config_path)
+                main_config = configparser.ConfigParser()
+                main_config.read(main_config_path)
+                
+                logger.info("config_contents_diagnostic_after_snapshot_restore",
+                           zerochain_sections=list(zerochain_config.sections()),
+                           main_sections=list(main_config.sections()),
+                           zerochain_dag_section_exists='dag' in zerochain_config,
+                           zerochain_static_genesis_event=zerochain_config.get('dag', 'static_genesis_event', fallback='NOT_SET') if 'dag' in zerochain_config else 'NO_DAG_SECTION',
+                           zerochain_is_static_genesis_event=zerochain_config.get('dag', 'is_static_genesis_event', fallback='NOT_SET') if 'dag' in zerochain_config else 'NO_DAG_SECTION',
+                           main_esbocs_section_exists='esbocs' in main_config,
+                           main_min_validators_count=main_config.get('esbocs', 'min_validators_count', fallback='NOT_SET') if 'esbocs' in main_config else 'NO_ESBOCS_SECTION',
+                           main_fee_addr=main_config.get('esbocs', 'fee_addr', fallback='NOT_SET') if 'esbocs' in main_config else 'NO_ESBOCS_SECTION',
+                           note="Full config contents after snapshot restore - verify all values are correct")
+            except Exception as diag_err:
+                logger.warning("config_contents_diagnostic_failed",
+                             error=str(diag_err),
+                             note="Could not read config contents for diagnostic")
+            
+            # CRITICAL: Start ROOT containers after snapshot restore
+            # Snapshot contains data but containers are stopped
+            # ROOT nodes must be running for MASTER nodes to sync node list via GDB
+            # Configs are now validated - nodes should be able to load network
+            logger.info("starting_root_containers_after_snapshot_restore",
+                       static_genesis_hash=static_genesis_hash[:16],
+                       fee_addr=fee_addr[:16],
+                       note="Starting containers with validated configs")
             root_services = [f"node-{nid}" for nid in root_node_ids]
-            logger.info("starting_root_nodes_only", services=root_services, seed_mode=True)
             self.compose.up(services=root_services, detach=True, wait=False)
+            logger.info("root_containers_started_from_snapshot", services=root_services)
             
-            # Wait for root nodes to be fully initialized with intelligent monitoring
-            logger.info("waiting_for_root_nodes_ready")
+            # Wait for ROOT nodes to be ONLINE before proceeding to PHASE 2
+            # This ensures GDB is accessible for MASTER nodes to sync node list
+            # Configs are validated, so nodes should load network successfully
+            logger.info("waiting_for_root_nodes_online_after_snapshot_restore",
+                       static_genesis_hash=static_genesis_hash[:16],
+                       note="Waiting for nodes to load network with validated configs")
+            await self.state_manager.wait_for_nodes_online(root_nodes, timeout=60.0)
+            logger.info("root_nodes_online_after_snapshot_restore")
+            
+            # Verify node list is available in GDB after restore
+            logger.info("verifying_node_list_in_gdb_after_snapshot_restore")
             from ..monitoring.network_consensus import NetworkConsensusMonitor
-            
-            # Create temporary nodes dict for root nodes only
-            # IMPORTANT: keys must be "node1", "node2", "node3" (without dash!)
             root_nodes_dict = {f"node{n.node_id}": n for n in root_nodes}
             consensus_monitor = NetworkConsensusMonitor(
                 nodes=root_nodes_dict,
                 node_cli_path=self.node_cli_path
             )
             
-            # Wait for ROOT nodes to reach NET_STATE_LINKS_CONNECTING
-            # This means network subsystems are initialized and ready for node registration
-            logger.info("waiting_for_network_ready_for_registration")
+            # Wait for ROOT nodes to establish links (they should have node list from snapshot)
+            logger.info("waiting_for_root_nodes_links_after_snapshot_restore")
             await consensus_monitor.wait_for_links_connecting_state(timeout=60.0)
-            logger.info("root_nodes_ready_for_registration")
+            logger.info("root_nodes_links_established_after_snapshot_restore")
             
-            # Register ONLY ROOT nodes (first 3) in node1's node list immediately
-            # This pre-populates the essential validators; other nodes will self-discover
-            logger.info("pre_registering_root_nodes_in_node1")
-            await self.genesis.registration_mgr.register_all_nodes_via_cli(root_nodes)
-            logger.info("root_nodes_pre_registered_in_node1", count=len(root_nodes))
+            # CRITICAL: Get emission_hash from zerochain DAG events after snapshot restore
+            # emission_hash is needed for creating first transaction in PHASE 2
+            # Emission is stored as a DAG event in zerochain, not in ledger
+            # We need to find the emission event in DAG events list
+            logger.info("getting_emission_hash_from_zerochain_dag_after_snapshot_restore")
+            import re
+            emission_hash = None
             
-            # CRITICAL: SOFT reconnect to establish links for DAG-PoA consensus
-            # Without links, DAG events cannot be created (consensus requires active validators)
-            logger.info("soft_reconnect_for_dag_consensus")
-            await self.genesis.registration_mgr.soft_network_reconnect(root_nodes, wait_for_links=True)
-            logger.info("dag_consensus_links_established")
-            
-            # Generate fee wallet
-            logger.info("generating_fee_wallet")
-            fee_addr = await self.genesis.token_mgr.generate_fee_wallet()
-            logger.info("fee_wallet_created", address=fee_addr)
-            
-            # Update fee_addr in main.cfg on ALL nodes
-            logger.info("updating_fee_addr_in_all_configs")
-            await self.genesis.config_mgr.update_fee_addr_in_config(fee_addr, node_configs)
-            logger.info("fee_addr_updated_in_configs")
-            
-            # Create TCELL token on zerochain
-            logger.info("creating_tcell_token_on_zerochain")
-            token_hash = await self.genesis.token_mgr.create_native_token()
-            logger.info("tcell_token_created", hash=token_hash[:16])
-            
-            # Process token_decl through DAG-PoA (with seed_mode!)
-            logger.info("processing_token_decl_dag_poa")
-            await self.genesis.sync_mgr.process_zerochain_datum(token_hash, root_nodes)
-            logger.info("token_decl_finalized_in_dag")
-            
-            # Emit TCELL
-            logger.info("emitting_tcell_tokens")
-            emission_hash = await self.genesis.token_mgr.emit_native_token(fee_addr)
-            logger.info("tcell_emission_created", hash=emission_hash[:16])
-            
-            # Process emission through DAG-PoA (with seed_mode!)
-            logger.info("processing_emission_dag_poa")
-            await self.genesis.sync_mgr.process_zerochain_datum(emission_hash, root_nodes)
-            logger.info("emission_finalized_in_dag")
-            
-            # DIAGNOSTIC: Verify emission is visible on ROOT nodes BEFORE restart
-            logger.info("verifying_emission_on_root_nodes", emission=emission_hash[:16])
+            # Method 1: Try to get emission hash from DAG events (most reliable)
             for root_node in root_nodes[:1]:  # Check first ROOT node
                 exit_code, stdout, _ = self.genesis._exec_cli(
                     root_node.node_id,
-                    f"ledger list -net {self.topology.network.name} -chain zerochain",
+                    f"dag event list -net {self.topology.network.name} -chain zerochain -from events -limit 20",
                     check_output=False
                 )
-                has_emission = emission_hash.lower() in stdout.lower() if stdout else False
-                logger.info("root_emission_check",
-                           node=f"node{root_node.node_id}",
-                           has_emission=has_emission,
+                # CRITICAL: Log full output for debugging
+                logger.info("dag_events_list_check",
+                           node_id=root_node.node_id,
                            exit_code=exit_code,
-                           ledger_preview=stdout[:300] if stdout else "empty")
+                           stdout_length=len(stdout) if stdout else 0,
+                           stdout_full=stdout[:2000] if stdout else "EMPTY")
+                
+                if exit_code == 0 and stdout:
+                    # Look for emission event hash in DAG events
+                    # Format: "event hash: 0x..." or "datum: 0x..." with emission type
+                    # Try multiple patterns to catch different formats
+                    hash_matches = re.findall(r'(?:event\s+hash|datum|hash):\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                    # Also try finding all hashes in text
+                    all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                    
+                    logger.info("dag_events_hash_search",
+                               node_id=root_node.node_id,
+                               hash_matches_count=len(hash_matches),
+                               all_hashes_count=len(all_hashes),
+                               hashes_preview=all_hashes[:5] if all_hashes else [])
+                    
+                    if hash_matches:
+                        # Emission is typically the second or last event (after token_decl)
+                        # Check all events and find the one with emission type
+                        lines = stdout.split('\n')
+                        for i, line in enumerate(lines):
+                            if 'emission' in line.lower() or ('datum' in line.lower() and 'tx' in line.lower()):
+                                # Look for hash in current or nearby lines
+                                for j in range(max(0, i-2), min(len(lines), i+5)):
+                                    hash_match = re.search(r'(0x[A-Fa-f0-9]{64})', lines[j])
+                                    if hash_match:
+                                        emission_hash = hash_match.group(1)
+                                        logger.info("emission_hash_found_in_dag_events",
+                                                   hash=emission_hash[:16],
+                                                   line_preview=lines[j].strip()[:100])
+                                        break
+                                if emission_hash:
+                                    break
+                        
+                        # Fallback: if no emission-specific event found, use second/last hash
+                        # (emission usually comes after token_decl)
+                        if not emission_hash and len(hash_matches) >= 2:
+                            emission_hash = hash_matches[-1]  # Last hash is usually emission
+                            logger.info("emission_hash_found_using_last_hash",
+                                       hash=emission_hash[:16],
+                                       total_hashes=len(hash_matches))
+                        elif not emission_hash and len(hash_matches) == 1:
+                            # If only one hash found, it might be emission
+                            emission_hash = hash_matches[0]
+                            logger.info("emission_hash_found_using_single_hash",
+                                       hash=emission_hash[:16],
+                                       note="Only one hash found, assuming it's emission")
+                        
+                        if emission_hash:
+                            break
+                    elif all_hashes:
+                        # If no structured hash matches but we found hashes in text, use last one
+                        emission_hash = all_hashes[-1]
+                        logger.info("emission_hash_found_from_all_hashes",
+                                   hash=emission_hash[:16],
+                                   total_hashes=len(all_hashes),
+                                   note="Using last hash from unstructured search")
+                        break
             
-            # CRITICAL: Get genesis EVENT hash from zerochain and update configs!
-            logger.info("getting_zerochain_genesis_event_hash")
-            zerochain_genesis_hash = await self.genesis.config_mgr.get_genesis_event_hash("zerochain")
-            if not zerochain_genesis_hash:
-                raise RuntimeError("Failed to retrieve zerochain genesis event hash")
-            logger.info("zerochain_genesis_event_hash", hash=zerochain_genesis_hash[:16])
+            # Method 2: Fallback - try ledger list (less reliable but sometimes works)
+            if not emission_hash:
+                logger.info("emission_hash_not_found_in_dag_trying_ledger")
+                for root_node in root_nodes[:1]:
+                    exit_code, stdout, _ = self.genesis._exec_cli(
+                        root_node.node_id,
+                        f"ledger list -net {self.topology.network.name} -chain zerochain",
+                        check_output=False
+                    )
+                    # CRITICAL: Log full output for debugging
+                    logger.info("ledger_list_check",
+                               node_id=root_node.node_id,
+                               exit_code=exit_code,
+                               stdout_length=len(stdout) if stdout else 0,
+                               stdout_full=stdout[:2000] if stdout else "EMPTY")
+                    
+                    if exit_code == 0 and stdout:
+                        # Look for emission hash in ledger (format: hash: 0x...)
+                        hash_matches = re.findall(r'hash:\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                        # Also try finding all hashes
+                        all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                        
+                        logger.info("ledger_hash_search",
+                                   node_id=root_node.node_id,
+                                   hash_matches_count=len(hash_matches),
+                                   all_hashes_count=len(all_hashes),
+                                   hashes_preview=all_hashes[:5] if all_hashes else [])
+                        
+                        if hash_matches:
+                            # Emission is typically the last hash (after token_decl)
+                            emission_hash = hash_matches[-1] if len(hash_matches) > 1 else hash_matches[0]
+                            logger.info("emission_hash_found_in_ledger",
+                                       hash=emission_hash[:16],
+                                       total_hashes=len(hash_matches))
+                            break
+                        elif all_hashes:
+                            # If no structured hash matches but we found hashes, use last one
+                            emission_hash = all_hashes[-1]
+                            logger.info("emission_hash_found_from_ledger_all_hashes",
+                                       hash=emission_hash[:16],
+                                       total_hashes=len(all_hashes),
+                                       note="Using last hash from unstructured search")
+                            break
             
-            # Update static_genesis_event_hash in zerochain.cfg for ALL nodes
-            logger.info("updating_static_genesis_event_in_all_configs")
-            await self.genesis.config_mgr.update_static_genesis_in_config("zerochain", zerochain_genesis_hash, node_configs)
-            logger.info("zerochain_static_genesis_updated")
+            # Method 3: Fallback - try token show/info to get emission datum hash
+            if not emission_hash:
+                logger.info("emission_hash_not_found_trying_token_show")
+                for root_node in root_nodes[:1]:
+                    # Try token show command
+                    exit_code, stdout, _ = self.genesis._exec_cli(
+                        root_node.node_id,
+                        f"token show -net {self.topology.network.name} -token TCELL",
+                        check_output=False
+                    )
+                    logger.info("token_show_check",
+                               node_id=root_node.node_id,
+                               exit_code=exit_code,
+                               stdout_length=len(stdout) if stdout else 0,
+                               stdout_preview=stdout[:500] if stdout else "EMPTY")
+                    
+                    if exit_code == 0 and stdout:
+                        # Look for emission datum hash in token info
+                        hash_matches = re.findall(r'(?:emission|datum)\s+(?:hash|datum):\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                        if hash_matches:
+                            emission_hash = hash_matches[0]
+                            logger.info("emission_hash_found_in_token_show",
+                                       hash=emission_hash[:16])
+                            break
+                        # Try finding any hash
+                        all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                        if all_hashes:
+                            emission_hash = all_hashes[-1]
+                            logger.info("emission_hash_found_from_token_show_hashes",
+                                       hash=emission_hash[:16],
+                                       total_hashes=len(all_hashes),
+                                       note="Using last hash from token show")
+                            break
             
-            # CRITICAL: HARD RESTART #1 - Apply DAG genesis event + disable seed_mode
-            # Full container restart to reload configs from disk
-            logger.info("=== HARD RESTART #1: After DAG Genesis Event ===")
+            # Method 4: Fallback - try token list to verify emission exists
+            if not emission_hash:
+                logger.info("emission_hash_not_found_trying_token_list")
+                for root_node in root_nodes[:1]:
+                    exit_code, stdout, _ = self.genesis._exec_cli(
+                        root_node.node_id,
+                        f"token list -net {self.topology.network.name}",
+                        check_output=False
+                    )
+                    logger.info("token_list_check",
+                               node_id=root_node.node_id,
+                               exit_code=exit_code,
+                               stdout_length=len(stdout) if stdout else 0,
+                               stdout_preview=stdout[:500] if stdout else "EMPTY")
+                    
+                    if exit_code == 0 and stdout and "TCELL" in stdout.upper():
+                        logger.info("tcell_token_found_but_emission_hash_missing",
+                                   note="Emission may have been lost - snapshot may be incomplete")
             
-            # Step 1: Disable seed_mode in ROOT configs (write to disk)
-            logger.info("disabling_seed_mode_for_root_nodes")
-            self.genesis.config_mgr.disable_seed_mode_in_configs(root_node_ids)
+            if not emission_hash:
+                # Log detailed diagnostic info before failing
+                logger.error("emission_hash_retrieval_failed",
+                           note="Tried DAG events, ledger, token show, and token list - snapshot may be corrupted")
+                raise RuntimeError("Failed to retrieve emission_hash from zerochain after snapshot restore. "
+                                 "Snapshot may be corrupted or emission not found in DAG events/ledger. "
+                                 "Check logs for detailed command outputs.")
             
-            # Step 2: Hard restart ROOT nodes with config reload
-            logger.info("hard_restarting_root_nodes_for_config_reload")
-            await self.lifecycle.hard_restart_with_config_reload(
-                service_names=root_services,
-                compose_manager=self.compose,
-                flush_timeout=60
-            )
+            logger.info("emission_hash_retrieved_after_snapshot_restore", hash=emission_hash[:16])
             
-            # Step 3: Wait for ROOT nodes to come back online and establish links
-            logger.info("waiting_for_root_nodes_after_hard_restart")
-            await consensus_monitor.wait_for_links_connecting_state(timeout=60.0)
-            logger.info("root_nodes_restarted_with_genesis_event_config")
-            
-            # Node list preserved in GDB, no re-registration needed!
-            
-        except Exception as e:
-            logger.error("root_nodes_genesis_failed", error=str(e))
-            self.compose.down(volumes=False, remove_images=False)
-            raise RuntimeError(f"ROOT nodes genesis failed: {e}") from e
+            # CRITICAL: After snapshot restore, emission_hash should already exist
+            # (emission was created and transferred before snapshot creation)
+            # No need to create emission again - it's already in the snapshot
+            logger.info("emission_hash_available_from_snapshot",
+                       emission_hash=emission_hash[:16],
+                       note="Emission and transfer already exist in snapshot - no need to create them again")
         
         # =================================================================
         # PHASE 2: START MASTER NODES FOR ESBOCS GENESIS
         # =================================================================
-        logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis) ===")
+        logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
         
         try:
-            # ROOT nodes already restarted in PHASE 1 with:
-            # - seed_mode=false (disabled after DAG genesis)
-            # - static_genesis_event_hash set
-            # - GDB node list preserved
-            
-            # MASTER nodes start with seed_mode=true (untouched since initial config generation)
-            # This allows them to create genesis block (first block without prev_block)
-            
-            # Use PHASED STARTUP: MASTER nodes start AFTER ROOT nodes are stable
-            # This ensures proper network topology formation
-            logger.info("using_phased_startup_for_master_nodes")
-            master_services = [f"node-{nid}" for nid in master_node_ids]
-            logger.info("starting_master_nodes", 
-                       services=master_services, 
-                       master_seed_mode=True,
-                       root_seed_mode=False,
-                       note="MASTER seed_mode=true for genesis block creation")
-            
-            # Start MASTER nodes
-            self.compose.up(services=master_services, detach=True, wait=False)
-            logger.info("master_nodes_containers_started")
-            
-            # CRITICAL: ROOT nodes already have node list in GDB from Phase 1
-            # MASTER nodes need to sync node list from ROOT via bootstrap balancer
-            # This must happen BEFORE MASTER nodes try to create DB contexts (prevents MDBX crash)
-            # Bootstrap balancer allows GDB sync WITHOUT active links!
-            # We call sync IMMEDIATELY after container start (before SDK initialization creates DB contexts)
-            # Give containers 1 second to start CLI server, then trigger sync with retry
-            logger.info("waiting_for_cli_server_ready")
-            await asyncio.sleep(1.0)  # CLI server needs ~1 second to start
-            
-            logger.info("syncing_node_list_from_root_nodes_via_bootstrap")
-            for master_node in master_nodes:
-                # Retry logic: CLI may not be ready immediately after container start
-                for attempt in range(3):
-                    try:
-                        exit_code, stdout, stderr = self.genesis._exec_cli(
-                            master_node.node_id,
-                            f"net -net {self.topology.network.name} go sync",
-                            check_output=False
-                        )
-                        if exit_code == 0:
-                            logger.debug("master_node_gdb_sync_triggered", 
-                                       node_id=master_node.node_id,
-                                       attempt=attempt + 1)
-                            break
-                        else:
-                            if attempt < 2:  # Not last attempt
-                                logger.debug("master_node_gdb_sync_retry",
-                                           node_id=master_node.node_id,
-                                           attempt=attempt + 1,
-                                           exit_code=exit_code)
-                                await asyncio.sleep(1.0)
-                            else:
-                                logger.warning("master_node_gdb_sync_failed",
-                                            node_id=master_node.node_id,
-                                            exit_code=exit_code,
-                                            stderr=stderr[:200] if stderr else "")
-                    except Exception as e:
-                        if attempt < 2:  # Not last attempt
-                            logger.debug("master_node_gdb_sync_retry_exception",
-                                       node_id=master_node.node_id,
-                                       attempt=attempt + 1,
-                                       error=str(e)[:100])
-                            await asyncio.sleep(1.0)
-                        else:
-                            logger.warning("master_node_gdb_sync_exception",
-                                         node_id=master_node.node_id,
-                                         error=str(e)[:100])
-            
-            # Give GDB sync time to propagate node list from ROOT to MASTER
-            logger.info("waiting_for_node_list_gdb_sync_propagation")
-            await asyncio.sleep(3.0)
-            logger.info("node_list_gdb_sync_complete")
-            
-            # Now wait for nodes to reach ONLINE state (after sync, so they have node list)
-            await self.state_manager.wait_for_nodes_online(master_nodes, timeout=60.0)
-            logger.info("master_nodes_online_and_ready")
-            
-            # Now both ROOT and MASTER nodes are online and stable
+            # Define all validator nodes (ROOT + MASTER)
             all_validator_nodes = root_nodes + master_nodes
             
-            # Register ONLY MASTER nodes (4,5,6) in the node list
-            # ROOT nodes (1,2,3) were already registered in Phase 1 and are in GDB
-            # MASTER nodes are NEW and need to be registered now
-            logger.info("registering_master_nodes_in_node_list")
-            
-            # Give MASTER nodes time to initialize network subsystems
-            # Node addresses are generated automatically during network init
-            # The registration process will read addresses via CLI when needed
-            logger.info("waiting_for_master_nodes_network_init")
-            await asyncio.sleep(5.0)  # Reduced from 10.0 - node list already synced above
-            logger.info("master_nodes_network_initialized")
-            
-            # Register MASTER nodes in the network
-            # IMPORTANT: Pass ALL validator nodes (ROOT + MASTER) so ROOT nodes can register MASTER nodes
-            # ROOT nodes have admin rights and will register all nodes from the list
-            await self.genesis.registration_mgr.register_all_nodes_via_cli(all_validator_nodes)
-            logger.info("master_nodes_registered")
-            
-            # CRITICAL: Trigger GDB sync IMMEDIATELY after registration
-            # This propagates node list BEFORE nodes try to create DB contexts
-            # Prevents MDBX assertion fail when nodes access empty node list
-            logger.info("triggering_gdb_sync_for_node_list")
-            await self.genesis.validator_mgr.sync_orders_across_network(all_validator_nodes)
-            logger.info("gdb_sync_triggered")
-            
-            # Give GDB time to propagate node list (2-5 seconds usually enough)
-            logger.info("waiting_for_gdb_propagation")
-            await asyncio.sleep(5.0)
-            logger.info("gdb_propagation_complete")
-            
-            # CRITICAL ORDERING: GDB sync requires active links!
-            # First establish links via offline/online cycle
-            logger.info("soft_reconnect_master_nodes_to_establish_links")
-            await self.genesis.registration_mgr.soft_network_reconnect(master_nodes, wait_for_links=True)
-            logger.info("master_links_established")
-            
-            # NOW wait for node list to propagate via GDB over established links
-            # Without this, MASTER nodes crash with MDBX assertion fail when creating DB contexts
-            logger.info("waiting_for_master_nodes_to_receive_node_list_via_gdb")
-            await self.genesis.registration_mgr.wait_for_node_list_propagation(
-                master_nodes, 
-                expected_count=len(all_validator_nodes),
-                timeout=60.0
-            )
-            logger.info("master_nodes_have_full_node_list")
-            
-            # Wait for network consensus with full node list
-            logger.info("waiting_for_root_and_master_consensus")
+            # Create consensus monitor for all validator nodes
+            from ..monitoring.network_consensus import NetworkConsensusMonitor
             all_validator_nodes_dict = {f"node{n.node_id}": n for n in all_validator_nodes}
             consensus_monitor_all = NetworkConsensusMonitor(
                 nodes=all_validator_nodes_dict,
@@ -538,172 +1013,37 @@ class NetworkManager:
                 network_name=self.topology.network.name
             )
             
-            try:
-                await consensus_monitor_all.wait_for_network_ready(timeout=120.0)
-                logger.info("all_validator_nodes_ready")
-            except TimeoutError as e:
-                logger.error("validators_not_ready", error=str(e))
-                raise RuntimeError(f"Validator nodes failed to reach consensus: {e}")
-            
-            # CRITICAL: Create validator orders for MASTER nodes
-            # Must be done AFTER network is ready but BEFORE block creation
-            # Orders are stored in GDB and automatically propagated
-            logger.info("creating_validator_orders_for_master_nodes")
-            for master_node in master_nodes:
-                try:
-                    container_name = f"cellframe-stage-node-{master_node.node_id}"
-                    container = self.genesis.docker_client.containers.get(container_name)
-                    await self.genesis.validator_mgr.create_validator_order(container, master_node)
-                    logger.info("master_validator_order_created", node_id=master_node.node_id)
-                except Exception as e:
-                    logger.warning("failed_to_create_validator_order",
-                                  node_id=master_node.node_id,
-                                  error=str(e))
-            
-            # CRITICAL: Sync GDB to propagate validator orders across network
-            # Orders are stored in local GDB but need sync to be visible on all nodes
-            logger.info("syncing_validator_orders_across_network")
-            await self.genesis.validator_mgr.sync_orders_across_network(all_validator_nodes)
-            logger.info("gdb_synced_orders_propagated")
-            
-            # Verify that MASTER nodes see all validator orders
-            # NOTE: ROOT nodes run DAG-PoA, they don't need validator orders (ESBocs-specific)
-            logger.info("verifying_validator_orders_visibility_on_master_nodes")
-            await self.genesis.validator_mgr.verify_validator_orders(master_nodes, expected_count=len(master_nodes))
-            logger.info("validator_orders_verified_on_master_nodes")
-            
-            # CRITICAL: HARD RESTART MASTER nodes to reload validator orders
-            # ESBocs consensus loads orders only at initialization, so we must restart
-            # to enable validator mode with newly created orders
-            logger.info("=== HARD RESTART MASTER: Loading Validator Orders ===")
-            logger.info("hard_restart_master_nodes_for_orders")
-            await self.lifecycle.hard_restart_with_config_reload(
-                service_names=master_services,
-                compose_manager=self.compose,
-                flush_timeout=60,
-                startup_timeout=60
-            )
-            logger.info("master_nodes_restarted_with_orders")
-            
-            # Wait for MASTER nodes to come back online and re-establish consensus
-            logger.info("waiting_for_master_consensus_after_restart")
-            
-            # Create nodes dict for master nodes (keys must be "node4", "node5", "node6")
-            master_nodes_dict = {f"node{n.node_id}": n for n in master_nodes}
-            consensus_monitor_master = NetworkConsensusMonitor(
-                nodes=master_nodes_dict,
-                node_cli_path=self.node_cli_path,
-                network_name=self.topology.network.name
-            )
-            try:
-                await consensus_monitor_master.wait_for_network_ready(timeout=120.0)
-                logger.info("master_nodes_network_consensus_achieved")
-            except TimeoutError as e:
-                logger.error("master_consensus_failed_after_restart", error=str(e))
-                raise RuntimeError(f"Master nodes failed to reach consensus after restart: {e}")
-            
-            # CRITICAL: Wait for ESBocs to load validator orders and activate validator mode
-            # Without this, TX creation will fail with "Can't place TX datum in mempool"
-            logger.info("waiting_for_esbocs_validator_mode_activation")
-            try:
-                await self.genesis.validator_mgr.wait_for_validator_mode_active(
-                    master_nodes,
-                    timeout=60.0
+            # CRITICAL: Verify emission_hash is set before proceeding to PHASE 2
+            if emission_hash is None:
+                raise RuntimeError(
+                    f"CRITICAL: emission_hash is None before PHASE 2! "
+                    f"This should not happen - emission_hash must be set either: "
+                    f"1. After hard restart (via create_emission_and_transfer_after_restart), or "
+                    f"2. After snapshot restore (via restore_emission_hash_from_snapshot). "
+                    f"Cannot proceed to ESBocs genesis without emission_hash."
                 )
-                logger.info("esbocs_validator_mode_active_on_all_masters")
-            except TimeoutError as e:
-                logger.error("validator_mode_activation_failed", error=str(e))
-                raise RuntimeError(f"ESBocs validator mode failed to activate: {e}")
             
-            # DO NOT soft reconnect here! Hard restart already established network connections
-            # soft_network_reconnect would do go offline → STOPS ESBocs consensus timer!
-            # Links will be established automatically as nodes come online
-            logger.info("waiting_for_master_links_after_restart")
-            consensus_monitor_master_links = NetworkConsensusMonitor(
-                nodes=master_nodes_dict,
-                node_cli_path=self.node_cli_path,
-                network_name=self.topology.network.name
-            )
-            try:
-                await consensus_monitor_master_links.wait_for_links_established(timeout=60.0)
-                logger.info("master_links_established_after_restart")
-            except TimeoutError as e:
-                logger.warning("master_links_timeout_continuing", error=str(e))
-            
-            # CRITICAL: Sync zerochain to MASTER nodes (emission was created in Phase 1!)
-            # Without this, master nodes can't see emission datum → tx_create fails
-            logger.info("syncing_zerochain_to_master_nodes")
-            await self.genesis.sync_mgr.sync_network(all_validator_nodes, chain_name="zerochain")
-            logger.info("zerochain_synced_to_all_validators")
-            
-            # Create first TX on main chain → genesis block
-            logger.info("creating_first_transaction_main_chain")
-            tx_hash = await self.genesis.token_mgr.create_first_transaction(emission_hash, master_nodes=master_nodes)
-            logger.info("first_transaction_created", hash=tx_hash[:16])
-            
-            # Wait for genesis block to be created (ESBocs consensus needs time)
-            logger.info("waiting_for_main_genesis_block_creation")
-            await self.genesis.sync_mgr.wait_for_first_block("main", timeout=60)
-            logger.info("main_genesis_block_created")
-            
-            # Get genesis block hash
-            main_genesis_hash = await self.genesis.config_mgr.get_genesis_block_hash("main")
-            if not main_genesis_hash:
-                raise RuntimeError("Failed to retrieve main genesis block hash")
-            logger.info("main_genesis_block_hash", hash=main_genesis_hash[:16])
-            
-            # Update static_genesis_block in ALL configs
-            logger.info("updating_static_genesis_block_in_all_configs")
-            await self.genesis.config_mgr.update_static_genesis_in_config("main", main_genesis_hash, node_configs)
-            logger.info("static_genesis_updated")
-            
-            # CRITICAL: HARD RESTART #2 - Apply ESBocs genesis block + disable seed_mode
-            # Full container restart to reload configs from disk
-            logger.info("=== HARD RESTART #2: After ESBocs Genesis Block ===")
-            
-            # Step 1: Disable seed_mode in ALL validator configs (write to disk)
-            logger.info("disabling_seed_mode_for_all_validators")
-            self.genesis.config_mgr.disable_seed_mode_in_configs(root_node_ids + master_node_ids)
-            
-            # Step 2: SEQUENTIAL Hard restart to prevent MDBX crash
-            # ROOT nodes first (one by one) → they provide GDB sync for node list
-            # Then MASTER nodes (one by one) → they get node list from ROOT nodes
-            # This prevents "Node list is empty" → MDBX assertion fail
-            logger.info("sequential_hard_restart_all_validators")
-            logger.info("restart_sequence", 
-                       order="ROOT nodes individually → MASTER nodes individually",
-                       reason="Prevent MDBX crash from empty node list")
-            
-            # Create service groups: each ROOT individually, then all MASTER together
-            # ROOT nodes restart one-by-one to maintain GDB sync availability
-            service_groups = [
-                [f"node-{root_node_ids[0]}"],  # ROOT node 1
-                [f"node-{root_node_ids[1]}"],  # ROOT node 2
-                [f"node-{root_node_ids[2]}"],  # ROOT node 3
-                master_services  # All MASTER nodes together (can do this safely now)
-            ]
-            
-            await self.lifecycle.sequential_restart_with_config_reload(
-                service_groups=service_groups,
+            # Use ESBocs genesis manager with PoS scheme:
+            # 1. ALL master nodes as validators (3 validators, 2/3 consensus)
+            # 2. Create wallets for all master nodes
+            # 3. Transfer tokens from ROOT to MASTER (on zerochain)
+            # 4. Delegate keys via srv_stake on zerochain
+            # 5. Restart → load delegations
+            # 6. Genesis block with full consensus
+            await self.esbocs_genesis.initialize_esbocs_genesis_with_pos_delegation(
+                master_nodes=master_nodes,
+                all_validator_nodes=all_validator_nodes,
+                node_configs=node_configs,
+                root_nodes=root_nodes,
+                emission_hash=emission_hash,
                 compose_manager=self.compose,
                 state_manager=self.state_manager,
-                flush_timeout=60,
-                startup_timeout=60,
-                inter_group_delay=5.0  # Wait for GDB sync between groups
+                lifecycle_manager=self.lifecycle,
+                consensus_monitor=consensus_monitor_all,
+                topology=self.topology
             )
             
-            # Step 3: Wait for ALL validators to come back online
-            logger.info("waiting_for_all_validators_after_hard_restart")
-            await consensus_monitor_all.wait_for_links_connecting_state(timeout=60.0)
-            logger.info("all_validators_restarted_with_genesis_block_config")
-            
-            # Node list preserved in GDB, no re-registration needed!
-            
-            # Step 4: SOFT reconnect to quickly establish full mesh connectivity
-            # After hard restart, soft offline/online helps links re-establish faster
-            logger.info("soft_reconnect_after_hard_restart")
-            await self.genesis.registration_mgr.soft_network_reconnect(all_validator_nodes, wait_for_links=True)
-            logger.info("full_mesh_connectivity_established")
+            logger.info("esbocs_genesis_complete_with_pos_master_nodes")
             
         except Exception as e:
             logger.error("master_nodes_genesis_failed", error=str(e))
@@ -730,6 +1070,7 @@ class NetworkManager:
             logger.info("waiting_for_all_nodes_ready")
             
             # Use existing self.nodes (should include all nodes)
+            from ..monitoring.network_consensus import NetworkConsensusMonitor
             final_consensus_monitor = NetworkConsensusMonitor(
                 nodes=self.nodes,
                 node_cli_path=self.node_cli_path
@@ -812,43 +1153,41 @@ class NetworkManager:
                 f"Check logs above for details. Network has been stopped."
             ) from e
         
-        # OPTIMIZATION: Create pristine snapshot for fast suite isolation
-        # Pause containers → Create snapshot → Unpause
-        # This way first suite can use already running network immediately
-        # and snapshot remains pristine for subsequent suites
-        if self.suite_isolation_config.get('auto_create_on_startup', True):
-            if self.snapshot_manager.mode != SnapshotMode.DISABLED:
-                logger.info("creating_initial_clean_snapshot_with_pause")
-                containers_paused = False
-                try:
-                    # Pause all containers to freeze state
-                    logger.info("pausing_containers_for_snapshot")
-                    self.compose.pause()
-                    containers_paused = True
-                    
-                    # =================================================================
-                    # PHASE 6: CREATE CLEAN SNAPSHOT
-                    # =================================================================
-                    logger.info("=== PHASE 6: Creating Clean Snapshot ===")
-                    
-                    # Create snapshot of paused state
-                    await self.create_clean_snapshot()
-                    logger.info("initial_snapshot_created")
-                    
-                    # Unpause containers - ready for first suite
-                    logger.info("unpausing_containers")
-                    self.compose.unpause()
+        # =================================================================
+        # PHASE 6: CREATE FULL SNAPSHOT (if genesis_stage == 'full')
+        # =================================================================
+        # Create final snapshot after all phases complete (if not already created in phase1)
+        genesis_stage = self.suite_isolation_config.get('genesis_stage', 'full')
+        if genesis_stage == 'full':
+            if self.suite_isolation_config.get('auto_create_on_startup', True):
+                if self.snapshot_manager.mode != SnapshotMode.DISABLED:
+                    logger.info("creating_final_snapshot_after_all_phases")
                     containers_paused = False
-                    logger.info("containers_unpaused_ready_for_first_suite")
-                    
-                except Exception as e:
-                    # Only unpause if we actually paused
-                    if containers_paused:
-                        try:
-                            self.compose.unpause()
-                        except:
-                            pass
-                    logger.warning("initial_snapshot_creation_failed",
+                    try:
+                        # Pause all containers to freeze state
+                        logger.info("pausing_containers_for_final_snapshot")
+                        self.compose.pause()
+                        containers_paused = True
+                        
+                        # Create snapshot of final state
+                        snapshot_name = self.suite_isolation_config.get('snapshot_name', 'clean_state')
+                        await self.create_clean_snapshot(name=snapshot_name)
+                        logger.info("final_snapshot_created", name=snapshot_name)
+                        
+                        # Unpause containers - ready for first suite
+                        logger.info("unpausing_containers")
+                        self.compose.unpause()
+                        containers_paused = False
+                        logger.info("containers_unpaused_ready_for_first_suite")
+                        
+                    except Exception as e:
+                        # Only unpause if we actually paused
+                        if containers_paused:
+                            try:
+                                self.compose.unpause()
+                            except:
+                                pass
+                        logger.warning("final_snapshot_creation_failed",
                                   error=str(e),
                                   note="Will fallback to traditional cleanup")
         
@@ -1065,6 +1404,12 @@ class NetworkManager:
         """
         Create a snapshot of current clean environment state.
         
+        CRITICAL: This method does NOT clean data before creating snapshot.
+        Snapshot system (squashfs/filesystem) automatically captures all mounted
+        directories including GDB data. Cleaning data before snapshot would
+        remove critical GDB data (node list, validator orders) needed for
+        network operation.
+        
         Should be called after network is fully initialized and ready,
         before any tests are run.
         
@@ -1185,13 +1530,19 @@ class NetworkManager:
     
     def _clean_node_data(self):
         """
-        Clean node data directories on host before creating pristine snapshot.
+        Clean node data directories on host.
+        
+        WARNING: This method removes ALL data including GDB (node list, validator orders).
+        Use ONLY when preparing for a fresh start (e.g., after stopping old network).
+        DO NOT call before creating snapshot - snapshot system automatically captures
+        all mounted directories including GDB data.
         
         This method removes and recreates data directories mounted into containers,
         ensuring that wallets, chains, and other runtime data from previous runs
-        don't pollute the snapshot.
+        don't pollute the next run.
         
-        Called before pause→snapshot→unpause to guarantee pristine state.
+        Called ONLY before initial network setup (after stopping old network).
+        NOT called before snapshot creation - snapshot preserves current state.
         
         Implementation: Uses temporary Docker container (Alpine) to clean files.
         This ensures proper permissions for root-owned files created by node containers.
@@ -1223,4 +1574,108 @@ class NetworkManager:
             logger.debug("recreated_node_data_dir", node_id=node_id, path=str(node_data_path))
         
         logger.info("node_data_cleaned_and_recreated", nodes=len(self.nodes))
+    
+    async def _wait_for_master_containers_running(
+        self,
+        master_nodes: List[NodeConfig],
+        timeout: float = 60.0,
+        poll_interval: float = 2.0
+    ) -> None:
+        """
+        Wait for master node containers to be running after restart.
+        
+        Some containers may crash after hard restart (e.g., MDBX assert failure)
+        and need to be restarted. This method ensures all containers are running.
+        
+        Args:
+            master_nodes: List of master nodes to check
+            timeout: Maximum time to wait (seconds)
+            poll_interval: Time between checks (seconds)
+            
+        Raises:
+            RuntimeError: If containers don't start within timeout
+        """
+        import time
+        
+        start_time = time.time()
+        logger.info("waiting_for_master_containers", node_count=len(master_nodes), timeout=timeout)
+        
+        while time.time() - start_time < timeout:
+            all_running = True
+            crashed_containers = []
+            
+            for node in master_nodes:
+                container_name = f"cellframe-stage-node-{node.node_id}"
+                try:
+                    container = self.compose.client.containers.get(container_name)
+                    container.reload()
+                    
+                    if container.status == 'running':
+                        continue
+                    elif container.status in ['exited', 'dead']:
+                        exit_code = container.attrs.get("State", {}).get("ExitCode", -1)
+                        logger.warning("container_crashed_restarting",
+                                     node_id=node.node_id,
+                                     status=container.status,
+                                     exit_code=exit_code)
+                        
+                        # Attempt to restart crashed container
+                        try:
+                            container.restart(timeout=30)
+                            logger.info("container_restarted", node_id=node.node_id)
+                            all_running = False  # Wait for restart to complete
+                            crashed_containers.append(node.node_id)
+                        except Exception as e:
+                            logger.error("container_restart_failed",
+                                       node_id=node.node_id,
+                                       error=str(e))
+                            # Try docker-compose restart as fallback
+                            service_name = f"node-{node.node_id}"
+                            try:
+                                self.compose.restart_services([service_name])
+                                logger.info("container_restarted_via_compose", node_id=node.node_id)
+                                all_running = False
+                                crashed_containers.append(node.node_id)
+                            except Exception as e2:
+                                logger.error("container_restart_via_compose_failed",
+                                           node_id=node.node_id,
+                                           error=str(e2))
+                    else:
+                        logger.debug("container_not_running_yet",
+                                   node_id=node.node_id,
+                                   status=container.status)
+                        all_running = False
+                        
+                except Exception as e:
+                    logger.warning("container_check_failed",
+                                node_id=node.node_id,
+                                error=str(e))
+                    all_running = False
+            
+            if all_running:
+                if crashed_containers:
+                    logger.info("crashed_containers_restarted", nodes=crashed_containers)
+                    # Give restarted containers time to start
+                    await asyncio.sleep(5.0)
+                logger.info("all_master_containers_running", elapsed=time.time() - start_time)
+                return
+            
+            await asyncio.sleep(poll_interval)
+        
+        # Timeout reached - check final status
+        failed_nodes = []
+        for node in master_nodes:
+            container_name = f"cellframe-stage-node-{node.node_id}"
+            try:
+                container = self.compose.client.containers.get(container_name)
+                container.reload()
+                if container.status != 'running':
+                    exit_code = container.attrs.get("State", {}).get("ExitCode", -1)
+                    failed_nodes.append(f"node-{node.node_id} (status={container.status}, exit={exit_code})")
+            except Exception:
+                failed_nodes.append(f"node-{node.node_id} (not found)")
+        
+        error_msg = f"Master containers failed to start within {timeout}s: {', '.join(failed_nodes)}"
+        logger.error("master_containers_startup_timeout", timeout=timeout, failed=failed_nodes)
+        raise RuntimeError(error_msg)
 

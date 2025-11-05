@@ -72,7 +72,10 @@ class FilesystemSnapshot(BaseSnapshot):
     
     async def create(self, name: str) -> bool:
         """
-        Create snapshot by copying data directory.
+        Create filesystem snapshot by copying data and config directories.
+        
+        CRITICAL: Includes both data (cache/data/) and configs (cache/configs/)
+        to preserve static_genesis_event and other genesis configuration.
         
         Args:
             name: Snapshot name
@@ -91,28 +94,47 @@ class FilesystemSnapshot(BaseSnapshot):
         
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         
-        # Get source data directory
+        # Get source directories
         data_dirs = self.get_data_dirs()
+        config_dirs = self.get_config_dirs()
+        
         if not data_dirs:
             logger.warning("filesystem_no_data_to_snapshot")
             return False
         
-        # Copy each node directory
+        # Copy each node data directory
         try:
+            data_snapshot_dir = snapshot_dir / "data"
+            data_snapshot_dir.mkdir(exist_ok=True)
+            
             for node_dir in data_dirs:
-                target_dir = snapshot_dir / node_dir.name
-                
+                target_dir = data_snapshot_dir / node_dir.name
                 # Use rsync for efficient copying
                 await self._rsync_copy(node_dir, target_dir)
             
+            # Copy config directories if they exist
+            if config_dirs:
+                config_snapshot_dir = snapshot_dir / "configs"
+                config_snapshot_dir.mkdir(exist_ok=True)
+                
+                logger.info("filesystem_snapshotting_configs",
+                           nodes=len(config_dirs),
+                           note="Including configs to preserve static_genesis_event")
+                
+                for config_dir in config_dirs:
+                    target_dir = config_snapshot_dir / config_dir.name
+                    # Use rsync for efficient copying
+                    await self._rsync_copy(config_dir, target_dir)
+            
             # Create metadata file
-            metadata = self._create_metadata(name, data_dirs)
+            metadata = self._create_metadata(name, data_dirs, config_dirs)
             metadata_file = snapshot_dir / ".snapshot_metadata"
             metadata_file.write_text(str(metadata))
             
             logger.info("filesystem_create_complete",
                        name=name,
                        nodes=len(data_dirs),
+                       configs=len(config_dirs) if config_dirs else 0,
                        size=self._get_dir_size(snapshot_dir))
             return True
             
@@ -125,7 +147,10 @@ class FilesystemSnapshot(BaseSnapshot):
     
     async def restore(self, name: str) -> bool:
         """
-        Restore data from snapshot.
+        Restore data and configs from snapshot.
+        
+        CRITICAL: Restores both data (cache/data/) and configs (cache/configs/)
+        to restore static_genesis_event and other genesis configuration.
         
         Args:
             name: Snapshot name
@@ -141,26 +166,76 @@ class FilesystemSnapshot(BaseSnapshot):
             logger.error("filesystem_snapshot_not_found", name=name)
             return False
         
-        # Get target data directory
+        # Get target directories
         data_path = self.cache_path / "data"
+        configs_path = self.cache_path / "configs"
         
         try:
-            # Clean existing data first
-            if data_path.exists():
-                logger.debug("filesystem_cleaning_existing_data")
-                await asyncio.to_thread(shutil.rmtree, data_path, ignore_errors=True)
-            
-            data_path.mkdir(parents=True, exist_ok=True)
-            
-            # Restore each node directory
-            node_dirs = [d for d in snapshot_dir.iterdir() 
-                        if d.is_dir() and not d.name.startswith('.')]
-            
-            for node_dir in node_dirs:
-                target_dir = data_path / node_dir.name
+            # Restore data directories
+            data_snapshot_dir = snapshot_dir / "data"
+            if data_snapshot_dir.exists():
+                # Clean existing data first
+                if data_path.exists():
+                    logger.debug("filesystem_cleaning_existing_data")
+                    await asyncio.to_thread(shutil.rmtree, data_path, ignore_errors=True)
                 
-                # Use rsync for efficient restoration
-                await self._rsync_copy(node_dir, target_dir)
+                data_path.mkdir(parents=True, exist_ok=True)
+                
+                # Restore each node data directory
+                node_dirs = [d for d in data_snapshot_dir.iterdir() 
+                            if d.is_dir() and not d.name.startswith('.')]
+                
+                for node_dir in node_dirs:
+                    target_dir = data_path / node_dir.name
+                    # Use rsync for efficient restoration
+                    await self._rsync_copy(node_dir, target_dir)
+            else:
+                # Legacy snapshot format - data directly in snapshot_dir
+                logger.debug("filesystem_legacy_snapshot_format")
+                if data_path.exists():
+                    await asyncio.to_thread(shutil.rmtree, data_path, ignore_errors=True)
+                
+                data_path.mkdir(parents=True, exist_ok=True)
+                
+                node_dirs = [d for d in snapshot_dir.iterdir() 
+                            if d.is_dir() and not d.name.startswith('.')]
+                
+                for node_dir in node_dirs:
+                    target_dir = data_path / node_dir.name
+                    await self._rsync_copy(node_dir, target_dir)
+            
+            # Restore config directories if they exist in snapshot
+            config_snapshot_dir = snapshot_dir / "configs"
+            if config_snapshot_dir.exists():
+                logger.info("filesystem_restoring_configs",
+                           note="Restoring configs to preserve static_genesis_event")
+                
+                # Clean existing configs first (only for nodes in snapshot)
+                if configs_path.exists():
+                    # Only remove configs for nodes that exist in snapshot
+                    config_dirs = [d for d in config_snapshot_dir.iterdir() 
+                                  if d.is_dir() and not d.name.startswith('.')]
+                    for config_dir in config_dirs:
+                        target_config_dir = configs_path / config_dir.name
+                        if target_config_dir.exists():
+                            await asyncio.to_thread(shutil.rmtree, target_config_dir, ignore_errors=True)
+                else:
+                    configs_path.mkdir(parents=True, exist_ok=True)
+                
+                # Restore each node config directory
+                config_dirs = [d for d in config_snapshot_dir.iterdir() 
+                              if d.is_dir() and not d.name.startswith('.')]
+                
+                for config_dir in config_dirs:
+                    target_dir = configs_path / config_dir.name
+                    # Use rsync for efficient restoration
+                    await self._rsync_copy(config_dir, target_dir)
+                
+                logger.info("filesystem_configs_restored",
+                           nodes=len(config_dirs))
+            else:
+                logger.debug("filesystem_no_configs_in_snapshot",
+                           note="Legacy snapshot or configs not included")
             
             logger.info("filesystem_restore_complete",
                        name=name,
@@ -239,14 +314,19 @@ class FilesystemSnapshot(BaseSnapshot):
         if proc.returncode != 0:
             raise RuntimeError(f"rsync failed: {stderr.decode()}")
     
-    def _create_metadata(self, name: str, data_dirs: list[Path]) -> Dict[str, Any]:
+    def _create_metadata(self, name: str, data_dirs: list[Path], config_dirs: list[Path] = None) -> Dict[str, Any]:
         """Create metadata for snapshot."""
-        return {
+        metadata = {
             "name": name,
             "type": "filesystem",
             "nodes": [d.name for d in data_dirs],
             "created": asyncio.get_event_loop().time(),
         }
+        
+        if config_dirs:
+            metadata["configs"] = [d.name for d in config_dirs]
+        
+        return metadata
     
     def _get_dir_size(self, path: Path) -> int:
         """Get total size of directory in bytes."""

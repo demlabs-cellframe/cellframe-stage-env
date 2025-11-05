@@ -1,5 +1,5 @@
 # Main chain configuration for Cellframe Stagenet
-# ESBocs consensus chain for block production
+# ESBocs consensus chain for block production (PoS - Proof of Stake)
 
 [chain]
 id=0x0000000000000003
@@ -22,14 +22,21 @@ static_genesis_block={{ static_genesis_block | default('', true) }}
 
 [esbocs]
 consensus_debug=true
-# PoA mode - bypass stake order requirements for new stagenet
-poa_mode=true
 # Minimum number of validators for consensus
-min_validators_count=2
+# CRITICAL: Must match actual validators count, otherwise SDK returns -2
+min_validators_count={{ min_validators_count | default(2, true) }}
+# Validators addresses (required by SDK for initialization)
+# Master node addresses are pre-configured here
+validators_addrs={{ mainchain_validators_addrs | default('[]', true) }}
+# PoA mode: when true, uses validators_addrs as authorized validators
+# CRITICAL: Must be true when validators_addrs is pre-configured
+poa_mode={{ poa_mode | default('true', true) }}
 # Authentication certificates prefix
+# Uses stagenet.master prefix for master node certificates (validators)
 auth_certs_prefix=stagenet.master
-# Validator addresses (dynamically filled from validator certs)
-validators_addrs={{ validators_addrs }}
+# Minimum fee for transactions
+# Format: decimal number (e.g., "0.1" for 0.1 tokens)
+minimum_fee=0.1
 # New round delay (in seconds)
 # CRITICAL: Must be > 0 for proper consensus operation
 # Too low values (0-5) cause synchronization issues
@@ -39,3 +46,8 @@ new_round_delay=10
 collecting_level=10.0
 # Fee collection address (filled dynamically after fee wallet creation)
 fee_addr={{ fee_addr | default('', true) }}
+# GENESIS MODE: Enable only during genesis block creation
+# When true, stage-env will wait longer for validators to be synchronized
+# This allows ESBocs to find validators even if they're not yet marked as active
+# After genesis block is created, this should be set to false
+genesis_mode={{ genesis_mode | default('false', true) }}

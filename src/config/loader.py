@@ -530,6 +530,8 @@ class ConfigLoader:
             'squashfs_compression': 'none',
             'auto_create_on_startup': True,
             'snapshot_name': 'clean_state',
+            'genesis_stage': 'full',
+            'phase1_snapshot_name': 'phase1_zerochain_genesis',
             'auto_cleanup': True,
             'keep_snapshot_count': 5,
             'snapshots_dir': '../testing/snapshots',
@@ -553,6 +555,10 @@ class ConfigLoader:
                 suite_isolation['auto_create_on_startup'] = config.getboolean('suite_isolation', 'auto_create_on_startup')
             if config.has_option('suite_isolation', 'snapshot_name'):
                 suite_isolation['snapshot_name'] = config.get('suite_isolation', 'snapshot_name')
+            if config.has_option('suite_isolation', 'genesis_stage'):
+                suite_isolation['genesis_stage'] = config.get('suite_isolation', 'genesis_stage')
+            if config.has_option('suite_isolation', 'phase1_snapshot_name'):
+                suite_isolation['phase1_snapshot_name'] = config.get('suite_isolation', 'phase1_snapshot_name')
             if config.has_option('suite_isolation', 'auto_cleanup'):
                 suite_isolation['auto_cleanup'] = config.getboolean('suite_isolation', 'auto_cleanup')
             if config.has_option('suite_isolation', 'keep_snapshot_count'):

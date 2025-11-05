@@ -10,7 +10,7 @@ node-role={{ node_role | default('full', true) }}
 # Seed nodes for initial discovery (root nodes - authorized network infrastructure)
 # Array format based on dap_config.c: [value1,value2,value3]
 seed_nodes_hosts={{ seed_nodes_hosts | default('[]', true) }}
-# Permanent nodes - master nodes that should always be connected (consensus participants)
+# Permanent nodes - root nodes that should always be connected (network infrastructure)
 # Array format: [IP1,IP2,IP3]
 permanent_nodes_hosts={{ permanent_nodes_hosts | default('[]', true) }}
 # Enable balancer for node discovery and registration
@@ -33,8 +33,6 @@ events-sign-cert={{ events_sign_cert }}
 
 # ESBocs consensus configuration (node-specific)
 [esbocs]
-# PoA mode - no stake orders required for validator operation
-poa_mode=true
 # Blocks signing certificate (only for validators/root nodes)
 {% if blocks_sign_cert %}
 blocks-sign-cert={{ blocks_sign_cert }}

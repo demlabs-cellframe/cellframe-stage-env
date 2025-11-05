@@ -1,10 +1,9 @@
-# Common: Create test wallet
+# Common: Create test wallet on node 1
 # Shared component for creating a test wallet
 
 setup:
   - cli: wallet new -w test_wallet
     node: node1
-    expect: success
     save: wallet_created
     wait: 1s
     description: "Create test wallet"

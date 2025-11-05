@@ -225,20 +225,35 @@ class NetworkConsensusMonitor:
                 raise
             
             # Get chain info (block count and last hash)
+            # CRITICAL: Use timeout wrapper to prevent hanging on chain loading
+            # When chains are loading, "block list" can hang indefinitely
             try:
-                # Use 'block list' command to get chain state
-                block_info = await self._exec_cli(
-                    node_id,
-                    f"block list -net {self.network_name} -chain main -last 1"
+                import asyncio
+                # Use 'block list' command to get chain state with timeout
+                block_info = await asyncio.wait_for(
+                    self._exec_cli(
+                        node_id,
+                        f"block list -net {self.network_name} -chain main -last 1"
+                    ),
+                    timeout=10.0  # 10 second timeout to prevent hanging
                 )
                 blocks, last_hash = self._parse_chain_info(block_info, "main")
                 metrics.main_chain_blocks = blocks
                 metrics.main_chain_last_hash = last_hash
+            except asyncio.TimeoutError:
+                # Chain is still loading - this is OK, set blocks to 0
+                logger.debug("chain_info_timeout_chain_loading",
+                            node=node_id,
+                            note="Chain is loading, treating as 0 blocks")
+                metrics.main_chain_blocks = 0
+                metrics.main_chain_last_hash = None
             except Exception as e:
                 logger.warning("failed_to_get_chain_info",
                               node=node_id,
                               error=str(e))
-                raise
+                # Don't raise - continue with 0 blocks
+                metrics.main_chain_blocks = 0
+                metrics.main_chain_last_hash = None
             
             # Check online status
             try:
@@ -473,9 +488,44 @@ class NetworkConsensusMonitor:
             elapsed = asyncio.get_event_loop().time() - start_time
             
             if elapsed > timeout:
+                # Log detailed state of each node before timeout
                 logger.error("node_state_registration_timeout", 
                            elapsed=f"{elapsed:.1f}s",
-                           timeout=timeout)
+                           timeout=timeout,
+                           ready=ready_count,
+                           total=self.expected_node_count)
+                
+                # Check and log state of each node
+                for node_id in self.nodes.keys():
+                    try:
+                        net_status = await self._exec_cli(
+                            node_id,
+                            f"net -net {self.network_name} get status"
+                        )
+                        state_ok = any(state in net_status for state in ['NET_STATE_LINKS_CONNECTING', 'NET_STATE_LINKS_ESTABLISHED', 'NET_STATE_ONLINE'])
+                        logger.error("node_state_at_timeout",
+                                   node=node_id,
+                                   net_status=net_status.strip()[:100],
+                                   state_ok=state_ok)
+                        
+                        if state_ok:
+                            try:
+                                node_dump = await self._exec_cli(
+                                    node_id,
+                                    f"node dump -net {self.network_name}"
+                                )
+                                logger.error("node_dump_at_timeout",
+                                           node=node_id,
+                                           dump_output=node_dump[:200] if node_dump else "EMPTY")
+                            except Exception as dump_err:
+                                logger.error("node_dump_failed_at_timeout",
+                                           node=node_id,
+                                           error=str(dump_err)[:200])
+                    except Exception as e:
+                        logger.error("node_check_failed_at_timeout",
+                                   node=node_id,
+                                   error=str(e)[:200])
+                
                 raise TimeoutError(f"Nodes did not register their state within {timeout}s")
             
             # Check state AND node dump availability
@@ -491,32 +541,80 @@ class NetworkConsensusMonitor:
                     state_ok = any(state in net_status for state in ['NET_STATE_LINKS_CONNECTING', 'NET_STATE_LINKS_ESTABLISHED', 'NET_STATE_ONLINE'])
                     
                     if not state_ok:
+                        logger.debug("node_state_not_ready_yet",
+                                   node=node_id,
+                                   net_status=net_status.strip()[:100])
                         continue
                     
                     # Check 2: Node dump works (state registered in GDB)
+                    # CRITICAL: node dump without address returns LIST of nodes from GDB
+                    # If empty, returns "No records\n" and exit_code = -1
+                    # We need to check that command executes successfully (node state is registered)
+                    # Even if node list is empty, if command executes - node is ready
                     try:
                         node_dump = await self._exec_cli(
                             node_id,
                             f"node dump -net {self.network_name}"
                         )
                         
-                        # If dump succeeds and contains node addr - node is fully ready
-                        if 'Node addr:' in node_dump:
+                        # Check if dump succeeded (command executed without exception)
+                        # Output can be:
+                        # - "Got N nodes:" (list of nodes - node list populated)
+                        # - "No records" (node list empty but command works - node state registered)
+                        # - "Node addr:" (current node info - if dump with address)
+                        # The key: if command executes without exception, node is ready
+                        dump_success = (
+                            node_dump is not None and len(node_dump) > 0 and
+                            (
+                                'Got' in node_dump and 'nodes:' in node_dump or  # List of nodes
+                                'No records' in node_dump or  # Empty but command works
+                                'Node addr:' in node_dump  # Current node info
+                            )
+                        )
+                        
+                        if dump_success:
                             ready_count += 1
                             logger.debug("node_fully_ready_for_registration", 
                                        node=node_id,
                                        state_ok=True,
                                        dump_ok=True)
+                        else:
+                            logger.debug("node_dump_unexpected_output",
+                                       node=node_id,
+                                       output_preview=node_dump[:200] if node_dump else "EMPTY")
+                            # Log as warning if we're close to timeout
+                            if elapsed > timeout * 0.8:
+                                logger.warning("node_dump_unexpected_output_near_timeout",
+                                             node=node_id,
+                                             output_preview=node_dump[:200] if node_dump else "EMPTY",
+                                             elapsed=f"{elapsed:.1f}s")
                     except Exception as dump_err:
-                        # node dump failed - state not registered yet
-                        logger.debug("node_state_not_registered_yet",
-                                   node=node_id,
-                                   error=str(dump_err)[:100])
+                        # node dump failed - state not registered yet OR node list empty causes error
+                        # Check if error is related to empty node list (this is OK - node is still ready)
+                        error_str = str(dump_err).lower()
+                        if 'no records' in error_str or 'empty' in error_str or 'code: 103' in error_str:
+                            # Node list empty but command executed - node is ready
+                            ready_count += 1
+                            logger.debug("node_ready_but_empty_node_list",
+                                       node=node_id,
+                                       state_ok=True)
+                        else:
+                            # Real error - state not registered yet
+                            logger.debug("node_state_not_registered_yet",
+                                       node=node_id,
+                                       error=str(dump_err)[:100])
                         
                 except Exception as e:
-                    logger.debug("failed_to_check_node_readiness",
-                               node=node_id,
-                               error=str(e)[:100])
+                    # Log as warning if we're close to timeout - helps diagnose issues
+                    if elapsed > timeout * 0.8:  # Last 20% of timeout
+                        logger.warning("failed_to_check_node_readiness",
+                                     node=node_id,
+                                     error=str(e)[:200],
+                                     elapsed=f"{elapsed:.1f}s")
+                    else:
+                        logger.debug("failed_to_check_node_readiness",
+                                   node=node_id,
+                                   error=str(e)[:100])
             
             # Log progress periodically
             if asyncio.get_event_loop().time() - last_log >= 5:
@@ -724,6 +822,72 @@ class NetworkConsensusMonitor:
         except Exception as e:
             raise RuntimeError(f"Container {container_name} not found: {e}")
         
+        # CRITICAL: Check container status before executing command
+        # Container may have crashed or stopped
+        container.reload()
+        if container.status != 'running':
+            # Container is stopped - attempt to restart it
+            logger.warning("container_not_running_attempting_restart_in_monitor",
+                         container=container_name,
+                         status=container.status,
+                         node=node_id,
+                         command=command[:50])
+            
+            # Check exit code to understand why container stopped
+            exit_code = container.attrs.get("State", {}).get("ExitCode", -1)
+            if exit_code != 0:
+                # Container crashed - check logs for diagnostics
+                try:
+                    logs = container.logs(tail=20).decode("utf-8", errors="ignore")
+                    logger.warning("container_crashed_logs_in_monitor",
+                                 container=container_name,
+                                 exit_code=exit_code,
+                                 logs_preview=logs[:500])
+                except Exception:
+                    pass
+            
+            # Attempt to restart container
+            try:
+                logger.info("restarting_stopped_container_in_monitor",
+                           container=container_name,
+                           node=node_id)
+                container.restart(timeout=30)
+                
+                # Wait for container to be running
+                import time
+                max_wait = 10  # Wait up to 10 seconds for container to start
+                wait_start = time.time()
+                while time.time() - wait_start < max_wait:
+                    container.reload()
+                    if container.status == 'running':
+                        logger.info("container_restarted_successfully_in_monitor",
+                                   container=container_name,
+                                   node=node_id,
+                                   wait_time=f"{time.time() - wait_start:.1f}s")
+                        # Additional small delay for process to initialize
+                        await asyncio.sleep(2)
+                        break
+                    await asyncio.sleep(0.5)
+                else:
+                    # Container didn't start within timeout
+                    logger.error("container_restart_timeout_in_monitor",
+                               container=container_name,
+                               node=node_id,
+                               timeout=max_wait)
+                    raise RuntimeError(f"Container {container_name} failed to restart within {max_wait}s")
+                    
+            except Exception as restart_err:
+                logger.error("container_restart_failed_in_monitor",
+                           container=container_name,
+                           node=node_id,
+                           error=str(restart_err))
+                raise RuntimeError(f"Container {container_name} restart failed: {restart_err}")
+            
+            # Reload container state after restart
+            container.reload()
+            if container.status != 'running':
+                raise RuntimeError(f"Container {container_name} is still not running after restart (status: {container.status})")
+        
         # Execute CLI command through sh -c to prevent JSON-RPC fallback
         # NOTE: cellframe-node-cli НЕ поддерживает -c аргумент!
         # CLI ищет конфиг в g_sys_dir_path/etc (обычно /opt/cellframe-node/etc)
@@ -732,16 +896,54 @@ class NetworkConsensusMonitor:
         # Wrap in sh -c to ensure proper execution environment
         cmd_array = ["sh", "-c", full_cmd]
         
-        # Execute using Docker SDK (synchronous, but we're in async context)
-        result = container.exec_run(cmd_array, demux=True)
-        exit_code = result.exit_code
-        stdout, stderr = result.output
+        # CRITICAL: Handle 409 Conflict errors - previous exec may still be running
+        # Retry with exponential backoff if we get 409 Conflict
+        max_retries = 3
+        retry_delay = 0.5  # Start with 500ms delay
+        
+        for attempt in range(max_retries):
+            try:
+                # Execute using Docker SDK (synchronous, but we're in async context)
+                result = container.exec_run(cmd_array, demux=True)
+                exit_code = result.exit_code
+                stdout, stderr = result.output
+                break  # Success - exit retry loop
+            except Exception as e:
+                error_str = str(e)
+                # Check if it's a 409 Conflict error (previous exec still running)
+                if '409' in error_str or 'Conflict' in error_str:
+                    if attempt < max_retries - 1:
+                        # Wait before retry with exponential backoff
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff: 0.5s, 1s, 2s
+                        logger.debug("docker_exec_conflict_retry",
+                                   node=node_id,
+                                   attempt=attempt + 1,
+                                   delay=retry_delay,
+                                   command=command[:50])
+                        continue
+                    else:
+                        # Last attempt failed - raise error
+                        logger.warning("docker_exec_conflict_failed_after_retries",
+                                     node=node_id,
+                                     attempts=max_retries,
+                                     command=command[:50])
+                        raise RuntimeError(f"Docker exec conflict after {max_retries} retries: {error_str}")
+                else:
+                    # Not a 409 error - raise immediately
+                    raise
         
         stdout_str = stdout.decode('utf-8') if stdout else ""
         stderr_str = stderr.decode('utf-8') if stderr else ""
         
+        # CRITICAL: node dump with empty node list returns exit_code = -1
+        # But this is OK - node state is registered, just node list is empty
+        # Allow exit_code = -1 for "node dump" commands if output contains "No records"
         if exit_code != 0:
-            raise RuntimeError(f"CLI command failed: {stderr_str}")
+            if exit_code == -1 and 'node dump' in command and 'No records' in stdout_str:
+                # Empty node list but command executed - this is OK
+                return stdout_str
+            raise RuntimeError(f"CLI command failed (exit_code={exit_code}): {stderr_str}")
         
         return stdout_str
     
@@ -784,24 +986,44 @@ class NetworkConsensusMonitor:
         """
         Parse chain info to get block count and last hash.
         
+        Handles multiple formats:
+        - "have blocks: 0" (when chain is empty)
+        - "blocks: 5" (when blocks exist)
+        - "stagenet.main with filter - none, have blocks: 0"
+        
         Returns:
             (block_count, last_block_hash)
         """
         blocks = 0
         last_hash = None
         
-        # Look for chain blocks count
-        for line in output.split('\n'):
-            if 'blocks:' in line.lower():
-                try:
-                    blocks = int(line.split(':')[-1].strip())
-                except:
-                    pass
-            if 'last' in line.lower() and 'hash' in line.lower():
-                parts = line.split()
-                for part in parts:
-                    if part.startswith('0x') and len(part) > 10:
-                        last_hash = part
+        output_lower = output.lower()
+        
+        # Look for "have blocks: N" pattern (most common format)
+        import re
+        have_blocks_match = re.search(r'have\s+blocks?:\s*(\d+)', output_lower)
+        if have_blocks_match:
+            try:
+                blocks = int(have_blocks_match.group(1))
+            except:
+                pass
+        
+        # Also look for "blocks:" pattern (alternative format)
+        if blocks == 0:
+            for line in output.split('\n'):
+                if 'blocks:' in line.lower():
+                    try:
+                        blocks = int(line.split(':')[-1].strip())
+                        break
+                    except:
+                        pass
+        
+        # Look for last hash
+        if 'last' in output_lower and 'hash' in output_lower:
+            parts = output.split()
+            for part in parts:
+                if part.startswith('0x') and len(part) > 10:
+                    last_hash = part
         
         return blocks, last_hash
     

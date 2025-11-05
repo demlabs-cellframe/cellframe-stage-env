@@ -499,6 +499,17 @@ auto_create_on_startup = true
 # Snapshot name to use for suite isolation
 snapshot_name = clean_state
 
+# Genesis stage for snapshot creation
+# Options:
+#   - full: Create snapshot after all phases (default)
+#   - phase1: Create snapshot after PHASE 1 (zerochain + genesis LN) and stop
+#   - disabled: Don't create phase1 snapshot (only final snapshot)
+genesis_stage = full
+
+# Snapshot name for PHASE 1 (zerochain genesis)
+# Used when genesis_stage is 'phase1' or 'full'
+phase1_snapshot_name = phase1_zerochain_genesis
+
 # Cleanup old snapshots (keep only N most recent)
 auto_cleanup = true
 keep_snapshot_count = 5

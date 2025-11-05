@@ -61,12 +61,92 @@ class NodeLifecycleManager:
                    services=service_names,
                    timeout=flush_timeout)
         
+        # CRITICAL: Before shutdown, ensure all data is flushed to disk
+        # Step 0: Flush GDB and sync filesystem to ensure chain files are saved
+        logger.info("flushing_gdb_and_syncing_filesystem_before_shutdown")
+        
+        for service in service_names:
+            try:
+                container_name = f"{self.project_name}-{service}"
+                container = self.docker_client.containers.get(container_name)
+                container.reload()
+                
+                if container.status != 'running':
+                    logger.debug("container_already_stopped_skip_flush", container=container_name)
+                    continue
+                
+                # Flush GDB to ensure all data is written to disk
+                logger.debug("flushing_gdb_before_shutdown", container=container_name)
+                cmd_flush = ["sh", "-c", "cellframe-node-cli global_db flush"]
+                result_flush = container.exec_run(cmd_flush, demux=True)
+                if result_flush.exit_code == 0:
+                    logger.debug("gdb_flushed_before_shutdown", container=container_name)
+                else:
+                    logger.warning("gdb_flush_failed_before_shutdown", 
+                                 container=container_name,
+                                 exit_code=result_flush.exit_code)
+                
+                # Sync filesystem to ensure all buffered writes are flushed
+                logger.debug("syncing_filesystem_before_shutdown", container=container_name)
+                cmd_sync = ["sh", "-c", "sync"]
+                container.exec_run(cmd_sync, demux=True)
+                logger.debug("filesystem_synced_before_shutdown", container=container_name)
+                
+            except Exception as e:
+                logger.error("failed_to_flush_before_shutdown",
+                             service=service,
+                             error=str(e))
+        
+        # CRITICAL: Before shutdown, ensure all data is flushed to disk
+        # Step 0: Flush GDB and sync filesystem to ensure chain files are saved
+        logger.info("flushing_gdb_and_syncing_filesystem_before_shutdown")
+        
+        for service in service_names:
+            try:
+                container_name = f"{self.project_name}-{service}"
+                container = self.docker_client.containers.get(container_name)
+                container.reload()
+                
+                if container.status != 'running':
+                    logger.debug("container_already_stopped_skip_flush", container=container_name)
+                    continue
+                
+                # Flush GDB to ensure all data is written to disk
+                logger.debug("flushing_gdb_before_shutdown", container=container_name)
+                cmd_flush = ["sh", "-c", "cellframe-node-cli global_db flush"]
+                result_flush = container.exec_run(cmd_flush, demux=True)
+                if result_flush.exit_code == 0:
+                    logger.debug("gdb_flushed_before_shutdown", container=container_name)
+                else:
+                    logger.warning("gdb_flush_failed_before_shutdown", 
+                                 container=container_name,
+                                 exit_code=result_flush.exit_code)
+                
+                # Sync filesystem to ensure all buffered writes are flushed
+                logger.debug("syncing_filesystem_before_shutdown", container=container_name)
+                cmd_sync = ["sh", "-c", "sync"]
+                container.exec_run(cmd_sync, demux=True)
+                logger.debug("filesystem_synced_before_shutdown", container=container_name)
+                
+            except Exception as e:
+                logger.error("failed_to_flush_before_shutdown",
+                             service=service,
+                             error=str(e))
+        
         # Step 1: Send 'exit' command to all nodes via CLI for graceful shutdown
+        # Note: Both CLI 'exit' and SIGTERM call sig_exit_handler which does exit(0)
+        # Chain files should be saved via fflush() in dap_chain_cell_file_append
+        # Standard library should flush buffers on exit(0), but explicit sync helps
         logger.info("sending_exit_commands_to_nodes")
         for service in service_names:
             try:
                 container_name = f"{self.project_name}-{service}"
                 container = self.docker_client.containers.get(container_name)
+                container.reload()
+                
+                if container.status != 'running':
+                    logger.debug("container_already_stopped_skip", container=container_name)
+                    continue
                 
                 # Send 'exit' command via cellframe-node-cli
                 logger.debug("sending_exit_command", container=container_name)

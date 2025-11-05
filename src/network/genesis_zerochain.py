@@ -14,6 +14,7 @@ from typing import List, Optional
 from .genesis_base import BaseGenesisManager
 from .models import NodeConfig
 from ..utils.logger import get_logger
+from ..monitoring.waiter.emission_waiters import EmissionSyncedInLedgerWaiter
 
 
 logger = get_logger(__name__)
@@ -634,56 +635,19 @@ class ZerochainGenesisManager(BaseGenesisManager):
                         all_nodes_have_emission = False
                         break
                 
-                if all_nodes_have_emission:
-                    emission_synced = True
-                    elapsed = time.time() - start_time
-                    logger.info("emission_synced_in_ledger_on_all_nodes",
-                               emission=emission_hash[:16],
-                               elapsed=f"{elapsed:.1f}s",
-                               nodes=len(root_nodes))
-                    break
-                
-                await asyncio.sleep(poll_interval)
+            # CRITICAL: Wait for emission to be synced in ledger on ALL root nodes
+            # DAG-PoA processing adds event to DAG, but datum needs time to be processed into ledger
+            logger.info("waiting_for_emission_in_ledger_after_dag_processing", emission=emission_hash[:16])
             
-            if not emission_synced:
-                # Log detailed diagnostic info before raising error
-                logger.error("emission_not_synced_in_ledger_diagnostic",
-                           emission=emission_hash[:16],
-                           timeout=timeout,
-                           note="Emission not found in ledger. Collecting diagnostic information.")
-                
-                for root_node in root_nodes:
-                    # Get ledger list coins output
-                    exit_code, stdout, stderr = self.genesis._exec_cli(
-                        root_node.node_id,
-                        f"ledger list coins -net {self.network_name} -chain zerochain",
-                        check_output=False
-                    )
-                    logger.debug("ledger_list_coins_diagnostic",
-                               node_id=root_node.node_id,
-                               exit_code=exit_code,
-                               stdout_preview=stdout[:500] if stdout else "empty",
-                               stderr_preview=stderr[:200] if stderr else "none")
-                    
-                    # Get DAG events
-                    exit_code_events, stdout_events, _ = self.genesis._exec_cli(
-                        root_node.node_id,
-                        f"dag event list -net {self.network_name} -chain zerochain -from events -limit 10",
-                        check_output=False
-                    )
-                    logger.debug("dag_events_diagnostic",
-                               node_id=root_node.node_id,
-                               exit_code=exit_code_events,
-                               stdout_preview=stdout_events[:500] if stdout_events else "empty")
-                
-                raise RuntimeError(
-                    f"Emission {emission_hash[:16]} not found in zerochain ledger on any root node after {timeout}s. "
-                    f"Emission was finalized in DAG but not processed into ledger. "
-                    f"This indicates a critical issue - emission datum is in DAG events but not accessible in ledger. "
-                    f"Cannot proceed with token transfer from emission as SDK requires emission in ledger. "
-                    f"Check node logs for datum processing errors or ledger loading issues. "
-                    f"Diagnostic information logged above."
-                )
+            waiter_emission_synced = EmissionSyncedInLedgerWaiter(
+                exec_cli=self.genesis._exec_cli,
+                nodes=root_nodes,
+                emission_hash=emission_hash,
+                network_name=self.network_name,
+                chain="zerochain",
+                poll_interval=1.0
+            )
+            await waiter_emission_synced.wait(timeout=60.0)
             
             # CRITICAL: Transfer emission to fee_collector wallet BEFORE snapshot creation
             # This ensures fee_collector wallet has tokens in snapshot, avoiding emission lookup issues

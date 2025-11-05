@@ -6,9 +6,6 @@ description: Verify that nodes can connect to each other and form a network
 tags: [e2e, basic, network, connectivity]
 version: "1.0"
 
-network:
-  topology: default
-
 defaults:
   wait: 2s
 

@@ -4,10 +4,11 @@ shard_id=0x0000000000000000
 name=zerochain
 load_priority=0
 # Possible values [token, emission, transaction, ca, decree, anchor]
-datum_types=[token,emission,decree]
+# CRITICAL: Added transaction for stake delegation and token transfers on zerochain
+datum_types=[token,emission,transaction,decree]
 default_datum_types=[token,emission,decree]
-# Auto-process token and emission datums in mempool for DAG-PoA
-mempool_auto_types=[token,emission,decree]
+# Auto-process token, emission and transaction datums in mempool for DAG-PoA
+mempool_auto_types=[token,emission,transaction,decree]
 consensus=dag_poa
 # Authorized root nodes addresses (auto-filled from validator addresses)
 authorized_nodes_addrs={{ root_nodes_addrs }}

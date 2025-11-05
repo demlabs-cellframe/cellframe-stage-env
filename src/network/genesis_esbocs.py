@@ -23,6 +23,22 @@ import docker
 from .genesis_base import BaseGenesisManager
 from .models import NodeConfig
 from ..utils.logger import get_logger
+from ..monitoring.waiter.validator_waiters import (
+    StakeServiceReadyWaiter,
+    ESBocsConsensusActiveWaiter,
+)
+from ..monitoring.waiter.sync_waiters import FirstBlockWaiter
+from ..monitoring.waiter.gdb_waiters import GDBClustersReadyWaiter
+from ..monitoring.waiter.token_waiters import TokenInMempoolWaiter
+from ..monitoring.waiter.genesis_waiters import (
+    MasterContainersRunningWaiter,
+    CLIReadyWaiter,
+    TransactionProcessedWaiter,
+    GDBSyncCompleteWaiter,
+    DelegationsSyncedWaiter,
+)
+from ..monitoring.checker.config_checkers import verify_zerochain_config
+from ..monitoring.waiters import UTXOIndexationWaiter
 
 
 logger = get_logger(__name__)
@@ -61,7 +77,8 @@ class ESBocsGenesisManager(BaseGenesisManager):
     async def regenerate_configs_with_all_master_validators(
         self,
         all_validator_nodes: List[NodeConfig],
-        master_nodes: List[NodeConfig]
+        master_nodes: List[NodeConfig],
+        root_nodes: List[NodeConfig] = None  # CRITICAL: Need root nodes to read static_genesis_event after snapshot restore
     ) -> None:
         """
         Regenerate chain configs with ALL master nodes as validators.
@@ -72,6 +89,7 @@ class ESBocsGenesisManager(BaseGenesisManager):
         Args:
             all_validator_nodes: List of all validator nodes (for root_nodes_addrs)
             master_nodes: List of ALL master nodes (will be validators)
+            root_nodes: List of ROOT nodes (used to read static_genesis_event after snapshot restore)
         """
         logger.info("regenerating_chain_configs_with_all_master_validators",
                    master_count=len(master_nodes))
@@ -101,12 +119,23 @@ class ESBocsGenesisManager(BaseGenesisManager):
                        node_id=master_node.node_id,
                        address=master_addr)
         
-        # CRITICAL: Read ALL parameters from existing configs BEFORE regenerating
-        # Regenerate will OVERWRITE configs, so we must preserve all important values
-        first_node = all_validator_nodes[0]
+        # CRITICAL: Read ALL parameters from ROOT node configs AFTER snapshot restore
+        # ROOT nodes have correct static_genesis_event after snapshot restore
+        # Use first ROOT node if available, otherwise fall back to first validator node
+        if root_nodes and len(root_nodes) > 0:
+            config_node = root_nodes[0]
+            logger.info("reading_configs_from_root_node_after_snapshot_restore",
+                       node_id=config_node.node_id,
+                       note="Using ROOT node config to read static_genesis_event after snapshot restore")
+        else:
+            config_node = all_validator_nodes[0]
+            logger.warning("no_root_nodes_using_first_validator_node",
+                          node_id=config_node.node_id,
+                          note="No root nodes provided, using first validator node")
+        
         cache_path = self.genesis.base_path.parent / "testing" / "cache"
-        zerochain_config_path = cache_path / "configs" / f"node{first_node.node_id}" / "network" / self.network_name / "zerochain.cfg"
-        main_config_path = cache_path / "configs" / f"node{first_node.node_id}" / "network" / self.network_name / "main.cfg"
+        zerochain_config_path = cache_path / "configs" / f"node{config_node.node_id}" / "network" / self.network_name / "zerochain.cfg"
+        main_config_path = cache_path / "configs" / f"node{config_node.node_id}" / "network" / self.network_name / "main.cfg"
         
         static_genesis_event = None
         fee_addr = None
@@ -123,7 +152,22 @@ class ESBocsGenesisManager(BaseGenesisManager):
                 if static_genesis_event:
                     logger.info("preserving_static_genesis_event_before_regenerate",
                               hash=static_genesis_event[:16],
-                              note="Reading static_genesis_event from existing config")
+                              node_id=config_node.node_id,
+                              note="Reading static_genesis_event from ROOT node config after snapshot restore")
+                else:
+                    logger.warning("static_genesis_event_empty_in_config",
+                                 node_id=config_node.node_id,
+                                 note="static_genesis_event is empty in config")
+            else:
+                logger.error("static_genesis_event_not_found_in_config",
+                           node_id=config_node.node_id,
+                           config_path=str(zerochain_config_path),
+                           note="CRITICAL: static_genesis_event not found in config after snapshot restore!")
+        else:
+            logger.error("zerochain_config_not_found",
+                       node_id=config_node.node_id,
+                       config_path=str(zerochain_config_path),
+                       note="CRITICAL: Zerochain config not found after snapshot restore!")
         
         # Read fee_addr and min_validators_count from main.cfg
         if main_config_path.exists():
@@ -137,17 +181,28 @@ class ESBocsGenesisManager(BaseGenesisManager):
                     if fee_addr:
                         logger.info("preserving_fee_addr_before_regenerate",
                                   fee_addr=fee_addr[:16],
-                                  note="Reading fee_addr from existing config")
+                                  node_id=config_node.node_id,
+                                  note="Reading fee_addr from ROOT node config")
                 
                 if 'min_validators_count' in config['esbocs']:
                     try:
                         min_validators_count = int(config['esbocs']['min_validators_count'])
                         logger.info("preserving_min_validators_count_before_regenerate",
                                   min_validators_count=min_validators_count,
-                                  note="Reading min_validators_count from existing config")
+                                  node_id=config_node.node_id,
+                                  note="Reading min_validators_count from ROOT node config")
                     except ValueError:
                         logger.warning("invalid_min_validators_count_in_config",
+                                     node_id=config_node.node_id,
                                      note="Using default value 2")
+        
+        # CRITICAL: Fail fast if static_genesis_event is not found
+        if not static_genesis_event:
+            raise RuntimeError(
+                f"CRITICAL: static_genesis_event not found in ROOT node {config_node.node_id} config after snapshot restore! "
+                f"Config path: {zerochain_config_path}. "
+                f"Without static_genesis_event, genesis event won't load and UTXO won't be indexed!"
+            )
         
         # Use ConfigGenerator to regenerate chain configs with ALL master validators
         from ..config.generator import ConfigGenerator
@@ -210,7 +265,8 @@ class ESBocsGenesisManager(BaseGenesisManager):
                        master_count=len(master_nodes))
             await self.regenerate_configs_with_all_master_validators(
                 all_validator_nodes,
-                master_nodes  # ALL master nodes
+                master_nodes,  # ALL master nodes
+                root_nodes=root_nodes  # CRITICAL: Pass root nodes to read static_genesis_event after snapshot restore
             )
             logger.info("chain_configs_regenerated_with_all_validators")
             
@@ -253,11 +309,22 @@ class ESBocsGenesisManager(BaseGenesisManager):
             logger.info("master_nodes_containers_started")
             
             # Wait for containers and CLI
-            await self._wait_for_master_containers_running(master_nodes, timeout=30.0)
+            waiter_containers = MasterContainersRunningWaiter(
+                docker_client=self.docker_client,
+                master_nodes=master_nodes,
+                poll_interval=1.0
+            )
+            await waiter_containers.wait(timeout=30.0)
             logger.info("waiting_for_cli_server_ready")
             # Wait for CLI to be ready on all master nodes
             for master_node in master_nodes:
-                await self._wait_for_cli_ready(master_node.node_id, timeout=30.0)
+                waiter_cli = CLIReadyWaiter(
+                    exec_cli=self.genesis._exec_cli,
+                    node_id=master_node.node_id,
+                    network_name=self.network_name,
+                    poll_interval=0.5
+                )
+                await waiter_cli.wait(timeout=30.0)
             logger.info("cli_servers_ready_on_all_master_nodes")
             
             # Step 3: Sync node list from ROOT nodes
@@ -279,7 +346,13 @@ class ESBocsGenesisManager(BaseGenesisManager):
                             await asyncio.sleep(1.0)
             
             # Wait for GDB sync to complete
-            await self._wait_for_gdb_sync_complete(master_nodes, timeout=30.0)
+            waiter_gdb_sync = GDBSyncCompleteWaiter(
+                exec_cli=self.genesis._exec_cli,
+                nodes=master_nodes,
+                network_name=self.network_name,
+                poll_interval=2.0
+            )
+            await waiter_gdb_sync.wait(timeout=30.0)
             
             # Diagnostic: Check if containers are running before going online
             logger.info("diagnostic_checking_master_containers_status")
@@ -345,34 +418,13 @@ class ESBocsGenesisManager(BaseGenesisManager):
             # This happens during network load, AFTER chains are loaded
             # If we create order before cluster is initialized, dap_global_db_set_sync will fail
             logger.info("waiting_for_gdb_clusters_initialization")
-            import time
-            start_wait = time.time()
-            gdb_ready = False
-            for attempt in range(10):
-                try:
-                    # Check if we can read from stagenet.service.orders group
-                    # This will work only if GDB cluster is initialized
-                    exit_code, stdout, stderr = self.genesis._exec_cli(
-                        first_master_node.node_id,
-                        f"srv_stake order list fee -net {self.network_name}",
-                        check_output=False
-                    )
-                    # exit_code=0 means GDB cluster is ready (even if "No orders found")
-                    if exit_code == 0:
-                        gdb_ready = True
-                        elapsed = time.time() - start_wait
-                        logger.info("gdb_clusters_ready",
-                                   elapsed=f"{elapsed:.1f}s",
-                                   note="GDB cluster for orders is initialized")
-                        break
-                except Exception:
-                    pass
-                await asyncio.sleep(1.0)
-            
-            if not gdb_ready:
-                logger.warning("gdb_clusters_readiness_unknown",
-                             elapsed=f"{time.time() - start_wait:.1f}s",
-                             note="Could not verify GDB cluster readiness, proceeding anyway")
+            waiter_gdb_clusters = GDBClustersReadyWaiter(
+                exec_cli=self.genesis._exec_cli,
+                node_id=first_master_node.node_id,
+                network_name=self.network_name,
+                poll_interval=1.0
+            )
+            await waiter_gdb_clusters.wait(timeout=10.0)
             
             # Step 4: Register all nodes via CLI (only ROOT nodes can be registered this way)
             # MASTER nodes will get node list via GDB sync from Step 3 (net go sync)
@@ -466,6 +518,128 @@ class ESBocsGenesisManager(BaseGenesisManager):
                        note="fee_collector wallet restored from PHASE 1 snapshot. "
                             "In PHASE 2, SDK is in load_mode so UTXO are properly indexed for transfers.")
             
+            # CRITICAL: After snapshot restore, verify configs and check node logs BEFORE transfer
+            # This helps diagnose why UTXO might not be indexed
+            logger.info("verifying_configs_and_logs_after_snapshot_restore",
+                       note="CRITICAL: Verifying zerochain configs and checking node logs for genesis event loading")
+            
+            # Check configs on ALL root nodes
+            config_issues = []
+            for root_node in root_nodes:
+                node_id = root_node.node_id
+                try:
+                    static_genesis_hash, is_static_genesis, seed_mode = await verify_zerochain_config(
+                        base_path=self.genesis.base_path,
+                        node_id=node_id,
+                        network_name=self.network_name
+                    )
+                    
+                    if not static_genesis_hash:
+                        config_issues.append(f"node{node_id}: static_genesis_event is NOT SET")
+                    elif not is_static_genesis:
+                        config_issues.append(f"node{node_id}: is_static_genesis_event=false but static_genesis_event={static_genesis_hash[:16]}")
+                    else:
+                        logger.info("config_check_passed",
+                                   node_id=node_id,
+                                   static_genesis_hash=static_genesis_hash[:16],
+                                   seed_mode=seed_mode)
+                except RuntimeError as config_err:
+                    config_issues.append(f"node{node_id}: Config check failed - {str(config_err)[:100]}")
+            
+            if config_issues:
+                error_msg = (
+                    f"CRITICAL: Config issues detected after snapshot restore:\n"
+                    + "\n".join(f"  - {issue}" for issue in config_issues) +
+                    f"\n\nWithout correct static_genesis_event, genesis event won't load and UTXO won't be indexed!"
+                )
+                logger.error("config_issues_after_snapshot_restore",
+                           issues=config_issues,
+                           note=error_msg)
+                # Don't fail here - continue to check logs and attempt transfer
+            
+            # Check node logs for genesis event loading/rejection
+            logger.info("checking_node_logs_for_genesis_event_loading",
+                       note="Checking node logs for genesis event acceptance/rejection messages")
+            
+            genesis_event_loaded = False
+            genesis_event_rejected = False
+            genesis_event_reject_reason = None
+            
+            try:
+                import docker
+                docker_client = docker.from_env()
+                
+                for root_node in root_nodes[:1]:  # Check first root node
+                    container_name = f"{compose_manager.project_name}-node-{root_node.node_id}"
+                    try:
+                        container = docker_client.containers.get(container_name)
+                        node_logs = container.logs(tail=10000).decode('utf-8', errors='ignore')
+                        
+                        # Search for genesis event messages
+                        for line in node_logs.split('\n'):
+                            line_lower = line.lower()
+                            
+                            # Check for genesis event acceptance
+                            if 'genesis' in line_lower and 'event' in line_lower:
+                                if 'accept' in line_lower or 'loaded' in line_lower or 'added' in line_lower:
+                                    genesis_event_loaded = True
+                                    logger.info("genesis_event_loaded_found_in_logs",
+                                               node_id=root_node.node_id,
+                                               line=line[:200])
+                                elif 'reject' in line_lower or 'wrong' in line_lower or 'invalid' in line_lower:
+                                    genesis_event_rejected = True
+                                    genesis_event_reject_reason = line[:300]
+                                    logger.error("genesis_event_rejected_found_in_logs",
+                                               node_id=root_node.node_id,
+                                               line=line[:300])
+                            
+                            # Check for zerochain loading errors
+                            if 'zerochain' in line_lower and ('error' in line_lower or 'fail' in line_lower):
+                                logger.warning("zerochain_error_in_logs",
+                                             node_id=root_node.node_id,
+                                             line=line[:300])
+                            
+                            # Check for ledger_items or HAL/HRL messages
+                            if ('ledger' in line_lower or 'hal' in line_lower or 'hrl' in line_lower) and 'zerochain' in line_lower:
+                                if '0 datums' in line_lower or 'empty' in line_lower:
+                                    logger.warning("zerochain_ledger_empty_in_logs",
+                                                 node_id=root_node.node_id,
+                                                 line=line[:300])
+                        
+                        logger.info("node_logs_analysis_complete",
+                                   node_id=root_node.node_id,
+                                   genesis_event_loaded=genesis_event_loaded,
+                                   genesis_event_rejected=genesis_event_rejected,
+                                   note="Node logs analysis - check genesis event status")
+                        
+                    except docker.errors.NotFound:
+                        logger.warning("container_not_found_for_logs",
+                                     container_name=container_name,
+                                     node_id=root_node.node_id)
+                        
+            except Exception as log_err:
+                logger.warning("node_logs_check_exception",
+                             error=str(log_err),
+                             note="Exception during node logs check - proceeding anyway")
+            
+            # Fail-fast if genesis event was rejected
+            if genesis_event_rejected:
+                error_msg = (
+                    f"CRITICAL: Genesis event was REJECTED after snapshot restore!\n"
+                    f"Rejection reason: {genesis_event_reject_reason}\n"
+                    f"Without genesis event, zerochain won't load and UTXO won't be indexed!\n"
+                    f"Check if static_genesis_event hash matches the actual genesis event hash."
+                )
+                logger.error("genesis_event_rejected_fail_fast",
+                           reject_reason=genesis_event_reject_reason,
+                           note=error_msg)
+                raise RuntimeError(error_msg)
+            
+            # Warn if genesis event not found in logs
+            if not genesis_event_loaded:
+                logger.warning("genesis_event_not_found_in_logs",
+                             note="Genesis event loading messages not found in logs - event may not have loaded")
+            
             # CRITICAL: Verify TCELL token exists on zerochain after snapshot restore
             # Token should be restored from snapshot, but may need time to load
             # CRITICAL: If zerochain has 0 events, genesis event is not loading - check genesis event loading!
@@ -496,248 +670,38 @@ class ESBocsGenesisManager(BaseGenesisManager):
                               f"If 0, genesis event is NOT loading - check static_genesis_event configuration!")
             
             if total_events_after_restore == 0:
-                # CRITICAL: Zerochain not loaded - check genesis event configuration
+                # CRITICAL: Zerochain not loaded - genesis event is not loading
+                # We already checked configs and logs above, so just fail fast here
+                error_msg = (
+                    f"CRITICAL: Zerochain has 0 events after snapshot restore! "
+                    f"Genesis event is NOT loading. "
+                    f"This means zerochain files are restored but genesis event is not being accepted. "
+                    f"Check config_issues above and genesis_event_rejected status from logs analysis."
+                )
                 logger.error("zerochain_not_loaded_after_snapshot_restore",
-                           note="CRITICAL: Zerochain has 0 events - genesis event is NOT loading! "
-                                "This means zerochain files are restored but genesis event is not being accepted. "
-                                "Check static_genesis_event configuration and node logs for genesis event rejection messages.")
-                
-                # Check zerochain config for static_genesis_event
-                zerochain_config_path = self.genesis.base_path / f"cache/configs/node{first_root_node.node_id}/network/{self.network_name}/zerochain.cfg"
-                
-                static_genesis_hash = None
-                is_static_genesis = False
-                seed_mode = None
-                
-                if zerochain_config_path.exists():
-                    config = configparser.ConfigParser()
-                    config.read(zerochain_config_path)
-                    
-                    if 'dag' not in config:
-                        raise RuntimeError(
-                            f"CRITICAL: [dag] section not found in zerochain config at {zerochain_config_path}! "
-                            f"Cannot proceed without dag section."
-                        )
-                    if 'static_genesis_event' not in config['dag']:
-                        raise RuntimeError(
-                            f"CRITICAL: static_genesis_event not found in [dag] section at {zerochain_config_path}! "
-                            f"Cannot proceed without static_genesis_event."
-                        )
-                    static_genesis_hash = config['dag']['static_genesis_event'].strip()
-                    if 'is_static_genesis_event' not in config['dag']:
-                        raise RuntimeError(
-                            f"CRITICAL: is_static_genesis_event not found in [dag] section at {zerochain_config_path}! "
-                            f"Cannot proceed without is_static_genesis_event flag."
-                        )
-                    is_static_genesis = config['dag'].getboolean('is_static_genesis_event')
-                    
-                    # Check base config for seed_mode
-                    base_config_path = self.genesis.base_path / f"cache/configs/node{first_root_node.node_id}/cellframe-node.cfg"
-                    if not base_config_path.exists():
-                        raise RuntimeError(
-                            f"CRITICAL: Base config not found at {base_config_path}! "
-                            f"Cannot proceed without base config."
-                        )
-                    base_config = configparser.ConfigParser()
-                    base_config.read(base_config_path)
-                    if 'main' not in base_config:
-                        raise RuntimeError(
-                            f"CRITICAL: [main] section not found in base config at {base_config_path}! "
-                            f"Cannot proceed without main section."
-                        )
-                    if 'seed_mode' not in base_config['main']:
-                        raise RuntimeError(
-                            f"CRITICAL: seed_mode not found in [main] section at {base_config_path}! "
-                            f"Cannot proceed without seed_mode parameter."
-                        )
-                    seed_mode = base_config['main']['seed_mode'].strip()
-                    
-                    logger.error("zerochain_genesis_config_diagnostic",
-                               static_genesis_hash=static_genesis_hash[:16] if static_genesis_hash else "NOT SET",
-                               is_static_genesis_event=is_static_genesis,
-                               seed_mode=seed_mode,
-                               config_path=str(zerochain_config_path),
-                               note="CRITICAL: Check if static_genesis_event matches genesis event in chain files!")
-                
-                # Check node logs for genesis event messages
-                try:
-                    import docker
-                    docker_client = docker.from_env()
-                    container_name = f"{compose_manager.project_name}-node-{first_root_node.node_id}"
-                    
-                    try:
-                        container = docker_client.containers.get(container_name)
-                        node_logs = container.logs(tail=5000).decode('utf-8', errors='ignore')
-                        
-                        genesis_event_logs = []
-                        chain_load_logs = []
-                        zerochain_logs = []
-                        
-                        for line in node_logs.split('\n'):
-                            line_lower = line.lower()
-                            if 'genesis' in line_lower and ('event' in line_lower or 'accept' in line_lower or 'reject' in line_lower or 'wrong' in line_lower):
-                                genesis_event_logs.append(line)
-                            if 'load' in line_lower and ('chain' in line_lower or 'zerochain' in line_lower):
-                                chain_load_logs.append(line)
-                            if 'zerochain' in line_lower:
-                                zerochain_logs.append(line)
-                        
-                        logger.error("zerochain_genesis_node_logs_diagnostic",
-                                   genesis_event_logs=genesis_event_logs[:10] if genesis_event_logs else [],
-                                   chain_load_logs=chain_load_logs[:10] if chain_load_logs else [],
-                                   zerochain_logs_count=len(zerochain_logs),
-                                   sample_zerochain_logs=zerochain_logs[:5] if zerochain_logs else [],
-                                   note="CRITICAL: Check node logs for genesis event rejection or chain loading errors!")
-                    except docker.errors.NotFound:
-                        logger.warning("container_not_found_for_genesis_diagnostic",
-                                     container_name=container_name,
-                                     note="Container not found - cannot get logs for genesis diagnostic")
-                    
-                except Exception as log_err:
-                    logger.warning("failed_to_get_node_logs_for_genesis_diagnostic",
-                                 error=str(log_err),
-                                 note="Could not get node logs - proceeding with other diagnostics")
-                
-                # Check if chain files exist
-                # On host: cache/data/node{id}/lib/network/stagenet/zerochain/
-                # Inside container: /opt/cellframe-node/var/lib/network/stagenet/zerochain/
-                chain_files_path = self.genesis.base_path / f"cache/data/node{first_root_node.node_id}/lib/network/{self.network_name}/zerochain"
-                chain_files_exist = chain_files_path.exists() if chain_files_path else False
-                
-                if chain_files_exist:
-                    chain_files = list(chain_files_path.glob("*.dchaincell")) if chain_files_path.exists() else []
-                    logger.error("zerochain_files_diagnostic",
-                               chain_files_count=len(chain_files),
-                               chain_files_path=str(chain_files_path),
-                               chain_files_list=[f.name for f in chain_files[:5]],
-                               note="Chain files exist but zerochain has 0 events - genesis event is not loading!")
-                else:
-                    logger.error("zerochain_files_missing",
-                               chain_files_path=str(chain_files_path),
-                               note="CRITICAL: Chain files directory does not exist - snapshot may not have restored chain files!")
-                    
-                    # Additional check: try to find chain files using Docker exec
-                    try:
-                        import docker
-                        docker_client = docker.from_env()
-                        container_name = f"cellframe-stage-node-{first_root_node.node_id}"
-                        container = docker_client.containers.get(container_name)
-                        
-                        # Check chain files inside container
-                        exit_code, output = container.exec_run(
-                            "sh -c 'ls -la /opt/cellframe-node/var/lib/network/stagenet/zerochain/*.dchaincell 2>&1 | head -5'"
-                        )
-                        
-                        logger.error("zerochain_files_docker_check",
-                                   container_name=container_name,
-                                   exit_code=exit_code,
-                                   output=output.decode('utf-8', errors='ignore')[:500] if output else "empty",
-                                   note="Checking chain files inside Docker container")
-                        
-                    except Exception as docker_check_err:
-                        logger.warning("failed_to_check_chain_files_in_docker",
-                                     error=str(docker_check_err),
-                                     note="Could not check chain files inside Docker container")
-                
-                # This is a critical error - cannot proceed
-                raise RuntimeError(
-                    f"Zerochain not loaded after snapshot restore - has 0 events. "
-                    f"This indicates genesis event is not loading from chain files. "
-                    f"static_genesis_event={static_genesis_hash[:16] if static_genesis_hash else 'NOT SET'}, "
-                    f"is_static_genesis_event={is_static_genesis}, "
-                    f"chain_files_exist={chain_files_exist}. "
-                    f"Check node logs for genesis event rejection messages or chain loading errors."
-                )
+                           total_events=total_events_after_restore,
+                           config_issues=config_issues if config_issues else [],
+                           genesis_event_rejected=genesis_event_rejected,
+                           note=error_msg)
+                raise RuntimeError(error_msg)
             
-            import time
-            token_found = False
-            timeout_token = 60.0  # Increased timeout - chains may need more time to load after snapshot restore
-            start_time_token = time.time()
-            
-            while time.time() - start_time_token < timeout_token:
-                elapsed = time.time() - start_time_token
-                
-                # Method 1: Check if TCELL token exists on zerochain using token list
-                exit_code_list, stdout_list, stderr_list = self.genesis._exec_cli(
-                    first_root_node.node_id,
-                    f"token list -net {self.network_name} -chain zerochain",
-                    check_output=False
-                )
-                
-                if exit_code_list == 0 and stdout_list:
-                    token_found = "TCELL" in stdout_list or "tcell" in stdout_list.lower()
-                    if token_found:
-                        logger.info("tcell_token_found_on_zerochain_via_list",
-                                   elapsed=f"{elapsed:.1f}s",
-                                   token_list_output=stdout_list[:500],
-                                   note="TCELL token exists on zerochain, ready for transfers")
-                        break
-                    else:
-                        logger.debug("tcell_not_in_token_list",
-                                   elapsed=f"{elapsed:.1f}s",
-                                   token_list_output=stdout_list[:500] if stdout_list else "empty",
-                                   note="TCELL not found in token list, trying alternative methods")
-                else:
-                    logger.debug("token_list_failed",
-                               elapsed=f"{elapsed:.1f}s",
-                               exit_code=exit_code_list,
-                               stderr=stderr_list[:200] if stderr_list else "empty",
-                               note="token list command failed, trying alternative methods")
-                
-                # Method 2: Try token show as alternative check
-                if not token_found:
-                    exit_code_show, stdout_show, stderr_show = self.genesis._exec_cli(
-                        first_root_node.node_id,
-                        f"token show -net {self.network_name} -chain zerochain -token TCELL",
-                        check_output=False
-                    )
-                    
-                    if exit_code_show == 0 and stdout_show:
-                        token_found = "TCELL" in stdout_show or "tcell" in stdout_show.lower()
-                        if token_found:
-                            logger.info("tcell_token_found_on_zerochain_via_show",
-                                       elapsed=f"{elapsed:.1f}s",
-                                       token_show_output=stdout_show[:500],
-                                       note="TCELL token exists on zerochain (verified via token show)")
-                            break
-                        else:
-                            logger.debug("tcell_not_in_token_show",
-                                       elapsed=f"{elapsed:.1f}s",
-                                       token_show_output=stdout_show[:500] if stdout_show else "empty")
-                    else:
-                        logger.debug("token_show_failed",
-                                   elapsed=f"{elapsed:.1f}s",
-                                   exit_code=exit_code_show,
-                                   stderr=stderr_show[:200] if stderr_show else "empty")
-                
-                # Method 3: Check if zerochain DAG has events (indicates chain is loaded)
-                if not token_found and elapsed > 5.0:  # Only check DAG after initial wait
-                    exit_code_dag, stdout_dag, _ = self.genesis._exec_cli(
-                        first_root_node.node_id,
-                        f"dag event list -net {self.network_name} -chain zerochain -from events -limit 1",
-                        check_output=False
-                    )
-                    
-                    if exit_code_dag == 0 and stdout_dag:
-                        import re
-                        total_match = re.search(r'total events:\s*(\d+)', stdout_dag, re.IGNORECASE)
-                        total_events = int(total_match.group(1)) if total_match else 0
-                        if total_events > 0:
-                            logger.debug("zerochain_has_dag_events",
-                                       elapsed=f"{elapsed:.1f}s",
-                                       total_events=total_events,
-                                       note="Zerochain has DAG events, token should be accessible")
-                        else:
-                            logger.debug("zerochain_no_dag_events",
-                                       elapsed=f"{elapsed:.1f}s",
-                                       note="Zerochain may not be fully loaded yet")
-                
-                    await asyncio.sleep(2.0)  # Check every 2 seconds instead of 1
-            
-            if not token_found:
+            # CRITICAL: Wait for TCELL token to be accessible on zerochain after snapshot restore
+            # After snapshot restore, chains are loaded but token may not be immediately accessible
+            # Token must be visible via token list or token show before we can transfer from emission
+            logger.info("waiting_for_tcell_token_accessible_after_snapshot_restore")
+            waiter_token = TokenInMempoolWaiter(
+                exec_cli=self.genesis._exec_cli,
+                node_id=first_root_node.node_id,
+                network_name=self.network_name,
+                token_name="TCELL",
+                chain="zerochain",
+                poll_interval=2.0
+            )
+            try:
+                await waiter_token.wait(timeout=60.0)
+            except TimeoutError:
                 # Final diagnostic: collect all information
                 logger.error("tcell_token_not_found_final_diagnostic",
-                           elapsed=f"{time.time() - start_time_token:.1f}s",
                            note="Collecting final diagnostic information")
                 
                 # Try token list one more time with full output
@@ -765,7 +729,7 @@ class ESBocsGenesisManager(BaseGenesisManager):
                            note="Check if zerochain has DAG events with token declaration")
                 
                 raise RuntimeError(
-                    f"TCELL token not found on zerochain after {timeout_token}s. "
+                    f"TCELL token not found on zerochain after 60.0s. "
                     f"Token should be restored from PHASE 1 snapshot. "
                     f"Cannot proceed with token transfers. "
                     f"Check if token was properly saved in snapshot or if zerochain is properly loaded. "
@@ -983,54 +947,11 @@ class ESBocsGenesisManager(BaseGenesisManager):
             
             try:
                 # Check zerochain config for static_genesis_event
-                zerochain_config_path = self.genesis.base_path / f"cache/configs/node{first_root_node.node_id}/network/{self.network_name}/zerochain.cfg"
-                
-                static_genesis_hash = None
-                is_static_genesis = False
-                seed_mode = None
-                
-                if zerochain_config_path.exists():
-                    config = configparser.ConfigParser()
-                    config.read(zerochain_config_path)
-                    
-                    if 'dag' not in config:
-                        raise RuntimeError(
-                            f"CRITICAL: [dag] section not found in zerochain config at {zerochain_config_path}! "
-                            f"Cannot proceed without dag section."
-                        )
-                    if 'static_genesis_event' not in config['dag']:
-                        raise RuntimeError(
-                            f"CRITICAL: static_genesis_event not found in [dag] section at {zerochain_config_path}! "
-                            f"Cannot proceed without static_genesis_event."
-                        )
-                    static_genesis_hash = config['dag']['static_genesis_event'].strip()
-                    if 'is_static_genesis_event' not in config['dag']:
-                        raise RuntimeError(
-                            f"CRITICAL: is_static_genesis_event not found in [dag] section at {zerochain_config_path}! "
-                            f"Cannot proceed without is_static_genesis_event flag."
-                        )
-                    is_static_genesis = config['dag'].getboolean('is_static_genesis_event')
-                    
-                    # Check base config for seed_mode
-                    base_config_path = self.genesis.base_path / f"cache/configs/node{first_root_node.node_id}/cellframe-node.cfg"
-                    if not base_config_path.exists():
-                        raise RuntimeError(
-                            f"CRITICAL: Base config not found at {base_config_path}! "
-                            f"Cannot proceed without base config."
-                        )
-                    base_config = configparser.ConfigParser()
-                    base_config.read(base_config_path)
-                    if 'main' not in base_config:
-                        raise RuntimeError(
-                            f"CRITICAL: [main] section not found in base config at {base_config_path}! "
-                            f"Cannot proceed without main section."
-                        )
-                    if 'seed_mode' not in base_config['main']:
-                        raise RuntimeError(
-                            f"CRITICAL: seed_mode not found in [main] section at {base_config_path}! "
-                            f"Cannot proceed without seed_mode parameter."
-                        )
-                    seed_mode = base_config['main']['seed_mode'].strip()
+                static_genesis_hash, is_static_genesis, seed_mode = await verify_zerochain_config(
+                    base_path=self.genesis.base_path,
+                    node_id=first_root_node.node_id,
+                    network_name=self.network_name
+                )
                 
                 logger.info("zerochain_config_check",
                            static_genesis_hash=static_genesis_hash[:16] if static_genesis_hash else "NOT SET",
@@ -1213,6 +1134,120 @@ class ESBocsGenesisManager(BaseGenesisManager):
                              error=str(diag_err),
                              note="Exception during diagnostic check - proceeding anyway")
             
+            # CRITICAL: After snapshot restore, restart root nodes to trigger NET_STATE_LOADING
+            # This ensures UTXO are indexed in ledger_items during node startup
+            # SDK indexes UTXO only when in NET_STATE_LOADING or NET_STATE_SYNC_CHAINS
+            logger.info("restarting_root_nodes_after_snapshot_restore_for_utxo_indexation",
+                       note="CRITICAL: Restarting root nodes after snapshot restore to trigger NET_STATE_LOADING for UTXO indexation")
+            
+            root_services = [f"node-{n.node_id}" for n in root_nodes]
+            
+            # Gracefully stop root nodes using docker client directly
+            logger.info("stopping_root_nodes_for_restart",
+                       services=root_services,
+                       note="Stopping root nodes before restart")
+            
+            # Stop containers using docker client
+            for root_node in root_nodes:
+                container_name = f"{compose_manager.project_name}-node-{root_node.node_id}"
+                try:
+                    container = self.docker_client.containers.get(container_name)
+                    container.stop(timeout=30)
+                    logger.debug("root_node_stopped", node_id=root_node.node_id)
+                except Exception as e:
+                    logger.warning("failed_to_stop_root_node",
+                                 node_id=root_node.node_id,
+                                 error=str(e)[:100])
+            
+            await asyncio.sleep(3.0)  # Wait for containers to stop
+            
+            # Restart root nodes - they will load in NET_STATE_LOADING and index UTXO
+            logger.info("restarting_root_nodes",
+                       services=root_services,
+                       note="Restarting root nodes - SDK will load in NET_STATE_LOADING and index UTXO")
+            compose_manager.up(services=root_services, detach=True, wait=False)
+            
+            # Wait for nodes to be online
+            from ..monitoring.waiters import NetworkOnlineWaiter
+            for root_node in root_nodes:
+                waiter_online = NetworkOnlineWaiter(
+                    exec_cli=self.genesis._exec_cli,
+                    node_id=root_node.node_id,
+                    network=self.network_name,
+                    poll_interval=1.0
+                )
+                await waiter_online.wait(timeout=60.0)
+            
+            logger.info("root_nodes_restarted_online",
+                       note="Root nodes restarted and online - UTXO should be indexed in ledger_items")
+            
+            # CRITICAL: After restart, trigger mempool_proc for all zerochain events to index UTXO
+            # After snapshot restore, events may be in DAG but not in ledger_items
+            # mempool_proc processes events from DAG into ledger_items
+            logger.info("triggering_mempool_proc_for_all_zerochain_events_after_restart",
+                       note="CRITICAL: Processing all zerochain events via mempool_proc to index UTXO in ledger_items")
+            
+            try:
+                # Get all zerochain events
+                exit_code_events, stdout_events, stderr_events = self.genesis._exec_cli(
+                    first_root_node.node_id,
+                    f"dag event list -net {self.network_name} -chain zerochain -from events -limit 10",
+                    check_output=False
+                )
+                
+                if exit_code_events == 0 and stdout_events:
+                    # Extract event hashes from output
+                    event_hashes = re.findall(r'hash:\s*(0x[A-Fa-f0-9]{64})', stdout_events, re.IGNORECASE)
+                    
+                    if event_hashes:
+                        logger.info("found_zerochain_events_for_mempool_proc",
+                                   event_count=len(event_hashes),
+                                   note="Processing zerochain events via mempool_proc to index UTXO")
+                        
+                        # Process each event on all root nodes
+                        for event_hash in event_hashes:
+                            for root_node in root_nodes:
+                                try:
+                                    exit_code_mp, stdout_mp, stderr_mp = self.genesis._exec_cli(
+                                        root_node.node_id,
+                                        f"mempool_proc -datum {event_hash} -net {self.network_name} -chain zerochain",
+                                        check_output=False
+                                    )
+                                    
+                                    if exit_code_mp == 0:
+                                        logger.debug("mempool_proc_success_for_event",
+                                                   node_id=root_node.node_id,
+                                                   event_hash=event_hash[:16],
+                                                   note="Event processed via mempool_proc")
+                                    else:
+                                        logger.debug("mempool_proc_failed_for_event",
+                                                   node_id=root_node.node_id,
+                                                   event_hash=event_hash[:16],
+                                                   exit_code=exit_code_mp,
+                                                   stdout=stdout_mp[:200] if stdout_mp else "empty",
+                                                   note="mempool_proc failed (may be already processed)")
+                                except Exception as mp_err:
+                                    logger.debug("mempool_proc_exception",
+                                               node_id=root_node.node_id,
+                                               event_hash=event_hash[:16],
+                                               error=str(mp_err)[:100])
+                        
+                        logger.info("mempool_proc_completed_for_all_events",
+                                   event_count=len(event_hashes),
+                                   note="All zerochain events processed via mempool_proc - UTXO should be indexed")
+                    else:
+                        logger.warning("no_zerochain_events_found_for_mempool_proc",
+                                     note="No zerochain events found - cannot process via mempool_proc")
+                else:
+                    logger.warning("failed_to_get_zerochain_events",
+                                 exit_code=exit_code_events,
+                                 stderr=stderr_events[:200] if stderr_events else "empty",
+                                 note="Failed to get zerochain events for mempool_proc")
+            except Exception as mp_err:
+                logger.warning("mempool_proc_exception",
+                             error=str(mp_err)[:200],
+                             note="Exception during mempool_proc - proceeding anyway")
+            
             # CRITICAL: Force network into NET_STATE_SYNC_CHAINS to enable UTXO indexation
             # After snapshot restore, SDK may not be in NET_STATE_LOADING, so UTXO won't be indexed
             # By forcing sync chains, we ensure UTXO are indexed in ledger_items
@@ -1266,7 +1301,7 @@ class ESBocsGenesisManager(BaseGenesisManager):
                     # Check network state
                     exit_code_state, stdout_state, stderr_state = self.genesis._exec_cli(
                         first_root_node.node_id,
-                        f"net -net {self.network_name} status",
+                        f"net -net {self.network_name} get status",
                         check_output=False
                     )
                     
@@ -1275,26 +1310,53 @@ class ESBocsGenesisManager(BaseGenesisManager):
                                    state_output=stdout_state[:500],
                                    note="Network state after sync command")
                     
-                    # Wait a bit more for ledger to update
-                    await asyncio.sleep(3.0)
+                    # CRITICAL: Wait for UTXO to be indexed in ledger_items before proceeding
+                    # After net go sync, we need to wait for transactions to be loaded into ledger_items
+                    # This is required for transfer_tokens to work - it uses dap_ledger_get_list_tx_outs_unspent_by_addr
+                    logger.info("waiting_for_utxo_indexation_after_sync",
+                               wallet_addr=fee_collector_addr[:16],
+                               note="CRITICAL: Waiting for UTXO to be indexed in ledger_items after sync")
                     
-                    # Re-check tx_history after sync
-                    exit_code_txhist2, stdout_txhist2, stderr_txhist2 = self.genesis._exec_cli(
-                        first_root_node.node_id,
-                        f"tx_history -w {emission_wallet_name} -net {self.network_name} -chain zerochain",
-                        check_output=False
+                    waiter_utxo = UTXOIndexationWaiter(
+                        exec_cli=self.genesis._exec_cli,
+                        node_id=first_root_node.node_id,
+                        wallet_addr=fee_collector_addr,
+                        network=self.network_name,
+                        chain="zerochain",
+                        poll_interval=2.0
                     )
                     
-                    tx_history_count_after = 0
-                    if exit_code_txhist2 == 0 and stdout_txhist2:
-                        tx_count_match = re.search(r'total_tx_count["\']?\s*:\s*(\d+)', stdout_txhist2, re.IGNORECASE)
-                        if tx_count_match:
-                            tx_history_count_after = int(tx_count_match.group(1))
-                    
-                    logger.info("zerochain_synced_into_ledger",
-                               tx_history_before=tx_history_count,
-                               tx_history_after=tx_history_count_after,
-                               note=f"Zerochain synced - tx_history changed from {tx_history_count} to {tx_history_count_after}")
+                    try:
+                        await waiter_utxo.wait(timeout=60.0, name="utxo_indexation_after_sync")
+                        logger.info("utxo_indexed_after_sync",
+                                   wallet_addr=fee_collector_addr[:16],
+                                   note="UTXO indexed in ledger_items - transfer should now work")
+                    except TimeoutError:
+                        # Re-check tx_history for diagnostic
+                        exit_code_txhist2, stdout_txhist2, stderr_txhist2 = self.genesis._exec_cli(
+                            first_root_node.node_id,
+                            f"tx_history -w {emission_wallet_name} -net {self.network_name} -chain zerochain",
+                            check_output=False
+                        )
+                        
+                        tx_history_count_after = 0
+                        if exit_code_txhist2 == 0 and stdout_txhist2:
+                            tx_count_match = re.search(r'total_tx_count["\']?\s*:\s*(\d+)', stdout_txhist2, re.IGNORECASE)
+                            if tx_count_match:
+                                tx_history_count_after = int(tx_count_match.group(1))
+                        
+                        error_msg = (
+                            f"CRITICAL: UTXO not indexed after sync! "
+                            f"tx_history_count before: {tx_history_count}, after: {tx_history_count_after}. "
+                            f"Without UTXO indexed in ledger_items, transfer will fail with 'transfer: False'. "
+                            f"Check if zerochain events are loaded and if network is in NET_STATE_SYNC_CHAINS."
+                        )
+                        logger.error("utxo_not_indexed_after_sync",
+                                   tx_history_before=tx_history_count,
+                                   tx_history_after=tx_history_count_after,
+                                   wallet_addr=fee_collector_addr[:16],
+                                   note=error_msg)
+                        raise RuntimeError(error_msg)
                 else:
                     logger.warning("net_sync_chains_failed",
                                  exit_code=exit_code_sync,
@@ -1384,27 +1446,39 @@ class ESBocsGenesisManager(BaseGenesisManager):
                 
                 # Wait for delegation transaction to be processed
                 if tx_hash:
-                    await self._wait_for_transaction_processed(
-                        master_node.node_id,
-                        tx_hash,
+                    waiter_tx = TransactionProcessedWaiter(
+                        exec_cli=self.genesis._exec_cli,
+                        node_id=master_node.node_id,
+                        tx_hash=tx_hash,
+                        network_name=self.network_name,
                         chain="zerochain",
-                        timeout=30.0
+                        poll_interval=1.0
                     )
+                    await waiter_tx.wait(timeout=30.0)
             
             # Step 8: GDB sync and wait for delegation transactions
             logger.info("triggering_gdb_sync_for_zerochain_delegations")
             await self.genesis.validator_mgr.sync_orders_across_network(all_validator_nodes)
-            await self._wait_for_gdb_sync_complete(all_validator_nodes, timeout=30.0)
+            waiter_gdb_sync2 = GDBSyncCompleteWaiter(
+                exec_cli=self.genesis._exec_cli,
+                nodes=all_validator_nodes,
+                network_name=self.network_name,
+                poll_interval=2.0
+            )
+            await waiter_gdb_sync2.wait(timeout=30.0)
             
             
             # Step 11: Verify delegations are visible (check stake service)
             logger.info("verifying_key_delegations_synced")
             # Wait for delegations to sync across network via GDB
-            await self._wait_for_delegations_synced(
-                master_nodes,
+            waiter_delegations = DelegationsSyncedWaiter(
+                exec_cli=self.genesis._exec_cli,
+                nodes=master_nodes,
                 expected_count=len(master_nodes),
-                timeout=60.0
+                network_name=self.network_name,
+                poll_interval=2.0
             )
+            await waiter_delegations.wait(timeout=60.0)
             logger.info("delegations_confirmed_synced")
             
             # CRITICAL: Flush GDB to disk before restart
@@ -1437,10 +1511,21 @@ class ESBocsGenesisManager(BaseGenesisManager):
             # when chains load and ESBocs initializes, order should be found
             logger.info("gracefully_restarting_master_nodes_to_reload_chains_with_order")
             compose_manager.restart(services=master_services)
-            await self._wait_for_master_containers_running(master_nodes, timeout=60.0)
+            waiter_containers2 = MasterContainersRunningWaiter(
+                docker_client=self.docker_client,
+                master_nodes=master_nodes,
+                poll_interval=1.0
+            )
+            await waiter_containers2.wait(timeout=60.0)
             # Wait for CLI to be ready after restart
             for master_node in master_nodes:
-                await self._wait_for_cli_ready(master_node.node_id, timeout=30.0)
+                waiter_cli2 = CLIReadyWaiter(
+                    exec_cli=self.genesis._exec_cli,
+                    node_id=master_node.node_id,
+                    network_name=self.network_name,
+                    poll_interval=0.5
+                )
+                await waiter_cli2.wait(timeout=30.0)
             logger.info("cli_servers_ready_after_restart")
             
             # Step 13: GDB sync after restart to ensure delegations are loaded
@@ -1453,11 +1538,13 @@ class ESBocsGenesisManager(BaseGenesisManager):
             # 2. Mark validators as active
             # 3. Make validators available for ESBocs consensus (s_get_validators_list)
             logger.info("waiting_for_stake_service_ready_with_delegations")
-            await self.genesis.validator_mgr.wait_for_stake_service_ready(
-                master_nodes,  # ALL master nodes now have delegations
-                timeout=60.0,
+            waiter_stake = StakeServiceReadyWaiter(
+                exec_cli=self.genesis._exec_cli,
+                nodes=master_nodes,
+                network_name=self.network_name,
                 poll_interval=2.0
             )
+            await waiter_stake.wait(timeout=60.0)
             logger.info("stake_service_ready_with_delegations")
             
             # Step 15: Verify delegated keys are active in stake service
@@ -1499,11 +1586,24 @@ class ESBocsGenesisManager(BaseGenesisManager):
             # Step 16: Wait for ESBocs consensus to become active
             # Now ALL master nodes participate (not just first)
             logger.info("waiting_for_esbocs_consensus_to_become_active_all_masters")
-            await self.genesis.validator_mgr.wait_for_esbocs_consensus_active(
-                master_nodes,  # ALL master nodes now have delegated keys
-                timeout=90.0,
-                poll_interval=3.0
+            
+            # Factory function for creating StakeServiceReadyWaiter
+            def create_stake_service_waiter():
+                return StakeServiceReadyWaiter(
+                    exec_cli=self.genesis._exec_cli,
+                    nodes=master_nodes,
+                    network_name=self.network_name,
+                    poll_interval=2.0
+                )
+            
+            waiter_esbocs = ESBocsConsensusActiveWaiter(
+                exec_cli=self.genesis._exec_cli,
+                nodes=master_nodes,
+                network_name=self.network_name,
+                poll_interval=3.0,
+                stake_service_waiter_factory=create_stake_service_waiter
             )
+            await waiter_esbocs.wait(timeout=90.0)
             logger.info("esbocs_consensus_active_all_masters")
             
             # Step 17: Create first transaction → genesis block
@@ -1517,11 +1617,14 @@ class ESBocsGenesisManager(BaseGenesisManager):
             
             # Step 18: Wait for genesis block
             logger.info("waiting_for_main_genesis_block_creation")
-            await self.genesis.sync_mgr.wait_for_first_block(
-                "main", 
-                timeout=60, 
-                master_nodes=master_nodes  # All master nodes participate in consensus
+            waiter_block = FirstBlockWaiter(
+                exec_cli=self.genesis._exec_cli,
+                network_name=self.network_name,
+                chain_name="main",
+                master_nodes=master_nodes,
+                poll_interval=3.0
             )
+            await waiter_block.wait(timeout=60.0)
             logger.info("main_genesis_block_created")
             
             # Step 17: Get genesis block hash
@@ -1587,328 +1690,4 @@ class ESBocsGenesisManager(BaseGenesisManager):
             logger.error("esbocs_genesis_failed", error=str(e))
             raise RuntimeError(f"ESBocs genesis failed: {e}") from e
     
-    async def _wait_for_master_containers_running(
-        self,
-        master_nodes: List[NodeConfig],
-        timeout: float = 60.0
-    ) -> None:
-        """
-        Wait for master node containers to be running.
-        
-        Args:
-            master_nodes: List of master nodes
-            timeout: Maximum time to wait (seconds)
-            
-        Raises:
-            RuntimeError: If containers don't start within timeout
-        """
-        import time
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            all_running = True
-            for master_node in master_nodes:
-                container_name = f"cellframe-stage-node-{master_node.node_id}"
-                try:
-                    container = self.docker_client.containers.get(container_name)
-                    container.reload()
-                    if container.status != 'running':
-                        all_running = False
-                        break
-                except Exception:
-                    all_running = False
-                    break
-            
-            if all_running:
-                return
-            
-            await asyncio.sleep(1.0)
-        
-        raise RuntimeError(f"Master containers did not start within {timeout}s")
-    
-    async def _wait_for_emission_in_ledger(
-        self,
-        node_id: int,
-        emission_hash: str,
-        chain: str = "zerochain",
-        timeout: float = 60.0,
-        poll_interval: float = 2.0
-    ) -> bool:
-        """
-        Wait for emission to appear in ledger (NOT just mempool).
-        
-        CRITICAL: Emission must be in ledger (processed by DAG-PoA) before it can be used.
-        Emission in mempool is not enough - SDK requires it to be in ledger.
-        
-        Args:
-            node_id: Node ID to check
-            emission_hash: Emission hash to look for
-            chain: Chain name (default: zerochain)
-            timeout: Maximum wait time (seconds)
-            poll_interval: Seconds between checks
-            
-        Returns:
-            True if emission found in ledger, False if timeout
-        """
-        import time
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            # Check ledger (emission must be processed by DAG-PoA)
-            exit_code, stdout, stderr = self.genesis._exec_cli(
-                node_id,
-                f"ledger list coins -net {self.network_name} -chain {chain}",
-                check_output=False
-            )
-            if exit_code == 0 and stdout:
-                emission_found = emission_hash.lower() in stdout.lower()
-                if emission_found:
-                    elapsed = time.time() - start_time
-                    logger.info("emission_found_in_ledger",
-                               node_id=node_id,
-                               emission=emission_hash[:16],
-                               elapsed=f"{elapsed:.1f}s",
-                               method="ledger")
-                    return True
-            
-            # Diagnostic: Check mempool status (for debugging)
-            exit_code, stdout, stderr = self.genesis._exec_cli(
-                node_id,
-                f"mempool list -net {self.network_name} -chain {chain}",
-                check_output=False
-            )
-            if exit_code == 0 and stdout:
-                emission_in_mempool = emission_hash.lower() in stdout.lower()
-                if emission_in_mempool and time.time() - start_time > 10:
-                    # Log warning if emission still in mempool after 10s
-                    logger.debug("emission_still_in_mempool",
-                               node_id=node_id,
-                               emission=emission_hash[:16],
-                               elapsed=f"{time.time() - start_time:.1f}s",
-                               note="Emission in mempool but not in ledger - may need DAG processing")
-            
-            await asyncio.sleep(poll_interval)
-        
-        elapsed = time.time() - start_time
-        logger.warning("emission_not_found_in_ledger_timeout",
-                     node_id=node_id,
-                     emission=emission_hash[:16],
-                     elapsed=f"{elapsed:.1f}s",
-                     note="Emission not found in ledger - may need DAG processing or sync")
-        return False
-    
-    async def _wait_for_transaction_processed(
-        self,
-        node_id: int,
-        tx_hash: str,
-        chain: str = "zerochain",
-        timeout: float = 30.0,
-        poll_interval: float = 1.0
-    ) -> bool:
-        """
-        Wait for transaction to be processed (appear in ledger or mempool).
-        
-        Args:
-            node_id: Node ID to check
-            tx_hash: Transaction hash to look for
-            chain: Chain name (default: zerochain)
-            timeout: Maximum wait time (seconds)
-            poll_interval: Seconds between checks
-            
-        Returns:
-            True if transaction found, False if timeout
-        """
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            # Check ledger first
-            exit_code, stdout, stderr = self.genesis._exec_cli(
-                node_id,
-                f"ledger list coins -net {self.network_name} -chain {chain}",
-                check_output=False
-            )
-            if exit_code == 0 and stdout:
-                tx_found = tx_hash.lower() in stdout.lower()
-                if tx_found:
-                    elapsed = time.time() - start_time
-                    logger.info("transaction_found_in_ledger",
-                               node_id=node_id,
-                               tx_hash=tx_hash[:16],
-                               elapsed=f"{elapsed:.1f}s")
-                    return True
-            
-            # Check mempool as fallback
-            exit_code, stdout, stderr = self.genesis._exec_cli(
-                node_id,
-                f"mempool list -net {self.network_name} -chain {chain}",
-                check_output=False
-            )
-            if exit_code == 0 and stdout:
-                tx_found = tx_hash.lower() in stdout.lower()
-                if tx_found:
-                    elapsed = time.time() - start_time
-                    logger.info("transaction_found_in_mempool",
-                               node_id=node_id,
-                               tx_hash=tx_hash[:16],
-                               elapsed=f"{elapsed:.1f}s")
-                    return True
-            
-            await asyncio.sleep(poll_interval)
-        
-        elapsed = time.time() - start_time
-        logger.warning("transaction_not_processed_timeout",
-                     node_id=node_id,
-                     tx_hash=tx_hash[:16],
-                     elapsed=f"{elapsed:.1f}s")
-        return False
-    
-    async def _wait_for_gdb_sync_complete(
-        self,
-        nodes: List[NodeConfig],
-        timeout: float = 30.0,
-        poll_interval: float = 2.0
-    ) -> bool:
-        """
-        Wait for GDB sync to complete across nodes.
-        
-        Args:
-            nodes: List of nodes to check
-            timeout: Maximum wait time (seconds)
-            poll_interval: Seconds between checks
-            
-        Returns:
-            True if sync complete, False if timeout
-        """
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            # Check GDB sync status on all nodes
-            all_synced = True
-            for node in nodes:
-                try:
-                    exit_code, stdout, stderr = self.genesis._exec_cli(
-                        node.node_id,
-                        f"global_db status -net {self.network_name}",
-                        check_output=False
-                    )
-                    if exit_code != 0:
-                        all_synced = False
-                        break
-                except Exception:
-                    all_synced = False
-                    break
-            
-            if all_synced:
-                elapsed = time.time() - start_time
-                logger.info("gdb_sync_complete",
-                           node_count=len(nodes),
-                           elapsed=f"{elapsed:.1f}s")
-                return True
-            
-            await asyncio.sleep(poll_interval)
-        
-        elapsed = time.time() - start_time
-        logger.warning("gdb_sync_timeout",
-                     node_count=len(nodes),
-                     elapsed=f"{elapsed:.1f}s")
-        return False
-    
-    async def _wait_for_delegations_synced(
-        self,
-        nodes: List[NodeConfig],
-        expected_count: int,
-        timeout: float = 60.0,
-        poll_interval: float = 2.0
-    ) -> bool:
-        """
-        Wait for delegations to be synced across nodes.
-        
-        Args:
-            nodes: List of nodes to check
-            expected_count: Expected number of delegations
-            timeout: Maximum wait time (seconds)
-            poll_interval: Seconds between checks
-            
-        Returns:
-            True if delegations synced, False if timeout
-        """
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            all_synced = True
-            for node in nodes:
-                try:
-                    exit_code, stdout, stderr = self.genesis._exec_cli(
-                        node.node_id,
-                        f"srv_stake list keys -net {self.network_name}",
-                        check_output=False
-                    )
-                    if exit_code != 0:
-                        all_synced = False
-                        break
-                    
-                    # Check if we have expected number of delegations
-                    if stdout:
-                        # Count keys in output (rough estimate)
-                        key_count = stdout.count('addr:') or stdout.count('address:')
-                        if key_count < expected_count:
-                            all_synced = False
-                            break
-                except Exception:
-                    all_synced = False
-                    break
-            
-            if all_synced:
-                elapsed = time.time() - start_time
-                logger.info("delegations_synced_across_nodes",
-                           node_count=len(nodes),
-                           expected_count=expected_count,
-                           elapsed=f"{elapsed:.1f}s")
-                return True
-            
-            await asyncio.sleep(poll_interval)
-        
-        elapsed = time.time() - start_time
-        logger.warning("delegations_sync_timeout",
-                     node_count=len(nodes),
-                     elapsed=f"{elapsed:.1f}s")
-        return False
-    
-    async def _wait_for_cli_ready(
-        self,
-        node_id: int,
-        timeout: float = 30.0,
-        poll_interval: float = 0.5
-    ) -> bool:
-        """
-        Wait for CLI server to be ready on node.
-        
-        Args:
-            node_id: Node ID to check
-            timeout: Maximum wait time (seconds)
-            poll_interval: Seconds between checks
-            
-        Returns:
-            True if CLI ready, False if timeout
-        """
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            try:
-                exit_code, stdout, stderr = self.genesis._exec_cli(
-                    node_id,
-                    "net -net {} get status".format(self.network_name),
-                    check_output=False
-                )
-                if exit_code == 0:
-                    elapsed = time.time() - start_time
-                    logger.debug("cli_ready",
-                               node_id=node_id,
-                               elapsed=f"{elapsed:.1f}s")
-                    return True
-            except Exception:
-                pass
-            
-            await asyncio.sleep(poll_interval)
-        
-        elapsed = time.time() - start_time
-        logger.warning("cli_not_ready_timeout",
-                     node_id=node_id,
-                     elapsed=f"{elapsed:.1f}s")
-        return False
 

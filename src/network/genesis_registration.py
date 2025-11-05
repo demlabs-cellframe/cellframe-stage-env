@@ -263,140 +263,11 @@ class NodeRegistrationManager(BaseGenesisManager):
         except Exception as e:
             logger.warning("node_list_verification_error", error=str(e))
         
-        # CRITICAL: Wait for GDB to propagate node list to ALL nodes
-        # Node1 added all nodes locally, but GDB sync takes time (1-5s)
-        # Without this, offline/online happens before other nodes see the list
-        logger.info("waiting_for_node_list_gdb_propagation")
-        
-        import time
-        start_wait = time.time()
-        all_have_list = False
-        
-        while time.time() - start_wait < 30:  # Max 30s for GDB sync
-            nodes_with_list = 0
-            
-            for node in nodes:
-                try:
-                    exit_code, stdout, _ = self._exec_cli(
-                        node.node_id,
-                        f"node list -net {self.network_name}",
-                        check_output=False
-                    )
-                    
-                    # Check if node has full list (should see len(nodes) nodes)
-                    if exit_code == 0:
-                        # Count "Got N nodes:"
-                        match = re.search(r'Got\s+(\d+)\s+nodes', stdout, re.IGNORECASE)
-                        if match:
-                            node_count = int(match.group(1))
-                            if node_count >= len(nodes):
-                                nodes_with_list += 1
-                except Exception as e:
-                    logger.debug("node_list_check_error", node=node.node_id, error=str(e)[:100])
-            
-            if nodes_with_list >= len(nodes):
-                elapsed = time.time() - start_wait
-                logger.info("all_nodes_have_node_list",
-                           nodes=nodes_with_list,
-                           total=len(nodes),
-                           elapsed=f"{elapsed:.1f}s")
-                all_have_list = True
-                break
-            
-            # Log progress
-            elapsed = time.time() - start_wait
-            logger.info("node_list_propagation_progress",
-                       elapsed=f"{elapsed:.1f}s",
-                       nodes_with_list=nodes_with_list,
-                       total=len(nodes),
-                       missing=len(nodes) - nodes_with_list)
-            
-            await asyncio.sleep(2)
-        
-        if not all_have_list:
-            logger.warning("node_list_gdb_sync_incomplete",
-                          nodes_with_list=nodes_with_list,
-                          total=len(nodes),
-                          note="GDB sync requires links - will propagate after initial link establishment or offline/online cycle")
-    
-    async def wait_for_node_list_propagation(
-        self,
-        nodes: List[NodeConfig],
-        expected_count: int,
-        timeout: float = 60.0,
-        poll_interval: float = 2.0
-    ) -> None:
-        """
-        Wait until all specified nodes have received the node list from GDB.
-        
-        This is critical to prevent MDBX assertion crashes when nodes try to create
-        DB contexts before the node list is available.
-        
-        Args:
-            nodes: List of nodes to check
-            expected_count: Expected number of nodes in the list
-            timeout: Maximum time to wait (seconds)
-            poll_interval: Time between checks (seconds)
-            
-        Raises:
-            TimeoutError: If not all nodes receive the list within timeout
-        """
-        import time
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            nodes_with_list = 0
-            
-            for node in nodes:
-                try:
-                    exit_code, stdout, _ = self._exec_cli(
-                        node.node_id,
-                        f"node list -net {self.network_name}",
-                        check_output=False
-                    )
-                    
-                    # Check if node has full list
-                    if exit_code == 0:
-                        # Count "Got N nodes:"
-                        match = re.search(r'Got\s+(\d+)\s+nodes', stdout, re.IGNORECASE)
-                        if match:
-                            node_count = int(match.group(1))
-                            if node_count >= expected_count:
-                                nodes_with_list += 1
-                                logger.debug("node_has_full_list",
-                                           node_id=node.node_id,
-                                           count=node_count)
-                except Exception as e:
-                    logger.debug("node_list_check_error",
-                               node=node.node_id,
-                               error=str(e)[:100])
-            
-            # All nodes have the list?
-            if nodes_with_list >= len(nodes):
-                elapsed = time.time() - start_time
-                logger.info("all_nodes_received_node_list",
-                           nodes=nodes_with_list,
-                           total=len(nodes),
-                           expected_count=expected_count,
-                           elapsed=round(elapsed, 1))
-                return
-            
-            # Log progress
-            elapsed = time.time() - start_time
-            if elapsed > 5.0:  # Only log after 5 seconds
-                logger.info("node_list_propagation_progress",
-                           ready=nodes_with_list,
-                           total=len(nodes),
-                           missing=len(nodes) - nodes_with_list,
-                           elapsed=round(elapsed, 1))
-            
-            await asyncio.sleep(poll_interval)
-        
-        # Timeout
-        raise TimeoutError(
-            f"Nodes failed to receive node list after {timeout}s. "
-            f"Only {nodes_with_list}/{len(nodes)} nodes have full list."
-        )
+        # NOTE: Node list propagation via GDB sync requires links
+        # In ESBocs genesis, node list is already synced via bootstrap sync (net go sync) in Step 2
+        # This check is skipped - node list propagation will happen naturally when links are established
+        logger.info("node_list_registration_complete",
+                   note="Node list propagation depends on links - already synced via bootstrap sync")
     
     async def soft_network_reconnect(self, nodes: List[NodeConfig], wait_for_links: bool = True) -> None:
         """
@@ -418,6 +289,21 @@ class NodeRegistrationManager(BaseGenesisManager):
         logger.info("bringing_all_nodes_offline")
         for node in nodes:
             try:
+                # Check if container is running before attempting offline
+                container_name = f"cellframe-stage-node-{node.node_id}"
+                try:
+                    container = self.docker_client.containers.get(container_name)
+                    container.reload()
+                    if container.status != 'running':
+                        logger.debug("skipping_offline_for_stopped_container",
+                                   node_id=node.node_id,
+                                   status=container.status)
+                        continue
+                except Exception:
+                    logger.debug("skipping_offline_for_inaccessible_container",
+                               node_id=node.node_id)
+                    continue
+                
                 self._exec_cli(node.node_id, f"net -net {self.network_name} go offline", check_output=False)
                 logger.debug("node_offline_command_sent", node_id=node.node_id)
             except Exception as e:
@@ -443,6 +329,21 @@ class NodeRegistrationManager(BaseGenesisManager):
         logger.info("bringing_all_nodes_online")
         for node in nodes:
             try:
+                # Check if container is running before attempting online
+                container_name = f"cellframe-stage-node-{node.node_id}"
+                try:
+                    container = self.docker_client.containers.get(container_name)
+                    container.reload()
+                    if container.status != 'running':
+                        logger.debug("skipping_online_for_stopped_container",
+                                   node_id=node.node_id,
+                                   status=container.status)
+                        continue
+                except Exception:
+                    logger.debug("skipping_online_for_inaccessible_container",
+                               node_id=node.node_id)
+                    continue
+                
                 self._exec_cli(node.node_id, f"net -net {self.network_name} go online", check_output=False)
                 logger.debug("node_online_command_sent", node_id=node.node_id)
             except Exception as e:

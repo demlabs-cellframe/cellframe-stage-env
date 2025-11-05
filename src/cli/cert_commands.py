@@ -1,11 +1,12 @@
 """
 CLI commands for certificate management.
 """
+import sys
 import typer
 from pathlib import Path
 from typing import Callable, Optional
 
-from .common import print_info, print_success, print_error, confirm
+from .common import print_info, print_success, print_error, print_warning, confirm
 
 
 def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callable[[], Optional[Path]]):
@@ -53,14 +54,20 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
     @app.command()
     def clean(
         yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+        all: bool = typer.Option(False, "--all", "-a", help="Clean everything (certificates, configs, data, snapshots)"),
     ):
         """🧹 Clean up generated certificates and cache."""
         from ..certs.generator import CertGenerator
+        from ..config.generator import ConfigGenerator
         from ..config.loader import ConfigLoader
+        from ..snapshots.manager import SnapshotManager, SnapshotMode
+        from ..docker.compose import DockerComposeManager
         
-        if not yes and not confirm("This will delete all generated certificates and cache. Continue?", default=False):
-            print_info("Cancelled")
-            return
+        # Skip confirmation if --yes or --all is used
+        if not yes and not all:
+            if not confirm("This will delete all generated certificates and cache. Continue?", default=False):
+                print_info("Cancelled")
+                return
         
         config_path = get_config_path()
         config_loader = ConfigLoader(base_path, config_path)
@@ -68,8 +75,123 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         cache_dir_relative = paths_config.get('cache_dir', 'cache')
         cache_dir = (base_path / cache_dir_relative).resolve()
         certs_dir = cache_dir / "certs"
+        configs_dir = cache_dir / "configs"
+        data_dir = cache_dir / "data"
         
+        # Clean certificates
         cert_gen = CertGenerator(base_path, certs_dir=certs_dir)
         cert_gen.clean()
+        print_success("Cleaned certificates")
+        
+        if all:
+            # Initialize Docker client for cleanup (no need for compose project)
+            compose_mgr = None
+            try:
+                import docker
+                docker_client = docker.from_env()
+                # Create minimal compose manager just for cleanup
+                compose_mgr = DockerComposeManager(base_path, project_name="stage_env_cleanup")
+                print_info("Using Docker for cleanup")
+            except Exception as e:
+                print_warning(f"Could not initialize Docker cleanup, falling back to sudo: {e}")
+                compose_mgr = None
+            
+            # Clean configs using Docker if available, otherwise sudo
+            if configs_dir.exists():
+                print_info("Cleaning configs...")
+                try:
+                    if compose_mgr:
+                        # Use Docker for cleanup
+                        print_info("Removing configs via Docker container...")
+                        container = compose_mgr.client.containers.run(
+                            image="alpine:latest",
+                            command=["sh", "-c", "rm -rf /cleanup/configs && echo 'Configs cleaned'"],
+                            volumes={
+                                str(cache_dir.absolute()): {
+                                    'bind': '/cleanup',
+                                    'mode': 'rw'
+                                }
+                            },
+                            remove=True,
+                            detach=False,
+                        )
+                    else:
+                        # Fallback to sudo
+                        print_warning("Falling back to sudo for configs cleanup")
+                        import subprocess
+                        subprocess.run(["sudo", "rm", "-rf", str(configs_dir)], check=True)
+                    configs_dir.mkdir(parents=True, exist_ok=True)
+                    print_success("Cleaned configs")
+                except Exception as e:
+                    print_error(f"Failed to clean configs: {e}")
+                    sys.exit(1)
+            
+            # Clean data using Docker
+            if data_dir.exists():
+                print_info("Cleaning cache/data...")
+                try:
+                    if compose_mgr:
+                        print_info("Removing cache/data via Docker container...")
+                        compose_mgr.clean_cache_data(cache_dir)
+                    else:
+                        # Fallback to sudo
+                        print_warning("Falling back to sudo for data cleanup")
+                        import subprocess
+                        subprocess.run(["sudo", "rm", "-rf", str(data_dir)], check=True)
+                        data_dir.mkdir(parents=True, exist_ok=True)
+                    print_success("Cleaned cache/data")
+                except Exception as e:
+                    print_error(f"Failed to clean data: {e}")
+                    sys.exit(1)
+            
+            # Clean snapshots
+            print_info("Removing snapshots...")
+            try:
+                snapshots_config = config_loader.get_suite_isolation_config()
+                snapshots_dir_relative = snapshots_config.get('snapshots_dir', '../testing/snapshots')
+                snapshots_dir = (base_path / snapshots_dir_relative).resolve()
+                
+                if snapshots_dir.exists():
+                    # Use snapshot manager to clean
+                    import asyncio
+                    
+                    # Check if event loop is already running
+                    try:
+                        loop = asyncio.get_running_loop()
+                        print_error("Cannot run async code: event loop already running")
+                        sys.exit(1)
+                    except RuntimeError:
+                        pass
+                    
+                    # Get snapshot mode from config
+                    mode_str = snapshots_config.get('mode', 'filesystem').lower()
+                    mode_map = {
+                        'disabled': SnapshotMode.DISABLED,
+                        'recreate': SnapshotMode.RECREATE,
+                        'filesystem': SnapshotMode.FILESYSTEM,
+                        'squashfs': SnapshotMode.SQUASHFS,
+                    }
+                    snapshot_mode = mode_map.get(mode_str, SnapshotMode.FILESYSTEM)
+                    
+                    snapshot_manager = SnapshotManager(base_path, snapshot_mode, snapshots_config)
+                    
+                    # Delete all snapshots
+                    async def delete_all_snapshots():
+                        try:
+                            snapshots = await snapshot_manager.list_snapshots()
+                            for snapshot_name in snapshots:
+                                await snapshot_manager.delete_snapshot(snapshot_name)
+                        except Exception as e:
+                            print_error(f"Error deleting snapshots: {e}")
+                            raise
+                    
+                    asyncio.run(delete_all_snapshots())
+                    print_success("Snapshots cleaned")
+                else:
+                    print_info("No snapshots directory found")
+            except Exception as e:
+                print_error(f"Failed to clean snapshots: {e}")
+                sys.exit(1)
+            
         
         print_success("Cleaned certificates and cache")

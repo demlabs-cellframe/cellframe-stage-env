@@ -91,11 +91,63 @@ class NodeStateManager:
             
             if elapsed >= timeout:
                 missing = len(nodes) - len(nodes_online)
+                
+                # DIAGNOSTIC: Before raising timeout, collect detailed diagnostics
                 logger.error("nodes_online_timeout",
                            elapsed=f"{elapsed:.1f}s",
                            online=len(nodes_online),
                            total=len(nodes),
                            missing=missing)
+                
+                # Collect diagnostic info for each missing node
+                for node in nodes:
+                    if node.node_id not in nodes_online:
+                        try:
+                            container_name = f"{self.project_name}-node-{node.node_id}"
+                            container = self.docker_client.containers.get(container_name)
+                            container.reload()
+                            
+                            # Get container status
+                            logger.error("node_timeout_diagnostic",
+                                       node_id=node.node_id,
+                                       container_status=container.status,
+                                       note="Node failed to reach ONLINE state")
+                            
+                            # Try to get network status output
+                            try:
+                                exit_code, output = container.exec_run(
+                                    f"{self.cli_path} net get status -net {self.network_name}",
+                                    demux=False
+                                )
+                                output_str = output.decode('utf-8') if output else ""
+                                logger.error("node_network_status_at_timeout",
+                                           node_id=node.node_id,
+                                           exit_code=exit_code,
+                                           output=output_str[:500],
+                                           note="Network status at timeout")
+                            except Exception as e:
+                                logger.error("failed_to_get_network_status_at_timeout",
+                                           node_id=node.node_id,
+                                           error=str(e))
+                            
+                            # Get recent logs for errors
+                            try:
+                                logs = container.logs(tail=50).decode('utf-8', errors='ignore')
+                                error_lines = [l for l in logs.split('\n') if any(keyword in l.lower() for keyword in ['error', 'fail', 'not found', 'can\'t init', 'no networks'])]
+                                if error_lines:
+                                    logger.error("node_logs_errors_at_timeout",
+                                               node_id=node.node_id,
+                                               error_lines=error_lines[-10:],
+                                               note="Recent errors from node logs")
+                            except Exception as e:
+                                logger.error("failed_to_get_logs_at_timeout",
+                                           node_id=node.node_id,
+                                           error=str(e))
+                        except Exception as e:
+                            logger.error("failed_to_collect_node_diagnostics",
+                                       node_id=node.node_id,
+                                       error=str(e))
+                
                 raise TimeoutError(
                     f"Nodes failed to reach ONLINE state after {elapsed:.1f}s. "
                     f"Only {len(nodes_online)}/{len(nodes)} nodes are online."
@@ -107,10 +159,25 @@ class NodeStateManager:
                     continue  # Already online
                 
                 state = await self._get_node_state(node.node_id)
+                
+                # DIAGNOSTIC: Log current state for debugging
+                if elapsed >= 10.0 and elapsed % 10.0 < poll_interval:  # Log every ~10 seconds
+                    logger.info("node_state_check_during_wait",
+                               node_id=node.node_id,
+                               state=state.value,
+                               elapsed=f"{elapsed:.1f}s",
+                               note="Waiting for node to reach ONLINE state")
+                
                 if state in [NodeState.ONLINE, NodeState.LINKS_CONNECTING, 
                             NodeState.LINKS_ESTABLISHED]:
                     nodes_online.add(node.node_id)
                     logger.debug("node_online", node_id=node.node_id, state=state.value)
+                elif state == NodeState.UNKNOWN:
+                    # DIAGNOSTIC: If state is UNKNOWN, try to get more info
+                    logger.debug("node_state_unknown_during_wait",
+                               node_id=node.node_id,
+                               elapsed=f"{elapsed:.1f}s",
+                               note="Node state is UNKNOWN - may indicate network not loaded or container issue")
             
             # All nodes online?
             if len(nodes_online) == len(nodes):
@@ -223,10 +290,18 @@ class NodeStateManager:
             if exit_code != 0:
                 logger.debug("cli_command_failed",
                            node_id=node_id,
-                           exit_code=exit_code)
+                           exit_code=exit_code,
+                           note="net get status command failed - network may not be loaded")
                 return NodeState.UNKNOWN
             
             output_str = output.decode('utf-8') if output else ""
+            
+            # DIAGNOSTIC: If output contains errors, log them
+            if "error" in output_str.lower() or "not found" in output_str.lower():
+                logger.warning("network_status_error_in_output",
+                             node_id=node_id,
+                             output_preview=output_str[:300],
+                             note="Network status command returned error - network may not be initialized")
             
             # Parse state from output
             # Format:
@@ -247,7 +322,16 @@ class NodeStateManager:
             
             logger.debug("state_not_parsed",
                        node_id=node_id,
-                       output_preview=output_str[:200])
+                       output_preview=output_str[:200],
+                       full_output=output_str[:500])
+            
+            # DIAGNOSTIC: If we can't parse state, log full output for debugging
+            if output_str:
+                logger.warning("failed_to_parse_node_state",
+                             node_id=node_id,
+                             output_preview=output_str[:500],
+                             note="Could not parse network state from CLI output - check network initialization")
+            
             return NodeState.UNKNOWN
             
         except docker.errors.NotFound:
