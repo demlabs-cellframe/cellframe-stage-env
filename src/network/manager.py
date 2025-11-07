@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ..config.loader import ConfigLoader, NetworkTopology
+from ..config.loader import NetworkTopology
 from ..config.generator import ConfigGenerator
 from ..docker.compose import DockerComposeManager
 from ..monitoring.health import HealthChecker, HealthStatus
@@ -49,8 +49,9 @@ class NetworkManager:
         # CLI path for node commands
         self.node_cli_path = "cellframe-node-cli"
         
-        # Load configuration
-        self.config_loader = ConfigLoader(base_path, config_path)
+        # Load configuration using global config manager
+        from ..config.manager import get_config_loader
+        self.config_loader = get_config_loader()
         self.topology = self.config_loader.load_topology(topology_name)
         
         # Config generator
@@ -621,8 +622,8 @@ class NetworkManager:
             
             # CRITICAL: First, verify config files exist after snapshot restore
             # This helps diagnose if configs were not restored correctly
-            from ..config.loader import ConfigLoader
-            config_loader = ConfigLoader(self.base_path, self.config_path)
+            from ..config.manager import get_config_loader
+            config_loader = get_config_loader()
             paths_config = config_loader.get_paths_config()
             cache_dir_relative = paths_config.get('cache_dir', 'cache')
             cache_dir = (self.base_path / cache_dir_relative).resolve()
@@ -747,25 +748,27 @@ class NetworkManager:
             
             # CRITICAL: Additional diagnostic - read and log full config contents to verify they are correct
             try:
-                zerochain_config = configparser.ConfigParser()
-                zerochain_config.read(zerochain_config_path)
-                main_config = configparser.ConfigParser()
-                main_config.read(main_config_path)
-                
-                logger.info("config_contents_diagnostic_after_snapshot_restore",
-                           zerochain_sections=list(zerochain_config.sections()),
-                           main_sections=list(main_config.sections()),
-                           zerochain_dag_section_exists='dag' in zerochain_config,
-                           zerochain_static_genesis_event=zerochain_config.get('dag', 'static_genesis_event', fallback='NOT_SET') if 'dag' in zerochain_config else 'NO_DAG_SECTION',
-                           zerochain_is_static_genesis_event=zerochain_config.get('dag', 'is_static_genesis_event', fallback='NOT_SET') if 'dag' in zerochain_config else 'NO_DAG_SECTION',
-                           main_esbocs_section_exists='esbocs' in main_config,
-                           main_min_validators_count=main_config.get('esbocs', 'min_validators_count', fallback='NOT_SET') if 'esbocs' in main_config else 'NO_ESBOCS_SECTION',
-                           main_fee_addr=main_config.get('esbocs', 'fee_addr', fallback='NOT_SET') if 'esbocs' in main_config else 'NO_ESBOCS_SECTION',
-                           note="Full config contents after snapshot restore - verify all values are correct")
-            except Exception as diag_err:
-                logger.warning("config_contents_diagnostic_failed",
-                             error=str(diag_err),
-                             note="Could not read config contents for diagnostic")
+                import configparser
+                try:
+                    zerochain_config = configparser.ConfigParser()
+                    zerochain_config.read(zerochain_config_path)
+                    main_config = configparser.ConfigParser()
+                    main_config.read(main_config_path)
+                    
+                    logger.info("config_contents_diagnostic_after_snapshot_restore",
+                               zerochain_sections=list(zerochain_config.sections()),
+                               main_sections=list(main_config.sections()),
+                               zerochain_dag_section_exists='dag' in zerochain_config,
+                               zerochain_static_genesis_event=zerochain_config.get('dag', 'static_genesis_event', fallback='NOT_SET') if 'dag' in zerochain_config else 'NO_DAG_SECTION',
+                               zerochain_is_static_genesis_event=zerochain_config.get('dag', 'is_static_genesis_event', fallback='NOT_SET') if 'dag' in zerochain_config else 'NO_DAG_SECTION',
+                               main_esbocs_section_exists='esbocs' in main_config,
+                               main_min_validators_count=main_config.get('esbocs', 'min_validators_count', fallback='NOT_SET') if 'esbocs' in main_config else 'NO_ESBOCS_SECTION',
+                               main_fee_addr=main_config.get('esbocs', 'fee_addr', fallback='NOT_SET') if 'esbocs' in main_config else 'NO_ESBOCS_SECTION',
+                               note="Full config contents after snapshot restore - verify all values are correct")
+                except Exception as diag_err:
+                    logger.warning("config_contents_diagnostic_failed",
+                                 error=str(diag_err),
+                                 note="Could not read config contents for diagnostic")
             
             # CRITICAL: Start ROOT containers after snapshot restore
             # Snapshot contains data but containers are stopped

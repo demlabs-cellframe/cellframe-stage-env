@@ -53,7 +53,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
     ):
         """▶️  Start the test network."""
         from ..network.manager import NetworkManager
-        from ..config.loader import ConfigLoader
+        from ..config.manager import get_config_loader
         from ..certs.generator import CertGenerator
         
         # Check prerequisites inline
@@ -90,8 +90,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 return
             
             print_warning("Cleaning all data...")
-            config_path = get_config_path()
-            config_loader = ConfigLoader(base_path, config_path)
+            config_loader = get_config_loader()
             paths_config = config_loader.get_paths_config()
             cache_dir_relative = paths_config.get('cache_dir', 'cache')
             cache_dir = (base_path / cache_dir_relative).resolve()
@@ -100,8 +99,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             cert_gen = CertGenerator(base_path, certs_dir=certs_dir)
             cert_gen.clean()
         
-        config_path = get_config_path()
-        network_mgr = NetworkManager(base_path, topology_name=topology, config_path=config_path)
+        # NetworkManager will use global config loader
+        network_mgr = NetworkManager(base_path, topology_name=topology, config_path=get_config_path())
         
         async def _start():
             await network_mgr.start(rebuild=rebuild, wait_ready=wait)
@@ -229,7 +228,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
     def rebuild():
         """🔧 Rebuild all Docker images and restart network."""
         from ..network.manager import NetworkManager
-        from ..config.loader import ConfigLoader
+        from ..config.manager import get_config_loader
         from ..certs.generator import CertGenerator
         
         print_info("Starting full environment rebuild...")
@@ -265,8 +264,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         # Clean and regenerate certs
         print_info("\n🔐 Regenerating certificates...")
-        config_path = get_config_path()
-        config_loader = ConfigLoader(base_path, config_path)
+            config_loader = get_config_loader()
         cache_config = config_loader.get_cache_config()
         cache_dir_relative = cache_config.get('cache_dir', 'cache')
         cache_dir = (base_path / cache_dir_relative).resolve()

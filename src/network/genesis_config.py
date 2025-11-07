@@ -195,8 +195,8 @@ class GenesisConfigManager(BaseGenesisManager):
                 # Update config on HOST filesystem (works for both running and stopped containers)
                 # Configs are mounted from cache/configs/nodeN/network/NETWORK_NAME/ into containers
                 # CRITICAL: Use cache_dir from config (same as ConfigGenerator)
-                from ..config.loader import ConfigLoader
-                config_loader = ConfigLoader(self.base_path, self.config_path)
+                from ..config.manager import get_config_loader
+                config_loader = get_config_loader()
                 paths_config = config_loader.get_paths_config()
                 if 'cache_dir' not in paths_config:
                     raise RuntimeError(
@@ -458,8 +458,8 @@ class GenesisConfigManager(BaseGenesisManager):
             first_node_id = node_ids[0]
             # CRITICAL: Use same cache_dir path as update_static_genesis_in_config
             # This ensures we read from the same location where genesis hash was written
-            from ..config.loader import ConfigLoader
-            config_loader = ConfigLoader(self.base_path, self.config_path)
+            from ..config.manager import get_config_loader
+            config_loader = get_config_loader()
             paths_config = config_loader.get_paths_config()
             if 'cache_dir' not in paths_config:
                 raise RuntimeError(
@@ -824,8 +824,8 @@ class GenesisConfigManager(BaseGenesisManager):
             Genesis event hash or None if not found
         """
         try:
-            from ..config.loader import ConfigLoader
-            config_loader = ConfigLoader(self.base_path, self.config_path)
+            from ..config.manager import get_config_loader
+            config_loader = get_config_loader()
             paths_config = config_loader.get_paths_config()
             if 'cache_dir' not in paths_config:
                 raise RuntimeError(
@@ -892,8 +892,8 @@ class GenesisConfigManager(BaseGenesisManager):
             Fee address or None if not found
         """
         try:
-            from ..config.loader import ConfigLoader
-            config_loader = ConfigLoader(self.base_path, self.config_path)
+            from ..config.manager import get_config_loader
+            config_loader = get_config_loader()
             paths_config = config_loader.get_paths_config()
             if 'cache_dir' not in paths_config:
                 raise RuntimeError(

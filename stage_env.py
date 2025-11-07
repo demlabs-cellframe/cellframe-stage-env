@@ -54,8 +54,8 @@ def main(
     log_file = None
     if CONFIG_PATH and CONFIG_PATH.exists():
         try:
-            from configparser import ConfigParser
-            cfg = ConfigParser()
+            import configparser
+            cfg = configparser.ConfigParser()
             cfg.read(CONFIG_PATH)
             if cfg.has_section('logging') and cfg.has_option('logging', 'log_dir'):
                 log_dir = BASE_PATH / cfg.get('logging', 'log_dir')
@@ -70,6 +70,10 @@ def main(
     
     if log_file:
         logger.info("file_logging_enabled", log_file=str(log_file))
+    
+    # Initialize global configuration manager
+    from src.config.manager import initialize_config
+    initialize_config(BASE_PATH, CONFIG_PATH)
 
 
 # Register commands from modules

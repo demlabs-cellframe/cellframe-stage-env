@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 
 from jinja2 import Template
 
-from ..config.loader import ConfigLoader, NetworkTopology
+from ..config.manager import get_config_loader
 from ..certs.generator import CertGenerator
 from ..network.models import NodeConfig
 from ..utils.logger import get_logger
@@ -33,7 +33,7 @@ class ConfigGenerator:
             config_path: Optional path to stage-env.cfg
         """
         self.base_path = base_path
-        self.config_loader = ConfigLoader(base_path, config_path)
+        self.config_loader = get_config_loader()
         
         # Load paths from config
         paths_config = self.config_loader.get_paths_config()

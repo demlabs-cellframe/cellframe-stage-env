@@ -21,11 +21,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
     ):
         """🔐 Generate certificates for test network."""
         from ..certs.generator import CertGenerator
-        from ..config.loader import ConfigLoader
+        from ..config.manager import get_config_loader
         
         # Load config to get correct cache_dir
-        config_path = get_config_path()
-        config_loader = ConfigLoader(base_path, config_path)
+        config_loader = get_config_loader()
         paths_config = config_loader.get_paths_config()
         cache_dir_relative = paths_config.get('cache_dir', 'cache')
         cache_dir = (base_path / cache_dir_relative).resolve()
@@ -59,7 +58,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         """🧹 Clean up generated certificates and cache."""
         from ..certs.generator import CertGenerator
         from ..config.generator import ConfigGenerator
-        from ..config.loader import ConfigLoader
+        from ..config.manager import get_config_loader
         from ..snapshots.manager import SnapshotManager, SnapshotMode
         from ..docker.compose import DockerComposeManager
         
@@ -69,8 +68,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 print_info("Cancelled")
                 return
         
-        config_path = get_config_path()
-        config_loader = ConfigLoader(base_path, config_path)
+        config_loader = get_config_loader()
         paths_config = config_loader.get_paths_config()
         cache_dir_relative = paths_config.get('cache_dir', 'cache')
         cache_dir = (base_path / cache_dir_relative).resolve()

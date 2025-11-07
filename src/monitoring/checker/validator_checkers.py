@@ -11,7 +11,7 @@ from typing import List, Optional
 from .base import BaseChecker
 from ...network.models import NodeConfig
 from ...utils.logger import get_logger
-from ...config.loader import ConfigLoader
+from ...config.manager import get_config_loader
 from ..validator import ValidatorMonitor
 from ..base import MonitorConfig
 
@@ -85,7 +85,7 @@ class ValidatorOrdersChecker(BaseChecker):
     async def _verify_orders(self) -> None:
         """Internal method to verify orders."""
         # Load monitoring config from stage-env.cfg
-        config_loader = ConfigLoader(self.base_path, self.config_path)
+        config_loader = get_config_loader()
         stage_config = config_loader.load_stage_config()
         
         # Extract monitoring settings (keys are flattened)

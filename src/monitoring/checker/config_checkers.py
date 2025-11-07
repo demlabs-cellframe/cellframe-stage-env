@@ -22,7 +22,7 @@ class ZerochainConfigChecker(BaseChecker):
     3. static_genesis_event parameter exists
     4. is_static_genesis_event parameter exists
     5. Base config file exists
-    6. [main] section exists in base config
+    6. [general] section exists in base config
     7. seed_mode parameter exists in base config
     
     Usage:
@@ -36,19 +36,22 @@ class ZerochainConfigChecker(BaseChecker):
         self,
         base_path: Path,
         node_id: int,
-        network_name: str = "stagenet"
+        network_name: str = "stagenet",
+        config_path: Optional[Path] = None
     ):
         """
         Initialize zerochain config checker.
         
         Args:
-            base_path: Base path for configs
+            base_path: Base path to stage-env directory
             node_id: Node ID to check
             network_name: Network name (default: stagenet)
+            config_path: Optional path to stage-env.cfg (for cache_dir resolution)
         """
         self.base_path = base_path
         self.node_id = node_id
         self.network_name = network_name
+        self.config_path = config_path
         self._cached_result = None
     
     async def check(self) -> bool:
@@ -78,13 +81,16 @@ class ZerochainConfigChecker(BaseChecker):
         if self._cached_result is not None:
             return self._cached_result
         
-        zerochain_config_path = self.base_path / f"cache/configs/node{self.node_id}/network/{self.network_name}/zerochain.cfg"
+        # Get cache_dir from config (strictly from --config path, no fallback)
+        from ...config.manager import get_config_loader
+        config_loader = get_config_loader()
+        paths_config = config_loader.get_paths_config()
+        cache_dir_relative = paths_config.get('cache_dir', 'cache')
+        cache_dir = (self.base_path / cache_dir_relative).resolve()
         
-        # CRITICAL: If config not found at base_path, try base_path.parent / "testing" (for stage-env structure)
-        if not zerochain_config_path.exists():
-            testing_path = self.base_path.parent / "testing" / f"cache/configs/node{self.node_id}/network/{self.network_name}/zerochain.cfg"
-            if testing_path.exists():
-                zerochain_config_path = testing_path
+        # Build config paths strictly from base_path and cache_dir from config
+        zerochain_config_path = cache_dir / "configs" / f"node{self.node_id}" / "network" / self.network_name / "zerochain.cfg"
+        base_config_path = cache_dir / "configs" / f"node{self.node_id}" / "cellframe-node.cfg"
         
         static_genesis_hash = None
         is_static_genesis = False
@@ -123,14 +129,7 @@ class ZerochainConfigChecker(BaseChecker):
             )
         is_static_genesis = config['dag'].getboolean('is_static_genesis_event')
         
-        # Check base config for seed_mode
-        base_config_path = self.base_path / f"cache/configs/node{self.node_id}/cellframe-node.cfg"
-        
-        # CRITICAL: If config not found at base_path, try base_path.parent / "testing" / "cache" (for stage-env structure)
-        if not base_config_path.exists():
-            testing_base_config_path = self.base_path.parent / "testing" / f"cache/configs/node{self.node_id}/cellframe-node.cfg"
-            if testing_base_config_path.exists():
-                base_config_path = testing_base_config_path
+        # Check base config for seed_mode (path already set above from cache_dir)
         if not base_config_path.exists():
             raise RuntimeError(
                 f"CRITICAL: Base config not found at {base_config_path}! "
@@ -140,20 +139,20 @@ class ZerochainConfigChecker(BaseChecker):
         base_config = configparser.ConfigParser()
         base_config.read(base_config_path)
         
-        # Verify [main] section exists
-        if 'main' not in base_config:
+        # Verify [general] section exists (seed_mode is in [general], not [main])
+        if 'general' not in base_config:
             raise RuntimeError(
-                f"CRITICAL: [main] section not found in base config at {base_config_path}! "
-                f"Cannot proceed without main section."
+                f"CRITICAL: [general] section not found in base config at {base_config_path}! "
+                f"Cannot proceed without general section."
             )
         
         # Verify seed_mode parameter exists
-        if 'seed_mode' not in base_config['main']:
+        if 'seed_mode' not in base_config['general']:
             raise RuntimeError(
-                f"CRITICAL: seed_mode not found in [main] section at {base_config_path}! "
+                f"CRITICAL: seed_mode not found in [general] section at {base_config_path}! "
                 f"Cannot proceed without seed_mode parameter."
             )
-        seed_mode = base_config['main']['seed_mode'].strip()
+        seed_mode = base_config['general']['seed_mode'].strip()
         
         logger.info("zerochain_config_verified",
                    static_genesis_hash=static_genesis_hash[:16] if static_genesis_hash else "NOT SET",
@@ -169,7 +168,8 @@ class ZerochainConfigChecker(BaseChecker):
 async def verify_zerochain_config(
     base_path: Path,
     node_id: int,
-    network_name: str = "stagenet"
+    network_name: str = "stagenet",
+    config_path: Optional[Path] = None
 ) -> Tuple[Optional[str], bool, Optional[str]]:
     """
     Verify zerochain configuration and return config values.
@@ -178,9 +178,10 @@ async def verify_zerochain_config(
     For new code, prefer using ZerochainConfigChecker directly.
     
     Args:
-        base_path: Base path for configs
+        base_path: Base path to stage-env directory
         node_id: Node ID to check
         network_name: Network name (default: stagenet)
+        config_path: Optional path to stage-env.cfg (for cache_dir resolution)
         
     Returns:
         Tuple of (static_genesis_hash, is_static_genesis, seed_mode)
@@ -189,7 +190,7 @@ async def verify_zerochain_config(
     Raises:
         RuntimeError: If config structure is invalid or required parameters are missing
     """
-    checker = ZerochainConfigChecker(base_path, node_id, network_name)
+    checker = ZerochainConfigChecker(base_path, node_id, network_name, config_path)
     return await checker.verify_and_get()
 
 

@@ -48,8 +48,8 @@ class GenesisInitializer(BaseGenesisManager):
         super().__init__(base_path, network_name, config_path)
         
         # Load cache dir from config
-        from ..config.loader import ConfigLoader
-        config_loader = ConfigLoader(base_path, config_path)
+        from ..config.manager import get_config_loader
+        config_loader = get_config_loader()
         paths_config = config_loader.get_paths_config()
         cache_dir_relative = paths_config.get('cache_dir', 'cache')
         # Resolve cache dir relative to BASE_PATH (always)

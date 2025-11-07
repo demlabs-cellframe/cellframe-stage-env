@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from collections import defaultdict
 
-from ..config.loader import ConfigLoader, NetworkTopology
+from ..config.manager import get_config_loader
 from ..scenarios.schema import NodeConfig as ScenarioNodeConfig
 from .models import NodeConfig
 from ..utils.logger import get_logger
@@ -29,7 +29,7 @@ class TopologyBuilder:
             config_path: Optional path to stage-env.cfg
         """
         self.base_path = base_path
-        self.config_loader = ConfigLoader(base_path, config_path)
+        self.config_loader = get_config_loader()
     
     def build_from_scenario_nodes(
         self,

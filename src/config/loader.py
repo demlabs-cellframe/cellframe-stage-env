@@ -5,6 +5,9 @@ Handles loading and validation of:
 - Stage environment config (stage-env.cfg)
 - Network topologies (JSON templates)
 - Template configurations (Jinja2)
+
+NOTE: Use config.manager.get_config_loader() to get global ConfigLoader instance.
+Direct instantiation of ConfigLoader is deprecated - use global manager instead.
 """
 
 import json

@@ -29,7 +29,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         from ..scenarios.executor import ScenarioExecutor, ScenarioExecutionError
         from ..scenarios.schema import SuiteDescriptor
         from ..utils.artifacts import ArtifactsManager
-        from ..config.loader import ConfigLoader
+        from ..config.manager import get_config_loader
         from ..network.manager import NetworkManager
         from ..monitoring.manager import MonitoringManager
         from ..utils.report_generator import ReportGenerator
@@ -42,8 +42,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             print_info(f"  • {test_dir}")
         
         # Load configuration
-        config_path = get_config_path()
-        config_loader = ConfigLoader(base_path, config_path)
+        config_loader = get_config_loader()
         artifacts_config = config_loader.get_artifacts_config()
         artifacts_manager = ArtifactsManager(base_path, artifacts_config)
         

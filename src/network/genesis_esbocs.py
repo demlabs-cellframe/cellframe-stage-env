@@ -531,7 +531,8 @@ class ESBocsGenesisManager(BaseGenesisManager):
                     static_genesis_hash, is_static_genesis, seed_mode = await verify_zerochain_config(
                         base_path=self.genesis.base_path,
                         node_id=node_id,
-                        network_name=self.network_name
+                        network_name=self.network_name,
+                        config_path=self.config_path
                     )
                     
                     if not static_genesis_hash:
@@ -950,7 +951,8 @@ class ESBocsGenesisManager(BaseGenesisManager):
                 static_genesis_hash, is_static_genesis, seed_mode = await verify_zerochain_config(
                     base_path=self.genesis.base_path,
                     node_id=first_root_node.node_id,
-                    network_name=self.network_name
+                    network_name=self.network_name,
+                    config_path=self.config_path
                 )
                 
                 logger.info("zerochain_config_check",
@@ -960,18 +962,30 @@ class ESBocsGenesisManager(BaseGenesisManager):
                            note="Zerochain config check - if static_genesis_event is set but seed_mode=false, genesis must match!")
                 
                 # Get actual genesis event from DAG
+                # CRITICAL: We need to find event with event_number=1, not just the first in list
+                # Events may be listed in different order, but genesis event always has event_number=1
                 exit_code_genesis, stdout_genesis, stderr_genesis = self.genesis._exec_cli(
                     first_root_node.node_id,
-                    f"dag event list -net {self.network_name} -chain zerochain -from events -limit 1",
+                    f"dag event list -net {self.network_name} -chain zerochain -from events -limit 10",
                     check_output=False
                 )
                 
                 actual_genesis_hash = None
                 if exit_code_genesis == 0 and stdout_genesis:
-                    # Extract first event hash
-                    genesis_match = re.search(r'(0x[A-Fa-f0-9]{64})', stdout_genesis)
+                    # Find event with event_number=1 (genesis event)
+                    # Format: "event number: 1\n                hash: 0x..."
+                    genesis_match = re.search(r'event number:\s*1\s*\n\s*hash:\s*(0x[A-Fa-f0-9]{64})', stdout_genesis, re.MULTILINE)
                     if genesis_match:
                         actual_genesis_hash = genesis_match.group(1)
+                    else:
+                        # Fallback: if event_number=1 not found, try to find first event hash
+                        # This may happen if genesis event was rejected
+                        first_match = re.search(r'hash:\s*(0x[A-Fa-f0-9]{64})', stdout_genesis)
+                        if first_match:
+                            actual_genesis_hash = first_match.group(1)
+                            logger.warning("genesis_event_not_found_by_number",
+                                        first_event_hash=actual_genesis_hash[:16],
+                                        note="Event number 1 not found - using first event in list. Genesis event may have been rejected!")
                 
                 logger.info("genesis_event_comparison",
                            static_genesis_hash=static_genesis_hash[:16] if static_genesis_hash else "NOT SET",
@@ -1181,6 +1195,61 @@ class ESBocsGenesisManager(BaseGenesisManager):
             logger.info("root_nodes_restarted_online",
                        note="Root nodes restarted and online - UTXO should be indexed in ledger_items")
             
+            # CRITICAL: Force network into NET_STATE_SYNC_CHAINS immediately after restart
+            # SDK indexes UTXO only when in NET_STATE_LOADING or NET_STATE_SYNC_CHAINS
+            # After restart, network may be in NET_STATE_ONLINE, so we need to force sync
+            logger.info("forcing_network_sync_chains_immediately_after_restart",
+                       note="CRITICAL: Forcing network into NET_STATE_SYNC_CHAINS immediately after restart to index UTXO")
+            
+            try:
+                # Go offline first to reset network state
+                exit_code_offline, stdout_offline, stderr_offline = self.genesis._exec_cli(
+                    first_root_node.node_id,
+                    f"net -net {self.network_name} go offline",
+                    check_output=False
+                )
+                if exit_code_offline == 0:
+                    logger.debug("network_offline_before_sync_after_restart",
+                               note="Network is offline, proceeding to sync chains")
+                    await asyncio.sleep(2.0)  # Wait for network to go offline
+                else:
+                    logger.warning("failed_to_go_offline_after_restart",
+                                exit_code=exit_code_offline,
+                                stderr=stderr_offline[:200] if stderr_offline else "empty",
+                                note="Failed to go offline - proceeding anyway")
+                
+                # Force sync - this will reload events from chain files and index UTXO
+                exit_code_sync, stdout_sync, stderr_sync = self.genesis._exec_cli(
+                    first_root_node.node_id,
+                    f"net -net {self.network_name} go sync",
+                    check_output=False
+                )
+                if exit_code_sync == 0:
+                    logger.info("network_sync_forced_after_restart",
+                              stdout_preview=stdout_sync[:300] if stdout_sync else "empty",
+                              note="Network sync forced - SDK should reload events and index UTXO")
+                    
+                    # Wait for sync to complete using NetworkSyncCompletionWaiter
+                    from ..monitoring.waiters import NetworkSyncCompletionWaiter
+                    sync_waiter = NetworkSyncCompletionWaiter(
+                        exec_cli=self.genesis._exec_cli,
+                        node_id=first_root_node.node_id,
+                        network=self.network_name,
+                        poll_interval=1.0
+                    )
+                    await sync_waiter.wait(timeout=120.0, name="network_sync_after_restart")
+                    logger.info("network_sync_completed_after_restart",
+                              note="Network sync completed - UTXO should be indexed in ledger_items")
+                else:
+                    logger.warning("failed_to_sync_after_restart",
+                                 exit_code=exit_code_sync,
+                                 stderr=stderr_sync[:200] if stderr_sync else "empty",
+                                 note="Failed to sync - proceeding anyway")
+            except Exception as sync_err:
+                logger.warning("network_sync_exception_after_restart",
+                             error=str(sync_err)[:200],
+                             note="Exception during network sync after restart - proceeding anyway")
+            
             # CRITICAL: After restart, trigger mempool_proc for all zerochain events to index UTXO
             # After snapshot restore, events may be in DAG but not in ledger_items
             # mempool_proc processes events from DAG into ledger_items
@@ -1293,10 +1362,17 @@ class ESBocsGenesisManager(BaseGenesisManager):
                            note="Net sync chains result - should reload zerochain transactions into ledger")
                 
                 if exit_code_sync == 0:
-                    # Wait for network to transition to NET_STATE_SYNC_CHAINS
-                    logger.info("waiting_for_sync_chains_state",
-                               note="Waiting for network to transition to NET_STATE_SYNC_CHAINS state")
-                    await asyncio.sleep(5.0)  # Wait for state transition
+                    # Wait for sync to complete using NetworkSyncCompletionWaiter
+                    from ..monitoring.waiters import NetworkSyncCompletionWaiter
+                    sync_waiter = NetworkSyncCompletionWaiter(
+                        exec_cli=self.genesis._exec_cli,
+                        node_id=first_root_node.node_id,
+                        network=self.network_name,
+                        poll_interval=1.0
+                    )
+                    await sync_waiter.wait(timeout=120.0, name="network_sync_for_utxo_indexation")
+                    logger.info("network_sync_completed_for_utxo_indexation",
+                              note="Network sync completed - UTXO should be indexed in ledger_items")
                     
                     # Check network state
                     exit_code_state, stdout_state, stderr_state = self.genesis._exec_cli(
