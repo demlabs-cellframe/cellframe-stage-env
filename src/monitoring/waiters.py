@@ -20,9 +20,88 @@ from .base import BaseWaiter
 logger = get_logger(__name__)
 
 
+class LedgerTransactionWaiter(BaseWaiter):
+    """
+    Waits for a transaction (datum) to appear in ledger using `ledger info`.
+    
+    This waiter uses `ledger info -hash <datum_hash>` which checks ledger_items
+    directly, unlike tx_history which depends on PVT(a_dag)->datums being populated.
+    
+    Usage:
+        waiter = LedgerTransactionWaiter(exec_cli_func, node_id, datum_hash, network)
+        await waiter.wait(timeout=30.0, name="ledger_transaction")
+    """
+    
+    def __init__(
+        self,
+        exec_cli: Callable,
+        node_id: int,
+        datum_hash: str,
+        network: str = "stagenet",
+        poll_interval: float = 1.0
+    ):
+        """
+        Initialize ledger transaction waiter.
+        
+        Args:
+            exec_cli: CLI execution function (node_id, command, check_output) -> (exit_code, stdout, stderr)
+            node_id: Node ID to check
+            datum_hash: Datum hash (transaction hash) to wait for
+            network: Network name
+            poll_interval: Seconds between checks
+        """
+        super().__init__(poll_interval)
+        self.exec_cli = exec_cli
+        self.node_id = node_id
+        self.datum_hash = datum_hash
+        self.network = network
+    
+    async def check(self) -> bool:
+        """
+        Check if transaction is present in ledger.
+        
+        Returns:
+            True if transaction found in ledger
+        """
+        try:
+            exit_code, stdout, stderr = self.exec_cli(
+                self.node_id,
+                f"ledger info -net {self.network} -hash {self.datum_hash}",
+                check_output=False
+            )
+            
+            if exit_code != 0:
+                return False
+            
+            # Check if datum hash is present in output
+            if stdout and self.datum_hash.lower() in stdout.lower():
+                # Also check for "Datum_tx_hash" or similar indicators
+                if "Datum_tx_hash" in stdout or "datum" in stdout.lower():
+                    logger.debug("ledger_transaction_found",
+                               node_id=self.node_id,
+                               datum_hash=self.datum_hash[:16],
+                               note="Transaction found in ledger")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.warning("ledger_transaction_check_failed",
+                         node_id=self.node_id,
+                         datum_hash=self.datum_hash[:16],
+                         error=str(e))
+            return False
+
+
 class UTXOIndexationWaiter(BaseWaiter):
     """
+    DEPRECATED: Use LedgerTransactionWaiter instead.
+    
     Waits for UTXO to be indexed in ledger_items (tx_history becomes non-empty).
+    
+    This waiter is deprecated because tx_history depends on PVT(a_dag)->datums
+    which may not be populated after snapshot restore. Use LedgerTransactionWaiter
+    with specific datum hashes instead.
     
     Usage:
         waiter = UTXOIndexationWaiter(exec_cli_func, node_id, wallet_addr, network, chain)
@@ -64,9 +143,11 @@ class UTXOIndexationWaiter(BaseWaiter):
             True if tx_history is not empty
         """
         try:
+            # WORKAROUND: Use -head flag to force forward iteration (get_first/get_next)
+            # because DAG chains don't implement get_last/get_prev callbacks
             exit_code, stdout, stderr = self.exec_cli(
                 self.node_id,
-                f"tx_history -addr {self.wallet_addr} -net {self.network} -chain {self.chain}",
+                f"tx_history -addr {self.wallet_addr} -net {self.network} -chain {self.chain} -head",
                 check_output=False
             )
             
@@ -212,14 +293,18 @@ class NetworkSyncCompletionWaiter(BaseWaiter):
     Waits for network sync to complete (NET_STATE_SYNC_CHAINS -> NET_STATE_ONLINE).
     
     After calling 'net go sync', network transitions:
-    1. NET_STATE_ONLINE -> NET_STATE_SYNC_CHAINS (sync starts)
-    2. NET_STATE_SYNC_CHAINS -> NET_STATE_ONLINE (sync completes)
+    1. NET_STATE_ONLINE -> NET_STATE_OFFLINE (goes offline to reset)
+    2. NET_STATE_OFFLINE -> NET_STATE_SYNC_CHAINS (sync starts)
+    3. NET_STATE_SYNC_CHAINS -> NET_STATE_ONLINE (sync completes)
     
     During NET_STATE_SYNC_CHAINS, SDK indexes UTXO into ledger_items!
     
+    This waiter handles all intermediate states (OFFLINE, LINKS_CONNECTING, etc.)
+    and waits for the complete cycle to finish.
+    
     Usage:
         waiter = NetworkSyncCompletionWaiter(exec_cli_func, node_id, network)
-        await waiter.wait(timeout=60.0, name="network_sync_completion")
+        await waiter.wait(timeout=120.0, name="network_sync_completion")
     """
     
     def __init__(
@@ -259,23 +344,72 @@ class NetworkSyncCompletionWaiter(BaseWaiter):
             )
             
             if exit_code == 0 and stdout:
+                # Log current state for debugging
+                current_state = "UNKNOWN"
+                if "NET_STATE_OFFLINE" in stdout:
+                    current_state = "NET_STATE_OFFLINE"
+                elif "NET_STATE_SYNC_CHAINS" in stdout:
+                    current_state = "NET_STATE_SYNC_CHAINS"
+                elif "NET_STATE_ONLINE" in stdout:
+                    current_state = "NET_STATE_ONLINE"
+                elif "NET_STATE_LINKS_CONNECTING" in stdout:
+                    current_state = "NET_STATE_LINKS_CONNECTING"
+                elif "NET_STATE_LINKS_PREPARE" in stdout:
+                    current_state = "NET_STATE_LINKS_PREPARE"
+                
                 # Check current network state
-                if "NET_STATE_SYNC_CHAINS" in stdout:
+                if "NET_STATE_OFFLINE" in stdout:
+                    # Network is offline - this happens after 'net go sync' before sync starts
+                    # Wait for transition to SYNC_CHAINS
+                    logger.debug("network_sync_waiting_for_sync_chains",
+                               node_id=self.node_id,
+                               current_state=current_state,
+                               note="Network is OFFLINE - waiting for transition to SYNC_CHAINS")
+                    return False
+                elif "NET_STATE_SYNC_CHAINS" in stdout:
+                    # Sync is in progress - UTXO indexation happens here
                     self._sync_started = True
                     logger.debug("network_sync_in_progress",
                                node_id=self.node_id,
+                               current_state=current_state,
                                note="Network is in SYNC_CHAINS state - UTXO indexation in progress")
                     return False
                 elif "NET_STATE_ONLINE" in stdout and self._sync_started:
+                    # Sync completed - network returned to ONLINE after SYNC_CHAINS
                     logger.debug("network_sync_completed",
                                node_id=self.node_id,
+                               current_state=current_state,
                                note="Network returned to ONLINE after SYNC_CHAINS - UTXO should be indexed")
                     return True
                 elif "NET_STATE_ONLINE" in stdout:
                     # Still online, sync hasn't started yet
+                    logger.debug("network_sync_waiting_for_sync_start",
+                               node_id=self.node_id,
+                               current_state=current_state,
+                               note="Network is ONLINE but sync hasn't started yet")
                     return False
-            
-            return False
+                elif "NET_STATE_LINKS_CONNECTING" in stdout or "NET_STATE_LINKS_PREPARE" in stdout:
+                    # Network is connecting - wait for it to stabilize
+                    logger.debug("network_sync_waiting_for_links",
+                               node_id=self.node_id,
+                               current_state=current_state,
+                               note="Network is connecting links - waiting for stable state")
+                    return False
+                else:
+                    # Unknown state - log for debugging
+                    logger.debug("network_sync_unknown_state",
+                               node_id=self.node_id,
+                               stdout_preview=stdout[:200] if stdout else "empty",
+                               note=f"Unknown network state: {current_state}")
+                    return False
+            else:
+                # Failed to get status
+                logger.debug("network_sync_status_check_failed",
+                           node_id=self.node_id,
+                           exit_code=exit_code,
+                           stderr=stderr[:200] if stderr else "empty",
+                           note="Failed to get network status")
+                return False
             
         except Exception as e:
             logger.warning("network_sync_completion_check_failed",
@@ -286,12 +420,14 @@ class NetworkSyncCompletionWaiter(BaseWaiter):
 
 class TransactionFinalizationWaiter(BaseWaiter):
     """
-    Waits for transaction to be fully processed (in DAG, in ledger, UTXO indexed).
+    Waits for transaction to be fully processed (in DAG, in ledger).
     
     Combines multiple checks:
     1. Transaction in DAG events
-    2. Transaction in ledger
-    3. UTXO indexed in ledger_items (tx_history)
+    2. Transaction in ledger (using ledger info, which checks ledger_items directly)
+    
+    Note: Uses `ledger info` instead of `tx_history` because tx_history depends on
+    PVT(a_dag)->datums which may not be populated after snapshot restore.
     
     Usage:
         waiter = TransactionFinalizationWaiter(
@@ -337,7 +473,7 @@ class TransactionFinalizationWaiter(BaseWaiter):
         Check if transaction is fully finalized.
         
         Returns:
-            True if transaction is in DAG, ledger, and UTXO indexed
+            True if transaction is in DAG and ledger (checked via ledger info)
         """
         try:
             # Step 1: Check if in DAG events (only once)
@@ -358,22 +494,24 @@ class TransactionFinalizationWaiter(BaseWaiter):
             
             # Step 2: Check if in ledger (only once after DAG check passed)
             if self._dag_checked and not self._ledger_checked:
-                # Check via tx_history (also checks UTXO indexation)
+                # Check via ledger info (checks ledger_items directly, more reliable than tx_history)
+                # tx_history depends on PVT(a_dag)->datums which may not be populated after snapshot restore
                 exit_code, stdout, stderr = self.exec_cli(
                     self.node_id,
-                    f"tx_history -addr {self.wallet_addr} -net {self.network} -chain {self.chain}",
+                    f"ledger info -net {self.network} -hash {self.tx_hash}",
                     check_output=False
                 )
                 
                 if exit_code == 0 and stdout:
-                    if "status: empty" not in stdout.lower():
-                        tx_count_match = re.search(r'total_tx_count:\s*(\d+)', stdout, re.IGNORECASE)
-                        if tx_count_match and int(tx_count_match.group(1)) > 0:
+                    # Check if datum hash is present in output
+                    if self.tx_hash.lower() in stdout.lower():
+                        # Also check for "Datum_tx_hash" or similar indicators
+                        if "Datum_tx_hash" in stdout or "datum" in stdout.lower():
                             self._ledger_checked = True
                             logger.debug("tx_indexed_in_ledger",
                                        node_id=self.node_id,
                                        tx_hash=self.tx_hash[:16],
-                                       tx_count=tx_count_match.group(1))
+                                       note="Transaction found in ledger via ledger info")
                             return True
             
             return self._dag_checked and self._ledger_checked

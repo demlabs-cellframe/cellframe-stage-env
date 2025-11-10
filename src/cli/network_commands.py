@@ -112,7 +112,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             
             # Create pristine network marker for test optimization
             # First suite will use this network directly without restore
-            config_loader = ConfigLoader(base_path, config_path)
+            config_loader = get_config_loader()
             paths_config = config_loader.get_paths_config()
             artifacts_dir = paths_config.get('artifacts_dir', '../testing/artifacts')
             artifacts_path = (base_path / artifacts_dir).resolve()
@@ -264,9 +264,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         # Clean and regenerate certs
         print_info("\n🔐 Regenerating certificates...")
-            config_loader = get_config_loader()
-        cache_config = config_loader.get_cache_config()
-        cache_dir_relative = cache_config.get('cache_dir', 'cache')
+        config_loader = get_config_loader()
+        paths_config = config_loader.get_paths_config()
+        cache_dir_relative = paths_config.get('cache_dir', 'cache')
         cache_dir = (base_path / cache_dir_relative).resolve()
         certs_dir = cache_dir / "certs"
         

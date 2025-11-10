@@ -8,7 +8,7 @@ Uses docker SDK 7.0+ with native compose v2 support.
 import time
 import yaml
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import docker
 from docker.errors import DockerException, NotFound
@@ -138,7 +138,8 @@ class DockerComposeManager:
         nodes: List[NodeConfig],
         build_type: str = "debug",
         cellframe_version: str = "latest",
-        cache_dir_relative: str = "cache"
+        cache_dir_relative: str = "cache",
+        node_source_config: Optional[Dict[str, Any]] = None
     ) -> None:
         """
         Generate docker-compose.yml dynamically for given nodes.
@@ -148,11 +149,13 @@ class DockerComposeManager:
             build_type: Build type (debug/release)
             cellframe_version: Cellframe version tag
             cache_dir_relative: Relative path to cache directory
+            node_source_config: Node source configuration (type, url, local_path, etc.)
         """
         logger.info("generating_compose_file",
                    node_count=len(nodes),
                    build_type=build_type,
-                   cache_dir=cache_dir_relative)
+                   cache_dir=cache_dir_relative,
+                   node_source_type=node_source_config.get('type', 'url') if node_source_config else 'url')
         
         # Read base template
         template_file = self.project_dir / "docker-compose.yml"
@@ -176,6 +179,31 @@ class DockerComposeManager:
                 services_to_keep[svc_name] = svc_config
         
         compose_data['services'] = services_to_keep
+        
+        # Ensure packages/ directory exists in build context (required for COPY in Dockerfile)
+        # This directory will be empty for url/repository sources, but must exist
+        build_context_packages_dir = self.project_dir / "packages"
+        build_context_packages_dir.mkdir(exist_ok=True)
+        (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
+        
+        # Determine node source configuration
+        node_source_type = node_source_config.get('type', 'url') if node_source_config else 'url'
+        local_package_path = None
+        
+        if node_source_type == 'local' and node_source_config:
+            local_path = node_source_config.get('local_path')
+            if local_path:
+                # Resolve absolute path
+                local_package_path = Path(local_path)
+                if not local_package_path.is_absolute():
+                    local_package_path = self.project_dir / local_path
+                local_package_path = local_package_path.resolve()
+                
+                if not local_package_path.exists():
+                    logger.error("local_package_not_found", path=str(local_package_path))
+                    raise FileNotFoundError(f"Local package not found: {local_package_path}")
+                
+                logger.info("using_local_package", path=str(local_package_path))
         
         # Generate service for each node
         for node in nodes:
@@ -211,6 +239,72 @@ class DockerComposeManager:
                 f"./{cache_dir_relative}/crash-artifacts/node{node.node_id}:/crash-artifacts/node-{node.node_id}",
                 f"./{cache_dir_relative}/cellframe-packages:/var/cache/cellframe-packages"
             ]
+            
+            # Add local package volume mount if using local source
+            if node_source_type == 'local' and local_package_path:
+                # Mount local package directory to container
+                package_dir = local_package_path.parent
+                node_service['volumes'].append(
+                    f"{package_dir}:/packages:ro"
+                )
+                logger.debug("added_local_package_volume",
+                           node_id=node.node_id,
+                           package_dir=str(package_dir))
+            
+            # Update build args based on node_source configuration
+            if 'build' not in node_service:
+                node_service['build'] = {}
+            if 'args' not in node_service['build']:
+                node_service['build']['args'] = {}
+            
+            # Set build args for node source
+            node_service['build']['args']['NODE_SOURCE_TYPE'] = node_source_type
+            if node_source_type == 'local' and local_package_path:
+                # For local packages, we need to:
+                # 1. Set build context to include package directory
+                # 2. Copy package to build context before build
+                package_dir = local_package_path.parent
+                package_name = local_package_path.name
+                
+                # Copy package to build context (packages/ directory)
+                # Directory already created above
+                # IMPORTANT: Use copy instead of symlink because Docker COPY doesn't follow
+                # symlinks that point outside build context
+                package_dest = self.project_dir / "packages" / package_name
+                if package_dest.exists() or package_dest.is_symlink():
+                    package_dest.unlink()
+                
+                # Always copy file (not symlink) so Docker COPY can access it
+                import shutil
+                try:
+                    shutil.copy2(local_package_path, package_dest)
+                    logger.debug("copied_package_to_build_context",
+                               node_id=node.node_id,
+                               source=str(local_package_path),
+                               dest=str(package_dest),
+                               size_mb=round(local_package_path.stat().st_size / (1024*1024), 2))
+                except Exception as e:
+                    logger.error("failed_to_copy_package_to_build_context",
+                               node_id=node.node_id,
+                               source=str(local_package_path),
+                               dest=str(package_dest),
+                               error=str(e))
+                    raise RuntimeError(f"Failed to copy package to build context: {e}")
+                
+                node_service['build']['args']['LOCAL_PACKAGE_NAME'] = package_name
+                logger.debug("set_local_package_build_arg",
+                           node_id=node.node_id,
+                           package_name=package_name)
+            elif node_source_type == 'url' and node_source_config:
+                url = node_source_config.get('url')
+                if url:
+                    node_service['build']['args']['PACKAGE_URL'] = url
+            elif node_source_type == 'repository' and node_source_config:
+                repo_url = node_source_config.get('repository_url')
+                branch = node_source_config.get('repository_branch', 'master')
+                if repo_url:
+                    node_service['build']['args']['REPOSITORY_URL'] = repo_url
+                    node_service['build']['args']['REPOSITORY_BRANCH'] = branch
             
             # Add custom volumes if specified
             if hasattr(node, 'docker_volumes') and node.docker_volumes:

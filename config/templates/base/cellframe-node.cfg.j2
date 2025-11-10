@@ -66,14 +66,17 @@ http_server=true
 
 # Ledger defaults
 [ledger]
-# cache_enabled=false
-# More debug output
-# debug_more=true
+# Enable detailed debug logging for ledger operations (includes UTXO search and transaction addition)
+# This enables [UTXO_SEARCH] and [LEDGER_TX_ADD] debug messages
+debug_more=true
+# CRITICAL: Disable cache to force UTXO indexation from chain events
+# When cache is enabled, balances are loaded from GDB but UTXO are not indexed in ledger_items
+cache_enabled=false
 
 # DAG defaults
 [dag]
-# More debug output
-# debug_more=true
+# More debug output - ENABLED for genesis events and UTXO debugging
+debug_more=true
 #threshold_enabled=true
 
 # Links check defaults
@@ -81,7 +84,8 @@ http_server=true
 #timer_update_states=5000
 #max_attempts_num=2
 # reconnect_delay=
-#debug_more=true
+# More debug output - ENABLED for network state transitions debugging
+debug_more=true
 
 [srv]
 allow_unsigned_orders=false
@@ -99,7 +103,8 @@ pricelist=[]
 auto_proc=false
 
 [chain]
-# debug_more=true
+# More debug output - ENABLED for chain loading and UTXO debugging
+debug_more=true
 # sync_timeout=
 # sync_ack_window_size=
 # debug_legacy=false
@@ -108,7 +113,8 @@ auto_proc=false
 
 # Chain network settings
 [chain_net]
-# debug_more=true
+# More debug output - ENABLED for chain network sync debugging
+debug_more=true
 
 [blocks]
 # debug_more=true
@@ -129,7 +135,8 @@ auto_proc=false
 [stream_ch_chain]
 # Uncomment to have more debug information in stream channel Chain
 # False by default
-#debug_more=true
+# More debug output - ENABLED for chain sync debugging
+debug_more=true
 
 # Number of hashes packed into the one update packet
 # Increase it to reduce update latency

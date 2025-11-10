@@ -316,7 +316,13 @@ class NetworkManager:
         # Generate dynamic docker-compose.yml for all nodes
         logger.info("generating_docker_compose")
         cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
-        self.compose.generate_compose_for_nodes(node_configs, cache_dir_relative=cache_dir_relative)
+        # Get node_source configuration from config loader
+        node_source_config = self.config_loader.get_node_source_config()
+        self.compose.generate_compose_for_nodes(
+            node_configs, 
+            cache_dir_relative=cache_dir_relative,
+            node_source_config=node_source_config
+        )
         
         # Build images if requested
         if rebuild:
@@ -500,10 +506,9 @@ class NetworkManager:
                                     zerochain_config_path = cache_dir / "configs" / f"node{node_id}" / "network" / self.topology.network.name / "zerochain.cfg"
                                     if zerochain_config_path.exists():
                                         configs_found += 1
-                                        # Verify static_genesis_event is set
-                                        import configparser
-                                        config = configparser.ConfigParser()
-                                        config.read(zerochain_config_path)
+                                        # Verify static_genesis_event is set using centralized config manager
+                                        config_loader = get_config_loader()
+                                        config = config_loader.load_config_file(zerochain_config_path)
                                         static_genesis = config.get('dag', 'static_genesis_event', fallback='').strip() if 'dag' in config else ''
                                         if static_genesis:
                                             logger.info("zerochain_config_verified_before_snapshot",
@@ -689,11 +694,10 @@ class NetworkManager:
                                 "This means configs were not properly restored or are missing genesis event hash. "
                                 "Nodes will fail to load network without this value. "
                                 "Check snapshot restoration process.")
-                # Diagnostic: Try to read config file directly to see what's in it
-                import configparser
+                # Diagnostic: Try to read config file directly to see what's in it using centralized config manager
                 try:
-                    config = configparser.ConfigParser()
-                    config.read(zerochain_config_path)
+                    config_loader = get_config_loader()
+                    config = config_loader.load_config_file(zerochain_config_path)
                     logger.error("zerochain_config_diagnostic",
                                sections=list(config.sections()),
                                dag_section_exists='dag' in config,
@@ -717,11 +721,10 @@ class NetworkManager:
                            note="CRITICAL: fee_addr could not be read from restored configs! "
                                 "This means configs were not properly restored or are missing fee address. "
                                 "Check snapshot restoration process.")
-                # Diagnostic: Try to read config file directly to see what's in it
-                import configparser
+                # Diagnostic: Try to read config file directly to see what's in it using centralized config manager
                 try:
-                    config = configparser.ConfigParser()
-                    config.read(main_config_path)
+                    config_loader = get_config_loader()
+                    config = config_loader.load_config_file(main_config_path)
                     logger.error("main_config_diagnostic",
                                sections=list(config.sections()),
                                esbocs_section_exists='esbocs' in config,
@@ -748,14 +751,12 @@ class NetworkManager:
             
             # CRITICAL: Additional diagnostic - read and log full config contents to verify they are correct
             try:
-                import configparser
-                try:
-                    zerochain_config = configparser.ConfigParser()
-                    zerochain_config.read(zerochain_config_path)
-                    main_config = configparser.ConfigParser()
-                    main_config.read(main_config_path)
-                    
-                    logger.info("config_contents_diagnostic_after_snapshot_restore",
+                # Use centralized config manager
+                config_loader = get_config_loader()
+                zerochain_config = config_loader.load_config_file(zerochain_config_path)
+                main_config = config_loader.load_config_file(main_config_path)
+                
+                logger.info("config_contents_diagnostic_after_snapshot_restore",
                                zerochain_sections=list(zerochain_config.sections()),
                                main_sections=list(main_config.sections()),
                                zerochain_dag_section_exists='dag' in zerochain_config,
@@ -765,10 +766,10 @@ class NetworkManager:
                                main_min_validators_count=main_config.get('esbocs', 'min_validators_count', fallback='NOT_SET') if 'esbocs' in main_config else 'NO_ESBOCS_SECTION',
                                main_fee_addr=main_config.get('esbocs', 'fee_addr', fallback='NOT_SET') if 'esbocs' in main_config else 'NO_ESBOCS_SECTION',
                                note="Full config contents after snapshot restore - verify all values are correct")
-                except Exception as diag_err:
-                    logger.warning("config_contents_diagnostic_failed",
-                                 error=str(diag_err),
-                                 note="Could not read config contents for diagnostic")
+            except Exception as diag_err:
+                logger.warning("config_contents_diagnostic_failed",
+                             error=str(diag_err),
+                             note="Could not read config contents for diagnostic")
             
             # CRITICAL: Start ROOT containers after snapshot restore
             # Snapshot contains data but containers are stopped

@@ -5,7 +5,6 @@ Handles updates to chain configuration files for genesis parameters.
 """
 
 import re
-import configparser
 from pathlib import Path
 from typing import List, Optional
 
@@ -469,12 +468,12 @@ class GenesisConfigManager(BaseGenesisManager):
             cache_dir_relative = paths_config['cache_dir']
             cache_dir = (self.base_path / cache_dir_relative).resolve()
             
-            # Read zerochain genesis event hash
+            # Read zerochain genesis event hash using centralized config manager
             zerochain_config_path = cache_dir / "configs" / f"node{first_node_id}" / "network" / self.network_name / "zerochain.cfg"
             if zerochain_config_path.exists():
-                import configparser
-                config = configparser.ConfigParser()
-                config.read(zerochain_config_path)
+                from ..config.manager import get_config_loader
+                config_loader = get_config_loader()
+                config = config_loader.load_config_file(zerochain_config_path)
                 if 'dag' not in config:
                     raise RuntimeError(
                         f"CRITICAL: [dag] section not found in zerochain.cfg at {zerochain_config_path}! "
@@ -499,12 +498,12 @@ class GenesisConfigManager(BaseGenesisManager):
                     f"Cannot preserve genesis hash without config file."
                 )
             
-            # Read main genesis block hash and fee_addr
+            # Read main genesis block hash and fee_addr using centralized config manager
             main_config_path = cache_dir / "configs" / f"node{first_node_id}" / "network" / self.network_name / "main.cfg"
             if main_config_path.exists():
-                import configparser
-                config = configparser.ConfigParser()
-                config.read(main_config_path)
+                from ..config.manager import get_config_loader
+                config_loader = get_config_loader()
+                config = config_loader.load_config_file(main_config_path)
                 # Main genesis block hash is optional (only required for blockchain chains)
                 if 'blocks' in config and 'static_genesis_block' in config['blocks']:
                     main_genesis_hash = config['blocks']['static_genesis_block'].strip()
@@ -586,9 +585,10 @@ class GenesisConfigManager(BaseGenesisManager):
             zerochain_config_path = config_generator.configs_cache / f"node{first_node_id}" / "network" / self.network_name / "zerochain.cfg"
             
             if zerochain_config_path.exists():
-                import configparser
-                existing_config = configparser.ConfigParser()
-                existing_config.read(zerochain_config_path)
+                # Use centralized config manager
+                from ..config.manager import get_config_loader
+                config_loader = get_config_loader()
+                existing_config = config_loader.load_config_file(zerochain_config_path)
                 
                 # Read zerochain parameters
                 if 'dag-poa' in existing_config:
@@ -626,9 +626,10 @@ class GenesisConfigManager(BaseGenesisManager):
             # Read main chain parameters
             main_config_path = config_generator.configs_cache / f"node{first_node_id}" / "network" / self.network_name / "main.cfg"
             if main_config_path.exists():
-                import configparser
-                existing_config = configparser.ConfigParser()
-                existing_config.read(main_config_path)
+                # Use centralized config manager
+                from ..config.manager import get_config_loader
+                config_loader = get_config_loader()
+                existing_config = config_loader.load_config_file(main_config_path)
                 
                 # Read main chain parameters
                 if 'esbocs' not in existing_config:
@@ -658,7 +659,7 @@ class GenesisConfigManager(BaseGenesisManager):
                     logger.warning("validators_addrs_empty_in_config_recollecting",
                                  note="validators_addrs is empty in config - recollecting from certificates")
                     # Re-collect master validator addresses from certificates
-                    from ..topology.models import NodeConfig
+                    # NodeConfig is already imported at module level
                     all_nodes = config_generator.topology_loader.load_topology()
                     master_nodes = [n for n in all_nodes if n.consensus_participation and not n.is_seed_node]
                     recollected_addrs = config_generator._collect_validator_addresses(master_nodes, self.network_name)
@@ -844,9 +845,9 @@ class GenesisConfigManager(BaseGenesisManager):
                              path=str(config_file))
                 return None
             
-            import configparser
-            config = configparser.ConfigParser()
-            config.read(config_file)
+            # Use centralized config manager
+            config_loader = get_config_loader()
+            config = config_loader.load_config_file(config_file)
             
             if 'dag' not in config:
                 raise RuntimeError(
@@ -911,9 +912,8 @@ class GenesisConfigManager(BaseGenesisManager):
                              path=str(config_file))
                 return None
             
-            import configparser
-            config = configparser.ConfigParser()
-            config.read(config_file)
+            # Use centralized config manager (already imported above)
+            config = config_loader.load_config_file(config_file)
             
             if 'esbocs' not in config:
                 raise RuntimeError(

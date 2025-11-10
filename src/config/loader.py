@@ -237,6 +237,31 @@ class ConfigLoader:
         template = self.jinja_env.get_template(template_name)
         return template.render(**context)
     
+    def load_config_file(self, config_path: Path) -> configparser.ConfigParser:
+        """
+        Load arbitrary INI-style config file using ConfigParser.
+        
+        Centralized method for reading config files to ensure consistent behavior.
+        Use this instead of directly creating ConfigParser instances.
+        
+        Args:
+            config_path: Path to config file
+            
+        Returns:
+            ConfigParser instance with loaded config
+            
+        Raises:
+            FileNotFoundError: If config file doesn't exist
+        """
+        if not config_path.exists():
+            logger.error("config_file_not_found", path=str(config_path))
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        
+        config = configparser.ConfigParser()
+        config.read(config_path)
+        logger.debug("config_file_loaded", path=str(config_path), sections=len(config.sections()))
+        return config
+    
     def load_yaml(self, file_path: Path) -> Dict[str, Any]:
         """
         Load YAML configuration file.
@@ -354,8 +379,10 @@ class ConfigLoader:
         # Use custom config path if provided, otherwise use default
         if self.custom_config_path:
             config_file = self.custom_config_path
+            logger.debug("using_custom_config_path", path=str(config_file))
         else:
             config_file = self.config_dir / "stage-env.cfg"
+            logger.debug("using_default_config_path", path=str(config_file))
         
         # Default paths
         paths = {
@@ -364,7 +391,9 @@ class ConfigLoader:
         }
         
         if not config_file.exists():
-            logger.warning("config_not_found_using_defaults", path=str(config_file))
+            logger.warning("config_not_found_using_defaults", 
+                         path=str(config_file),
+                         custom_config_path=str(self.custom_config_path) if self.custom_config_path else None)
             return paths
         
         # Load config
@@ -571,4 +600,54 @@ class ConfigLoader:
         
         logger.debug("suite_isolation_config_loaded", **suite_isolation)
         return suite_isolation
+    
+    def get_node_source_config(self) -> Dict[str, Any]:
+        """
+        Load node_source configuration from stage-env.cfg.
+        
+        Returns:
+            Dict with node_source configuration (type, url, local_path, etc.)
+        """
+        node_source = {
+            'type': 'url',  # Default: download from URL
+            'url': None,
+            'local_path': None,
+            'repository_url': None,
+            'repository_branch': 'master',
+            'build_type': 'debug',
+            'checksum': None,
+            'headers': None,
+        }
+        
+        config_file = self.custom_config_path or (self.config_dir / "stage-env.cfg")
+        
+        if not config_file.exists():
+            logger.warning("config_not_found_using_defaults", path=str(config_file))
+            return node_source
+        
+        # Load config
+        config = configparser.ConfigParser()
+        config.read(config_file)
+        
+        # Read node_source section if exists
+        if config.has_section('node_source'):
+            if config.has_option('node_source', 'type'):
+                node_source['type'] = config.get('node_source', 'type')
+            if config.has_option('node_source', 'url'):
+                node_source['url'] = config.get('node_source', 'url')
+            if config.has_option('node_source', 'local_path'):
+                node_source['local_path'] = config.get('node_source', 'local_path')
+            if config.has_option('node_source', 'repository_url'):
+                node_source['repository_url'] = config.get('node_source', 'repository_url')
+            if config.has_option('node_source', 'branch'):
+                node_source['repository_branch'] = config.get('node_source', 'branch')
+            if config.has_option('node_source', 'build_type'):
+                node_source['build_type'] = config.get('node_source', 'build_type')
+            if config.has_option('node_source', 'checksum'):
+                node_source['checksum'] = config.get('node_source', 'checksum')
+            if config.has_option('node_source', 'headers'):
+                node_source['headers'] = config.get('node_source', 'headers')
+        
+        logger.debug("node_source_config_loaded", **node_source)
+        return node_source
 

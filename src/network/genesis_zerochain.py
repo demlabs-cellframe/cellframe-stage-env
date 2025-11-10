@@ -45,7 +45,9 @@ class ZerochainGenesisManager(BaseGenesisManager):
         super().__init__(base_path, network_name, config_path)
         
         # Import managers (to avoid circular imports)
-        from .genesis import GenesisInitializer
+        # Import inside __init__ to avoid circular import issues
+        # Use absolute import - path is already added in stage_env.py: sys.path.insert(0, str(Path(__file__).parent))
+        from src.network.genesis import GenesisInitializer
         self.genesis = GenesisInitializer(base_path, network_name, config_path)
     
     async def initialize_zerochain_genesis(

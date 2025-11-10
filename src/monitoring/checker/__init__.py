@@ -16,6 +16,10 @@ from .config_checkers import (
     ZerochainConfigChecker,
 )
 
+from .ledger_checkers import (
+    LedgerTransactionChecker,
+)
+
 __all__ = [
     # Validator checkers
     "verify_validator_orders",
@@ -25,5 +29,7 @@ __all__ = [
     # Config checkers
     "verify_zerochain_config",
     "ZerochainConfigChecker",
+    # Ledger checkers
+    "LedgerTransactionChecker",
 ]
 

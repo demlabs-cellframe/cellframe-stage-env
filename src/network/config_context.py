@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 import structlog
 
-from ..topology.models import NodeConfig
+from .models import NodeConfig
 
 logger = structlog.get_logger(__name__)
 

@@ -104,6 +104,8 @@ services:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     container_name: cellframe-stage-node-1
@@ -143,11 +145,14 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node1:/crash-artifacts/node-1
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
+    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-2:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     container_name: cellframe-stage-node-2
@@ -187,11 +192,14 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node2:/crash-artifacts/node-2
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
+    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-3:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     container_name: cellframe-stage-node-3
@@ -231,11 +239,14 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node3:/crash-artifacts/node-3
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
+    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-4:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     container_name: cellframe-stage-node-4
@@ -275,11 +286,14 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node4:/crash-artifacts/node-4
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
+    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-5:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     container_name: cellframe-stage-node-5
@@ -319,11 +333,14 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node5:/crash-artifacts/node-5
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
+    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-6:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     container_name: cellframe-stage-node-6
@@ -363,11 +380,14 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node6:/crash-artifacts/node-6
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
+    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-7:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     container_name: cellframe-stage-node-7
@@ -407,11 +427,14 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node7:/crash-artifacts/node-7
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
+    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-8:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     container_name: cellframe-stage-node-8
@@ -451,6 +474,7 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node8:/crash-artifacts/node-8
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
+    - /mnt/work/work/cellframe-node/build:/packages:ro
 networks:
   stagenet:
     driver: bridge

@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 from jinja2 import Template
 
 from ..config.manager import get_config_loader
+from ..config.loader import NetworkTopology
 from ..certs.generator import CertGenerator
 from ..network.models import NodeConfig
 from ..utils.logger import get_logger
@@ -912,17 +913,46 @@ blocks-sign-cert=pvt.{network_name}.master.{master_idx}
         """
         logger.info("cleaning_configs", clean_certs=clean_certs)
         
-        # Clean config cache
+        # Clean config cache (safe to use shutil.rmtree - configs are not root-owned)
         if self.configs_cache.exists():
             shutil.rmtree(self.configs_cache)
             logger.debug("cleaned_configs")
         
-        # Clean data cache
+        # Clean data cache using Docker (handles root-owned files from containers)
         if self.data_cache.exists():
-            shutil.rmtree(self.data_cache)
-            logger.debug("cleaned_data")
+            try:
+                import docker
+                docker_client = docker.from_env()
+                logger.debug("cleaning_data_cache_with_docker", path=str(self.data_cache))
+                # Use Docker container to remove files (handles root-owned files)
+                docker_client.containers.run(
+                    image="alpine:latest",
+                    command=["sh", "-c", "rm -rf /cleanup/data && echo 'Data cache cleaned'"],
+                    volumes={
+                        str(self.cache_dir.absolute()): {
+                            'bind': '/cleanup',
+                            'mode': 'rw'
+                        }
+                    },
+                    remove=True,
+                    detach=False,
+                )
+                logger.debug("cleaned_data_with_docker")
+            except (ImportError, docker.errors.DockerException) as e:
+                # Fallback to shutil.rmtree if Docker is not available
+                logger.warning("docker_unavailable_fallback_to_shutil",
+                             error=str(e),
+                             note="Data cache may contain root-owned files that cannot be removed")
+                try:
+                    shutil.rmtree(self.data_cache)
+                    logger.debug("cleaned_data_with_shutil")
+                except PermissionError as pe:
+                    logger.error("failed_to_clean_data_cache",
+                               error=str(pe),
+                               note="Files may be owned by root. Install Docker or use sudo.")
+                    raise
         
-        # Clean certificates if requested
+        # Clean certificates if requested (safe to use shutil.rmtree - certs are not root-owned)
         if clean_certs and self.certs_cache.exists():
             shutil.rmtree(self.certs_cache)
             logger.debug("cleaned_certificates")

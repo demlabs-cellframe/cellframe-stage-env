@@ -50,30 +50,34 @@ def main(
         if env_config:
             CONFIG_PATH = Path(env_config).resolve()
     
-    # Setup logging with file output
+    # Initialize global configuration manager FIRST (before reading config for logging)
+    from src.config.manager import initialize_config
+    initialize_config(BASE_PATH, CONFIG_PATH)
+    
+    # Setup logging with file output using centralized config manager
     log_file = None
-    if CONFIG_PATH and CONFIG_PATH.exists():
+    try:
+        from src.config.manager import get_config_loader
+        config_loader = get_config_loader()
+        # Try to load config for logging setup (may fail if config doesn't exist)
         try:
-            import configparser
-            cfg = configparser.ConfigParser()
-            cfg.read(CONFIG_PATH)
-            if cfg.has_section('logging') and cfg.has_option('logging', 'log_dir'):
-                log_dir = BASE_PATH / cfg.get('logging', 'log_dir')
+            stage_config = config_loader.load_stage_config()
+            if 'log_dir' in stage_config:
+                log_dir = BASE_PATH / stage_config['log_dir']
                 log_dir.mkdir(parents=True, exist_ok=True)
                 from datetime import datetime
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 log_file = log_dir / f"stage-env_{timestamp}.log"
-        except Exception as e:
-            print(f"Warning: Failed to setup file logging: {e}", file=sys.stderr)
+        except FileNotFoundError:
+            # Config not found - will use defaults, no file logging
+            pass
+    except Exception as e:
+        print(f"Warning: Failed to setup file logging: {e}", file=sys.stderr)
     
     setup_logging(verbose=verbose, json_output=json_logs, log_file=log_file)
     
     if log_file:
         logger.info("file_logging_enabled", log_file=str(log_file))
-    
-    # Initialize global configuration manager
-    from src.config.manager import initialize_config
-    initialize_config(BASE_PATH, CONFIG_PATH)
 
 
 # Register commands from modules

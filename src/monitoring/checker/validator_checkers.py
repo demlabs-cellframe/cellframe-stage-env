@@ -4,7 +4,6 @@ Checkers for validator operations.
 Extracted from genesis_validator.py for better code organization.
 """
 
-import configparser
 from pathlib import Path
 from typing import List, Optional
 
@@ -193,8 +192,9 @@ class CertificateOrderMatchChecker(BaseChecker):
             chain_config_path = self.base_path.parent / "testing" / "cache" / "configs" / f"node{node.node_id}" / "etc" / "network" / self.network_name / "main"
             if chain_config_path.exists():
                 try:
-                    config = configparser.ConfigParser()
-                    config.read(chain_config_path)
+                    # Use centralized config manager
+                    config_loader = get_config_loader()
+                    config = config_loader.load_config_file(chain_config_path)
                     if config.has_section('esbocs') and config.has_option('esbocs', 'blocks-sign-cert'):
                         config_cert = config.get('esbocs', 'blocks-sign-cert').strip()
                         config_found = True
@@ -227,8 +227,9 @@ class CertificateOrderMatchChecker(BaseChecker):
                 network_config_path = self.base_path.parent / "testing" / "cache" / "configs" / f"node{node.node_id}" / "cellframe-node.cfg.d" / f"node{node.node_id}.cfg"
                 if network_config_path.exists():
                     try:
-                        config = configparser.ConfigParser()
-                        config.read(network_config_path)
+                        # Use centralized config manager
+                        config_loader = get_config_loader()
+                        config = config_loader.load_config_file(network_config_path)
                         # Check if there's an [esbocs] section
                         if config.has_section('esbocs') and config.has_option('esbocs', 'blocks-sign-cert'):
                             config_cert = config.get('esbocs', 'blocks-sign-cert').strip()
@@ -262,8 +263,9 @@ class CertificateOrderMatchChecker(BaseChecker):
                 network_file_path = self.base_path.parent / "testing" / "cache" / "configs" / f"node{node.node_id}" / "network" / self.network_name / "main"
                 if network_file_path.exists():
                     try:
-                        config = configparser.ConfigParser()
-                        config.read(network_file_path)
+                        # Use centralized config manager
+                        config_loader = get_config_loader()
+                        config = config_loader.load_config_file(network_file_path)
                         if config.has_section('esbocs') and config.has_option('esbocs', 'blocks-sign-cert'):
                             config_cert = config.get('esbocs', 'blocks-sign-cert').strip()
                             config_found = True

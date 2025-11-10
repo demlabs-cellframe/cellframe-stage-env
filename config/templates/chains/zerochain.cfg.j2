@@ -21,6 +21,8 @@ is_single_line=true
 is_celled=false
 is_add_directly=false
 datum_add_hashes_count=1
+# Enable detailed debug logging for DAG consensus (includes datums table operations)
+debug_more=true
 # Static genesis event hash (filled dynamically during network initialization)
 static_genesis_event={{ static_genesis_event | default('', true) }}
 is_static_genesis_event={{ is_static_genesis_event | default('false', true) }}

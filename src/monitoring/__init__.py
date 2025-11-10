@@ -41,6 +41,7 @@ from .network_consensus import (
 from .base import BaseMonitor, BaseWaiter, MonitorConfig
 from .validator import ValidatorMonitor
 from .waiters import (
+    LedgerTransactionWaiter,
     UTXOIndexationWaiter,
     ChainReloadWaiter,
     NetworkOnlineWaiter,
@@ -64,6 +65,7 @@ __all__ = [
     "BaseWaiter",
     "MonitorConfig",
     "ValidatorMonitor",
+    "LedgerTransactionWaiter",
     "UTXOIndexationWaiter",
     "ChainReloadWaiter",
     "NetworkOnlineWaiter",

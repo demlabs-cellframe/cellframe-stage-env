@@ -12,7 +12,6 @@ Handles ESBocs consensus initialization with PoS stake delegation:
 """
 
 import asyncio
-import configparser
 import re
 import time
 from pathlib import Path
@@ -38,7 +37,8 @@ from ..monitoring.waiter.genesis_waiters import (
     DelegationsSyncedWaiter,
 )
 from ..monitoring.checker.config_checkers import verify_zerochain_config
-from ..monitoring.waiters import UTXOIndexationWaiter
+from ..monitoring.checker.ledger_checkers import LedgerTransactionChecker
+from ..monitoring.waiters import LedgerTransactionWaiter
 
 
 logger = get_logger(__name__)
@@ -141,11 +141,11 @@ class ESBocsGenesisManager(BaseGenesisManager):
         fee_addr = None
         min_validators_count = 2  # Default: 2/3 consensus for 3 validators
         
-        # Read static_genesis_event from zerochain.cfg
+        # Read static_genesis_event from zerochain.cfg using centralized config manager
         if zerochain_config_path.exists():
-            import configparser
-            config = configparser.ConfigParser()
-            config.read(zerochain_config_path)
+            from ..config.manager import get_config_loader
+            config_loader = get_config_loader()
+            config = config_loader.load_config_file(zerochain_config_path)
             
             if 'dag' in config and 'static_genesis_event' in config['dag']:
                 static_genesis_event = config['dag']['static_genesis_event'].strip()
@@ -169,11 +169,11 @@ class ESBocsGenesisManager(BaseGenesisManager):
                        config_path=str(zerochain_config_path),
                        note="CRITICAL: Zerochain config not found after snapshot restore!")
         
-        # Read fee_addr and min_validators_count from main.cfg
+        # Read fee_addr and min_validators_count from main.cfg using centralized config manager
         if main_config_path.exists():
-            import configparser
-            config = configparser.ConfigParser()
-            config.read(main_config_path)
+            from ..config.manager import get_config_loader
+            config_loader = get_config_loader()
+            config = config_loader.load_config_file(main_config_path)
             
             if 'esbocs' in config:
                 if 'fee_addr' in config['esbocs']:
@@ -256,6 +256,9 @@ class ESBocsGenesisManager(BaseGenesisManager):
             RuntimeError: If genesis initialization fails
         """
         logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with PoS - 3 Validators, 2/3 Consensus) ===")
+        
+        # Store emission_hash for later use in ledger checks
+        self.emission_hash = emission_hash
         
         try:
             # Step 0: CRITICAL - Regenerate chain configs with ALL master validators
@@ -1110,10 +1113,33 @@ class ESBocsGenesisManager(BaseGenesisManager):
                                  stderr=stderr_events[:500] if stderr_events else "empty",
                                  note="Failed to get DAG events count")
                 
-                # Check tx_history for fee_collector wallet (should show transactions if UTXO are indexed)
+                # Check if emission transaction is in ledger using ledger info (more reliable than tx_history)
+                # tx_history depends on PVT(a_dag)->datums which may not be populated after snapshot restore
+                # ledger info checks ledger_items directly, which is populated during chain loading
+                emission_in_ledger = False
+                if hasattr(self, 'emission_hash') and self.emission_hash:
+                    try:
+                        checker = LedgerTransactionChecker(
+                            self.genesis._exec_cli,
+                            first_root_node.node_id,
+                            self.emission_hash,
+                            network=self.network_name
+                        )
+                        emission_in_ledger = await checker.check()
+                        logger.info("emission_transaction_ledger_check",
+                                   emission_hash=self.emission_hash[:16],
+                                   found_in_ledger=emission_in_ledger,
+                                   note="Emission transaction check via ledger info (checks ledger_items directly)")
+                    except Exception as ledger_check_err:
+                        logger.warning("emission_ledger_check_exception",
+                                     emission_hash=self.emission_hash[:16] if hasattr(self, 'emission_hash') and self.emission_hash else "unknown",
+                                     error=str(ledger_check_err)[:200],
+                                     note="Exception during emission ledger check")
+                
+                # DIAGNOSTIC: Also check tx_history for comparison (may be empty if PVT(a_dag)->datums is not populated)
                 exit_code_txhist, stdout_txhist, stderr_txhist = self.genesis._exec_cli(
                     first_root_node.node_id,
-                    f"tx_history -w {emission_wallet_name} -net {self.network_name} -chain zerochain",
+                    f"tx_history -w {emission_wallet_name} -net {self.network_name} -chain zerochain -head",
                     check_output=False
                 )
                 
@@ -1123,25 +1149,28 @@ class ESBocsGenesisManager(BaseGenesisManager):
                     tx_count_match = re.search(r'total_tx_count["\']?\s*:\s*(\d+)', stdout_txhist, re.IGNORECASE)
                     if tx_count_match:
                         tx_history_count = int(tx_count_match.group(1))
-                    logger.info("tx_history_check_result",
+                    logger.info("tx_history_check_result_diagnostic",
                                tx_history_count=tx_history_count,
                                stdout_preview=stdout_txhist[:500] if stdout_txhist else "empty",
-                               note="TX history count for fee_collector wallet")
+                               note="TX history count (diagnostic - may be empty if PVT(a_dag)->datums not populated)")
                 else:
-                    logger.warning("tx_history_check_failed",
+                    logger.warning("tx_history_check_failed_diagnostic",
                                  exit_code=exit_code_txhist,
                                  stderr=stderr_txhist[:500] if stderr_txhist else "empty",
-                                 note="Failed to get tx_history")
+                                 note="Failed to get tx_history (diagnostic - not critical)")
                 
                 # DIAGNOSTIC SUMMARY
                 logger.warning("diagnostic_summary_balance_vs_utxo",
                              balance_datoshi=fee_collector_balance_datoshi,
                              dag_events_count=dag_events_count,
+                             emission_in_ledger=emission_in_ledger,
                              tx_history_count=tx_history_count,
                              note=f"BALANCE VISIBLE: {fee_collector_balance_datoshi} datoshi, "
                                   f"DAG EVENTS: {dag_events_count}, "
-                                  f"TX HISTORY: {tx_history_count}. "
-                                  f"If balance > 0 but tx_history = 0, UTXO are NOT indexed in ledger_items!")
+                                  f"EMISSION IN LEDGER (via ledger info): {emission_in_ledger}, "
+                                  f"TX HISTORY (diagnostic): {tx_history_count}. "
+                                  f"ledger info checks ledger_items directly (reliable), "
+                                  f"tx_history depends on PVT(a_dag)->datums (may be empty after snapshot restore)")
                 
             except Exception as diag_err:
                 logger.warning("diagnostic_check_exception",
@@ -1409,9 +1438,11 @@ class ESBocsGenesisManager(BaseGenesisManager):
                                    note="UTXO indexed in ledger_items - transfer should now work")
                     except TimeoutError:
                         # Re-check tx_history for diagnostic
+                        # WORKAROUND: Use -head flag to force forward iteration (get_first/get_next)
+                        # because DAG chains don't implement get_last/get_prev callbacks
                         exit_code_txhist2, stdout_txhist2, stderr_txhist2 = self.genesis._exec_cli(
                             first_root_node.node_id,
-                            f"tx_history -w {emission_wallet_name} -net {self.network_name} -chain zerochain",
+                            f"tx_history -w {emission_wallet_name} -net {self.network_name} -chain zerochain -head",
                             check_output=False
                         )
                         

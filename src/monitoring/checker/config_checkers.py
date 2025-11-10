@@ -2,12 +2,12 @@
 Configuration checkers for genesis operations.
 """
 
-import configparser
 from pathlib import Path
 from typing import Optional, Tuple
 
 from .base import BaseChecker
 from ...utils.logger import get_logger
+from ...config.manager import get_config_loader
 
 logger = get_logger(__name__)
 
@@ -103,8 +103,9 @@ class ZerochainConfigChecker(BaseChecker):
             self._cached_result = (None, False, None)
             return self._cached_result
         
-        config = configparser.ConfigParser()
-        config.read(zerochain_config_path)
+        # Use centralized config manager
+        config_loader = get_config_loader()
+        config = config_loader.load_config_file(zerochain_config_path)
         
         # Verify [dag] section exists
         if 'dag' not in config:
@@ -136,8 +137,9 @@ class ZerochainConfigChecker(BaseChecker):
                 f"Cannot proceed without base config."
             )
         
-        base_config = configparser.ConfigParser()
-        base_config.read(base_config_path)
+        # Use centralized config manager
+        config_loader = get_config_loader()
+        base_config = config_loader.load_config_file(base_config_path)
         
         # Verify [general] section exists (seed_mode is in [general], not [main])
         if 'general' not in base_config:

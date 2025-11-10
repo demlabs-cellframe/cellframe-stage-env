@@ -483,21 +483,26 @@ class BaseGenesisManager:
                                stderr=stderr_balance[:500] if stderr_balance else "empty",
                                note="Wallet balance check - SDK may not find UTXO even if balance exists")
                     
-                    # Check transaction history to see if UTXO are indexed
+                    # DIAGNOSTIC: Check transaction history (may be empty if PVT(a_dag)->datums not populated)
+                    # NOTE: For checking specific transactions, use LedgerTransactionChecker with datum_hash
+                    # tx_history depends on PVT(a_dag)->datums which may not be populated after snapshot restore
+                    # WORKAROUND: Use -head flag to force forward iteration (get_first/get_next)
+                    # because DAG chains don't implement get_last/get_prev callbacks
                     from_addr = await self.get_wallet_address(from_node_id, from_wallet)
                     exit_code_tx_hist, stdout_tx_hist, _ = self._exec_cli(
                         from_node_id,
-                        f"tx_history -addr {from_addr} -net {self.network_name} -chain {chain} -limit 5",
+                        f"tx_history -addr {from_addr} -net {self.network_name} -chain {chain} -limit 5 -head",
                         check_output=False
                     )
                     
-                    logger.error("tx_history_check_on_transfer_failure",
+                    logger.error("tx_history_check_on_transfer_failure_diagnostic",
                                wallet=from_wallet,
                                addr=from_addr[:16],
                                chain=chain,
                                exit_code=exit_code_tx_hist,
                                stdout=stdout_tx_hist[:1000] if stdout_tx_hist else "empty",
-                               note="Transaction history check - if empty, UTXO may not be indexed in ledger")
+                               note="Transaction history check (diagnostic - may be empty if PVT(a_dag)->datums not populated). "
+                                    "For reliable transaction checks, use LedgerTransactionChecker with specific datum_hash")
                     
                 except Exception as diag_err:
                     logger.warning("diagnostic_check_failed", error=str(diag_err)[:200])
