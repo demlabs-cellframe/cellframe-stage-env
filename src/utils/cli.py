@@ -10,7 +10,7 @@ Provides common CLI functionality like:
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, List, Tuple, TextIO
+from typing import Optional, List, Tuple, TextIO, Dict
 from io import StringIO
 
 from rich.console import Console
@@ -70,6 +70,7 @@ def run_command(
     cwd: Optional[Path] = None,
     capture_output: bool = True,
     check: bool = True,
+    env: Optional[Dict[str, str]] = None,
 ) -> Tuple[int, str, str]:
     """
     Run a shell command with logging.
@@ -77,16 +78,18 @@ def run_command(
     Args:
         cmd: Command and arguments as list
         cwd: Working directory
-        capture_output: Capture stdout/stderr
+        capture_output: Capture stdout/stderr (False = show output in real-time)
         check: Raise exception on non-zero exit
+        env: Environment variables dict (None = use current env)
         
     Returns:
         Tuple of (exit_code, stdout, stderr)
+        If capture_output=False, stdout and stderr will be empty strings
         
     Raises:
         subprocess.CalledProcessError: If check=True and command fails
     """
-    logger.debug("running_command", cmd=" ".join(cmd), cwd=str(cwd) if cwd else None)
+    logger.debug("running_command", cmd=" ".join(cmd), cwd=str(cwd) if cwd else None, capture_output=capture_output)
     
     try:
         result = subprocess.run(
@@ -95,14 +98,23 @@ def run_command(
             capture_output=capture_output,
             text=True,
             check=check,
+            env=env,
         )
-        return result.returncode, result.stdout, result.stderr
+        if capture_output:
+            return result.returncode, result.stdout, result.stderr
+        else:
+            # When not capturing, stdout/stderr go directly to terminal
+            return result.returncode, "", ""
+    except KeyboardInterrupt:
+        logger.warning("command_interrupted", cmd=" ".join(cmd))
+        # Re-raise KeyboardInterrupt so caller can handle it
+        raise
     except subprocess.CalledProcessError as e:
         logger.error(
             "command_failed",
             cmd=" ".join(cmd),
             exit_code=e.returncode,
-            stderr=e.stderr,
+            stderr=e.stderr if capture_output else "output was shown in real-time",
         )
         raise
 

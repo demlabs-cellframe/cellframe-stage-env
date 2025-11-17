@@ -1,0 +1,157 @@
+name: PHASE 1 - Zerochain Genesis
+description: Initialize ROOT nodes, create token and emission
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: stagenet
+
+setup:
+  - docker_op: start
+    services: [root-1, root-2, root-3]
+    detach: true
+  
+  - wait_network: online
+    nodes: [root-1, root-2, root-3]
+    timeout: 60
+  
+  - wait_network: links_connecting
+    nodes: [root-1, root-2, root-3]
+    timeout: 60
+
+test:
+  # Register ROOT nodes - get addresses (IPs already in context as node_ip map)
+  # Available: node_ip['node1'], node_ip['node2'], node_ip['node3']
+  # Or as array: node_ips[0], node_ips[1], node_ips[2]
+  - group: Get node addresses
+    steps:
+      - cli: "node dump"
+        node: root-1
+        save_node: root_addr_0
+      
+      - cli: "node dump"
+        node: root-2
+        save_node: root_addr_1
+      
+      - cli: "node dump"
+        node: root-3
+        save_node: root_addr_2
+  
+  # Register all nodes on each root node with IP and port (each node registers others, not itself)
+  # Using node_ip map for readable access by node ID
+  - group: Register nodes on root-1
+    defaults:
+      node: root-1
+    steps:
+      # root-1 registers root-2 and root-3 with their IP addresses and ports
+      - cli: "node add -addr {{root_addr_1}} -alias root-2 -host {{node_ip['node2']}} -port 8079"
+      
+      - cli: "node add -addr {{root_addr_2}} -alias root-3 -host {{node_ip['node3']}} -port 8079"
+  
+  - group: Register nodes on root-2
+    defaults:
+      node: root-2
+    steps:
+      # root-2 registers root-1 and root-3 with their IP addresses and ports
+      - cli: "node add -addr {{root_addr_0}} -alias root-1 -host {{node_ip['node1']}} -port 8079"
+      
+      - cli: "node add -addr {{root_addr_2}} -alias root-3 -host {{node_ip['node3']}} -port 8079"
+  
+  - group: Register nodes on root-3
+    defaults:
+      node: root-3
+    steps:
+      # root-3 registers root-1 and root-2 with their IP addresses and ports
+      - cli: "node add -addr {{root_addr_0}} -alias root-1 -host {{node_ip['node1']}} -port 8079"
+      
+      - cli: "node add -addr {{root_addr_1}} -alias root-2 -host {{node_ip['node2']}} -port 8079"
+  
+  # Establish links via soft reconnect (offline/online cycle)
+  - group: Soft reconnect - offline
+    steps:
+      - cli: "net go offline"
+        node: root-1
+      
+      - cli: "net go offline"
+        node: root-2
+      
+      - cli: "net go offline"
+        node: root-3
+  
+  # Wait for nodes to reach offline state
+  - wait_network: offline
+    nodes: [root-1, root-2, root-3]
+    timeout: 30
+  
+  - group: Soft reconnect - online
+    steps:
+      - cli: "net go online"
+        node: root-1
+      
+      - cli: "net go online"
+        node: root-2
+      
+      - cli: "net go online"
+        node: root-3
+  
+  - wait_network: links_established
+    nodes: [root-1, root-2, root-3]
+    timeout: 120
+  
+  # Genesis operations on root-1
+  - group: Genesis operations
+    defaults:
+      node: root-1
+    steps:
+      # Create fee wallet
+      - cli: "wallet new -w fee_collector"
+      
+      # Get fee wallet address
+      - cli: "wallet info -w fee_collector"
+        save_wallet: fee_addr
+      
+      # Create TCELL token declaration (2 of 3 consensus: 2 signatures required out of 3 total signers)
+      # root-1 creates token with its private certificate and specifies all public certs
+      # NOTE: Requires modified cellframe-node with distributed multi-sig support
+      - cli: "token_decl -token TCELL -chain zerochain -total_supply 1000000 -decimals 18 -signs_emission 2 -signs_total 3 -certs pvt.stagenet.root.0 -pub_certs stagenet.root.0,stagenet.root.1,stagenet.root.2"
+        node: root-1
+        save_hash: token_hash
+      
+      # Wait for token declaration to appear in mempool
+      - wait: "2s"
+  
+  # Other root nodes add their signatures to token declaration (distributed multi-sig)
+  - group: Add signatures from other root nodes
+    steps:
+      # root-2 adds signature (token gets new hash after signing)
+      - cli: "token_decl_sign -datum {{token_hash}} -chain zerochain -certs pvt.stagenet.root.1"
+        node: root-2
+        save_hash: token_hash_signed
+      
+      # Wait for token with 2 signatures to be finalized in DAG
+      - wait_for_datum: "{{token_hash_signed}}"
+        node: root-1
+        chain: zerochain
+        timeout: 120
+      
+      # Create emission (requires 2 signatures: root-1 and root-2)
+      - cli: "token_emit -chain zerochain -token TCELL -emission_value 1000000 -addr {{fee_addr}} -certs pvt.stagenet.root.0"
+        node: root-1
+        save_hash: emission_hash_partial
+      
+      # root-2 adds signature to emission
+      - cli: "token_emit_sign -datum {{emission_hash_partial}} -chain zerochain -certs pvt.stagenet.root.1"
+        node: root-2
+        save_hash: emission_hash
+  
+  # Wait for emission to be finalized
+  - wait_for_datum: "{{emission_hash}}"
+    timeout: 120
+  
+  # Create snapshot
+  - snapshot: create
+    name: phase1_zerochain_genesis
+    phase: phase1
+

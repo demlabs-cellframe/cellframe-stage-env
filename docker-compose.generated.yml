@@ -5,6 +5,7 @@ x-cf-node-template:
     args:
       CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
       BUILD_TYPE: ${BUILD_TYPE:-debug}
+      DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
   image: cf-node:${BUILD_TYPE:-debug}-${CELLFRAME_VERSION:-latest}
   container_name: ${COMPOSE_PROJECT_NAME:-cellframe}-${NODE_TYPE:-node}-${NODE_ID:-1}
   hostname: ${COMPOSE_PROJECT_NAME:-cellframe}-${NODE_TYPE:-node}-${NODE_ID:-1}
@@ -104,6 +105,7 @@ services:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
         NODE_SOURCE_TYPE: local
         LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
@@ -151,6 +153,7 @@ services:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
         NODE_SOURCE_TYPE: local
         LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
@@ -198,6 +201,7 @@ services:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
         NODE_SOURCE_TYPE: local
         LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
@@ -245,6 +249,7 @@ services:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
         NODE_SOURCE_TYPE: local
         LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
@@ -292,6 +297,7 @@ services:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
         NODE_SOURCE_TYPE: local
         LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
@@ -339,6 +345,7 @@ services:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
         NODE_SOURCE_TYPE: local
         LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
@@ -386,6 +393,7 @@ services:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
         NODE_SOURCE_TYPE: local
         LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .
@@ -433,6 +441,7 @@ services:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
         NODE_SOURCE_TYPE: local
         LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
       context: .

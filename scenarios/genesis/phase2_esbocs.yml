@@ -1,0 +1,228 @@
+name: PHASE 2 - ESBocs Genesis
+description: Initialize MASTER nodes with PoS delegation
+
+# Note: emission_hash should be passed via scenario variables or restored from snapshot
+# It's set in phase1_zerochain.yml and should be available in context
+
+includes:
+  - common/snapshot_restore.yml
+  - common/set_net_default.yml
+
+test:
+  # Restore from snapshot
+  - snapshot: restore
+    name: phase1_zerochain_genesis
+  
+  # Restart ROOT nodes
+  - docker_op: restart
+    services: [root-1, root-2, root-3]
+  
+  - wait_network: online
+    nodes: [root-1, root-2, root-3]
+    timeout: 60
+  
+  - wait_network: links_established
+    nodes: [root-1, root-2, root-3]
+    timeout: 120
+  
+  # Create master wallets
+  - group: Create master wallets
+    steps:
+      - loop: 3
+        steps:
+          - python: |
+              ctx.set_variable('master_idx', ctx.get_variable('i'))
+              ctx.set_variable('master_node', f"master-{ctx.get_variable('iteration')}")
+              ctx.set_variable('wallet_name', f"stagenet_master_{ctx.get_variable('i')}")
+          
+          - cli: "wallet new -w {{wallet_name}}"
+            node: "{{master_node}}"
+          
+          - cli: "wallet info -w {{wallet_name}}"
+            node: "{{master_node}}"
+            save_wallet: "master_addr_{{master_idx}}"
+  
+  # Transfer to masters
+  - group: Transfer tokens to masters
+    defaults:
+      node: root-1
+      cli:
+        chain: zerochain
+        token: TCELL
+        from_wallet: fee_collector
+    steps:
+      - loop: 3
+        steps:
+          - python: |
+              ctx.set_variable('master_idx', ctx.get_variable('i'))
+              ctx.set_variable('master_addr_var', f"master_addr_{ctx.get_variable('i')}")
+              ctx.set_variable('master_addr', ctx.get_variable(ctx.get_variable('master_addr_var')))
+          
+          - cli: "tx_create -value 120e18 -to_addr {{master_addr}}"
+            save_hash: "transfer_hash_{{master_idx}}"
+          
+          - wait_for_datum: "{{transfer_hash_{{master_idx}}}}"
+            timeout: 120
+  
+  # Start MASTER nodes
+  - docker_op: start
+    services: [master-1, master-2, master-3]
+    detach: true
+  
+  - wait_network: online
+    nodes: [master-1, master-2, master-3]
+    timeout: 60
+  
+  # Step 7: Delegate keys via srv_stake on zerochain
+  - group: Delegate keys
+    defaults:
+      cli:
+        chain: zerochain
+    steps:
+      - loop: 3
+        steps:
+          - python: |
+              ctx.set_variable('master_idx', ctx.get_variable('i'))
+              ctx.set_variable('master_node', f"master-{ctx.get_variable('iteration')}")
+              ctx.set_variable('wallet_name', f"stagenet_master_{ctx.get_variable('i')}")
+              ctx.set_variable('cert_name', f"pvt.stagenet.master.{ctx.get_variable('i')}")
+          
+          # Get node address
+          - cli: "node addr"
+            node: "{{master_node}}"
+            save_node: "master_node_addr_{{master_idx}}"
+          
+          # Delegate key
+          - python: |
+              node_addr_var = f"master_node_addr_{ctx.get_variable('i')}"
+              ctx.set_variable('node_addr', ctx.get_variable(node_addr_var))
+          
+          - cli: "srv_stake delegate -w {{wallet_name}} -value 100.0e+18 -cert {{cert_name}} -node_addr {{node_addr}} -fee 0.1"
+            node: "{{master_node}}"
+            save_hash: "delegation_hash_{{master_idx}}"
+          
+          - wait_for_datum: "{{delegation_hash_{{master_idx}}}}"
+            node: "{{master_node}}"
+            timeout_total: 30
+  
+  # Step 8: GDB sync and wait for delegation transactions
+  - group: GDB sync
+    steps:
+      - loop: 3
+        steps:
+          - python: |
+              ctx.set_variable('node_name', f"master-{ctx.get_variable('iteration')}")
+          
+          - cli: "net go sync"
+            node: "{{node_name}}"
+      
+      - loop: 3
+        steps:
+          - python: |
+              ctx.set_variable('node_name', f"root-{ctx.get_variable('iteration')}")
+          
+          - cli: "net go sync"
+            node: "{{node_name}}"
+  
+  - wait_network: sync_complete
+    nodes: [master-1, master-2, master-3, root-1, root-2, root-3]
+    timeout: 30
+  
+  # Step 9: Verify delegations are synced
+  - wait:
+      type: delegations_synced
+      nodes: [master-1, master-2, master-3]
+      expected_count: 3
+      timeout: 60
+  
+  # Step 10: Flush GDB to disk before restart
+  - group: Flush GDB
+    steps:
+      - loop: 3
+        steps:
+          - python: |
+              ctx.set_variable('node_name', f"master-{ctx.get_variable('iteration')}")
+          
+          - cli: "global_db flush"
+            node: "{{node_name}}"
+  
+  # Step 11: Restart master nodes to reload chains with delegations
+  - docker_op: restart
+    services: [master-1, master-2, master-3]
+  
+  - wait:
+      type: master_containers_running
+      nodes: [master-1, master-2, master-3]
+      timeout: 60
+  
+  - wait:
+      type: cli_ready
+      nodes: [master-1, master-2, master-3]
+      timeout: 30
+  
+  # Step 12: GDB sync after restart
+  - group: GDB sync after restart
+    steps:
+      - loop: 3
+        steps:
+          - python: |
+              ctx.set_variable('node_name', f"master-{ctx.get_variable('iteration')}")
+          
+          - cli: "net go sync"
+            node: "{{node_name}}"
+  
+  # Step 13: Wait for stake service ready with delegated keys
+  - wait:
+      type: stake_service_ready
+      nodes: [master-1, master-2, master-3]
+      timeout: 60
+  
+  # Step 14: Verify delegated keys are active (CLI check)
+  - group: Verify delegated keys
+    steps:
+      - loop: 3
+        steps:
+          - python: |
+              ctx.set_variable('node_name', f"master-{ctx.get_variable('iteration')}")
+          
+          - cli: "srv_stake list keys"
+            node: "{{node_name}}"
+            contains: "keys"
+  
+  # Step 15: Wait for network consensus
+  - wait_network: links_established
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
+    timeout: 120
+  
+  # Step 16: Wait for ESBocs consensus active
+  - wait:
+      type: esbocs_consensus_active
+      nodes: [master-1, master-2, master-3]
+      timeout: 90
+  
+  # Step 17: Create first transaction → genesis block
+  - group: Create genesis block
+    defaults:
+      node: master-1
+      cli:
+        chain: main
+        token: TCELL
+    steps:
+      - cli: "tx_create -from_emission {{emission_hash}} -chain_emission zerochain -value 1e18 -to_addr {{master_addr_0}} -cert pvt.stagenet.master.0 -fee 0.1"
+        save_hash: first_tx_hash
+      
+      # Step 18: Wait for genesis block
+      - wait:
+          type: first_block
+          chain: main
+          nodes: [master-1, master-2, master-3]
+          timeout: 60
+      
+      # Step 19: Get genesis block hash
+      - cli: "block list -first 1"
+        save_hash: main_genesis_hash
+  
+  # Note: Steps 20-22 (update configs, disable seed_mode, sequential restart, soft reconnect)
+  # require access to config_mgr and lifecycle_manager which are not available in YAML scenarios.
+  # These steps should be handled by the calling Python code after scenario execution.
+

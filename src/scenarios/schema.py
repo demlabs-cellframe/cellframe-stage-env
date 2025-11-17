@@ -182,10 +182,30 @@ class CLIStep(BaseModel):
     save_hash: Optional[str] = Field(None, description="Extract and save hash (0x[hex]) to variable")
     save_wallet: Optional[str] = Field(None, description="Extract and validate wallet address to variable")
     save_node: Optional[str] = Field(None, description="Extract node address (0x::format) to variable")
+    save_token: Optional[str] = Field(None, description="Extract token ticker to variable")
+    save_to: Optional[str] = Field(None, description="Save raw output to variable")
     wait: Optional[str] = Field(None, description="Wait duration after command (e.g., '5s')")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     contains: Optional[str] = Field(None, description="Expected substring in output")
     timeout: Optional[int] = Field(30, description="Command timeout in seconds")
+    
+    def get_extraction_info(self) -> List[str]:
+        """
+        Get list of extraction information for logging.
+        Returns list of strings like ['hash→emission_hash', 'wallet→fee_wallet']
+        """
+        info = []
+        if self.save_hash:
+            info.append(f"hash→{self.save_hash}")
+        if self.save_wallet:
+            info.append(f"wallet→{self.save_wallet}")
+        if self.save_token:
+            info.append(f"token→{self.save_token}")
+        if self.save_node:
+            info.append(f"node→{self.save_node}")
+        if self.save_to:
+            info.append(f"output→{self.save_to}")
+        return info
     
     class Config:
         use_enum_values = True
@@ -207,7 +227,13 @@ class RPCStep(BaseModel):
 
 class WaitStep(BaseModel):
     """Wait for duration or condition."""
-    wait: str = Field(..., description="Duration (e.g., '5s') or condition")
+    wait: Optional[str] = Field(None, description="Duration (e.g., '5s') or condition")
+    type: Optional[str] = Field(None, description="Waiter type from wait_registry (e.g., 'delegations_synced', 'stake_service_ready')")
+    nodes: Optional[List[str]] = Field(None, description="Nodes to wait on (for waiter types)")
+    network: Optional[str] = Field(None, description="Network name (for waiter types)")
+    chain: Optional[str] = Field(None, description="Chain name (for waiter types)")
+    expected_count: Optional[int] = Field(None, description="Expected count (for delegations_synced)")
+    timeout: Optional[int] = Field(60, description="Timeout in seconds (for waiter types)")
 
 
 class PythonStep(BaseModel):
@@ -259,6 +285,33 @@ class WaitForDatumStep(BaseModel):
     timeout_in_blocks: int = Field(180, description="Timeout after appearing in blocks")
     check_interval: int = Field(2, description="Check interval in seconds")
     save_status: Optional[str] = Field(None, description="Variable name to save final status")
+
+
+class NetworkWaitStep(BaseModel):
+    """Wait for network state (online, offline, links_connecting, links_established, sync_complete)."""
+    wait_network: str = Field(..., description="Network state to wait for: 'online', 'offline', 'links_connecting', 'links_established', 'sync_complete'")
+    nodes: List[str] = Field(default_factory=lambda: ["root-1", "root-2", "root-3"], description="Nodes to check")
+    timeout: int = Field(120, description="Timeout in seconds")
+    network: str = Field("stagenet", description="Network name")
+    chain: Optional[str] = Field(None, description="Chain name (optional)")
+
+
+class DockerOpStep(BaseModel):
+    """Execute Docker operations (start, stop, restart, logs, exec)."""
+    docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'logs', 'exec'")
+    services: List[str] = Field(..., description="Docker services to operate on")
+    command: Optional[str] = Field(None, description="Command for 'exec' operation")
+    detach: bool = Field(True, description="Run in detached mode (for start/restart)")
+    wait_for_ip: bool = Field(True, description="Wait for containers to receive IP addresses (for start)")
+    wait: Optional[str] = Field(None, description="Wait duration after operation (e.g., '5s')")
+
+
+class SnapshotStep(BaseModel):
+    """Snapshot operations (create, restore, verify)."""
+    snapshot: str = Field(..., description="Snapshot operation: 'create', 'restore', 'verify'")
+    name: str = Field(..., description="Snapshot name")
+    phase: str = Field("full", description="Snapshot phase: 'phase1', 'full'")
+    nodes: Optional[List[str]] = Field(None, description="Nodes to include in snapshot (for create)")
 
 
 # ============================================================================
@@ -323,8 +376,11 @@ class StepGroup(BaseModel):
     steps: List[Union["TestStep", "StepGroup"]] = Field(..., description="Steps in this group")
 
 
-# Update TestStep to include StepGroup
-TestStep = Union[CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup]
+# Update TestStep to include StepGroup and new step types
+TestStep = Union[
+    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
+    NetworkWaitStep, DockerOpStep, SnapshotStep
+]
 
 
 # ============================================================================

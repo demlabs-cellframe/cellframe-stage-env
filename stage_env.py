@@ -15,6 +15,7 @@ from rich.console import Console
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.utils.logger import setup_logging, get_logger
+from src.utils.pid_manager import PIDManager
 
 # Initialize CLI app
 app = typer.Typer(
@@ -29,6 +30,7 @@ logger = get_logger(__name__)
 # Global state
 BASE_PATH = Path(__file__).parent
 CONFIG_PATH: Optional[Path] = None
+PID_MANAGER: Optional[PIDManager] = None
 
 
 @app.callback()
@@ -78,6 +80,18 @@ def main(
     
     if log_file:
         logger.info("file_logging_enabled", log_file=str(log_file))
+    
+    # Initialize PID manager to prevent multiple instances
+    global PID_MANAGER
+    PID_MANAGER = PIDManager(BASE_PATH)
+    if not PID_MANAGER.check_and_create():
+        console.print(
+            f"[red]❌ Another instance of stage-env is already running.[/red]\n"
+            f"[yellow]PID file: {PID_MANAGER.pid_file}[/yellow]\n"
+            f"[dim]If you're sure no other instance is running, remove the PID file:[/dim]\n"
+            f"[dim]  rm {PID_MANAGER.pid_file}[/dim]"
+        )
+        raise typer.Exit(1)
 
 
 # Register commands from modules
@@ -99,4 +113,10 @@ snapshot_commands.register_commands(app, BASE_PATH, get_config_path)
 
 
 if __name__ == "__main__":
-    app()
+    try:
+        app()
+    finally:
+        # Cleanup PID file on exit
+        if PID_MANAGER is not None:
+            PID_MANAGER.remove()
+

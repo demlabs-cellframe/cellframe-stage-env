@@ -57,7 +57,8 @@ class BaseScenarioParser:
         self.scenarios_root = Path(scenarios_root)
         self.common_root = Path(common_root) if common_root else self.scenarios_root
         self._loaded_files: Dict[Path, Dict[str, Any]] = {}
-        self._variable_pattern = re.compile(r'\{\{(\w+)\}\}')
+        # Pattern to match {{anything}} including complex expressions like {{map['key']}} or {{array[0]}}
+        self._variable_pattern = re.compile(r'\{\{([^}]+)\}\}')
     
     def _load_yaml_file(self, file_path: Path) -> Dict[str, Any]:
         """
@@ -261,6 +262,11 @@ class ScenarioParser(BaseScenarioParser):
     def substitute_variables(self, text: str, variables: Dict[str, Any]) -> str:
         """
         Substitute {{variable}} placeholders in text.
+        Supports:
+        - Simple variables: {{var_name}}
+        - Array indexing: {{array[0]}}, {{array[1]}}
+        - Map/Dict string keys: {{map['key']}}, {{map["key"]}}
+        - Nested access: {{map.key}} (if key is valid identifier)
         
         Args:
             text: Text with variable placeholders
@@ -270,13 +276,87 @@ class ScenarioParser(BaseScenarioParser):
             Text with variables substituted
             
         Raises:
-            ScenarioParseError: If undefined variable referenced
+            ScenarioParseError: If undefined variable referenced or invalid index/key
         """
+        import re
+        
         def replace_var(match):
-            var_name = match.group(1)
-            if var_name not in variables:
-                raise ScenarioParseError(f"Undefined variable: {var_name}")
-            return str(variables[var_name])
+            full_expr = match.group(1)  # e.g., "array[0]", "map['key']", "map.key", "simple_var"
+            
+            # Try numeric indexing: var_name[123]
+            if '[' in full_expr and full_expr.endswith(']') and not ("'" in full_expr or '"' in full_expr):
+                try:
+                    bracket_pos = full_expr.index('[')
+                    var_name = full_expr[:bracket_pos]
+                    index_str = full_expr[bracket_pos+1:-1]
+                    
+                    if index_str.isdigit():
+                        index = int(index_str)
+                        
+                        if var_name not in variables:
+                            raise ScenarioParseError(f"Undefined variable: {var_name}")
+                        
+                        value = variables[var_name]
+                        if not isinstance(value, (list, tuple)):
+                            raise ScenarioParseError(f"Variable '{var_name}' is not an array (type: {type(value).__name__})")
+                        
+                        if index < 0 or index >= len(value):
+                            raise ScenarioParseError(f"Array index {index} out of bounds for '{var_name}' (length: {len(value)})")
+                        
+                        return str(value[index])
+                except (ValueError, IndexError):
+                    pass
+            
+            # Try string key indexing: var_name['key'] or var_name["key"]
+            if '[' in full_expr and full_expr.endswith(']') and ("'" in full_expr or '"' in full_expr):
+                try:
+                    bracket_pos = full_expr.index('[')
+                    var_name = full_expr[:bracket_pos]
+                    key_part = full_expr[bracket_pos+1:-1]  # Get content between [ and ]
+                    
+                    # Remove quotes from key
+                    if (key_part.startswith("'") and key_part.endswith("'")) or \
+                       (key_part.startswith('"') and key_part.endswith('"')):
+                        key = key_part[1:-1]
+                        
+                        if var_name not in variables:
+                            raise ScenarioParseError(f"Undefined variable: {var_name}")
+                        
+                        value = variables[var_name]
+                        if not isinstance(value, dict):
+                            raise ScenarioParseError(f"Variable '{var_name}' is not a map/dict (type: {type(value).__name__})")
+                        
+                        if key not in value:
+                            raise ScenarioParseError(f"Key '{key}' not found in map '{var_name}' (available keys: {list(value.keys())})")
+                        
+                        return str(value[key])
+                except (ValueError, KeyError):
+                    pass
+            
+            # Try dot notation: var_name.key
+            if '.' in full_expr and full_expr.count('.') == 1:
+                parts = full_expr.split('.')
+                if len(parts) == 2:
+                    var_name, key = parts
+                    
+                    if var_name not in variables:
+                        raise ScenarioParseError(f"Undefined variable: {var_name}")
+                    
+                    value = variables[var_name]
+                    if isinstance(value, dict):
+                        if key not in value:
+                            raise ScenarioParseError(f"Key '{key}' not found in map '{var_name}' (available keys: {list(value.keys())})")
+                        return str(value[key])
+                    elif hasattr(value, key):
+                        # Support attribute access for objects
+                        return str(getattr(value, key))
+                    else:
+                        raise ScenarioParseError(f"Variable '{var_name}' (type: {type(value).__name__}) does not support key/attribute '{key}'")
+            
+            # Simple variable
+            if full_expr not in variables:
+                raise ScenarioParseError(f"Undefined variable: {full_expr}")
+            return str(variables[full_expr])
         
         return self._variable_pattern.sub(replace_var, text)
 

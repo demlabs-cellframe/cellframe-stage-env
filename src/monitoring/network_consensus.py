@@ -810,9 +810,18 @@ class NetworkConsensusMonitor:
         Returns:
             Command output as string
         """
-        # Convert node_id to container name: node1 -> node-1
+        # Convert node_id to container name: node1 -> node-1, root-1 -> node-1, etc.
         if node_id.startswith('node'):
             node_number = node_id[4:]  # Extract number from "node1"
+            container_name = f"cellframe-stage-node-{node_number}"
+        elif node_id.startswith('root-'):
+            # root-1 -> node-1, root-2 -> node-2, etc.
+            node_number = node_id.split('-')[1]
+            container_name = f"cellframe-stage-node-{node_number}"
+        elif node_id.startswith('master-'):
+            # master-1 -> node-4, master-2 -> node-5, etc. (in default topology)
+            master_idx = int(node_id.split('-')[1])
+            node_number = str(master_idx + 3)
             container_name = f"cellframe-stage-node-{node_number}"
         else:
             container_name = f"cellframe-stage-{node_id}"

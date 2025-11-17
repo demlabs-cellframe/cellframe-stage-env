@@ -32,6 +32,16 @@ ARG LOCAL_PACKAGE_NAME=
 ARG PACKAGE_URL=
 ARG REPOSITORY_URL=
 ARG REPOSITORY_BRANCH=master
+ARG DEBIAN_MIRROR=
+
+# Configure Debian mirror if provided (for faster package downloads)
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+        echo "Using Debian mirror: $DEBIAN_MIRROR" && \
+        sed -i "s|http://deb.debian.org/debian|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+        (echo "deb $DEBIAN_MIRROR trixie main" > /etc/apt/sources.list && \
+         echo "deb $DEBIAN_MIRROR trixie-updates main" >> /etc/apt/sources.list && \
+         echo "deb $DEBIAN_MIRROR trixie-security main" >> /etc/apt/sources.list); \
+    fi
 
 # Install required packages (base packages always, debug tools conditionally)
 RUN apt-get update && apt-get install -y \

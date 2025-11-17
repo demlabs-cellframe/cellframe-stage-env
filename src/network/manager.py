@@ -73,20 +73,6 @@ class NetworkManager:
             config_path=config_path
         )
         
-        # Initialize specialized genesis managers
-        from .genesis_zerochain import ZerochainGenesisManager
-        from .genesis_esbocs import ESBocsGenesisManager
-        self.zerochain_genesis = ZerochainGenesisManager(
-            base_path, 
-            self.topology.network.name, 
-            config_path
-        )
-        self.esbocs_genesis = ESBocsGenesisManager(
-            base_path, 
-            self.topology.network.name, 
-            config_path
-        )
-        
         # Node lifecycle manager for graceful restarts
         self.lifecycle = NodeLifecycleManager(project_name=self.compose.project_name)
         
@@ -138,6 +124,14 @@ class NetworkManager:
         )
         
         self.suite_isolation_config = suite_isolation_config
+        
+        # Initialize global scenario context
+        from ..scenarios.global_context import ScenarioGlobalContext
+        self.scenario_context = ScenarioGlobalContext(
+            network_name=self.topology.network.name,
+            topology_name=topology_name,
+            docker_client=self.genesis.docker_client
+        )
         
         logger.info("network_manager_initialized",
                    topology=topology_name,
@@ -362,89 +356,46 @@ class NetworkManager:
                     node_cli_path=self.node_cli_path
                 )
                 
-                # Use zerochain genesis manager
-                root_services = [f"node-{nid}" for nid in root_node_ids]
-                emission_hash, fee_addr = await self.zerochain_genesis.initialize_zerochain_genesis(
-                    root_nodes=root_nodes,
-                    node_configs=node_configs,
-                    compose_manager=self.compose,
-                    state_manager=self.state_manager,
-                    lifecycle_manager=self.lifecycle,
-                    consensus_monitor=consensus_monitor
+                # Use YAML scenario for phase1 genesis
+                # CLI parser will be initialized automatically in executor after setup phase
+                from ..scenarios.executor import ScenarioExecutor
+                from ..scenarios.parser import ScenarioParser
+                
+                scenario_parser = ScenarioParser(self.base_path / "scenarios")
+                phase1_scenario = scenario_parser.load_scenario("genesis/phase1_zerochain.yml")
+                
+                # Get scenario debug setting from config
+                scenarios_config = self.config_loader.get_scenarios_config()
+                
+                executor = ScenarioExecutor(
+                    node_cli_path=self.node_cli_path,
+                    log_file=None,
+                    debug=scenarios_config.get('debug', False)
                 )
+                
+                # Execute phase1 scenario
+                # Pass global_context and node_configs for automatic IP collection after setup
+                root_node_configs = [n for n in node_configs if n.role == 'root']
+                
+                logger.info("executing_phase1_scenario")
+                
+                ctx = await executor.execute_scenario(
+                    phase1_scenario,
+                    compose_manager=self.compose,
+                    snapshot_manager=self.snapshot_manager,
+                    initial_variables={},
+                    global_context=self.scenario_context,
+                    node_configs=root_node_configs
+                )
+                
+                # Extract results from context
+                emission_hash = ctx.get_variable('emission_hash') if 'emission_hash' in ctx.variables else None
+                fee_addr = ctx.get_variable('fee_addr') if 'fee_addr' in ctx.variables else None
                 
                 logger.info("zerochain_genesis_complete",
                            emission_hash=emission_hash[:16] if emission_hash else None,
                            fee_addr=fee_addr,
-                           note="Token declaration created. Emission and transfer will be created after hard restart.")
-                
-                # =================================================================
-                # HARD RESTART: Disable seed_mode for root nodes
-                # =================================================================
-                # CRITICAL: Hard restart must happen BEFORE emission/transfer creation
-                # This ensures seed_mode is disabled before creating emission and transfer transactions
-                logger.info("=== HARD RESTART: Disable seed_mode for root nodes ===")
-                
-                # Hard restart ROOT nodes with config reload (seed_mode disabled)
-                logger.info("hard_restarting_root_nodes_to_disable_seed_mode")
-                await self.lifecycle.hard_restart_with_config_reload(
-                    service_names=root_services,
-                    compose_manager=self.compose,
-                    flush_timeout=60
-                )
-                
-                # Wait for ROOT nodes to be ONLINE after hard restart
-                # NOTE: Even if mainchain fails to initialize (ESBocs error), zerochain should still work
-                # We can create emission on zerochain even if mainchain is not initialized
-                logger.info("waiting_for_root_nodes_online_after_hard_restart")
-                try:
-                    await self.state_manager.wait_for_nodes_online(root_nodes, timeout=30.0)
-                    logger.info("root_nodes_online_after_hard_restart")
-                except TimeoutError:
-                    # If timeout, log warning but continue - emission creation will fail-fast if zerochain is not accessible
-                    logger.warning("nodes_online_timeout_after_hard_restart",
-                                 note="Nodes did not reach ONLINE state within timeout. "
-                                      "Will attempt emission creation anyway - it will fail-fast if zerochain is not accessible.")
-                
-                # =================================================================
-                # CREATE EMISSION AND TRANSFER TRANSACTION (after hard restart)
-                # =================================================================
-                # CRITICAL: Create emission and transfer transaction AFTER hard restart
-                # (seed_mode is now disabled, so emission and transfer are created without seed_mode)
-                logger.info("creating_emission_and_transfer_after_hard_restart",
-                           note="Emission and transfer will be created now (seed_mode disabled)")
-                
-                # Read fee_addr from config after hard restart
-                fee_addr_from_config = None
-                for root_node in root_nodes[:1]:  # Check first ROOT node
-                    fee_addr_from_config = self.genesis.config_mgr.read_fee_addr_from_config(
-                        node_id=root_node.node_id
-                    )
-                    break
-                
-                if fee_addr_from_config:
-                    fee_addr = fee_addr_from_config
-                    logger.info("using_fee_addr_from_config_for_emission",
-                               fee_addr=fee_addr[:16],
-                               note="Using fee_addr read from config after hard restart")
-                elif not fee_addr:
-                    raise RuntimeError(
-                        f"CRITICAL: fee_addr not found in configs after hard restart! "
-                        f"Cannot create emission and transfer transaction without fee address."
-                    )
-                
-                emission_hash = await self.zerochain_genesis.create_emission_and_transfer_after_restart(
-                    root_nodes=root_nodes,
-                    master_nodes=master_nodes,
-                    fee_addr=fee_addr,
-                    compose_manager=self.compose,
-                    state_manager=self.state_manager,
-                    lifecycle_manager=self.lifecycle
-                )
-                logger.info("emission_and_transfer_created_after_hard_restart",
-                           emission_hash=emission_hash[:16] if emission_hash else None,
-                           fee_addr=fee_addr[:16] if fee_addr else None,
-                           note="Emission and transfer transaction created successfully (seed_mode disabled)")
+                           note="Phase1 genesis completed via YAML scenario")
                 
                 # =================================================================
                 # PHASE 1.5: CREATE PHASE 1 SNAPSHOT (zerochain + genesis LN + emission + transfer)
@@ -1022,32 +973,38 @@ class NetworkManager:
                 raise RuntimeError(
                     f"CRITICAL: emission_hash is None before PHASE 2! "
                     f"This should not happen - emission_hash must be set either: "
-                    f"1. After hard restart (via create_emission_and_transfer_after_restart), or "
+                    f"1. After phase1 YAML scenario execution, or "
                     f"2. After snapshot restore (via restore_emission_hash_from_snapshot). "
                     f"Cannot proceed to ESBocs genesis without emission_hash."
                 )
             
-            # Use ESBocs genesis manager with PoS scheme:
-            # 1. ALL master nodes as validators (3 validators, 2/3 consensus)
-            # 2. Create wallets for all master nodes
-            # 3. Transfer tokens from ROOT to MASTER (on zerochain)
-            # 4. Delegate keys via srv_stake on zerochain
-            # 5. Restart → load delegations
-            # 6. Genesis block with full consensus
-            await self.esbocs_genesis.initialize_esbocs_genesis_with_pos_delegation(
-                master_nodes=master_nodes,
-                all_validator_nodes=all_validator_nodes,
-                node_configs=node_configs,
-                root_nodes=root_nodes,
-                emission_hash=emission_hash,
-                compose_manager=self.compose,
-                state_manager=self.state_manager,
-                lifecycle_manager=self.lifecycle,
-                consensus_monitor=consensus_monitor_all,
-                topology=self.topology
+            # Use YAML scenario for phase2 genesis
+            # CLI parser should already be initialized after phase1, but executor will reinitialize if needed
+            from ..scenarios.executor import ScenarioExecutor
+            from ..scenarios.parser import ScenarioParser
+            
+            scenario_parser = ScenarioParser(self.base_path / "scenarios")
+            phase2_scenario = scenario_parser.load_scenario("genesis/phase2_esbocs.yml")
+            
+            # Get scenario debug setting from config
+            scenarios_config = self.config_loader.get_scenarios_config()
+            
+            executor = ScenarioExecutor(
+                node_cli_path=self.node_cli_path,
+                log_file=None,
+                debug=scenarios_config.get('debug', False)
             )
             
-            logger.info("esbocs_genesis_complete_with_pos_master_nodes")
+            # Execute phase2 scenario with emission_hash from phase1
+            ctx = await executor.execute_scenario(
+                phase2_scenario,
+                compose_manager=self.compose,
+                snapshot_manager=self.snapshot_manager,
+                initial_variables={'emission_hash': emission_hash} if emission_hash else None
+            )
+            
+            logger.info("esbocs_genesis_complete_with_pos_master_nodes",
+                       note="Phase2 genesis completed via YAML scenario")
             
         except Exception as e:
             logger.error("master_nodes_genesis_failed", error=str(e))

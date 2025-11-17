@@ -118,9 +118,16 @@ class CLICommandParser:
                 logger.warning("Failed to get main CLI help")
                 return False
             
+            # Log help output for debugging
+            logger.info(f"CLI help output (first 500 chars): {main_help[:500]}")
+            
             # Extract command list from main help
             commands = self._extract_commands(main_help)
             logger.info(f"Found {len(commands)} CLI commands")
+            
+            if len(commands) == 0:
+                logger.warning(f"No commands extracted from help. Help output length: {len(main_help)}")
+                logger.warning(f"Full help output: {repr(main_help)}")
             
             # Parse help for each command
             for cmd in commands:
@@ -269,7 +276,14 @@ class CLICommandParser:
         available_options = self.get_command_options(command)
         
         # Debug logging
-        logger.debug(f"apply_cli_defaults: command='{command}', available_options={available_options}, defaults={defaults}")
+        logger.debug(f"apply_cli_defaults: cli_command='{cli_command}', command='{command}', available_options={available_options}, defaults={defaults}, parsed={self._parsed}")
+        
+        # If command not found, log warning
+        if not available_options:
+            if self._parsed:
+                logger.warning(f"Command '{command}' not found in parsed commands. Available commands: {list(self.commands.keys())[:10]}")
+            else:
+                logger.warning(f"CLI parser not initialized (parsed={self._parsed}). Cannot apply defaults for command '{command}'. Parser must be initialized before use.")
         
         # Build list of options to add
         options_to_add = []
@@ -281,11 +295,17 @@ class CLICommandParser:
                 pattern = rf'(^|\s)-{re.escape(option)}(\s|$)'
                 if not re.search(pattern, cli_command):
                     options_to_add.append(f"-{option} {value}")
+                    logger.debug(f"Adding option -{option} {value} to command '{cli_command}'")
+            else:
+                logger.debug(f"Option '{option}' not in available_options {available_options} for command '{command}'")
         
         # Add options to command
         if options_to_add:
-            return f"{cli_command} {' '.join(options_to_add)}"
+            result = f"{cli_command} {' '.join(options_to_add)}"
+            logger.debug(f"apply_cli_defaults result: '{result}'")
+            return result
         
+        logger.debug(f"apply_cli_defaults: no options added, returning original: '{cli_command}'")
         return cli_command
     
     def get_stats(self) -> Dict:
@@ -317,5 +337,15 @@ def get_cli_parser(cache_file: Path = None) -> CLICommandParser:
     global _cli_parser
     if _cli_parser is None:
         _cli_parser = CLICommandParser(cache_file=cache_file)
+        # Try to load from cache if cache_file is provided
+        if cache_file:
+            _cli_parser.load_from_cache()
+        else:
+            # Try default cache location
+            from pathlib import Path
+            default_cache = Path(__file__).parent.parent.parent / ".cache" / "cli_commands.json"
+            if default_cache.exists():
+                _cli_parser.cache_file = default_cache
+                _cli_parser.load_from_cache()
     return _cli_parser
 

@@ -874,9 +874,16 @@ blocks-sign-cert=pvt.{network_name}.master.{master_idx}
         # All nodes need all public certs for signature verification:
         # - stagenet.root.{0,1,2} for DAG-PoA event verification
         # - stagenet.master.{0,1,2} for ESBocs block verification
+        logger.info("distributing_public_certs_to_all_nodes", 
+                   total_nodes=len(nodes), 
+                   network=network_name)
+        
         for node in nodes:
             node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
             node_data_cert_dir.mkdir(parents=True, exist_ok=True)
+            
+            root_certs_copied = 0
+            master_certs_copied = 0
             
             # Copy all ROOT public certs (stagenet.root.{0,1,2})
             for root_idx in range(3):
@@ -885,10 +892,16 @@ blocks-sign-cert=pvt.{network_name}.master.{master_idx}
                 if src_pub_cert.exists():
                     dst_pub_cert = node_data_cert_dir / f"{network_name}.root.{root_idx}.dcert"
                     shutil.copy2(src_pub_cert, dst_pub_cert)
+                    root_certs_copied += 1
                     logger.debug("copied_public_root_cert",
                                node_id=node.node_id,
                                root_idx=root_idx,
                                dst=str(dst_pub_cert))
+                else:
+                    logger.warning("public_root_cert_not_found",
+                                 node_id=node.node_id,
+                                 root_idx=root_idx,
+                                 expected_path=str(src_pub_cert))
             
             # Copy all MASTER public certs (stagenet.master.{0,1,2})
             for master_idx in range(3):
@@ -897,10 +910,21 @@ blocks-sign-cert=pvt.{network_name}.master.{master_idx}
                 if src_pub_cert.exists():
                     dst_pub_cert = node_data_cert_dir / f"{network_name}.master.{master_idx}.dcert"
                     shutil.copy2(src_pub_cert, dst_pub_cert)
+                    master_certs_copied += 1
                     logger.debug("copied_public_master_cert",
                                node_id=node.node_id,
                                master_idx=master_idx,
                                dst=str(dst_pub_cert))
+                else:
+                    logger.warning("public_master_cert_not_found",
+                                 node_id=node.node_id,
+                                 master_idx=master_idx,
+                                 expected_path=str(src_pub_cert))
+            
+            logger.info("public_certs_distributed_to_node",
+                       node_id=node.node_id,
+                       root_certs=root_certs_copied,
+                       master_certs=master_certs_copied)
         
         logger.info("certificates_generated", count=node_count)
     

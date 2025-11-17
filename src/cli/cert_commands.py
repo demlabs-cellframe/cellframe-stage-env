@@ -191,5 +191,55 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 print_error(f"Failed to clean snapshots: {e}")
                 sys.exit(1)
             
+            # Clean Docker networks (including conflicting ones)
+            print_info("Cleaning Docker networks...")
+            try:
+                import docker
+                docker_client = docker.from_env()
+                
+                # Find and remove all test-related networks
+                all_networks = docker_client.networks.list()
+                test_networks = [
+                    net for net in all_networks
+                    if any(pattern in net.name for pattern in [
+                        'cellframe-stage',
+                        'stage-env',
+                        'stagenet'
+                    ])
+                ]
+                
+                if test_networks:
+                    print_info(f"Found {len(test_networks)} test network(s) to remove...")
+                    for network in test_networks:
+                        try:
+                            # Check if network has active endpoints
+                            network.reload()
+                            if network.containers:
+                                print_info(f"Stopping containers on network {network.name}...")
+                                for container in network.containers:
+                                    try:
+                                        container.stop(timeout=5)
+                                        container.remove()
+                                    except Exception as e:
+                                        print_warning(f"Could not remove container {container.name}: {e}")
+                            
+                            network.remove()
+                            print_info(f"Removed network: {network.name}")
+                        except docker.errors.APIError as e:
+                            if "has active endpoints" in str(e):
+                                print_warning(f"Network {network.name} has active endpoints, skipping")
+                            else:
+                                print_warning(f"Could not remove network {network.name}: {e}")
+                        except Exception as e:
+                            print_warning(f"Error removing network {network.name}: {e}")
+                    
+                    print_success("Docker networks cleaned")
+                else:
+                    print_info("No test networks found")
+            except ImportError:
+                print_warning("Docker Python library not available, skipping network cleanup")
+            except Exception as e:
+                print_warning(f"Failed to clean Docker networks: {e}")
+                # Don't exit - network cleanup is not critical
         
         print_success("Cleaned certificates and cache")

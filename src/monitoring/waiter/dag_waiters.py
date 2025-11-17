@@ -128,11 +128,14 @@ class DAGEventWaiter(BaseWaiter):
                 f"mempool list -net {self.network_name} -chain {self.chain}",
                 check_output=False
             )
+            datum_in_mempool = self.datum_hash.lower() in (stdout_mempool_final.lower() if stdout_mempool_final else "")
             logger.error("final_mempool_check",
                         datum=self.datum_hash[:16],
                         exit_code=exit_code_mempool_final,
                         mempool_content=stdout_mempool_final[:1000] if stdout_mempool_final else "empty",
-                        datum_in_mempool=self.datum_hash.lower() in (stdout_mempool_final.lower() if stdout_mempool_final else ""))
+                        datum_in_mempool=datum_in_mempool,
+                        note="If datum_in_mempool=True, datum was not processed. "
+                             "If datum_in_mempool=False, datum was processed but event was not created.")
             
             # Check all events content
             exit_code_events_final, stdout_events_final, _ = self.exec_cli(
@@ -143,7 +146,65 @@ class DAGEventWaiter(BaseWaiter):
             logger.error("final_dag_events_check",
                         datum=self.datum_hash[:16],
                         exit_code=exit_code_events_final,
-                        events_content=stdout_events_final[:2000] if stdout_events_final else "empty")
+                        events_content=stdout_events_final[:2000] if stdout_events_final else "empty",
+                        note="Check if datum hash appears in any event. "
+                             "If not, DAG-PoA consensus may have rejected the datum or event creation failed.")
+            
+            # CRITICAL: Try to get node logs to see why datum was not finalized
+            # This will help diagnose DAG-PoA consensus issues
+            logger.error("diagnostic_suggestions",
+                       datum=self.datum_hash[:16],
+                       suggestions=[
+                           "1. Check node logs for 'Datum was already added to round' - datum may have been processed already",
+                           "2. Check node logs for 'Configuration mismatch' - DAG config may be incorrect",
+                           "3. Check node logs for consensus errors - DAG-PoA may have rejected the datum",
+                           "4. Verify network synchronization - nodes may not be in sync",
+                           "5. Check if datum is valid - verify signature and structure",
+                           f"6. Try 'mempool_proc -datum {self.datum_hash} -net {self.network_name} -chain {self.chain}' manually to see error",
+                           "7. Check for 'Nothing to link' - no unlinked events available for linking",
+                           "8. Check for 'No enough unlinked events present' - insufficient events",
+                           "9. Check DAG consensus logs for 'Start mempool proc' - verify processing started"
+                       ])
+            
+            # Collect actual node logs for diagnostic
+            try:
+                import docker
+                docker_client = docker.from_env()
+                logger.info("collecting_actual_node_logs", datum=self.datum_hash[:16])
+                container = docker_client.containers.get(f"cellframe-stage-node-{self.node_id}")
+                # Get last 500 lines of logs (increased from 100)
+                logs = container.logs(tail=500).decode('utf-8', errors='replace')
+                
+                # Filter logs for relevant patterns
+                import re
+                relevant_patterns = [
+                    r'mempool.*proc',
+                    r'Start mempool',
+                    r'Nothing to link',
+                    r'already added to round',
+                    r'Configuration mismatch',
+                    r'No enough unlinked',
+                    r"Can't create new event",
+                    r"Can't add new event",
+                    r'Datum.*drop',
+                    self.datum_hash[:16]
+                ]
+                
+                filtered_logs = []
+                for line in logs.split('\n'):
+                    if any(re.search(pattern, line, re.IGNORECASE) for pattern in relevant_patterns):
+                        filtered_logs.append(line)
+                
+                logger.error("node_logs_diagnostic",
+                           node=f"node{self.node_id}",
+                           datum=self.datum_hash[:16],
+                           full_logs=logs,
+                           filtered_logs='\n'.join(filtered_logs) if filtered_logs else "No relevant patterns found",
+                           note="Check for DAG consensus errors, 'Nothing to link', 'already added to round', or consensus rejections")
+            except Exception as e:
+                logger.warning("failed_to_collect_node_logs",
+                             node=f"node{self.node_id}",
+                             error=str(e))
             
             raise RuntimeError(
                 f"Datum {self.datum_hash[:16]} not finalized in DAG events after {timeout}s. "

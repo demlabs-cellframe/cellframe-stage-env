@@ -17,6 +17,7 @@ from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
     CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
+    NetworkWaitStep, DockerOpStep, SnapshotStep,
     CLICheck, RPCCheck, PythonCheck, BashCheck,
     TestScenario, SuiteSetupScenario, TestStep, CheckSpec, StepDefaults, SectionConfig, DatumStatus
 )
@@ -178,17 +179,26 @@ class ScenarioExecutor:
         Convert node ID/alias to Docker container name.
         
         Args:
-            node: Node ID or alias
+            node: Node ID or alias (e.g., "root-1", "node1", "node-1")
             
         Returns:
             Container name (e.g., "cellframe-stage-node-1")
         """
-        # Resolve alias to actual node ID first
-        node_id = self._resolve_node_alias(node)
-        
         # Already a full container name
-        if node_id.startswith("cellframe-stage-"):
-            return node_id
+        if node.startswith("cellframe-stage-"):
+            return node
+        
+        # Handle role-based aliases directly (root-1 -> node-1, master-1 -> node-4, etc.)
+        if node.startswith("root-"):
+            node_num = node.split("-")[1]
+            return f"cellframe-stage-node-{node_num}"
+        elif node.startswith("master-"):
+            master_idx = int(node.split("-")[1])
+            node_num = str(master_idx + 3)  # master-1 -> 4, master-2 -> 5, etc.
+            return f"cellframe-stage-node-{node_num}"
+        
+        # Try to resolve alias (node1, node-1, etc.)
+        node_id = self._resolve_node_alias(node)
         
         # Extract number from node ID (node1 -> 1)
         if node_id.startswith("node"):
@@ -290,12 +300,25 @@ class ScenarioExecutor:
         
         return step
     
-    async def execute_scenario(self, scenario: Union[TestScenario, SuiteSetupScenario]) -> RuntimeContext:
+    async def execute_scenario(
+        self, 
+        scenario: Union[TestScenario, SuiteSetupScenario],
+        compose_manager=None,
+        snapshot_manager=None,
+        initial_variables: Optional[Dict[str, Any]] = None,
+        global_context=None,
+        node_configs: Optional[List[Any]] = None
+    ) -> RuntimeContext:
         """
         Execute complete test scenario or suite setup.
         
         Args:
             scenario: Parsed test scenario or suite setup scenario
+            compose_manager: Optional DockerComposeManager for docker_op steps
+            snapshot_manager: Optional SnapshotManager for snapshot steps
+            initial_variables: Optional dict of initial variables to set in context
+            global_context: Optional ScenarioGlobalContext for automatic IP collection
+            node_configs: Optional list of NodeConfig objects for IP collection
             
         Returns:
             Runtime context with results
@@ -308,6 +331,22 @@ class ScenarioExecutor:
             logger.info(f"Description: {scenario.description}")
         
         ctx = RuntimeContext(scenario)
+        
+        # Set managers in context for docker_op and snapshot steps
+        if compose_manager:
+            ctx.compose_manager = compose_manager
+        if snapshot_manager:
+            ctx.snapshot_manager = snapshot_manager
+        
+        # Store global context and node configs for post-setup IP collection
+        self._global_context = global_context
+        self._node_configs = node_configs
+        
+        # Set initial variables if provided
+        if initial_variables:
+            for key, value in initial_variables.items():
+                ctx.set_variable(key, value)
+        
         self._running = True
         
         try:
@@ -325,6 +364,64 @@ class ScenarioExecutor:
                 logger.info("Executing setup phase...")
                 section_defaults = self._merge_defaults(global_defaults, scenario.setup.defaults)
                 await self._execute_steps(scenario.setup.steps, ctx, section_defaults)
+                
+                # CRITICAL: After setup phase, collect node IPs into global context
+                # Setup phase typically starts containers, so IPs should now be available
+                if self._global_context and self._node_configs:
+                    logger.info("collecting_global_context_after_setup", 
+                               nodes=len(self._node_configs))
+                    try:
+                        self._global_context.collect_node_ips(self._node_configs, wait_for_ips=True)
+                        
+                        # Inject global variables into scenario context
+                        global_vars = self._global_context.to_dict()
+                        for key, value in global_vars.items():
+                            ctx.set_variable(key, value)
+                        
+                        logger.info("global_context_injected_into_scenario",
+                                   variables=list(global_vars.keys()),
+                                   node_count=self._global_context.node_count,
+                                   node_ip_map=self._global_context._node_ip_map)
+                    except Exception as e:
+                        logger.warning("failed_to_collect_global_context", 
+                                     error=str(e),
+                                     note="Continuing without global context")
+            
+            # Initialize CLI parser after setup (containers should be running now)
+            # This ensures CLI defaults can be applied to commands in test phase
+            if compose_manager and global_defaults and global_defaults.cli:
+                from ..utils.cli_parser import get_cli_parser
+                from pathlib import Path
+                
+                cli_parser = get_cli_parser()
+                if not cli_parser._parsed:
+                    logger.info("initializing_cli_parser_after_setup")
+                    # Try to find a running node container
+                    try:
+                        import docker
+                        docker_client = docker.from_env()
+                        # Find first running node container
+                        containers = docker_client.containers.list(filters={"name": "cellframe-stage-node-"})
+                        if containers:
+                            container_name = containers[0].name
+                            cache_file = Path(__file__).parent.parent.parent / ".cache" / "cli_commands.json"
+                            cache_file.parent.mkdir(parents=True, exist_ok=True)
+                            cli_parser.cache_file = cache_file
+                            parser_success = await cli_parser.parse_cli_help(container_name, use_cache=True)
+                            if parser_success:
+                                stats = cli_parser.get_stats()
+                                logger.info("cli_parser_initialized_after_setup", 
+                                           commands=stats['total_commands'],
+                                           note="CLI defaults will be applied to commands")
+                            else:
+                                logger.warning("cli_parser_init_failed_after_setup",
+                                             note="CLI defaults may not be applied")
+                        else:
+                            logger.warning("no_running_containers_for_cli_parser",
+                                         note="Cannot initialize CLI parser - no containers running")
+                    except Exception as e:
+                        logger.warning("failed_to_initialize_cli_parser", error=str(e),
+                                     note="CLI defaults may not be applied")
             
             # Test phase (only for TestScenario, not for SuiteSetupScenario)
             if hasattr(scenario, 'test') and scenario.test:
@@ -421,13 +518,27 @@ class ScenarioExecutor:
                 await self._execute_tool_step(step, ctx)
             elif isinstance(step, LoopStep):
                 await self._execute_loop_step(step, ctx, defaults)
+            elif isinstance(step, NetworkWaitStep):
+                await self._execute_network_wait_step(step, ctx)
+            elif isinstance(step, DockerOpStep):
+                await self._execute_docker_op_step(step, ctx)
+            elif isinstance(step, SnapshotStep):
+                await self._execute_snapshot_step(step, ctx)
             else:
                 raise ScenarioExecutionError(f"Unknown step type: {type(step)}")
     
     async def _execute_cli_step(self, step: CLIStep, ctx: RuntimeContext, defaults: Optional[StepDefaults] = None):
         """Execute CLI command step."""
         # Substitute variables in command
-        cmd = ctx.substitute(step.cli)
+        original_cmd = ctx.substitute(step.cli)
+        cmd = original_cmd
+        node_display = ctx.substitute(step.node) if step.node else "node1"
+        
+        # Log original command (before defaults)
+        if self.debug:
+            logger.info(f"CLI step: {original_cmd} (node: {node_display})")
+        else:
+            logger.info(f"CLI: {original_cmd}")
         
         # Apply CLI defaults if present
         if defaults and defaults.cli:
@@ -470,7 +581,9 @@ class ScenarioExecutor:
             if self.debug:
                 self._log_to_file(f"[DEBUG] No CLI defaults to apply (defaults={defaults}, cli={defaults.cli if defaults else 'N/A'})")
         
-        logger.debug(f"Executing CLI: {cmd} on {step.node}")
+        # Log full command with defaults in debug mode
+        if self.debug and cmd != original_cmd:
+            logger.info(f"CLI with defaults: {cmd}")
         
         # Log to file
         self._log_to_file(f"\n{'=' * 70}")
@@ -499,6 +612,30 @@ class ScenarioExecutor:
             
             # Check expected result
             success = self._check_expectation(result, step.expect, step.contains)
+            
+            # Log result based on debug mode
+            if self.debug:
+                # Debug mode: log full output
+                logger.info(f"Result: {'✓ success' if success else '✗ error'}")
+                if result.get('stdout'):
+                    stdout_preview = result['stdout'][:500]
+                    if len(result['stdout']) > 500:
+                        stdout_preview += f"... ({len(result['stdout']) - 500} more chars)"
+                    logger.info(f"STDOUT: {stdout_preview}")
+                if result.get('stderr'):
+                    logger.info(f"STDERR: {result['stderr']}")
+                logger.info(f"Exit code: {result.get('returncode', 'N/A')}")
+            else:
+                # Normal mode: log only result status and extracted values
+                result_status = '✓ success' if success else '✗ error'
+                
+                # Get extraction info from step itself (Clean Architecture principle)
+                extracted_info = step.get_extraction_info()
+                
+                if extracted_info:
+                    logger.info(f"Result: {result_status}, {', '.join(extracted_info)}")
+                else:
+                    logger.info(f"Result: {result_status}")
             
             if not success:
                 # Determine what went wrong for better error message
@@ -601,6 +738,12 @@ class ScenarioExecutor:
                 from .extractors import DataExtractor, ExtractionError, ExtractType
                 
                 self._log_to_file(f"\n--- Extracting Values ---")
+                # Log full output for debugging
+                self._log_to_file(f"Full command output ({len(result['stdout'])} chars):")
+                self._log_to_file(f"STDOUT: {repr(result['stdout'])}")
+                if result.get('stderr'):
+                    self._log_to_file(f"STDERR: {repr(result['stderr'])}")
+                self._log_to_file(f"Return code: {result.get('returncode', 'N/A')}")
                 
                 # Map of save_* field → (variable_name, extract_type)
                 extractions = []
@@ -726,10 +869,176 @@ class ScenarioExecutor:
             raise ScenarioExecutionError(f"RPC call timeout: {method}")
     
     async def _execute_wait_step(self, step: WaitStep, ctx: RuntimeContext):
-        """Execute wait step."""
-        logger.debug(f"Waiting: {step.wait}")
-        await self._wait_duration(step.wait)
-        ctx.add_result("wait", True, {"duration": step.wait})
+        """Execute wait step - supports both duration and waiter types."""
+        # If type is specified, use waiter from registry
+        if step.type:
+            logger.info(f"Waiting for waiter type: {step.type}")
+            
+            from ..monitoring.unified.wait_registry import WaitRegistry
+            
+            # Get waiter class from registry
+            waiter_class = WaitRegistry.get(step.type)
+            if not waiter_class:
+                raise ScenarioExecutionError(f"Unknown waiter type: {step.type}")
+            
+            # Resolve nodes
+            nodes = [self._resolve_node_alias(ctx.substitute(n)) for n in (step.nodes or [])]
+            network_name = ctx.substitute(step.network) if step.network else ctx.get_variable('network_name')
+            
+            # Create waiter instance based on type
+            if step.type == "delegations_synced":
+                if not step.nodes or step.expected_count is None:
+                    raise ScenarioExecutionError("nodes and expected_count required for delegations_synced", step=step)
+                
+                exec_cli_func = self._create_exec_cli_for_waiter()
+                waiter = waiter_class(
+                    exec_cli=exec_cli_func,
+                    nodes=[self._get_node_config(n) for n in nodes],
+                    expected_count=step.expected_count,
+                    network_name=network_name,
+                    poll_interval=2.0
+                )
+                await waiter.wait(timeout=float(step.timeout))
+                
+            elif step.type == "stake_service_ready":
+                if not step.nodes:
+                    raise ScenarioExecutionError("nodes required for stake_service_ready", step=step)
+                
+                exec_cli_func = self._create_exec_cli_for_waiter()
+                waiter = waiter_class(
+                    exec_cli=exec_cli_func,
+                    nodes=[self._get_node_config(n) for n in nodes],
+                    network_name=network_name,
+                    poll_interval=2.0
+                )
+                await waiter.wait(timeout=float(step.timeout))
+                
+            elif step.type == "esbocs_consensus_active":
+                if not step.nodes:
+                    raise ScenarioExecutionError("nodes required for esbocs_consensus_active", step=step)
+                
+                exec_cli_func = self._create_exec_cli_for_waiter()
+                
+                # Create factory for stake_service_waiter
+                def create_stake_waiter():
+                    from ..monitoring.waiter.validator_waiters import StakeServiceReadyWaiter
+                    return StakeServiceReadyWaiter(
+                        exec_cli=exec_cli_func,
+                        nodes=[self._get_node_config(n) for n in nodes],
+                        network_name=network_name,
+                        poll_interval=2.0
+                    )
+                
+                waiter = waiter_class(
+                    exec_cli=exec_cli_func,
+                    nodes=[self._get_node_config(n) for n in nodes],
+                    network_name=network_name,
+                    poll_interval=3.0,
+                    stake_service_waiter_factory=create_stake_waiter
+                )
+                await waiter.wait(timeout=float(step.timeout))
+                
+            elif step.type == "first_block":
+                if not step.nodes or not step.chain:
+                    raise ScenarioExecutionError("nodes and chain required for first_block", step=step)
+                
+                exec_cli_func = self._create_exec_cli_for_waiter()
+                waiter = waiter_class(
+                    exec_cli=exec_cli_func,
+                    network_name=network_name,
+                    chain_name=ctx.substitute(step.chain),
+                    master_nodes=[self._get_node_config(n) for n in nodes],
+                    poll_interval=3.0
+                )
+                await waiter.wait(timeout=float(step.timeout))
+                
+            elif step.type in ["master_containers_running", "cli_ready"]:
+                if not step.nodes:
+                    raise ScenarioExecutionError(f"nodes required for {step.type}", step=step)
+                
+                exec_cli_func = self._create_exec_cli_for_waiter()
+                waiter = waiter_class(
+                    exec_cli=exec_cli_func,
+                    nodes=[self._get_node_config(n) for n in nodes],
+                    network_name=network_name,
+                    poll_interval=1.0
+                )
+                await waiter.wait(timeout=float(step.timeout))
+                
+            else:
+                raise ScenarioExecutionError(f"Waiter type {step.type} not yet implemented in executor", step=step)
+            
+            logger.info(f"✅ Waiter '{step.type}' completed")
+            ctx.add_result("wait", True, {"type": step.type, "nodes": nodes})
+            
+        # Otherwise, treat as duration
+        elif step.wait:
+            logger.debug(f"Waiting: {step.wait}")
+            await self._wait_duration(step.wait)
+            ctx.add_result("wait", True, {"duration": step.wait})
+        else:
+            raise ScenarioExecutionError("WaitStep requires either 'wait' (duration) or 'type' (waiter)", step=step)
+    
+    def _create_exec_cli_for_waiter(self):
+        """Create synchronous exec_cli function for waiters."""
+        # Waiters expect sync function, but we have async _run_cli_command
+        # Use a closure that captures self and runs async command synchronously
+        def exec_cli_sync(node_id: int, command: str, check_output: bool = True) -> tuple:
+            """Synchronous wrapper that runs async CLI command."""
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            if loop.is_running():
+                # If loop is running, we need to use a different approach
+                # Create a new task and wait for it
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        self._run_cli_command(command, f"node{node_id}", 30)
+                    )
+                    result = future.result(timeout=35)
+            else:
+                result = loop.run_until_complete(
+                    self._run_cli_command(command, f"node{node_id}", 30)
+                )
+            
+            return result.get("returncode", -1), result.get("stdout", ""), result.get("stderr", "")
+        
+        return exec_cli_sync
+    
+    def _get_node_config(self, node_id: str):
+        """Get NodeConfig for node ID - create minimal object with node_id attribute."""
+        # First resolve alias if needed (root-1 -> node1, etc.)
+        resolved = self._resolve_node_alias(node_id)
+        
+        # Extract numeric ID from node string (node1 -> 1, node-1 -> 1)
+        if resolved.startswith("node"):
+            num_str = resolved[4:]
+            if num_str.isdigit():
+                node_num = int(num_str)
+            else:
+                # Try node-N format
+                if "-" in num_str:
+                    node_num = int(num_str.split("-")[-1])
+                else:
+                    raise ValueError(f"Cannot parse node_id from: {resolved}")
+        # Handle role-based aliases directly (root-1 -> 1, master-1 -> 4, etc.)
+        elif node_id.startswith("root-"):
+            node_num = int(node_id.split("-")[1])
+        elif node_id.startswith("master-"):
+            master_idx = int(node_id.split("-")[1])
+            node_num = master_idx + 3  # master-1 -> 4, master-2 -> 5, etc.
+        else:
+            raise ValueError(f"Unknown node_id format: {node_id}")
+        
+        # Create minimal NodeConfig-like object
+        from types import SimpleNamespace
+        return SimpleNamespace(node_id=node_num)
     
     async def _execute_wait_for_datum_step(self, step: WaitForDatumStep, ctx: RuntimeContext):
         """Execute wait-for-datum step - directly monitor datum lifecycle."""
@@ -1377,4 +1686,246 @@ class ScenarioExecutor:
                 return False
         
         return True
-
+    
+    async def _execute_network_wait_step(self, step: NetworkWaitStep, ctx: RuntimeContext):
+        """Execute network wait step."""
+        logger.info(f"Waiting for network state: {step.wait_network} on nodes {step.nodes}")
+        
+        # Get monitoring manager singleton
+        monitoring = MonitoringManager.get_instance(
+            node_cli_path=self.node_cli_path,
+            log_file=self.log_file
+        )
+        
+        # Resolve node aliases
+        resolved_nodes = [self._resolve_node_alias(node) for node in step.nodes]
+        
+        # Substitute variables
+        network_name = ctx.substitute(step.network)
+        wait_state = ctx.substitute(step.wait_network)
+        
+        try:
+            if wait_state == "online":
+                # Use NodeStateManager.wait_for_nodes_online for multiple nodes
+                from ..network.node_states import NodeStateManager
+                import docker
+                docker_client = docker.from_env()
+                state_manager = NodeStateManager(
+                    docker_client=docker_client,
+                    project_name="cellframe-stage",
+                    cli_path=self.node_cli_path,
+                    network_name=network_name
+                )
+                # Convert node IDs to NodeConfig objects
+                # resolved_nodes already contains node1, node2, etc. from _resolve_node_alias
+                node_configs = [self._get_node_config(node_id) for node_id in resolved_nodes]
+                await state_manager.wait_for_nodes_online(node_configs, timeout=step.timeout)
+                
+            elif wait_state == "offline":
+                # Use NodeStateManager.wait_for_nodes_offline for multiple nodes
+                from ..network.node_states import NodeStateManager
+                import docker
+                docker_client = docker.from_env()
+                state_manager = NodeStateManager(
+                    docker_client=docker_client,
+                    project_name="cellframe-stage",
+                    cli_path=self.node_cli_path,
+                    network_name=network_name
+                )
+                # Convert node IDs to NodeConfig objects
+                node_configs = [self._get_node_config(node_id) for node_id in resolved_nodes]
+                await state_manager.wait_for_nodes_offline(node_configs, timeout=step.timeout)
+                
+            elif wait_state == "links_connecting":
+                # Use NetworkConsensusMonitor.wait_for_links_connecting_state
+                from ..monitoring.network_consensus import NetworkConsensusMonitor
+                # resolved_nodes already contains node1, node2, etc. from _resolve_node_alias
+                nodes_dict = {node_id: None for node_id in resolved_nodes}
+                monitor = NetworkConsensusMonitor(
+                    nodes=nodes_dict,
+                    node_cli_path=self.node_cli_path,
+                    network_name=network_name
+                )
+                await monitor.wait_for_links_connecting_state(timeout=float(step.timeout))
+                
+            elif wait_state == "links_established":
+                # Use NetworkConsensusMonitor
+                from ..monitoring.network_consensus import NetworkConsensusMonitor
+                # resolved_nodes already contains node1, node2, etc. from _resolve_node_alias
+                nodes_dict = {node_id: None for node_id in resolved_nodes}
+                monitor = NetworkConsensusMonitor(
+                    nodes=nodes_dict,
+                    node_cli_path=self.node_cli_path,
+                    network_name=network_name
+                )
+                await monitor.wait_for_links_established(timeout=float(step.timeout))
+                
+            elif wait_state == "sync_complete":
+                # Use NetworkSyncCompletionWaiter
+                from ..monitoring.waiters import NetworkSyncCompletionWaiter
+                waiter = NetworkSyncCompletionWaiter(
+                    node_cli_path=self.node_cli_path,
+                    network=network_name
+                )
+                await waiter.wait_for_sync_complete(resolved_nodes, timeout=step.timeout)
+            else:
+                raise ScenarioExecutionError(
+                    f"Unknown network wait state: {wait_state}",
+                    step=step
+                )
+            
+            logger.info(f"✅ Network state '{wait_state}' achieved")
+            ctx.add_result("network_wait", True, {"state": wait_state, "nodes": resolved_nodes})
+            
+        except Exception as e:
+            error_msg = f"Network wait failed: {str(e)}"
+            logger.error(error_msg)
+            ctx.add_result("network_wait", False, {"state": wait_state, "error": str(e)})
+            raise ScenarioExecutionError(error_msg, step=step)
+    
+    async def _execute_docker_op_step(self, step: DockerOpStep, ctx: RuntimeContext):
+        """Execute Docker operation step."""
+        logger.info(f"Docker operation: {step.docker_op} on services {step.services}")
+        
+        # Substitute variables and resolve node aliases to docker service names
+        # Docker services use format: node-1, node-2, etc.
+        # But scenarios may use: root-1, master-1, node-1, etc.
+        services = []
+        for s in step.services:
+            substituted = ctx.substitute(s)
+            
+            # Direct docker service name (node-1, node-2, etc.)
+            if substituted.startswith("node-") and len(substituted) > 5:
+                docker_service = substituted
+            # Resolve node alias (root-1 -> node1) then convert to docker service name (node1 -> node-1)
+            else:
+                resolved = self._resolve_node_alias(substituted)
+                # Convert node1 -> node-1 for docker-compose service names
+                if resolved.startswith("node") and len(resolved) > 4:
+                    node_num = resolved[4:]  # Extract number from node1, node2, etc.
+                    docker_service = f"node-{node_num}"
+                # Handle role-based aliases directly for default topology
+                # root-1, root-2, root-3 -> node-1, node-2, node-3
+                elif substituted.startswith("root-"):
+                    node_num = substituted.split("-")[1]
+                    docker_service = f"node-{node_num}"
+                # master-1, master-2, master-3 -> node-4, node-5, node-6 (in default topology)
+                elif substituted.startswith("master-"):
+                    master_idx = int(substituted.split("-")[1])
+                    node_num = str(master_idx + 3)  # master-1 -> node-4, master-2 -> node-5, etc.
+                    docker_service = f"node-{node_num}"
+                else:
+                    # Fallback: use as-is
+                    docker_service = resolved
+            services.append(docker_service)
+        operation = ctx.substitute(step.docker_op)
+        
+        # Get DockerComposeManager - need to get it from context or create it
+        # For now, we'll need to get it from RuntimeContext or pass it as parameter
+        # This is a limitation - we need NetworkManager or ComposeManager in context
+        # For now, raise error if not available
+        if not hasattr(ctx, 'compose_manager'):
+            raise ScenarioExecutionError(
+                "DockerComposeManager not available in context. "
+                "Docker operations require NetworkManager to be set in RuntimeContext.",
+                step=step
+            )
+        
+        compose_manager = ctx.compose_manager
+        
+        try:
+            if operation == "start":
+                compose_manager.up(services=services, detach=step.detach, wait=False)
+                
+                # Wait for containers to receive IP addresses
+                if step.wait_for_ip:
+                    from ..monitoring.waiter.docker_ip_waiter import DockerIPWaiter
+                    import docker
+                    
+                    docker_client = docker.from_env()
+                    ip_waiter = DockerIPWaiter(docker_client)
+                    
+                    # Map docker service names to container names
+                    # node-1 -> cellframe-stage-node-1
+                    container_names = [f"cellframe-stage-{svc}" for svc in services]
+                    
+                    logger.info("waiting_for_container_ips", containers=container_names)
+                    
+                    if not ip_waiter.wait_for_container_ips(container_names, timeout=30.0):
+                        raise ScenarioExecutionError(
+                            f"Containers did not receive IP addresses within timeout: {container_names}"
+                        )
+                    
+                    logger.info("✅ All containers have IP addresses", count=len(container_names))
+                
+            elif operation == "stop":
+                compose_manager.down(services=services)
+            elif operation == "restart":
+                compose_manager.restart(services=services)
+            elif operation == "logs":
+                # Logs operation - would need to implement
+                logger.warning("Docker logs operation not yet implemented")
+            elif operation == "exec":
+                if not step.command:
+                    raise ScenarioExecutionError("Command required for 'exec' operation", step=step)
+                # Exec operation - would need to implement
+                logger.warning("Docker exec operation not yet implemented")
+            else:
+                raise ScenarioExecutionError(f"Unknown Docker operation: {operation}", step=step)
+            
+            # Wait if specified
+            if step.wait:
+                await self._execute_wait_step(WaitStep(wait=step.wait), ctx)
+            
+            logger.info(f"✅ Docker operation '{operation}' completed")
+            ctx.add_result("docker_op", True, {"operation": operation, "services": services})
+            
+        except Exception as e:
+            error_msg = f"Docker operation failed: {str(e)}"
+            logger.error(error_msg)
+            ctx.add_result("docker_op", False, {"operation": operation, "error": str(e)})
+            raise ScenarioExecutionError(error_msg, step=step)
+    
+    async def _execute_snapshot_step(self, step: SnapshotStep, ctx: RuntimeContext):
+        """Execute snapshot step."""
+        logger.info(f"Snapshot operation: {step.snapshot} name={step.name}")
+        
+        # Substitute variables
+        snapshot_name = ctx.substitute(step.name)
+        operation = ctx.substitute(step.snapshot)
+        phase = ctx.substitute(step.phase)
+        
+        # Get SnapshotManager - need to get it from context
+        if not hasattr(ctx, 'snapshot_manager'):
+            raise ScenarioExecutionError(
+                "SnapshotManager not available in context. "
+                "Snapshot operations require NetworkManager to be set in RuntimeContext.",
+                step=step
+            )
+        
+        snapshot_manager = ctx.snapshot_manager
+        
+        try:
+            if operation == "create":
+                result = await snapshot_manager.create_snapshot(snapshot_name)
+                if not result:
+                    raise RuntimeError("Snapshot creation failed")
+            elif operation == "restore":
+                result = await snapshot_manager.restore_snapshot(snapshot_name)
+                if not result:
+                    raise RuntimeError("Snapshot restoration failed")
+            elif operation == "verify":
+                # Verify operation - would need to implement
+                logger.warning("Snapshot verify operation not yet implemented")
+            else:
+                raise ScenarioExecutionError(f"Unknown snapshot operation: {operation}", step=step)
+            
+            logger.info(f"✅ Snapshot operation '{operation}' completed")
+            ctx.add_result("snapshot", True, {"operation": operation, "name": snapshot_name})
+            
+        except Exception as e:
+            error_msg = f"Snapshot operation failed: {str(e)}"
+            logger.error(error_msg)
+            ctx.add_result("snapshot", False, {"operation": operation, "error": str(e)})
+            raise ScenarioExecutionError(error_msg, step=step)
+    

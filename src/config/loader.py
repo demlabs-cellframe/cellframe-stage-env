@@ -601,6 +601,23 @@ class ConfigLoader:
         logger.debug("suite_isolation_config_loaded", **suite_isolation)
         return suite_isolation
     
+    def get_scenarios_config(self) -> Dict:
+        """Get scenarios execution configuration."""
+        config_file = self.custom_config_path or (self.config_dir / "stage-env.cfg")
+        
+        if not config_file.exists():
+            return {'debug': False}
+        
+        config = configparser.ConfigParser()
+        config.read(config_file)
+        
+        if 'scenarios' not in config:
+            return {'debug': False}
+        
+        return {
+            'debug': config.getboolean('scenarios', 'debug', fallback=False)
+        }
+    
     def get_node_source_config(self) -> Dict[str, Any]:
         """
         Load node_source configuration from stage-env.cfg.

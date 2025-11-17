@@ -1,0 +1,372 @@
+{
+  "srv_stake": [
+    "date_to",
+    "fee",
+    "pkey_hash",
+    "net",
+    "poa_cert",
+    "tx",
+    "cert",
+    "pkey",
+    "chain",
+    "value_min",
+    "date_from",
+    "node_addr",
+    "percent",
+    "tax_addr",
+    "tax",
+    "addr",
+    "value",
+    "siging_pkey_hash",
+    "signing_pkey_type",
+    "order",
+    "value_max",
+    "pkey_full"
+  ],
+  "dag": [
+    "from",
+    "datum",
+    "to_hash",
+    "chain",
+    "from_date",
+    "event",
+    "net",
+    "to_date",
+    "from_hash"
+  ],
+  "dag_poa": [
+    "net",
+    "event",
+    "chain"
+  ],
+  "block": [
+    "datum",
+    "value",
+    "cert",
+    "chain",
+    "to_hash",
+    "from_date",
+    "hash",
+    "pkey_hash",
+    "num",
+    "hashes",
+    "fee",
+    "net",
+    "poa_cert",
+    "to_date",
+    "addr",
+    "from_hash"
+  ],
+  "esbocs": [
+    "cert",
+    "chain",
+    "val_count",
+    "pkey_hash",
+    "net",
+    "round_count"
+  ],
+  "poll": [
+    "question",
+    "cert",
+    "token",
+    "max_votes_count",
+    "expire",
+    "hash",
+    "options",
+    "fee",
+    "net",
+    "option_idx"
+  ],
+  "net": [
+    "from",
+    "cert",
+    "to",
+    "prev_sec",
+    "hash",
+    "net"
+  ],
+  "net_srv": [
+    "provider_pkey_hash",
+    "srv_uid",
+    "direction",
+    "hash",
+    "units",
+    "net",
+    "tx_cond",
+    "client_pkey_hash",
+    "cert",
+    "price_token",
+    "price_max",
+    "price_min",
+    "price",
+    "continent",
+    "price_unit",
+    "ext",
+    "node_addr",
+    "region",
+    "expires"
+  ],
+  "srv_xchange": [
+    "value",
+    "offset",
+    "time_from",
+    "token_to",
+    "order",
+    "time_to",
+    "fee",
+    "limit",
+    "token_from",
+    "net",
+    "token_buy",
+    "rate",
+    "token_sell",
+    "addr"
+  ],
+  "stake_lock": [
+    "time_staking",
+    "value",
+    "chain",
+    "token",
+    "reinvest",
+    "fee",
+    "net",
+    "tx"
+  ],
+  "global_db": [
+    "mask",
+    "value",
+    "group",
+    "all",
+    "key"
+  ],
+  "mempool": [
+    "datum",
+    "ca_name",
+    "chain",
+    "net",
+    "addr"
+  ],
+  "node": [
+    "host",
+    "addr",
+    "alias",
+    "certs",
+    "port",
+    "net",
+    "link"
+  ],
+  "token_update": [
+    "add_certs",
+    "flag_set",
+    "add_cert",
+    "net",
+    "tx_receiver_blocked",
+    "flag_unset",
+    "total_signs_valid",
+    "utxo_blocked_add",
+    "certs",
+    "type",
+    "token",
+    "remove_certs",
+    "chain",
+    "utxo_blocked_remove",
+    "tx_receiver_allowed",
+    "tx_sender_allowed",
+    "tx_sender_blocked",
+    "description",
+    "total_supply_change"
+  ],
+  "wallet": [
+    "to_addr",
+    "fee",
+    "net",
+    "tx",
+    "pkey_hashes",
+    "cert",
+    "type",
+    "file",
+    "restore_legacy",
+    "pkey",
+    "token",
+    "cond",
+    "password",
+    "restore",
+    "ttl",
+    "remove_password",
+    "addr",
+    "value",
+    "sign",
+    "signs_minimum"
+  ],
+  "token_decl": [
+    "flags",
+    "total_signs_valid",
+    "datum_type_blocked",
+    "tx_receiver_blocked",
+    "chain",
+    "token",
+    "certs",
+    "description",
+    "type",
+    "datum_type_allowed",
+    "tx_sender_allowed",
+    "tx_receiver_allowed",
+    "signs_total",
+    "signs_emission",
+    "net",
+    "total_supply",
+    "decimals",
+    "tx_sender_blocked"
+  ],
+  "token_update_sign": [
+    "net",
+    "datum",
+    "certs",
+    "chain"
+  ],
+  "token_decl_sign": [
+    "net",
+    "datum",
+    "certs",
+    "chain"
+  ],
+  "token_emit": [
+    "net",
+    "certs",
+    "emission",
+    "chain_emission",
+    "emission_value",
+    "token",
+    "addr"
+  ],
+  "chain_ca_pub": [
+    "net",
+    "ca_name",
+    "chain"
+  ],
+  "tx_create": [
+    "value",
+    "cert",
+    "wallet_fee",
+    "chain",
+    "token",
+    "lock_before",
+    "from_wallet",
+    "certs",
+    "to_addr",
+    "from_emission",
+    "fee",
+    "net"
+  ],
+  "tx_create_json": [
+    "net",
+    "json",
+    "chain"
+  ],
+  "mempool_add": [
+    "net",
+    "tx_obj",
+    "json",
+    "chain"
+  ],
+  "tx_cond_create": [
+    "value",
+    "cert",
+    "token",
+    "srv_uid",
+    "unit",
+    "fee",
+    "pkey",
+    "net"
+  ],
+  "tx_cond_remove": [
+    "net",
+    "fee",
+    "srv_uid",
+    "hashes"
+  ],
+  "tx_cond_unspent_find": [
+    "net",
+    "srv_uid"
+  ],
+  "tx_verify": [
+    "net",
+    "tx",
+    "chain"
+  ],
+  "tx_sign": [
+    "net",
+    "certs",
+    "tx",
+    "chain"
+  ],
+  "tx_history": [
+    "chain",
+    "all",
+    "count",
+    "net",
+    "addr",
+    "tx"
+  ],
+  "ledger": [
+    "net",
+    "hash"
+  ],
+  "token": [
+    "net",
+    "full",
+    "name",
+    "history_limit"
+  ],
+  "print_log": [],
+  "stats": [],
+  "gdb_export": [
+    "groups"
+  ],
+  "gdb_import": [],
+  "remove": [
+    "net",
+    "chains",
+    "gdb"
+  ],
+  "decree": [
+    "datum",
+    "signs_verify",
+    "chain",
+    "certs",
+    "new_certs",
+    "to_addr",
+    "decree_chain",
+    "hash",
+    "fee",
+    "net",
+    "srv_id"
+  ],
+  "exec_cmd": [
+    "net",
+    "cmd",
+    "addr"
+  ],
+  "find": [
+    "chain",
+    "type",
+    "hash",
+    "where",
+    "net"
+  ],
+  "policy": [
+    "block_start",
+    "chain",
+    "certs",
+    "num",
+    "ts_start",
+    "net"
+  ],
+  "vpn_client": [
+    "value",
+    "token",
+    "port",
+    "net",
+    "addr"
+  ]
+}

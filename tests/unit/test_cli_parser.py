@@ -155,4 +155,74 @@ class TestCLICommandParser:
         cached_data = json.loads(cache_file.read_text())
         assert "token_decl" in cached_data
         assert "net" in cached_data["token_decl"]
+    
+    def test_apply_cli_defaults_for_net_command(self):
+        """Test that defaults are applied to 'net' command with subcommands."""
+        parser = CLICommandParser()
+        
+        # Manually set commands for testing
+        # 'net' command supports -net option
+        parser.commands = {
+            "net": {"net"}  # net command supports -net option
+        }
+        parser._parsed = True
+        
+        # Test case: "net go offline" should get -net added
+        cmd = "net go offline"
+        defaults = {"net": "stagenet"}
+        
+        result = parser.apply_cli_defaults(cmd, defaults)
+        
+        # Should add -net stagenet
+        assert "-net stagenet" in result, f"Expected -net stagenet in result, got: {result}"
+        assert result.startswith("net go offline"), f"Command should start with 'net go offline', got: {result}"
+    
+    def test_apply_cli_defaults_for_net_go_online(self):
+        """Test that defaults are applied to 'net go online' command."""
+        parser = CLICommandParser()
+        
+        parser.commands = {
+            "net": {"net"}  # net command supports -net option
+        }
+        parser._parsed = True
+        
+        cmd = "net go online"
+        defaults = {"net": "stagenet"}
+        
+        result = parser.apply_cli_defaults(cmd, defaults)
+        
+        assert "-net stagenet" in result, f"Expected -net stagenet in result, got: {result}"
+    
+    def test_apply_cli_defaults_for_node_dump(self):
+        """Test that defaults are applied to 'node dump' command."""
+        parser = CLICommandParser()
+        
+        parser.commands = {
+            "node": {"net"}  # node command supports -net option
+        }
+        parser._parsed = True
+        
+        cmd = "node dump"
+        defaults = {"net": "stagenet"}
+        
+        result = parser.apply_cli_defaults(cmd, defaults)
+        
+        assert "-net stagenet" in result, f"Expected -net stagenet in result, got: {result}"
+    
+    def test_apply_cli_defaults_for_node_add(self):
+        """Test that defaults are applied to 'node add' command."""
+        parser = CLICommandParser()
+        
+        parser.commands = {
+            "node": {"net"}  # node command supports -net option
+        }
+        parser._parsed = True
+        
+        cmd = "node add -addr 1234::5678"
+        defaults = {"net": "stagenet"}
+        
+        result = parser.apply_cli_defaults(cmd, defaults)
+        
+        assert "-net stagenet" in result, f"Expected -net stagenet in result, got: {result}"
+        assert "-addr 1234::5678" in result, "Original -addr should be preserved"
 

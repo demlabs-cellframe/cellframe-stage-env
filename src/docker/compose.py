@@ -46,6 +46,7 @@ class DockerComposeManager:
         self,
         services: Optional[List[str]] = None,
         no_cache: bool = False,
+        test_mirrors: bool = True,
     ) -> None:
         """
         Build Docker images.
@@ -53,14 +54,37 @@ class DockerComposeManager:
         Args:
             services: List of service names to build (None = all)
             no_cache: Don't use cache
+            test_mirrors: Test mirror speeds before building
         """
         logger.info("building_images", 
                    services=services or "all",
-                   no_cache=no_cache)
+                   no_cache=no_cache,
+                   test_mirrors=test_mirrors)
+        
+        # Test mirrors and select fastest before building
+        debian_mirror = None
+        if test_mirrors:
+            try:
+                from ..utils.mirror_tester import select_fastest_mirrors
+                from ..cli.common import print_info, print_success, print_warning
+                
+                print_info("Testing mirror speeds...")
+                mirror_results = select_fastest_mirrors(timeout=5)
+                debian_mirror = mirror_results['debian_mirror']
+                debian_time = mirror_results['debian_time']
+                
+                print_success(f"Fastest Debian mirror: {debian_mirror} ({debian_time:.2f}s)")
+                logger.info("fastest_mirror_selected", 
+                           debian_mirror=debian_mirror,
+                           debian_time=debian_time)
+            except Exception as e:
+                logger.warning("mirror_test_failed", error=str(e))
+                print_warning(f"Mirror testing failed: {e}, using default mirrors")
         
         # Use docker compose CLI via subprocess for build
         # (docker SDK doesn't have direct compose build API yet)
         from ..utils.cli import run_command
+        import os
         
         cmd = ["docker", "compose", "-f", str(self.compose_file),
                "-p", self.project_name, "build"]
@@ -68,11 +92,43 @@ class DockerComposeManager:
         if no_cache:
             cmd.append("--no-cache")
         
+        # Set environment variable for mirror (docker-compose reads from env)
+        env = os.environ.copy()
+        if debian_mirror:
+            env["DEBIAN_MIRROR"] = debian_mirror
+            logger.info("setting_debian_mirror_env", mirror=debian_mirror)
+        
         if services:
             cmd.extend(services)
         
-        run_command(cmd, cwd=self.project_dir)
-        logger.info("build_completed")
+        # Print informative messages before starting Docker build
+        from ..cli.common import print_info, print_success
+        print_info("Starting Docker build...")
+        print_info(f"Docker Compose file: {self.compose_file.name}")
+        print_info(f"Project name: {self.project_name}")
+        if debian_mirror:
+            print_info(f"Using Debian mirror: {debian_mirror}")
+        if no_cache:
+            print_info("Build mode: --no-cache (clean build)")
+        print_info("Docker Compose is building images (this may take a while)...")
+        
+        logger.info("starting_docker_build", 
+                   compose_file=str(self.compose_file),
+                   project=self.project_name,
+                   no_cache=no_cache,
+                   services=services or "all")
+        
+        try:
+            # Run command with real-time output (not captured)
+            run_command(cmd, cwd=self.project_dir, env=env, capture_output=False)
+            
+            print_success("Docker build completed successfully")
+            logger.info("build_completed")
+        except KeyboardInterrupt:
+            from ..cli.common import print_warning
+            print_warning("\nDocker build interrupted by user (Ctrl+C)")
+            logger.warning("docker_build_interrupted")
+            raise
     
     def cleanup_stale_resources(self) -> None:
         """
@@ -436,6 +492,48 @@ class DockerComposeManager:
         
         run_command(cmd, cwd=self.project_dir)
         logger.info("services_stopped")
+    
+    def kill(self, timeout: int = 10) -> None:
+        """
+        Stop containers gracefully with SIGTERM (docker stop).
+        
+        Args:
+            timeout: Timeout in seconds before force kill
+        """
+        logger.info("killing_services", timeout=timeout)
+        
+        from ..utils.cli import run_command
+        
+        cmd = ["docker", "compose", "-f", str(self.compose_file),
+               "-p", self.project_name, "stop", "-t", str(timeout)]
+        
+        run_command(cmd, cwd=self.project_dir)
+        logger.info("services_killed")
+    
+    def terminate(self) -> None:
+        """
+        Force kill containers with SIGKILL (docker kill).
+        """
+        logger.info("terminating_services")
+        
+        # Get all containers for this project
+        containers = self.ps()
+        
+        if not containers:
+            logger.info("no_containers_to_terminate")
+            return
+        
+        # Kill each container directly
+        for container in containers:
+            try:
+                logger.debug("killing_container", name=container.name, id=container.short_id)
+                container.kill()
+            except Exception as e:
+                logger.warning("failed_to_kill_container",
+                             name=container.name,
+                             error=str(e))
+        
+        logger.info("services_terminated", count=len(containers))
     
     def restart(self, services: Optional[List[str]] = None) -> None:
         """
