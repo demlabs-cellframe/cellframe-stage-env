@@ -14,7 +14,7 @@ import docker
 from docker.errors import DockerException, NotFound
 from docker.models.containers import Container
 
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 from ..network.models import NodeConfig
 
 logger = get_logger(__name__)
@@ -65,7 +65,7 @@ class DockerComposeManager:
         debian_mirror = None
         if test_mirrors:
             try:
-                from ..utils.mirror_tester import select_fastest_mirrors
+                from src.utils.mirror_tester import select_fastest_mirrors
                 from ..cli.common import print_info, print_success, print_warning
                 
                 print_info("Testing mirror speeds...")
@@ -83,7 +83,7 @@ class DockerComposeManager:
         
         # Use docker compose CLI via subprocess for build
         # (docker SDK doesn't have direct compose build API yet)
-        from ..utils.cli import run_command
+        from src.utils.cli import run_command
         import os
         
         cmd = ["docker", "compose", "-f", str(self.compose_file),
@@ -139,28 +139,44 @@ class DockerComposeManager:
         logger.info("cleanup_stale_resources", project=self.project_name)
         
         # Find and remove stale containers with this project name
+        stale_containers = []
+        
+        # First, try to find by label
         try:
             stale_containers = self.client.containers.list(
                 all=True,
                 filters={"label": f"com.docker.compose.project={self.project_name}"}
             )
-            
-            if stale_containers:
-                logger.info("removing_stale_containers", count=len(stale_containers))
-                for container in stale_containers:
-                    try:
-                        logger.debug("removing_container", 
-                                   name=container.name,
-                                   id=container.short_id)
-                        container.remove(force=True)
-                    except Exception as e:
-                        logger.warning("failed_to_remove_container",
-                                     name=container.name,
-                                     error=str(e))
-            else:
-                logger.debug("no_stale_containers")
         except Exception as e:
-            logger.warning("failed_to_list_containers", error=str(e))
+            logger.warning("failed_to_list_containers_by_label", error=str(e))
+        
+        # Also check by name prefix (more reliable for containers in "Created" state)
+        try:
+            all_containers = self.client.containers.list(all=True)
+            for container in all_containers:
+                if container.name.startswith(f"{self.project_name}-"):
+                    # Avoid duplicates
+                    if container not in stale_containers:
+                        stale_containers.append(container)
+                        logger.debug("found_stale_container_by_name", name=container.name, status=container.status)
+        except Exception as e:
+            logger.warning("failed_to_list_all_containers", error=str(e))
+        
+        if stale_containers:
+            logger.info("removing_stale_containers", count=len(stale_containers))
+            for container in stale_containers:
+                try:
+                    logger.debug("removing_container", 
+                               name=container.name,
+                               id=container.short_id,
+                               status=container.status)
+                    container.remove(force=True)
+                except Exception as e:
+                    logger.warning("failed_to_remove_container",
+                                 name=container.name,
+                                 error=str(e))
+        else:
+            logger.debug("no_stale_containers")
         
         # Find and remove stale networks with this project name
         try:
@@ -240,10 +256,23 @@ class DockerComposeManager:
         # This directory will be empty for url/repository sources, but must exist
         build_context_packages_dir = self.project_dir / "packages"
         build_context_packages_dir.mkdir(exist_ok=True)
-        (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
         
         # Determine node source configuration
         node_source_type = node_source_config.get('type', 'url') if node_source_config else 'url'
+        
+        # CRITICAL: Clear packages/ directory if using URL source to prevent using stale local packages
+        # Dockerfile COPY will copy everything from packages/, so we must ensure it's empty for URL sources
+        if node_source_type == 'url':
+            # Remove all .deb files but keep .gitkeep
+            for item in build_context_packages_dir.iterdir():
+                if item.is_file() and item.suffix == '.deb':
+                    logger.debug("removing_stale_local_package", path=str(item))
+                    item.unlink()
+            # Ensure .gitkeep exists
+            (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
+        else:
+            # For local/repository sources, just ensure .gitkeep exists
+            (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
         local_package_path = None
         
         if node_source_type == 'local' and node_source_config:
@@ -444,6 +473,8 @@ class DockerComposeManager:
         """
         Start services.
         
+        If containers already exist, uses 'start' instead of 'up' to avoid conflicts.
+        
         Args:
             services: List of service names (None = all)
             detach: Run in background
@@ -451,18 +482,130 @@ class DockerComposeManager:
         """
         logger.info("starting_services", services=services or "all")
         
-        from ..utils.cli import run_command
+        from src.utils.cli import run_command
         
-        cmd = ["docker", "compose", "-f", str(self.compose_file),
-               "-p", self.project_name, "up"]
+        # Check if containers already exist (by label and by name pattern)
+        existing_containers = self.ps()
         
-        if detach:
-            cmd.append("-d")
+        # Also check by container name pattern (more reliable)
+        # Project containers follow pattern: {project_name}-{service_name}
+        # Check ALL containers (including stopped/created ones) with project name prefix
+        if not existing_containers:
+            # Check all containers with project name prefix (including stopped/created)
+            all_containers = self.client.containers.list(all=True)
+            for container in all_containers:
+                if container.name.startswith(f"{self.project_name}-"):
+                    existing_containers.append(container)
+                    logger.debug("found_container_by_name_prefix", name=container.name, status=container.status)
         
-        if services:
-            cmd.extend(services)
+        # If still no containers found and services specified, check specific service names
+        if not existing_containers and services:
+            for service in services:
+                expected_name = f"{self.project_name}-{service}"
+                try:
+                    container = self.client.containers.get(expected_name)
+                    if container:
+                        existing_containers.append(container)
+                        logger.debug("found_container_by_name", name=expected_name, status=container.status)
+                except NotFound:
+                    pass
         
-        run_command(cmd, cwd=self.project_dir)
+        # Check if any containers are in "Created" state (created but not started due to errors)
+        created_containers = [c for c in existing_containers if c.status.startswith("Created")]
+        if created_containers:
+            logger.warning("found_created_containers", count=len(created_containers))
+            # Remove created containers to allow recreation
+            for container in created_containers:
+                try:
+                    logger.info("removing_created_container", name=container.name)
+                    container.remove(force=True)
+                    existing_containers.remove(container)
+                except Exception as e:
+                    logger.warning("failed_to_remove_created_container", name=container.name, error=str(e))
+        
+        if existing_containers:
+            # Containers exist - use 'start' instead of 'up' to avoid port conflicts
+            logger.info("containers_exist_using_start", count=len(existing_containers))
+            cmd = ["docker", "compose", "-f", str(self.compose_file),
+                   "-p", self.project_name, "start"]
+            
+            if services:
+                cmd.extend(services)
+            
+            run_command(cmd, cwd=self.project_dir)
+        else:
+            # No containers exist - use 'up' to create and start them
+            # But first, ensure no stale containers exist (including "Created" state)
+            logger.info("no_existing_containers_using_up")
+            
+            # Double-check for containers in "Created" state that might have been missed
+            # This can happen if containers were created but failed to start due to port conflicts
+            try:
+                all_containers = self.client.containers.list(all=True)
+                created_containers = [
+                    c for c in all_containers 
+                    if c.name.startswith(f"{self.project_name}-") and c.status.startswith("Created")
+                ]
+                if created_containers:
+                    logger.warning("found_created_containers_before_up", count=len(created_containers))
+                    for container in created_containers:
+                        try:
+                            logger.info("removing_created_container_before_up", name=container.name)
+                            container.remove(force=True)
+                        except Exception as e:
+                            logger.warning("failed_to_remove_created_container", name=container.name, error=str(e))
+            except Exception as e:
+                logger.warning("failed_to_check_created_containers", error=str(e))
+            
+            cmd = ["docker", "compose", "-f", str(self.compose_file),
+                   "-p", self.project_name, "up"]
+            
+            if detach:
+                cmd.append("-d")
+            
+            if services:
+                cmd.extend(services)
+            
+            try:
+                run_command(cmd, cwd=self.project_dir)
+            except Exception as e:
+                # If port conflict occurred, containers may be in "Created" state
+                # Check if containers were created but failed to start
+                error_str = str(e)
+                # Check both exception message and stderr (if available)
+                stderr_str = ""
+                if hasattr(e, 'stderr'):
+                    stderr_str = str(e.stderr)
+                
+                port_conflict = "port is already allocated" in error_str or "Bind for" in error_str or \
+                               "port is already allocated" in stderr_str or "Bind for" in stderr_str
+                
+                if port_conflict:
+                    logger.warning("port_conflict_detected_checking_created_containers")
+                    # Check if containers were created (even if not started)
+                    try:
+                        all_containers = self.client.containers.list(all=True)
+                        created_containers = [
+                            c for c in all_containers 
+                            if c.name.startswith(f"{self.project_name}-") and c.status.startswith("Created")
+                        ]
+                        if created_containers:
+                            logger.info("found_created_containers_after_port_conflict", count=len(created_containers))
+                            # Try to start them instead of removing (they exist, just need to be started)
+                            # But first check if port is still occupied
+                            logger.warning("containers_created_but_port_conflict_removing_for_retry", count=len(created_containers))
+                            for container in created_containers:
+                                try:
+                                    container.remove(force=True)
+                                    logger.debug("removed_created_container_after_error", name=container.name)
+                                except Exception as cleanup_error:
+                                    logger.warning("failed_to_remove_created_container_after_error", 
+                                                 name=container.name, error=str(cleanup_error))
+                    except Exception as cleanup_error:
+                        logger.warning("failed_to_check_created_containers_after_error", error=str(cleanup_error))
+                
+                # Re-raise the original error
+                raise
         
         if wait:
             self.wait_for_services(services)
@@ -479,7 +622,7 @@ class DockerComposeManager:
         """
         logger.info("stopping_services", volumes=volumes, remove_images=remove_images)
         
-        from ..utils.cli import run_command
+        from src.utils.cli import run_command
         
         cmd = ["docker", "compose", "-f", str(self.compose_file),
                "-p", self.project_name, "down"]
@@ -502,7 +645,7 @@ class DockerComposeManager:
         """
         logger.info("killing_services", timeout=timeout)
         
-        from ..utils.cli import run_command
+        from src.utils.cli import run_command
         
         cmd = ["docker", "compose", "-f", str(self.compose_file),
                "-p", self.project_name, "stop", "-t", str(timeout)]
@@ -544,7 +687,7 @@ class DockerComposeManager:
         """
         logger.info("restarting_services", services=services or "all")
         
-        from ..utils.cli import run_command
+        from src.utils.cli import run_command
         
         cmd = ["docker", "compose", "-f", str(self.compose_file),
                "-p", self.project_name, "restart"]
@@ -564,7 +707,7 @@ class DockerComposeManager:
         """
         logger.info("pausing_services", services=services or "all")
         
-        from ..utils.cli import run_command
+        from src.utils.cli import run_command
         
         cmd = ["docker", "compose", "-f", str(self.compose_file),
                "-p", self.project_name, "pause"]
@@ -584,7 +727,7 @@ class DockerComposeManager:
         """
         logger.info("unpausing_services", services=services or "all")
         
-        from ..utils.cli import run_command
+        from src.utils.cli import run_command
         
         cmd = ["docker", "compose", "-f", str(self.compose_file),
                "-p", self.project_name, "unpause"]

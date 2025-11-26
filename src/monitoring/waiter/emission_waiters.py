@@ -8,7 +8,7 @@ from typing import Callable, List
 
 from ..base import BaseWaiter
 from ...network.models import NodeConfig
-from ...utils.logger import get_logger
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

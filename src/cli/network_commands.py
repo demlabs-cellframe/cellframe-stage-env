@@ -150,7 +150,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
     ):
         """🛑 Kill the test network gracefully (SIGTERM)."""
         from ..network.manager import NetworkManager
-        from ..utils.pid_manager import PIDManager
+        from src.utils.pid_manager import PIDManager
         
         config_path = get_config_path()
         network_mgr = NetworkManager(base_path, config_path=config_path)
@@ -170,7 +170,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
     def terminate():
         """💀 Force terminate the test network (SIGKILL)."""
         from ..network.manager import NetworkManager
-        from ..utils.pid_manager import PIDManager
+        from src.utils.pid_manager import PIDManager
         
         config_path = get_config_path()
         network_mgr = NetworkManager(base_path, config_path=config_path)
@@ -340,6 +340,135 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         _show_status(network_mgr)
         
         print_success("\n✅ Full rebuild completed!")
+    
+    @app.command()
+    def pkgs_update():
+        """📦 Update packages in containers (copy binary + apt update/upgrade). Starts containers if needed."""
+        from ..network.manager import NetworkManager
+        from ..build.builder import BuildManager
+        from ..config.manager import get_config_loader
+        import tarfile
+        import io
+        
+        config_path = get_config_path()
+        config_loader = get_config_loader()
+        
+        # Get build directory from config
+        base_path_parent = base_path.parent.parent  # Go to project root
+        build_dir = base_path_parent / "build"
+        binary_path = build_dir / "cellframe-node-cli"
+        
+        if not binary_path.exists():
+            print_error(f"Binary not found: {binary_path}")
+            print_info("Please build cellframe-node first: ./stage-env build")
+            raise typer.Exit(1)
+        
+        print_info(f"Found binary: {binary_path}")
+        
+        # Initialize network manager to get containers
+        network_mgr = NetworkManager(base_path, config_path=config_path)
+        
+        # Get ALL containers (including stopped ones)
+        all_containers = network_mgr.compose.ps()
+        
+        if not all_containers:
+            print_warning("No containers found for this project")
+            print_info("Starting containers (without genesis)...")
+            # Start containers directly using compose.up() (without genesis scenario)
+            try:
+                network_mgr.compose.up(detach=True, wait=False)
+                # Wait a bit for containers to start
+                import time
+                time.sleep(5)
+                all_containers = network_mgr.compose.ps()
+                if not all_containers:
+                    print_error("Failed to start containers")
+                    raise typer.Exit(1)
+                print_success(f"Started {len(all_containers)} container(s)")
+            except Exception as e:
+                print_error(f"Failed to start containers: {e}")
+                raise typer.Exit(1)
+        
+        # Separate running and stopped containers
+        running_containers = [c for c in all_containers if c.status == "running"]
+        stopped_containers = [c for c in all_containers if c.status != "running"]
+        
+        print_info(f"Found {len(all_containers)} container(s): {len(running_containers)} running, {len(stopped_containers)} stopped")
+        
+        # Start stopped containers if needed
+        if stopped_containers:
+            print_info(f"Starting {len(stopped_containers)} stopped container(s)...")
+            for container in stopped_containers:
+                try:
+                    print_info(f"  → Starting {container.name}")
+                    container.start()
+                    # Wait a bit for container to be ready
+                    import time
+                    time.sleep(2)
+                    print_success(f"  ✓ {container.name} started")
+                except Exception as e:
+                    print_error(f"  ✗ Failed to start {container.name}: {e}")
+            
+            # Refresh container list after starting
+            all_containers = network_mgr.compose.ps()
+            running_containers = [c for c in all_containers if c.status == "running"]
+        
+        if not running_containers:
+            print_error("No running containers available for update")
+            raise typer.Exit(1)
+        
+        # Copy binary to each container
+        print_info(f"Copying binary to {len(running_containers)} container(s)...")
+        for container in running_containers:
+            try:
+                print_info(f"  → {container.name}")
+                
+                # Create tar archive with binary
+                tar_stream = io.BytesIO()
+                with tarfile.open(fileobj=tar_stream, mode='w') as tar:
+                    tar.add(binary_path, arcname="cellframe-node-cli")
+                tar_data = tar_stream.getvalue()
+                
+                # Copy to container
+                container.put_archive("/tmp", tar_data)
+                
+                # Move to final location
+                container.exec_run(
+                    ["sh", "-c", "mv /tmp/cellframe-node-cli /opt/cellframe-node/bin/cellframe-node-cli && chmod +x /opt/cellframe-node/bin/cellframe-node-cli"],
+                    user="root"
+                )
+                
+                print_success(f"  ✓ Binary updated in {container.name}")
+            except Exception as e:
+                print_error(f"  ✗ Failed to update binary in {container.name}: {e}")
+        
+        # Update packages in containers
+        print_info(f"Updating packages in {len(running_containers)} container(s)...")
+        for container in running_containers:
+            try:
+                print_info(f"  → {container.name}")
+                
+                # apt update
+                result = container.exec_run(
+                    ["apt-get", "update"],
+                    user="root"
+                )
+                if result.exit_code != 0:
+                    print_warning(f"  ⚠ apt-get update failed in {container.name}")
+                
+                # apt upgrade (non-interactive)
+                result = container.exec_run(
+                    ["sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get upgrade -y"],
+                    user="root"
+                )
+                if result.exit_code != 0:
+                    print_warning(f"  ⚠ apt-get upgrade failed in {container.name}")
+                else:
+                    print_success(f"  ✓ Packages updated in {container.name}")
+            except Exception as e:
+                print_error(f"  ✗ Failed to update packages in {container.name}: {e}")
+        
+        print_success("Package update completed")
 
 
 def _show_status(network_mgr):
@@ -419,94 +548,4 @@ def _print_status_table(status_data):
         )
     
     console.print(table)
-    
-    @app.command()
-    def pkgs_update():
-        """📦 Update packages in running containers (copy binary + apt update/upgrade)."""
-        from ..network.manager import NetworkManager
-        from ..build.builder import BuildManager
-        from ..config.manager import get_config_loader
-        import tarfile
-        import io
-        
-        config_path = get_config_path()
-        config_loader = get_config_loader()
-        
-        # Get build directory from config
-        base_path_parent = base_path.parent.parent  # Go to project root
-        build_dir = base_path_parent / "build"
-        binary_path = build_dir / "cellframe-node-cli"
-        
-        if not binary_path.exists():
-            print_error(f"Binary not found: {binary_path}")
-            print_info("Please build cellframe-node first: ./stage-env build")
-            raise typer.Exit(1)
-        
-        print_info(f"Found binary: {binary_path}")
-        
-        # Initialize network manager to get containers
-        network_mgr = NetworkManager(base_path, config_path=config_path)
-        
-        # Get all running containers
-        containers = network_mgr.compose.ps()
-        running_containers = [c for c in containers if c.status == "running"]
-        
-        if not running_containers:
-            print_warning("No running containers found")
-            raise typer.Exit(1)
-        
-        print_info(f"Found {len(running_containers)} running container(s)")
-        
-        # Copy binary to each container
-        print_info("Copying binary to containers...")
-        for container in running_containers:
-            try:
-                print_info(f"  → {container.name}")
-                
-                # Create tar archive with binary
-                tar_stream = io.BytesIO()
-                with tarfile.open(fileobj=tar_stream, mode='w') as tar:
-                    tar.add(binary_path, arcname="cellframe-node-cli")
-                tar_data = tar_stream.getvalue()
-                
-                # Copy to container
-                container.put_archive("/tmp", tar_data)
-                
-                # Move to final location
-                container.exec_run(
-                    ["sh", "-c", "mv /tmp/cellframe-node-cli /opt/cellframe-node/bin/cellframe-node-cli && chmod +x /opt/cellframe-node/bin/cellframe-node-cli"],
-                    user="root"
-                )
-                
-                print_success(f"  ✓ Binary updated in {container.name}")
-            except Exception as e:
-                print_error(f"  ✗ Failed to update binary in {container.name}: {e}")
-        
-        # Update packages in containers
-        print_info("Updating packages in containers...")
-        for container in running_containers:
-            try:
-                print_info(f"  → {container.name}")
-                
-                # apt update
-                result = container.exec_run(
-                    ["apt-get", "update"],
-                    user="root"
-                )
-                if result.exit_code != 0:
-                    print_warning(f"  ⚠ apt-get update failed in {container.name}")
-                
-                # apt upgrade (non-interactive)
-                result = container.exec_run(
-                    ["sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get upgrade -y"],
-                    user="root"
-                )
-                if result.exit_code != 0:
-                    print_warning(f"  ⚠ apt-get upgrade failed in {container.name}")
-                else:
-                    print_success(f"  ✓ Packages updated in {container.name}")
-            except Exception as e:
-                print_error(f"  ✗ Failed to update packages in {container.name}: {e}")
-        
-        print_success("Package update completed")
 

@@ -19,8 +19,8 @@ from ..config.generator import ConfigGenerator
 from ..docker.compose import DockerComposeManager
 from ..monitoring.health import HealthChecker, HealthStatus
 from ..monitoring.network_consensus import NetworkConsensusMonitor
-from ..utils.logger import get_logger
-from ..utils.artifacts import ArtifactsManager
+from src.utils.logger import get_logger
+from src.utils.artifacts import ArtifactsManager
 from ..snapshots.manager import SnapshotManager, SnapshotMode
 from .models import NodeConfig
 from .genesis import GenesisInitializer
@@ -370,7 +370,8 @@ class NetworkManager:
                 executor = ScenarioExecutor(
                     node_cli_path=self.node_cli_path,
                     log_file=None,
-                    debug=scenarios_config.get('debug', False)
+                    debug=scenarios_config.get('debug', False),
+                    base_path=self.base_path
                 )
                 
                 # Execute phase1 scenario
@@ -383,6 +384,7 @@ class NetworkManager:
                     phase1_scenario,
                     compose_manager=self.compose,
                     snapshot_manager=self.snapshot_manager,
+                    genesis_config_manager=self.genesis.config_mgr,
                     initial_variables={},
                     global_context=self.scenario_context,
                     node_configs=root_node_configs
@@ -458,6 +460,7 @@ class NetworkManager:
                                     if zerochain_config_path.exists():
                                         configs_found += 1
                                         # Verify static_genesis_event is set using centralized config manager
+                                        from ..config.manager import get_config_loader
                                         config_loader = get_config_loader()
                                         config = config_loader.load_config_file(zerochain_config_path)
                                         static_genesis = config.get('dag', 'static_genesis_event', fallback='').strip() if 'dag' in config else ''
@@ -992,7 +995,8 @@ class NetworkManager:
             executor = ScenarioExecutor(
                 node_cli_path=self.node_cli_path,
                 log_file=None,
-                debug=scenarios_config.get('debug', False)
+                debug=scenarios_config.get('debug', False),
+                base_path=self.base_path
             )
             
             # Execute phase2 scenario with emission_hash from phase1

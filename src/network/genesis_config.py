@@ -13,7 +13,7 @@ from jinja2 import Template
 
 from .genesis_base import BaseGenesisManager
 from .models import NodeConfig
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 
 
 logger = get_logger(__name__)

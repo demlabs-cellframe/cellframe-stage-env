@@ -19,7 +19,7 @@ import yaml
 from jinja2 import Environment, FileSystemLoader, Template
 from pydantic import BaseModel, Field, field_validator
 
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

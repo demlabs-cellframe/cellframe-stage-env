@@ -226,14 +226,31 @@ class RPCStep(BaseModel):
 
 
 class WaitStep(BaseModel):
-    """Wait for duration or condition."""
-    wait: Optional[str] = Field(None, description="Duration (e.g., '5s') or condition")
-    type: Optional[str] = Field(None, description="Waiter type from wait_registry (e.g., 'delegations_synced', 'stake_service_ready')")
-    nodes: Optional[List[str]] = Field(None, description="Nodes to wait on (for waiter types)")
-    network: Optional[str] = Field(None, description="Network name (for waiter types)")
-    chain: Optional[str] = Field(None, description="Chain name (for waiter types)")
-    expected_count: Optional[int] = Field(None, description="Expected count (for delegations_synced)")
-    timeout: Optional[int] = Field(60, description="Timeout in seconds (for waiter types)")
+    """
+    Universal wait step.
+    
+    Usage:
+      - wait: "5s"              # Duration
+      - wait: mempool           # Wait for datum in mempool
+      - wait: finalized         # Wait for datum finalization (DAG/Block/None)
+      - wait: network_online    # Wait for network state
+    """
+    wait: str = Field(..., description="Duration (e.g., '5s') or condition ('mempool', 'finalized', ...)")
+    
+    # Context parameters
+    datum: Optional[str] = Field(None, description="Datum hash (for mempool/finalized)")
+    node: Optional[str] = Field(None, description="Target node")
+    nodes: Optional[List[str]] = Field(None, description="Target nodes list")
+    network: Optional[str] = Field(None, description="Network name")
+    chain: Optional[str] = Field(None, description="Chain name")
+    timeout: int = Field(60, description="Timeout in seconds")
+    
+    # Advanced options
+    check_master: bool = Field(True, description="Check master nodes (for finalized)")
+    expected_count: Optional[int] = Field(None, description="Expected count (for specific waiters)")
+
+    # Deprecated fields (kept for backward compatibility if needed, but cleaner to remove)
+    type: Optional[str] = Field(None, description="Deprecated: use wait field for type")
 
 
 class PythonStep(BaseModel):

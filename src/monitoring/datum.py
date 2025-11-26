@@ -27,6 +27,9 @@ from dataclasses import dataclass, field
 import docker
 
 from ..scenarios.schema import DatumStatus
+from ..utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -65,6 +68,7 @@ class DatumMonitor:
         """
         self.node_cli_path = node_cli_path
         self.docker_client = docker.from_env()
+        self._topology_map = None  # Cache for role -> node_ids mapping
         
         # Create separate datum monitor log
         if log_file:
@@ -93,6 +97,40 @@ class DatumMonitor:
         
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(log_line)
+    
+    def _collect_node_logs(self, node: str, lines: int = 100) -> None:
+        """
+        Collect and log node container logs for diagnosis.
+        
+        Args:
+            node: Node identifier (e.g., "root-1", "node1")
+            lines: Number of log lines to collect
+        """
+        try:
+            container_name = self._node_to_container(node)
+            container = self.docker_client.containers.get(container_name)
+            
+            # Get container logs
+            logs = container.logs(tail=lines).decode('utf-8', errors='replace')
+            
+            self._log(f"  📋 Node logs ({node}, {lines} lines):")
+            self._log(f"     {'-' * 60}")
+            for line in logs.split('\n'):
+                if line.strip():
+                    self._log(f"     {line}")
+            self._log(f"     {'-' * 60}")
+            
+            # Also log to main logger for visibility
+            logger.info("collected_node_logs_for_diagnosis",
+                       node=node,
+                       container=container_name,
+                       lines=lines,
+                       log_preview=logs[:500] if logs else "empty")
+        except Exception as e:
+            self._log(f"  ⚠️ Failed to collect node logs: {e}")
+            logger.warning("failed_to_collect_node_logs",
+                         node=node,
+                         error=str(e))
     
     async def wait_for_datum(
         self,
@@ -169,52 +207,174 @@ class DatumMonitor:
                     error_message=error
                 )
             
-            # Stage 1: Check mempool
+            # Stage 1: Wait for datum to appear in mempool (if not already there)
+            if not was_in_mempool:
+                # Use waiter to wait for datum to appear in mempool
+                # This handles cases where datum is created with delay (e.g., token_decl_sign replaces old datum)
+                from .waiter.datum_waiters import DatumInMempoolWaiter
+                
+                # Extract node_id from node name (e.g., "root-1" -> 1, "node-2" -> 2)
+                node_id = self._extract_node_id(node)
+                
+                # Create exec_cli function using existing pattern from GenesisInitializer._exec_cli
+                # This matches the pattern used by other waiters in the codebase
+                def exec_cli_sync(node_id: int, command: str, check_output: bool = True) -> tuple:
+                    """
+                    Execute CLI command synchronously using DatumMonitor's docker client.
+                    
+                    Based on GenesisInitializer._exec_cli pattern (same as used by other waiters).
+                    Note: node_id parameter is ignored, we use the original node name instead.
+                    """
+                    # Use original node name (not converted from node_id) for container lookup
+                    # This is important because node_id might not match the actual container name
+                    container_name = self._node_to_container(node)
+                    try:
+                        container = self.docker_client.containers.get(container_name)
+                    except Exception as e:
+                        if check_output:
+                            raise RuntimeError(f"Container {container_name} not found: {e}")
+                        return (1, "", f"Container {container_name} not found: {e}")
+                    
+                    # CRITICAL: Check container status before executing command (fail-fast)
+                    container.reload()
+                    if container.status != 'running':
+                        error_msg = (
+                            f"Container {container_name} (node {node}) is not running "
+                            f"(status: {container.status}). Container crashed during datum monitoring."
+                        )
+                        # ALWAYS raise exception for container crash, even if check_output=False
+                        # This ensures fail-fast behavior - waiter should stop immediately
+                        raise RuntimeError(error_msg)
+                    
+                    # Use sh -c wrapper to ensure proper command execution (same as GenesisInitializer._exec_cli)
+                    full_cmd = f"{self.node_cli_path} {command}"
+                    cmd = ["sh", "-c", full_cmd]
+                    
+                    try:
+                        result = container.exec_run(cmd, demux=True)
+                        exit_code = result.exit_code
+                        stdout, stderr = result.output
+                        stdout_str = stdout.decode('utf-8', errors='replace') if stdout else ""
+                        stderr_str = stderr.decode('utf-8', errors='replace') if stderr else ""
+                        
+                        if check_output and exit_code != 0:
+                            raise RuntimeError(f"CLI command failed with exit code {exit_code}: {stderr_str}")
+                        
+                        return (exit_code, stdout_str, stderr_str)
+                    except Exception as e:
+                        # Check if error is about container not running
+                        error_str = str(e).lower()
+                        if "not running" in error_str or "409" in error_str or "conflict" in error_str:
+                            error_msg = (
+                                f"Container {container_name} (node {node}) crashed during command execution: {e}"
+                            )
+                            # ALWAYS raise exception for container crash, even if check_output=False
+                            # This ensures fail-fast behavior - waiter should stop immediately
+                            raise RuntimeError(error_msg) from e
+                        # Re-raise other exceptions
+                        raise
+                
+                # Log the hash we're looking for
+                self._log(f"  🔍 Looking for datum {datum_hash[:16]}... in mempool on {node}")
+                logger.info("waiting_for_datum_in_mempool",
+                           node=node,
+                           node_id=node_id,
+                           datum_hash=datum_hash,
+                           network=network,
+                           chain=chain)
+                
+                waiter = DatumInMempoolWaiter(
+                    exec_cli=exec_cli_sync,
+                    node_id=node_id,
+                    datum_hash=datum_hash,
+                    network_name=network,
+                    chain=chain,
+                    poll_interval=0.5  # Fast polling for mempool appearance
+                )
+                
+                try:
+                    # Wait for datum to appear in mempool (with reasonable timeout)
+                    mempool_wait_timeout = min(10.0, timeout_mempool)  # Wait up to 10s or timeout_mempool, whichever is smaller
+                    await waiter.wait(timeout=mempool_wait_timeout, name=f"datum_{datum_hash[:16]}_in_mempool")
+                    was_in_mempool = True
+                    mempool_start = current_time
+                    self._log(f"  ✅ Datum {datum_hash[:16]}... entered mempool")
+                except RuntimeError as e:
+                    # Container crashed during monitoring - fail-fast
+                    error_msg = str(e)
+                    self._log(f"  ❌ Container crashed during datum monitoring: {error_msg}")
+                    
+                    # Collect crash artifacts
+                    container_name = self._node_to_container(node)
+                    from ..docker.container import DockerContainerManager
+                    from pathlib import Path
+                    container_manager = DockerContainerManager(Path.cwd(), self.node_cli_path)
+                    try:
+                        artifacts = container_manager.collect_crash_artifacts(
+                            container_name=container_name,
+                            node_id=node,
+                            test_name=None
+                        )
+                        self._log(f"  📦 Crash artifacts collected: {artifacts}")
+                    except Exception as artifact_error:
+                        self._log(f"  ⚠️ Failed to collect crash artifacts: {artifact_error}")
+                    
+                    # Collect node logs for diagnosis
+                    self._collect_node_logs(node, lines=100)
+                    
+                    return DatumMonitorResult(
+                        status=DatumStatus.REJECTED,
+                        datum_hash=datum_hash,
+                        elapsed_time=elapsed,
+                        error_message=error_msg
+                    )
+                except TimeoutError:
+                    # Datum didn't appear in mempool - this likely means it wasn't created
+                    error = f"Datum never appeared in mempool after {mempool_wait_timeout:.1f}s - likely not created (check CLI command output for errors)"
+                    self._log(f"  ❌ {error}")
+                    self._log(f"  💡 Datum hash received: {datum_hash[:50]}...")
+                    self._log(f"  💡 Check that token_decl/token_emit/token_decl_sign command succeeded")
+                    
+                    # Collect node logs for diagnosis
+                    self._collect_node_logs(node, lines=100)
+                    
+                    return DatumMonitorResult(
+                        status=DatumStatus.REJECTED,
+                        datum_hash=datum_hash,
+                        elapsed_time=elapsed,
+                        error_message=error
+                    )
+            
+            # Stage 1 continued: Check if datum is still in mempool
             in_mempool = await self._check_mempool(node, network, chain, datum_hash)
             
             if in_mempool:
-                if not was_in_mempool:
-                    self._log(f"  ✅ Datum {datum_hash[:16]}... entered mempool")
-                    was_in_mempool = True
-                    mempool_start = current_time
-                else:
-                    # Check mempool timeout
-                    mempool_time = current_time - mempool_start
+                # Check mempool timeout
+                mempool_time = current_time - mempool_start
+                
+                # Log mempool waiting state periodically
+                if int(mempool_time) % 10 == 0:  # Every 10 seconds
+                    self._log(f"  ⏳ Datum {datum_hash[:16]}... still in mempool ({mempool_time:.1f}s)")
+                
+                if mempool_time > timeout_mempool:
+                    error = f"Datum stuck in mempool for {mempool_time:.1f}s (expected verification within {timeout_mempool}s)"
+                    self._log(f"  ❌ {error}")
+                    self._log(f"  💡 This may indicate consensus issues or insufficient validators")
                     
-                    # Log mempool waiting state periodically
-                    if int(mempool_time) % 10 == 0:  # Every 10 seconds
-                        self._log(f"  ⏳ Datum {datum_hash[:16]}... still in mempool ({mempool_time:.1f}s)")
+                    # Collect node logs for diagnosis
+                    self._collect_node_logs(node, lines=200)
                     
-                    if mempool_time > timeout_mempool:
-                        error = f"Datum stuck in mempool for {mempool_time:.1f}s (expected verification within {timeout_mempool}s)"
-                        self._log(f"  ❌ {error}")
-                        self._log(f"  💡 This may indicate consensus issues or insufficient validators")
-                        return DatumMonitorResult(
-                            status=DatumStatus.TIMEOUT_MEMPOOL,
-                            datum_hash=datum_hash,
-                            elapsed_time=elapsed,
-                            details={"mempool_time": mempool_time},
-                            error_message=error
-                        )
+                    return DatumMonitorResult(
+                        status=DatumStatus.TIMEOUT_MEMPOOL,
+                        datum_hash=datum_hash,
+                        elapsed_time=elapsed,
+                        details={"mempool_time": mempool_time},
+                        error_message=error
+                    )
                 
                 # Still in mempool, continue monitoring
                 await asyncio.sleep(check_interval)
                 continue
-            
-            # CRITICAL: Check if datum NEVER appeared in mempool
-            # This likely means the datum wasn't created (CLI command failed)
-            # Datums are created locally and appear in mempool almost instantly (<100ms)
-            if not was_in_mempool and elapsed > 0.1:  # Give it 100ms max
-                error = f"Datum never appeared in mempool after {elapsed:.1f}s - likely not created (check CLI command output for errors)"
-                self._log(f"  ❌ {error}")
-                self._log(f"  💡 Datum hash received: {datum_hash[:50]}...")
-                self._log(f"  💡 Check that token_decl/token_emit command succeeded")
-                return DatumMonitorResult(
-                    status=DatumStatus.REJECTED,
-                    datum_hash=datum_hash,
-                    elapsed_time=elapsed,
-                    error_message=error
-                )
             
             # Stage 2: Datum left mempool - check if verified
             if was_in_mempool and not was_verified:
@@ -232,6 +392,10 @@ class DatumMonitor:
                         error = f"Datum not verified after {verification_time:.1f}s"
                         self._log(f"  ❌ {error}")
                         self._log(f"  💡 Datum left mempool but not verified - may be rejected")
+                        
+                        # Collect node logs for diagnosis
+                        self._collect_node_logs(node, lines=100)
+                        
                         return DatumMonitorResult(
                             status=DatumStatus.TIMEOUT_VERIFICATION,
                             datum_hash=datum_hash,
@@ -297,6 +461,31 @@ class DatumMonitor:
             container_name = self._node_to_container(node)
             container = self.docker_client.containers.get(container_name)
             
+            # CRITICAL: Check container status before executing command (fail-fast)
+            container.reload()
+            if container.status != 'running':
+                error_msg = (
+                    f"Container {container_name} (node {node}) is not running "
+                    f"(status: {container.status}). Container crashed during datum monitoring."
+                )
+                self._log(f"  ❌ {error_msg}")
+                # Collect crash artifacts if container crashed
+                from ..docker.container import DockerContainerManager
+                from pathlib import Path
+                container_manager = DockerContainerManager(Path.cwd(), self.node_cli_path)
+                try:
+                    artifacts = container_manager.collect_crash_artifacts(
+                        container_name=container_name,
+                        node_id=node,
+                        test_name=None
+                    )
+                    self._log(f"  📦 Crash artifacts collected: {artifacts}")
+                except Exception as artifact_error:
+                    self._log(f"  ⚠️ Failed to collect crash artifacts: {artifact_error}")
+                
+                # Raise exception to stop monitoring immediately
+                raise RuntimeError(error_msg)
+            
             # Use mempool_list instead of mempool_proc -list
             cmd = [
                 self.node_cli_path, "mempool_list",
@@ -329,7 +518,33 @@ class DatumMonitor:
             
             return found
             
+        except RuntimeError:
+            # Re-raise RuntimeError (container crash) to stop monitoring
+            raise
         except Exception as e:
+            # Check if error is about container not running
+            error_str = str(e).lower()
+            if "not running" in error_str or "409" in error_str or "conflict" in error_str:
+                container_name = self._node_to_container(node)
+                error_msg = (
+                    f"Container {container_name} (node {node}) crashed during mempool check: {e}"
+                )
+                self._log(f"  ❌ {error_msg}")
+                # Collect crash artifacts
+                from ..docker.container import DockerContainerManager
+                from pathlib import Path
+                container_manager = DockerContainerManager(Path.cwd(), self.node_cli_path)
+                try:
+                    artifacts = container_manager.collect_crash_artifacts(
+                        container_name=container_name,
+                        node_id=node,
+                        test_name=None
+                    )
+                    self._log(f"  📦 Crash artifacts collected: {artifacts}")
+                except Exception as artifact_error:
+                    self._log(f"  ⚠️ Failed to collect crash artifacts: {artifact_error}")
+                raise RuntimeError(error_msg)
+            
             self._log(f"  ⚠️ Failed to check mempool: {e}")
             import traceback
             self._log(f"     Traceback: {traceback.format_exc()}")
@@ -464,10 +679,147 @@ class DatumMonitor:
             self._log(f"  ⚠️ Failed to check blocks: {e}")
             return None
     
+    def _extract_node_id(self, node: str) -> int:
+        """
+        Extract node ID from node name.
+        
+        Args:
+            node: Node name (e.g., "root-1", "node-2", "master-3", "node1")
+            
+        Returns:
+            Node ID as integer
+        """
+        # Extract number from node name (e.g., "root-1" -> 1, "node-2" -> 2, "node1" -> 1)
+        import re
+        match = re.search(r'-(\d+)$', node)
+        if match:
+            return int(match.group(1))
+        # Fallback: try to extract from "node1", "node2" format
+        match = re.search(r'(\d+)$', node)
+        if match:
+            return int(match.group(1))
+        # Default to 1 if can't extract
+        return 1
+    
+    def _id_to_node_name(self, node_id: int) -> str:
+        """
+        Convert node ID to node name.
+        
+        Args:
+            node_id: Node ID
+            
+        Returns:
+            Node name matching original format (e.g., "root-1", "node-2")
+        """
+        # For now, use generic "node-{id}" format
+        # The actual node name format doesn't matter for container lookup
+        return f"node-{node_id}"
+    
+    def _build_topology_map(self) -> None:
+        """
+        Build topology map by inspecting running containers.
+        Maps roles (root, master, etc.) to their node IDs.
+        """
+        if self._topology_map is not None:
+            return
+
+        self._topology_map = {'root': [], 'master': [], 'full': [], 'node': []}
+        
+        try:
+            # Get all containers for the project (assuming default project name 'cellframe-stage')
+            # We look for containers with names starting with cellframe-stage-node-
+            containers = self.docker_client.containers.list(
+                filters={"name": "cellframe-stage-node-"}
+            )
+            
+            for container in containers:
+                try:
+                    # Extract node ID from name
+                    name = container.name
+                    if not name.startswith("cellframe-stage-node-"):
+                        continue
+                        
+                    node_id_str = name.replace("cellframe-stage-node-", "")
+                    if not node_id_str.isdigit():
+                        continue
+                        
+                    node_id = int(node_id_str)
+                    self._topology_map['node'].append(node_id)
+                    
+                    # Inspect environment to find role
+                    # NODE_ROLE is set in Dockerfile/docker-compose
+                    env = container.attrs.get('Config', {}).get('Env', [])
+                    role = 'full' # Default
+                    
+                    for e in env:
+                        if e.startswith('NODE_ROLE='):
+                            role = e.split('=')[1].lower()
+                            break
+                    
+                    if role in self._topology_map:
+                        self._topology_map[role].append(node_id)
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to inspect container {container.name}: {e}")
+            
+            # Sort IDs for deterministic mapping
+            for role in self._topology_map:
+                self._topology_map[role].sort()
+                
+            logger.debug("topology_map_built", map=self._topology_map)
+            
+        except Exception as e:
+            logger.warning(f"Failed to build topology map: {e}")
+            # If discovery fails, we leave the map empty to fail fast rather than using hardcoded defaults
+            # This prevents "magic" behavior that might hide configuration issues
+            pass
+
     def _node_to_container(self, node: str) -> str:
-        """Convert node ID to Docker container name."""
-        if node.startswith('node'):
-            node_number = node[4:]  # Extract number from "node1"
-            return f"cellframe-stage-node-{node_number}"
-        else:
-            return f"cellframe-stage-{node}"
+        """
+        Convert node name/alias to Docker container name.
+        Dynamically resolves roles (root-N, master-N) to node IDs based on running containers.
+        
+        Args:
+            node: Node name (e.g., "root-1", "node-2", "master-1", "node1")
+            
+        Returns:
+            Container name (e.g., "cellframe-stage-node-1")
+        """
+        # Already a full container name
+        if node.startswith("cellframe-stage-"):
+            return node
+            
+        # Ensure topology map is built
+        self._build_topology_map()
+        
+        node_num = None
+        
+        if node.startswith("root-"):
+            try:
+                idx = int(node.split("-")[1]) - 1 # root-1 -> index 0
+                if 0 <= idx < len(self._topology_map['root']):
+                    node_num = str(self._topology_map['root'][idx])
+            except (IndexError, ValueError):
+                pass
+                
+        elif node.startswith("master-"):
+            try:
+                idx = int(node.split("-")[1]) - 1 # master-1 -> index 0
+                if 0 <= idx < len(self._topology_map['master']):
+                    node_num = str(self._topology_map['master'][idx])
+            except (IndexError, ValueError):
+                pass
+                
+        elif node.startswith('node'):
+            # Handle "node1", "node-1" formats
+            node_num = node[4:] if node[4:5].isdigit() else node.split('-')[1] if '-' in node else node[4:]
+        
+        if not node_num:
+             # Fail fast: if we can't resolve node via topology map, raise an error
+            raise RuntimeError(
+                f"Could not resolve node '{node}' via topology map. "
+                f"Topology map: {self._topology_map}. "
+                f"Node must be in format 'root-N', 'master-N', or 'nodeN' where N is a valid index."
+            )
+        
+        return f"cellframe-stage-node-{node_num}"

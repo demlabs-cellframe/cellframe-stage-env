@@ -92,5 +92,5 @@ def check_prerequisites() -> bool:
 
 def setup_logging(verbose: bool = False, json_output: bool = False, log_file: Optional[Path] = None):
     """Setup logging configuration."""
-    from ..utils.logger import setup_logging as internal_setup
+    from src.utils.logger import setup_logging as internal_setup
     internal_setup(verbose=verbose, json_output=json_output, log_file=log_file)

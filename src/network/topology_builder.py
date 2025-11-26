@@ -12,7 +12,7 @@ from collections import defaultdict
 from ..config.manager import get_config_loader
 from ..scenarios.schema import NodeConfig as ScenarioNodeConfig
 from .models import NodeConfig
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

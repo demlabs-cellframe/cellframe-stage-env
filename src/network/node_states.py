@@ -13,7 +13,7 @@ from enum import Enum
 
 import docker
 
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 from .models import NodeConfig
 
 

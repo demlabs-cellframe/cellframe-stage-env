@@ -5,7 +5,7 @@ Provides single point of access to all waiters with unified API.
 """
 
 from typing import Dict, Any, Callable, Optional, List
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -114,6 +114,8 @@ def _initialize_registry():
     # Network consensus monitor (special case - has wait_for_links_established method)
     from ..network_consensus import NetworkConsensusMonitor
     
+    from ..waiter.datum_waiters import DatumInMempoolWaiter
+    
     # Register all waiters
     WaitRegistry.register("network_online", NetworkOnlineWaiter)
     WaitRegistry.register("sync_complete", NetworkSyncCompletionWaiter)
@@ -125,6 +127,7 @@ def _initialize_registry():
     WaitRegistry.register("chain_data_propagation", ChainDataPropagationWaiter)
     WaitRegistry.register("network_sync", NetworkSyncWaiter)
     WaitRegistry.register("token_in_mempool", TokenInMempoolWaiter)
+    WaitRegistry.register("datum_in_mempool", DatumInMempoolWaiter)
     WaitRegistry.register("emission_synced", EmissionSyncedInLedgerWaiter)
     WaitRegistry.register("master_containers_running", MasterContainersRunningWaiter)
     WaitRegistry.register("emission_in_ledger", EmissionInLedgerWaiter)

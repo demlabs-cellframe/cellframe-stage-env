@@ -7,7 +7,7 @@ Waits for Docker containers to receive IP addresses from Docker networks.
 import time
 from typing import List, Optional
 import docker
-from ...utils.logger import get_logger
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -53,7 +53,7 @@ class ValidatorMonitor(BaseMonitor):
     
     def _exec_cli(self, node_id: int, command: str) -> tuple[int, str, str]:
         """
-        Execute CLI command in node container.
+        Execute CLI command in node container (delegates to DockerContainerManager).
         
         Args:
             node_id: Node ID (1-8)
@@ -62,25 +62,22 @@ class ValidatorMonitor(BaseMonitor):
         Returns:
             Tuple of (exit_code, stdout, stderr)
         """
-        container_name = f"cellframe-stage-node-{node_id}"
-        try:
-            container = self.docker_client.containers.get(container_name)
-            
-            exit_code, output = container.exec_run(
-                f"cellframe-node-cli {command}",
-                demux=True
-            )
-            
-            stdout_bytes, stderr_bytes = output if isinstance(output, tuple) else (output, b"")
-            stdout_str = stdout_bytes.decode('utf-8') if stdout_bytes else ""
-            stderr_str = stderr_bytes.decode('utf-8') if stderr_bytes else ""
-            
-            return exit_code, stdout_str, stderr_str
-            
-        except docker.errors.NotFound:
-            return 1, "", f"Container {container_name} not found"
-        except Exception as e:
-            return 1, "", str(e)
+        # Use container manager for fail-fast execution
+        # Note: BaseMonitor should have container_manager, but for now create one
+        from pathlib import Path
+        from ..docker.container import DockerContainerManager
+        
+        # Get base_path from config or use default
+        base_path = Path.cwd()  # Fallback, should be passed from config
+        if hasattr(self, 'config') and hasattr(self.config, 'base_path'):
+            base_path = self.config.base_path
+        
+        container_manager = DockerContainerManager(base_path, "cellframe-node-cli")
+        return container_manager.exec_cli_command_sync(
+            command=command,
+            node=f"node{node_id}",
+            timeout=30
+        )
     
     async def _check_condition(self) -> tuple[bool, Dict[str, Any]]:
         """

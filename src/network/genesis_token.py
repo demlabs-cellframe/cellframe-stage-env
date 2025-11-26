@@ -14,7 +14,7 @@ import docker
 
 from .genesis_base import BaseGenesisManager
 from .models import NodeConfig
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 from ..monitoring.waiter.esbocs_waiters import ESBocsActiveWaiter
 
 

@@ -129,11 +129,10 @@ test:
     timeout: 30
   
   # Step 9: Verify delegations are synced
-  - wait:
-      type: delegations_synced
-      nodes: [master-1, master-2, master-3]
-      expected_count: 3
-      timeout: 60
+  - wait: delegations_synced
+    nodes: [master-1, master-2, master-3]
+    expected_count: 3
+    timeout: 60
   
   # Step 10: Flush GDB to disk before restart
   - group: Flush GDB
@@ -150,15 +149,13 @@ test:
   - docker_op: restart
     services: [master-1, master-2, master-3]
   
-  - wait:
-      type: master_containers_running
-      nodes: [master-1, master-2, master-3]
-      timeout: 60
+  - wait: master_containers_running
+    nodes: [master-1, master-2, master-3]
+    timeout: 60
   
-  - wait:
-      type: cli_ready
-      nodes: [master-1, master-2, master-3]
-      timeout: 30
+  - wait: cli_ready
+    nodes: [master-1, master-2, master-3]
+    timeout: 30
   
   # Step 12: GDB sync after restart
   - group: GDB sync after restart
@@ -172,10 +169,9 @@ test:
             node: "{{node_name}}"
   
   # Step 13: Wait for stake service ready with delegated keys
-  - wait:
-      type: stake_service_ready
-      nodes: [master-1, master-2, master-3]
-      timeout: 60
+  - wait: stake_service_ready
+    nodes: [master-1, master-2, master-3]
+    timeout: 60
   
   # Step 14: Verify delegated keys are active (CLI check)
   - group: Verify delegated keys
@@ -195,8 +191,7 @@ test:
     timeout: 120
   
   # Step 16: Wait for ESBocs consensus active
-  - wait:
-      type: esbocs_consensus_active
+  - wait: esbocs_consensus_active
       nodes: [master-1, master-2, master-3]
       timeout: 90
   

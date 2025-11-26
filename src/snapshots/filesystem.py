@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 import subprocess
 
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 from .base import BaseSnapshot
 
 logger = get_logger(__name__)

@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Type, TypeVar
 import yaml
 from pydantic import ValidationError, BaseModel
 
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 from .schema import TestScenario, SuiteSetupScenario
 
 logger = get_logger(__name__)

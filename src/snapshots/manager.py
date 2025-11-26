@@ -11,7 +11,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 from .base import BaseSnapshot
 from .recreate import RecreateSnapshot
 from .filesystem import FilesystemSnapshot

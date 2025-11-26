@@ -9,7 +9,7 @@ than tx_history because it doesn't depend on PVT(a_dag)->datums being populated.
 from typing import Callable, Optional
 import asyncio
 from .base import BaseChecker
-from ...utils.logger import get_logger
+from src.utils.logger import get_logger
 from ..waiters import NetworkOnlineWaiter
 
 logger = get_logger(__name__)

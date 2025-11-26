@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from .base import BaseChecker
 from ...network.models import NodeConfig
-from ...utils.logger import get_logger
+from src.utils.logger import get_logger
 from ...config.manager import get_config_loader
 from ..validator import ValidatorMonitor
 from ..base import MonitorConfig

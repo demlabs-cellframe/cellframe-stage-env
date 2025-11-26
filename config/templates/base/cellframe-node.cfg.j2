@@ -100,7 +100,8 @@ pricelist=[]
 [mempool]
 # gdb_group=
 # Automatically false, for enabling need role master or higher
-auto_proc=false
+# CRITICAL: Must be true for DAG/Block processing to work
+auto_proc=true
 
 [chain]
 # More debug output - ENABLED for chain loading and UTXO debugging
@@ -168,7 +169,8 @@ network_mask=255.255.255.0
 # Console interface server
 [cli-server]
 enabled=true
-# debug_more=false
+# Enable detailed debug logging for CLI commands (includes token_decl/token_decl_sign debugging)
+debug_more=true
 # debug-cli=false
 version=1
 # Allow node command for manual node list management  

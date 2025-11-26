@@ -13,7 +13,7 @@ from typing import List, Dict, Optional
 import docker
 import time
 
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 from .models import NodeConfig
 from .genesis_base import BaseGenesisManager
 from .genesis_config import GenesisConfigManager

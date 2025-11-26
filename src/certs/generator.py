@@ -20,8 +20,8 @@ import os
 
 from pydantic import BaseModel
 
-from ..utils.logger import get_logger
-from ..utils.cli import run_command, print_info, print_success, print_error
+from src.utils.logger import get_logger
+from src.utils.cli import run_command, print_info, print_success, print_error
 
 logger = get_logger(__name__)
 

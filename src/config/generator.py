@@ -17,7 +17,7 @@ from ..config.manager import get_config_loader
 from ..config.loader import NetworkTopology
 from ..certs.generator import CertGenerator
 from ..network.models import NodeConfig
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -869,6 +869,38 @@ blocks-sign-cert=pvt.{network_name}.master.{master_idx}
                 logger.warning("private_consensus_cert_not_found", 
                              node_id=node.node_id,
                              expected=str(src_cert))
+            
+            # SPECIAL CASE: root-1 (node1) receives ALL private certificates for centralized genesis
+            # This allows testing threshold consensus (2/3) with all signatures from single node
+            if node.node_id == 1 and node.is_seed_node:
+                logger.info("copying_all_private_certs_to_root1_for_centralized_genesis")
+                all_pvt_certs_copied = 0
+                
+                # Copy all ROOT private certificates (pvt.stagenet.root.{0,1,2})
+                for root_idx in range(3):
+                    root_node_id = root_idx + 1
+                    if root_node_id == node.node_id:
+                        # Skip own certificate (already copied above)
+                        continue
+                    
+                    src_pvt_cert = self.certs_cache / f"node{root_node_id}" / f"pvt.{network_name}.root.{root_idx}.dcert"
+                    if src_pvt_cert.exists():
+                        dst_pvt_cert = node_data_cert_dir / f"pvt.{network_name}.root.{root_idx}.dcert"
+                        shutil.copy2(src_pvt_cert, dst_pvt_cert)
+                        all_pvt_certs_copied += 1
+                        logger.debug("copied_private_root_cert_to_root1",
+                                   root_idx=root_idx,
+                                   dst=str(dst_pvt_cert))
+                    else:
+                        logger.warning("private_root_cert_not_found_for_root1",
+                                     root_idx=root_idx,
+                                     expected_path=str(src_pvt_cert))
+                
+                logger.info("all_private_certs_copied_to_root1",
+                           own_cert=1,
+                           additional_certs=all_pvt_certs_copied,
+                           total_pvt_certs=all_pvt_certs_copied + 1,
+                           note="root-1 can now perform centralized genesis with threshold consensus")
         
         # Copy ALL PUBLIC consensus certificates to EVERY node's /var/lib/ca
         # All nodes need all public certs for signature verification:

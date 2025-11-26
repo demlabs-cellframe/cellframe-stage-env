@@ -13,7 +13,7 @@ from typing import Optional, List
 
 import docker
 
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 from .models import NodeConfig
 
 
@@ -45,113 +45,37 @@ class BaseGenesisManager:
         self.network_name = network_name
         self.config_path = config_path
         self.docker_client = docker.from_env()
+        # Use DockerContainerManager for CLI execution
+        from ..docker.container import DockerContainerManager
+        self.container_manager = DockerContainerManager(base_path, "cellframe-node-cli")
     
     def _exec_cli(self, node_id: int, command: str, check_output: bool = True) -> tuple:
         """
-        Execute CLI command inside container.
+        Execute CLI command inside container (delegates to DockerContainerManager).
         
         Args:
             node_id: Node ID (1-8)
             command: CLI command without 'cellframe-node-cli' prefix
-            check_output: Whether to check for errors in output
+            check_output: Whether to check for errors in output (not used, kept for compatibility)
             
         Returns:
             Tuple of (exit_code, stdout, stderr)
         """
-        container_name = f"cellframe-stage-node-{node_id}"
-        try:
-            container = self.docker_client.containers.get(container_name)
+        # Use container manager for fail-fast execution
+        exit_code, stdout, stderr = self.container_manager.exec_cli_command_sync(
+            command=command,
+            node=f"node{node_id}",
+            timeout=30
+        )
+        
+        if check_output and exit_code != 0:
+            logger.warning("cli_command_failed",
+                         node_id=node_id,
+                         command=command[:100],
+                         exit_code=exit_code,
+                         stderr=stderr[:500])
             
-            # CRITICAL: Check container status before executing command
-            # Container may have crashed (e.g., SIGSEGV 139) or stopped
-            container.reload()  # Refresh container state
-            if container.status != 'running':
-                # Container is stopped - attempt to restart it
-                logger.warning("container_not_running_attempting_restart",
-                           container=container_name,
-                           status=container.status,
-                           node_id=node_id,
-                           command=command[:100])
-                
-                # Check exit code to understand why container stopped
-                exit_code = container.attrs.get("State", {}).get("ExitCode", -1)
-                if exit_code != 0:
-                    # Container crashed - check logs for diagnostics
-                    try:
-                        logs = container.logs(tail=20).decode("utf-8", errors="ignore")
-                        logger.warning("container_crashed_logs",
-                                   container=container_name,
-                                   exit_code=exit_code,
-                                   logs_preview=logs[:500])
-                    except Exception:
-                        pass
-                
-                # Attempt to restart container
-                try:
-                    logger.info("restarting_stopped_container",
-                               container=container_name,
-                               node_id=node_id)
-                    container.restart(timeout=30)
-                    
-                    # Wait for container to be running
-                    import time
-                    max_wait = 10  # Wait up to 10 seconds for container to start
-                    wait_start = time.time()
-                    while time.time() - wait_start < max_wait:
-                        container.reload()
-                        if container.status == 'running':
-                            logger.info("container_restarted_successfully",
-                                       container=container_name,
-                                       node_id=node_id,
-                                       wait_time=f"{time.time() - wait_start:.1f}s")
-                            # Additional small delay for process to initialize
-                            time.sleep(2)
-                            break
-                        time.sleep(0.5)
-                    else:
-                        # Container didn't start within timeout
-                        logger.error("container_restart_timeout",
-                                   container=container_name,
-                                   node_id=node_id,
-                                   timeout=max_wait)
-                        return 1, "", f"Container {container_name} failed to restart within {max_wait}s"
-                        
-                except Exception as restart_err:
-                    logger.error("container_restart_failed",
-                               container=container_name,
-                               node_id=node_id,
-                               error=str(restart_err))
-                    return 1, "", f"Container {container_name} restart failed: {restart_err}"
-                
-                # Reload container state after restart
-                container.reload()
-                if container.status != 'running':
-                    error_msg = f"Container {container_name} is still not running after restart (status: {container.status})"
-                    logger.error("container_not_running_after_restart",
-                               container=container_name,
-                               status=container.status,
-                               node_id=node_id)
-                    return 1, "", error_msg
-            
-            # Execute command inside container
-            exit_code, output = container.exec_run(
-                f"cellframe-node-cli {command}",
-                demux=True
-            )
-            
-            # Demux separates stdout and stderr
-            stdout_bytes, stderr_bytes = output if isinstance(output, tuple) else (output, b"")
-            stdout_str = stdout_bytes.decode('utf-8') if stdout_bytes else ""
-            stderr_str = stderr_bytes.decode('utf-8') if stderr_bytes else ""
-            
-            return exit_code, stdout_str, stderr_str
-            
-        except docker.errors.NotFound:
-            logger.error("container_not_found", container=container_name)
-            return 1, "", f"Container {container_name} not found"
-        except Exception as e:
-            logger.error("cli_exec_error", container=container_name, error=str(e))
-            return 1, "", str(e)
+        return exit_code, stdout, stderr
     
     def _read_node_addr_from_cli(self, node_id: int, max_retries: int = 3) -> str:
         """

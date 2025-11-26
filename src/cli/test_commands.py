@@ -28,14 +28,14 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         from ..scenarios.parser import ScenarioParser
         from ..scenarios.executor import ScenarioExecutor, ScenarioExecutionError
         from ..scenarios.schema import SuiteDescriptor
-        from ..utils.artifacts import ArtifactsManager
+        from src.utils.artifacts import ArtifactsManager
         from ..config.manager import get_config_loader
         from ..network.manager import NetworkManager
         from ..monitoring.manager import MonitoringManager
-        from ..utils.report_generator import ReportGenerator
+        from src.utils.report_generator import ReportGenerator
         from ..scenarios.extractors import set_debug_mode
         import docker
-        from ..utils.logger import logger
+        from src.utils.logger import logger
         
         print_info(f"Running tests from {len(test_dirs)} director{'y' if len(test_dirs) == 1 else 'ies'}:")
         for test_dir in test_dirs:
@@ -80,7 +80,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 
                 # Initialize CLI parser with help data from node
                 print_info("📖 Parsing CLI commands...")
-                from ..utils.cli_parser import get_cli_parser
+                from src.utils.cli_parser import get_cli_parser
                 
                 cache_file = base_path / "cache" / "cli_commands.json"
                 cli_parser = get_cli_parser(cache_file=cache_file)
@@ -109,7 +109,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             
             # Still need to initialize CLI parser
             print_info("📖 Initializing CLI parser from running network...")
-            from ..utils.cli_parser import get_cli_parser
+            from src.utils.cli_parser import get_cli_parser
             
             cache_file = base_path / "cache" / "cli_commands.json"
             cli_parser = get_cli_parser(cache_file=cache_file)
@@ -317,7 +317,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             executor = ScenarioExecutor(
                                 node_cli_path="cellframe-node-cli",
                                 log_file=suite_dir / "suite-setup.log",
-                                debug=debug_mode
+                                debug=debug_mode,
+                                base_path=base_path
                             )
                             
                             async def _run_suite_setup():
@@ -446,7 +447,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             executor = ScenarioExecutor(
                                 node_cli_path=cli_path, 
                                 log_file=scenario_log_file,
-                                debug=debug_mode
+                                debug=debug_mode,
+                                base_path=base_path
                             )
                             
                             async def _execute():

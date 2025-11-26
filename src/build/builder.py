@@ -17,8 +17,8 @@ import os
 
 from pydantic import BaseModel
 
-from ..utils.logger import get_logger
-from ..utils.cli import run_command, print_info, print_success, print_error
+from src.utils.logger import get_logger
+from src.utils.cli import run_command, print_info, print_success, print_error
 
 logger = get_logger(__name__)
 
@@ -432,8 +432,14 @@ class BuildManager:
         """
         local_path = self.node_source_config.get("local_path")
         if not local_path:
-            print_error("No local_path specified in node_source config")
-            return None
+            # Try to auto-detect if we're in cellframe-node repository
+            if self._is_cellframe_node_repo():
+                print_info("No local_path specified, but detected cellframe-node repository")
+                print_info("Attempting to build package automatically...")
+                return self._build_and_get_local_package()
+            else:
+                print_error("No local_path specified in node_source config")
+                return None
         
         # Resolve path (can be relative to stage-env dir or absolute)
         package_path = Path(local_path)
@@ -442,10 +448,22 @@ class BuildManager:
         
         package_path = package_path.resolve()
         
+        # If package doesn't exist and we're in cellframe-node repo, try to build it
         if not package_path.exists():
-            print_error(f"Local package not found: {package_path}")
-            logger.error("local_package_not_found", path=str(package_path))
-            return None
+            if self._is_cellframe_node_repo() and self.build_dir in package_path.parents:
+                print_info(f"Package not found at {package_path}")
+                print_info("Detected cellframe-node repository - building package...")
+                built_package = self._build_and_get_local_package()
+                if built_package:
+                    # Update local_path to point to built package
+                    logger.info("auto_built_package", 
+                              requested=str(package_path),
+                              built=str(built_package))
+                    return built_package
+            else:
+                print_error(f"Local package not found: {package_path}")
+                logger.error("local_package_not_found", path=str(package_path))
+                return None
         
         if not package_path.suffix == ".deb":
             print_error(f"Local file is not a .deb package: {package_path}")
@@ -455,4 +473,68 @@ class BuildManager:
         logger.info("using_local_package", path=str(package_path))
         
         return package_path
+    
+    def _is_cellframe_node_repo(self) -> bool:
+        """Check if we're running in cellframe-node repository."""
+        cmake_file = self.project_root / "CMakeLists.txt"
+        if not cmake_file.exists():
+            return False
+        
+        try:
+            with open(cmake_file, 'r') as f:
+                content = f.read()
+                return "cellframe-node" in content
+        except Exception:
+            return False
+    
+    def _build_and_get_local_package(self) -> Optional[Path]:
+        """
+        Build cellframe-node package from source and return path to .deb file.
+        
+        Returns:
+            Path to built .deb package or None if build failed
+        """
+        if not self._is_cellframe_node_repo():
+            print_error("Not in cellframe-node repository - cannot build package")
+            return None
+        
+        # Check if package already exists
+        existing_packages = list(self.build_dir.glob("cellframe-node*.deb"))
+        if existing_packages:
+            package_path = existing_packages[0]
+            print_info(f"Using existing package: {package_path.name}")
+            logger.info("using_existing_built_package", path=str(package_path))
+            return package_path
+        
+        # Build package
+        print_info("Building cellframe-node package...")
+        logger.info("auto_building_package", build_dir=str(self.build_dir))
+        
+        try:
+            build_result = self.build(build_type="debug", clean=False, parallel=0)
+            if not build_result.success:
+                print_error("Package build failed")
+                return None
+            
+            # Package with cpack
+            print_info("Creating .deb package...")
+            run_command(["cpack", "-G", "DEB"], cwd=self.build_dir)
+            
+            # Find the built package
+            deb_files = list(self.build_dir.glob("cellframe-node*.deb"))
+            if not deb_files:
+                print_error("No .deb package found after build")
+                logger.error("no_package_after_build", build_dir=str(self.build_dir))
+                return None
+            
+            package_path = deb_files[0]
+            print_success(f"Package built: {package_path.name}")
+            logger.info("package_built_successfully", path=str(package_path))
+            
+            return package_path
+            
+        except Exception as e:
+            print_error(f"Failed to build package: {e}")
+            logger.error("package_build_failed", error=str(e))
+            return None
 

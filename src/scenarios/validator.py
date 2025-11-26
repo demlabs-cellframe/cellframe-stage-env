@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import ValidationError
 
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 from .parser import ScenarioParser, ScenarioParseError
 from .schema import TestScenario
 

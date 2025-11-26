@@ -309,7 +309,13 @@ class DataExtractor:
         defaults = {
             ExtractType.WALLET_ADDRESS: r'addr:\s+(\S+)',
             ExtractType.NODE_ADDRESS: r'Node addr:\s+([A-Fa-f0-9:]+)',
-            ExtractType.HASH: r'(0x[A-Fa-f0-9]{64})',  # Simplified - just match hash anywhere
+            # Match hash in various formats:
+            # - "New: 0x..." (from token_decl_sign)
+            # - "hash: 0x..." (from JSON)
+            # - "datum_hash: 0x..." (from JSON)
+            # - standalone "0x..." (64 hex chars)
+            # NOTE: Uses negative lookbehind (?<!Old: ) to ignore "Old: 0x..." hashes in replacement outputs
+            ExtractType.HASH: r'(?:New:\s+|hash["\']?\s*:\s*["\']?|datum_hash["\']?\s*:\s*["\']?)?(?<!Old: )(0x[A-Fa-f0-9]{64})',
             ExtractType.TOKEN_NAME: r'token:\s*([A-Z0-9_]+)',
             ExtractType.NUMBER: r'(\d+(?:\.\d+)?)',
             ExtractType.BOOL: r'(true|false|yes|no|1|0|on|off|enabled|disabled)',

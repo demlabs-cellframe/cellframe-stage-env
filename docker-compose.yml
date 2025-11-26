@@ -54,6 +54,9 @@ x-cf-node-template: &cf-node-template
   # Core dump configuration - allows crash-handler to collect core dumps
   ulimits:
     core: -1
+  privileged: true
+  cap_add:
+    - SYS_PTRACE
   environment:
     NODE_ID: ${NODE_ID:-1}
     NODE_ROLE: ${NODE_ROLE:-root}

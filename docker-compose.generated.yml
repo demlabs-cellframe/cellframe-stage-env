@@ -24,6 +24,9 @@ x-cf-node-template:
   - ./cache/cellframe-packages:/var/cache/cellframe-packages
   ulimits:
     core: -1
+  privileged: true
+  cap_add:
+  - SYS_PTRACE
   environment:
     NODE_ID: ${NODE_ID:-1}
     NODE_ROLE: ${NODE_ROLE:-root}
@@ -106,10 +109,12 @@ services:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: local
-        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
+        NODE_SOURCE_TYPE: url
+        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/latest-amd64
       context: .
       dockerfile: Dockerfile.cellframe
+    cap_add:
+    - SYS_PTRACE
     container_name: cellframe-stage-node-1
     environment:
       NODE_ID: '1'
@@ -136,6 +141,7 @@ services:
         ipv4_address: 172.20.0.10
     ports:
     - 8079:8079
+    privileged: true
     restart: 'no'
     ulimits:
       core: -1
@@ -147,17 +153,18 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node1:/crash-artifacts/node-1
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
-    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-2:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: local
-        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
+        NODE_SOURCE_TYPE: url
+        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/latest-amd64
       context: .
       dockerfile: Dockerfile.cellframe
+    cap_add:
+    - SYS_PTRACE
     container_name: cellframe-stage-node-2
     environment:
       NODE_ID: '2'
@@ -184,6 +191,7 @@ services:
         ipv4_address: 172.20.0.11
     ports:
     - 8080:8079
+    privileged: true
     restart: 'no'
     ulimits:
       core: -1
@@ -195,17 +203,18 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node2:/crash-artifacts/node-2
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
-    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-3:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: local
-        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
+        NODE_SOURCE_TYPE: url
+        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/latest-amd64
       context: .
       dockerfile: Dockerfile.cellframe
+    cap_add:
+    - SYS_PTRACE
     container_name: cellframe-stage-node-3
     environment:
       NODE_ID: '3'
@@ -232,6 +241,7 @@ services:
         ipv4_address: 172.20.0.12
     ports:
     - 8081:8079
+    privileged: true
     restart: 'no'
     ulimits:
       core: -1
@@ -243,17 +253,18 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node3:/crash-artifacts/node-3
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
-    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-4:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: local
-        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
+        NODE_SOURCE_TYPE: url
+        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/latest-amd64
       context: .
       dockerfile: Dockerfile.cellframe
+    cap_add:
+    - SYS_PTRACE
     container_name: cellframe-stage-node-4
     environment:
       NODE_ID: '4'
@@ -280,6 +291,7 @@ services:
         ipv4_address: 172.20.0.13
     ports:
     - 8082:8079
+    privileged: true
     restart: 'no'
     ulimits:
       core: -1
@@ -291,17 +303,18 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node4:/crash-artifacts/node-4
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
-    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-5:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: local
-        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
+        NODE_SOURCE_TYPE: url
+        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/latest-amd64
       context: .
       dockerfile: Dockerfile.cellframe
+    cap_add:
+    - SYS_PTRACE
     container_name: cellframe-stage-node-5
     environment:
       NODE_ID: '5'
@@ -328,6 +341,7 @@ services:
         ipv4_address: 172.20.0.14
     ports:
     - 8083:8079
+    privileged: true
     restart: 'no'
     ulimits:
       core: -1
@@ -339,17 +353,18 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node5:/crash-artifacts/node-5
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
-    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-6:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: local
-        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
+        NODE_SOURCE_TYPE: url
+        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/latest-amd64
       context: .
       dockerfile: Dockerfile.cellframe
+    cap_add:
+    - SYS_PTRACE
     container_name: cellframe-stage-node-6
     environment:
       NODE_ID: '6'
@@ -376,6 +391,7 @@ services:
         ipv4_address: 172.20.0.15
     ports:
     - 8084:8079
+    privileged: true
     restart: 'no'
     ulimits:
       core: -1
@@ -387,17 +403,18 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node6:/crash-artifacts/node-6
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
-    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-7:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: local
-        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
+        NODE_SOURCE_TYPE: url
+        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/latest-amd64
       context: .
       dockerfile: Dockerfile.cellframe
+    cap_add:
+    - SYS_PTRACE
     container_name: cellframe-stage-node-7
     environment:
       NODE_ID: '7'
@@ -424,6 +441,7 @@ services:
         ipv4_address: 172.20.0.16
     ports:
     - 8085:8079
+    privileged: true
     restart: 'no'
     ulimits:
       core: -1
@@ -435,17 +453,18 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node7:/crash-artifacts/node-7
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
-    - /mnt/work/work/cellframe-node/build:/packages:ro
   node-8:
     build:
       args:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: local
-        LOCAL_PACKAGE_NAME: cellframe-node-5.6-LOCALBUILD-dbg-amd64.deb
+        NODE_SOURCE_TYPE: url
+        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/latest-amd64
       context: .
       dockerfile: Dockerfile.cellframe
+    cap_add:
+    - SYS_PTRACE
     container_name: cellframe-stage-node-8
     environment:
       NODE_ID: '8'
@@ -472,6 +491,7 @@ services:
         ipv4_address: 172.20.0.17
     ports:
     - 8086:8079
+    privileged: true
     restart: 'no'
     ulimits:
       core: -1
@@ -483,7 +503,6 @@ services:
     - ./../testing/cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./../testing/cache/crash-artifacts/node8:/crash-artifacts/node-8
     - ./../testing/cache/cellframe-packages:/var/cache/cellframe-packages
-    - /mnt/work/work/cellframe-node/build:/packages:ro
 networks:
   stagenet:
     driver: bridge

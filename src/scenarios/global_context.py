@@ -8,7 +8,7 @@ in all scenarios: node IPs, topology, network configuration, etc.
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 import docker
-from ..utils.logger import get_logger
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

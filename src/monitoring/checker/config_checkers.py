@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from .base import BaseChecker
-from ...utils.logger import get_logger
+from src.utils.logger import get_logger
 from ...config.manager import get_config_loader
 
 logger = get_logger(__name__)
