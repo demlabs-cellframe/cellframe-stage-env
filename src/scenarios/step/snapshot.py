@@ -71,6 +71,23 @@ class SnapshotStepExecutor(StepExecutor):
                     raise RuntimeError(f"Cannot create genesis snapshot '{snapshot_name}': token_hash not found in context. "
                                      "Ensure token declaration step was successful and 'save_hash' was used.")
                 
+                # Also save fee_addr if present (needed for Phase 2)
+                if 'fee_addr' in ctx.variables and hasattr(ctx, 'genesis_config_manager'):
+                    fee_addr = ctx.variables['fee_addr']
+                    logger.info("saving_fee_addr_to_config_before_snapshot",
+                              fee_addr=fee_addr,
+                              note="Writing fee_addr to configs before snapshot creation")
+                    
+                    if hasattr(ctx, 'node_configs'):
+                        await ctx.genesis_config_manager.update_fee_addr_in_config(
+                            fee_addr=fee_addr,
+                            node_configs=ctx.node_configs
+                        )
+                        logger.info("fee_addr_saved_before_snapshot")
+                    else:
+                         logger.warning("node_configs_not_in_context_fee_addr",
+                                      note="Cannot save fee_addr without node configs")
+                
                 result = await snapshot_manager.create_snapshot(snapshot_name)
                 if not result:
                     raise RuntimeError("Snapshot creation failed")

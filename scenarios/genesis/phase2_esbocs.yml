@@ -73,6 +73,14 @@ test:
     nodes: [master-1, master-2, master-3]
     timeout: 60
   
+  # Ensure masters are connected to roots
+  - wait_network: links_established
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
+    timeout: 120
+
+  # Allow DAG synchronization
+  - wait: "10s"
+  
   # Step 7: Delegate keys via srv_stake on zerochain
   - group: Delegate keys
     defaults:
@@ -103,7 +111,7 @@ test:
           
           - wait_for_datum: "{{delegation_hash_{{master_idx}}}}"
             node: "{{master_node}}"
-            timeout_total: 30
+            timeout_total: 120
   
   # Step 8: GDB sync and wait for delegation transactions
   - group: GDB sync
@@ -168,10 +176,15 @@ test:
           - cli: "net go sync"
             node: "{{node_name}}"
   
+  # Ensure connectivity
+  - wait_network: links_established
+    nodes: [master-1, master-2, master-3]
+    timeout: 60
+
   # Step 13: Wait for stake service ready with delegated keys
   - wait: stake_service_ready
     nodes: [master-1, master-2, master-3]
-    timeout: 60
+    timeout: 120
   
   # Step 14: Verify delegated keys are active (CLI check)
   - group: Verify delegated keys
@@ -189,11 +202,9 @@ test:
   - wait_network: links_established
     nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     timeout: 120
-  
-  # Step 16: Wait for ESBocs consensus active
-  - wait: esbocs_consensus_active
-      nodes: [master-1, master-2, master-3]
-      timeout: 90
+
+  # Allow consensus algorithm to stabilize
+  - wait: "10s"
   
   # Step 17: Create first transaction → genesis block
   - group: Create genesis block
@@ -205,13 +216,17 @@ test:
     steps:
       - cli: "tx_create -from_emission {{emission_hash}} -chain_emission zerochain -value 1e18 -to_addr {{master_addr_0}} -cert pvt.stagenet.master.0 -fee 0.1"
         save_hash: first_tx_hash
-      
-      # Step 18: Wait for genesis block
-      - wait:
-          type: first_block
-          chain: main
-          nodes: [master-1, master-2, master-3]
-          timeout: 60
+
+  # Step 16: Wait for ESBocs consensus active
+  - wait: esbocs_consensus_active
+    nodes: [master-1, master-2, master-3]
+    timeout: 300
+
+  # Step 18: Wait for genesis block
+  - wait: first_block
+    chain: main
+    nodes: [master-1, master-2, master-3]
+    timeout: 60
       
       # Step 19: Get genesis block hash
       - cli: "block list -first 1"

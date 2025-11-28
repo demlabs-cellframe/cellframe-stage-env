@@ -194,6 +194,7 @@ class WaitStepExecutor(StepExecutor):
         """Execute waiter-based wait."""
         wait_type = ctx.substitute(step.wait) if step.wait else step.type
         logger.info(f"Waiting for condition: {wait_type}")
+        logger.info(f"Waiting for condition: {wait_type}")
         
         # Map clean names to internal waiter types if needed
         waiter_map = {
@@ -320,6 +321,41 @@ class WaitStepExecutor(StepExecutor):
                 nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
                 network_name=network_name,
                 poll_interval=1.0
+            )
+            await waiter.wait(timeout=float(step.timeout))
+            
+        elif registry_type == "delegations_synced":
+            if not step.nodes:
+                raise ScenarioExecutionError("nodes required for delegations_synced", step=step)
+            if step.expected_count is None:
+                raise ScenarioExecutionError("expected_count required for delegations_synced", step=step)
+            
+            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
+            if not exec_cli_func:
+                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
+            
+            waiter = waiter_class(
+                exec_cli=exec_cli_func,
+                nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
+                expected_count=step.expected_count,
+                network_name=network_name,
+                poll_interval=2.0
+            )
+            await waiter.wait(timeout=float(step.timeout))
+
+        elif registry_type == "stake_service_ready":
+            if not step.nodes:
+                raise ScenarioExecutionError("nodes required for stake_service_ready", step=step)
+            
+            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
+            if not exec_cli_func:
+                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
+            
+            waiter = waiter_class(
+                exec_cli=exec_cli_func,
+                nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
+                network_name=network_name,
+                poll_interval=2.0
             )
             await waiter.wait(timeout=float(step.timeout))
             
