@@ -7,7 +7,7 @@ import sys
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from utils.cli_parser import CLICommandParser
+from src.utils.cli_parser import CLICommandParser
 
 
 class TestCLICommandParser:

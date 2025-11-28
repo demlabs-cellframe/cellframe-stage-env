@@ -24,13 +24,13 @@ static_genesis_block={{ static_genesis_block | default('', true) }}
 consensus_debug=true
 # Minimum number of validators for consensus
 # CRITICAL: Must match actual validators count, otherwise SDK returns -2
-min_validators_count={{ min_validators_count | default(2, true) }}
+min_validators_count={{ min_validators_count | default(1, true) }}
 # Validators addresses (required by SDK for initialization)
 # Master node addresses are pre-configured here
 validators_addrs={{ mainchain_validators_addrs | default('[]', true) }}
 # PoA mode: when true, uses validators_addrs as authorized validators
-# CRITICAL: Must be true when validators_addrs is pre-configured
-poa_mode={{ poa_mode | default('true', true) }}
+# CRITICAL: Set to false to enable PoS (Proof of Stake) via srv_stake
+poa_mode={{ poa_mode | default('false', true) }}
 # Authentication certificates prefix
 # Uses stagenet.master prefix for master node certificates (validators)
 auth_certs_prefix=stagenet.master

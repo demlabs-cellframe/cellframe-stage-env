@@ -174,5 +174,12 @@ class CLIStepExecutor(StepExecutor):
             ctx.set_variable(variable_name, output.strip())
             logger.debug("cli_step_saved", variable=variable_name)
         
+        # Record success result
+        ctx.add_result("CLI", True, {
+            "command": cmd,
+            "node": node,
+            "exit_code": exit_code
+        })
+        
         return result
 

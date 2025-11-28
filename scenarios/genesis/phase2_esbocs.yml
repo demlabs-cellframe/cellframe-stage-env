@@ -214,8 +214,18 @@ test:
         chain: main
         token: TCELL
     steps:
-      - cli: "tx_create -from_emission {{emission_hash}} -chain_emission zerochain -value 1e18 -to_addr {{master_addr_0}} -cert pvt.stagenet.master.0 -fee 0.1"
+      # Send transaction from master-1 (stagenet_master_0) to master-2 (stagenet_master_1)
+      # This uses tokens received in zerochain to create activity in main chain
+      - python: |
+          ctx.set_variable('master_wallet', "stagenet_master_0")
+          # Get address of master-2
+          ctx.set_variable('recipient_addr', ctx.get_variable('master_addr_1'))
+      
+      - cli: "tx_create -w {{master_wallet}} -value 1.0 -to_addr {{recipient_addr}} -fee 0.1"
         save_hash: first_tx_hash
+      
+      - wait_for_datum: "{{first_tx_hash}}"
+        timeout_total: 60
 
   # Step 16: Wait for ESBocs consensus active
   - wait: esbocs_consensus_active
