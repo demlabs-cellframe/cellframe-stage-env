@@ -157,6 +157,16 @@ test:
         chain: zerochain
         timeout: 180
   
+  # Save genesis configuration explicitly before snapshot
+  - config: set_genesis
+    nodes: [root-1, root-2, root-3]
+    chain: zerochain
+    hash: "{{token_hash}}"
+    
+  - config: set_fee_addr
+    nodes: [root-1, root-2, root-3]
+    value: "{{fee_addr}}"
+
   # Create snapshot
   - snapshot: create
     name: phase1_zerochain_genesis

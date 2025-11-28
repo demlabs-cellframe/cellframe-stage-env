@@ -34,59 +34,8 @@ class SnapshotStepExecutor(StepExecutor):
         
         try:
             if operation == "create":
-                # CRITICAL: Before creating snapshot, save token_hash as static_genesis_event
-                # This ensures the snapshot includes the genesis event hash in configs
-                
-                # Check for token_hash (current) or token_hash_final (legacy)
-                token_hash = None
-                if 'token_hash' in ctx.variables:
-                    token_hash = ctx.variables['token_hash']
-                elif 'token_hash_final' in ctx.variables:
-                    token_hash = ctx.variables['token_hash_final']
-                
-                if token_hash and hasattr(ctx, 'genesis_config_manager'):
-                    logger.info("saving_token_hash_to_config_before_snapshot",
-                              hash=token_hash[:16],
-                              note="Writing static_genesis_event to configs before snapshot creation")
-                    
-                    # Get node configs from context
-                    if hasattr(ctx, 'node_configs'):
-                        await ctx.genesis_config_manager.update_static_genesis_in_config(
-                            chain_name="zerochain",
-                            genesis_hash=token_hash,
-                            node_configs=ctx.node_configs
-                        )
-                        logger.info("static_genesis_event_saved_before_snapshot",
-                                  hash=token_hash[:16])
-                    else:
-                        logger.warning("node_configs_not_in_context",
-                                     note="Cannot save static_genesis_event without node configs")
-                else:
-                    # FAIL FAST: If we are creating a genesis snapshot but don't have the token hash,
-                    # the snapshot will be useless for genesis.
-                    logger.error("token_hash_missing_for_genesis_snapshot",
-                               variables_keys=list(ctx.variables.keys())[:20],
-                               has_genesis_manager=hasattr(ctx, 'genesis_config_manager'),
-                               note="Cannot create valid genesis snapshot without token_hash")
-                    raise RuntimeError(f"Cannot create genesis snapshot '{snapshot_name}': token_hash not found in context. "
-                                     "Ensure token declaration step was successful and 'save_hash' was used.")
-                
-                # Also save fee_addr if present (needed for Phase 2)
-                if 'fee_addr' in ctx.variables and hasattr(ctx, 'genesis_config_manager'):
-                    fee_addr = ctx.variables['fee_addr']
-                    logger.info("saving_fee_addr_to_config_before_snapshot",
-                              fee_addr=fee_addr,
-                              note="Writing fee_addr to configs before snapshot creation")
-                    
-                    if hasattr(ctx, 'node_configs'):
-                        await ctx.genesis_config_manager.update_fee_addr_in_config(
-                            fee_addr=fee_addr,
-                            node_configs=ctx.node_configs
-                        )
-                        logger.info("fee_addr_saved_before_snapshot")
-                    else:
-                         logger.warning("node_configs_not_in_context_fee_addr",
-                                      note="Cannot save fee_addr without node configs")
+                # Note: Config updates (genesis hash, fee_addr) must be done via explicit ConfigStep
+                # before calling snapshot create. This executor no longer handles implicit updates.
                 
                 result = await snapshot_manager.create_snapshot(snapshot_name)
                 if not result:
