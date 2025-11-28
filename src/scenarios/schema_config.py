@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 class ConfigStep(BaseModel):
     """
@@ -38,8 +38,7 @@ class GenConfigStep(BaseModel):
     Generate/Regenerate config from template with arbitrary context variables.
     
     Usage:
-      - gen_config: "Generate zerochain config"
-        name: "stagenet/zerochain"
+      - gen_config: "stagenet/zerochain"
         nodes: [root-1]
         set:
           static_genesis_event: "{{token_hash}}"
@@ -49,7 +48,17 @@ class GenConfigStep(BaseModel):
         nodes: [root-1]
         set: "fee_addr={{fee_addr}}, param=value"
     """
-    gen_config: Optional[str] = Field(None, description="Step description (optional)")
-    name: str = Field(..., description="Target config path/name (e.g. 'stagenet/zerochain', 'cellframe-node')")
+    gen_config: Optional[str] = Field(None, description="Config name OR description")
+    name: Optional[str] = Field(None, description="Target config path/name (e.g. 'stagenet/zerochain', 'cellframe-node')")
     nodes: Union[str, List[str]] = Field(..., description="Target node(s)")
     set: Union[Dict[str, Any], str] = Field(default_factory=dict, description="Variables to inject (Dict or 'k=v, k2=v')")
+
+    @model_validator(mode='after')
+    def resolve_name(self) -> 'GenConfigStep':
+        """Resolve 'name' field from 'gen_config' if not provided."""
+        if not self.name and self.gen_config:
+            self.name = self.gen_config
+        
+        if not self.name:
+            raise ValueError("Config name must be provided (either in 'name' field or as 'gen_config' value)")
+        return self

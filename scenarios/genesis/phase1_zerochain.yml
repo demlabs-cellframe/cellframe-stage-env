@@ -159,17 +159,16 @@ test:
   
   # Save genesis configuration explicitly before snapshot
   # Using new Generic Config Generation syntax
+  
   # Set genesis hash for Zerochain
-  - gen_config:
-    name: "stagenet/zerochain"
+  - gen_config: "stagenet/zerochain"
     nodes: [root-1, root-2, root-3]
     set:
       static_genesis_event: "{{token_hash}}"
       is_static_genesis_event: "true"
       
   # Set fee address for Mainchain
-  - gen_config:
-    name: "stagenet/main"
+  - gen_config: "stagenet/main"
     nodes: [root-1, root-2, root-3]
     set:
       fee_addr: "{{fee_addr}}"
