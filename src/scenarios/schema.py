@@ -336,6 +336,7 @@ class SnapshotStep(BaseModel):
 # ============================================================================
 
 from .schema_control_flow import SetStep, IfStep, WhileStep, ForStep, SwitchStep
+from .schema_config import ConfigStep, GenConfigStep
 
 
 # ============================================================================
@@ -404,7 +405,8 @@ class StepGroup(BaseModel):
 TestStep = Union[
     CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
     NetworkWaitStep, DockerOpStep, SnapshotStep,
-    SetStep, IfStep, WhileStep, SwitchStep, ForStep
+    SetStep, IfStep, WhileStep, SwitchStep, ForStep,
+    ConfigStep, GenConfigStep
 ]
 
 
@@ -582,4 +584,5 @@ IfStep.model_rebuild(_types_namespace=types_ctx)
 WhileStep.model_rebuild(_types_namespace=types_ctx)
 ForStep.model_rebuild(_types_namespace=types_ctx)
 SwitchStep.model_rebuild(_types_namespace=types_ctx)
+# ConfigStep doesn't need rebuild as it has no recursive refs
 

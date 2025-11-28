@@ -158,17 +158,21 @@ test:
         timeout: 180
   
   # Save genesis configuration explicitly before snapshot
-  - config: set_genesis
+  # Using new Generic Config Generation syntax
+  - gen_config: "Set genesis hash for Zerochain"
+    name: "stagenet/zerochain"
     nodes: [root-1, root-2, root-3]
-    chain: zerochain
-    hash: "{{token_hash}}"
-    
-  - config: set_fee_addr
+    set:
+      static_genesis_event: "{{token_hash}}"
+      is_static_genesis_event: "true"
+      
+  - gen_config: "Set fee address for Mainchain"
+    name: "stagenet/main"
     nodes: [root-1, root-2, root-3]
-    value: "{{fee_addr}}"
+    set:
+      fee_addr: "{{fee_addr}}"
 
   # Create snapshot
   - snapshot: create
     name: phase1_zerochain_genesis
     phase: phase1
-

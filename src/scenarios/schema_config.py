@@ -1,4 +1,4 @@
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field
 
 class ConfigStep(BaseModel):
@@ -12,7 +12,7 @@ class ConfigStep(BaseModel):
     - set_fee_addr: Set fee address in main.cfg
     - update: Update specific key in config file
     """
-    config: str = Field(..., description="Action: 'disable_seed_mode', 'enable_seed_mode', 'set_genesis', 'set_fee_addr', 'update'")
+    config: str = Field(..., description="Action name")
     nodes: Union[str, List[str]] = Field(..., description="Target node(s)")
     
     # Parameters for set_genesis
@@ -31,3 +31,25 @@ class ConfigStep(BaseModel):
     zerochain_genesis_hash: Optional[str] = Field(None, description="Zerochain genesis hash (override)")
     main_genesis_hash: Optional[str] = Field(None, description="Mainchain genesis hash (override)")
     fee_addr: Optional[str] = Field(None, description="Fee address (override)")
+
+
+class GenConfigStep(BaseModel):
+    """
+    Generate/Regenerate config from template with arbitrary context variables.
+    
+    Usage:
+      - gen_config: "Generate zerochain config"
+        name: "stagenet/zerochain"
+        nodes: [root-1]
+        set:
+          static_genesis_event: "{{token_hash}}"
+          
+      - gen_config: "Update main config"
+        name: "stagenet/main"
+        nodes: [root-1]
+        set: "fee_addr={{fee_addr}}, param=value"
+    """
+    gen_config: Optional[str] = Field(None, description="Step description (optional)")
+    name: str = Field(..., description="Target config path/name (e.g. 'stagenet/zerochain', 'cellframe-node')")
+    nodes: Union[str, List[str]] = Field(..., description="Target node(s)")
+    set: Union[Dict[str, Any], str] = Field(default_factory=dict, description="Variables to inject (Dict or 'k=v, k2=v')")
