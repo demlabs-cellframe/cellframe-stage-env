@@ -575,8 +575,11 @@ class TestScenario(BaseModel):
 # Allow forward references for recursive models
 LoopStep.model_rebuild()
 StepGroup.model_rebuild()
-IfStep.model_rebuild()
-WhileStep.model_rebuild()
-ForStep.model_rebuild()
-SwitchStep.model_rebuild()
+
+# Rebuild control flow steps with knowledge of TestStep
+types_ctx = {'TestStep': TestStep}
+IfStep.model_rebuild(_types_namespace=types_ctx)
+WhileStep.model_rebuild(_types_namespace=types_ctx)
+ForStep.model_rebuild(_types_namespace=types_ctx)
+SwitchStep.model_rebuild(_types_namespace=types_ctx)
 
