@@ -30,10 +30,9 @@ test:
     steps:
       - loop: 3
         steps:
-          - python: |
-              ctx.set_variable('master_idx', ctx.get_variable('i'))
-              ctx.set_variable('master_node', f"master-{ctx.get_variable('iteration')}")
-              ctx.set_variable('wallet_name', f"stagenet_master_{ctx.get_variable('i')}")
+          - set: master_idx = "{{i}}"
+          - set: master_node = "master-{{iteration}}"
+          - set: wallet_name = "stagenet_master_{{i}}"
           
           - cli: "wallet new -w {{wallet_name}}"
             node: "{{master_node}}"
@@ -53,10 +52,9 @@ test:
     steps:
       - loop: 3
         steps:
-          - python: |
-              ctx.set_variable('master_idx', ctx.get_variable('i'))
-              ctx.set_variable('master_addr_var', f"master_addr_{ctx.get_variable('i')}")
-              ctx.set_variable('master_addr', ctx.get_variable(ctx.get_variable('master_addr_var')))
+          - set: master_idx = "{{i}}"
+          - set: master_addr = "locals()['master_addr_' + str(i)]"
+            eval: true
           
           - cli: "tx_create -value 120e18 -to_addr {{master_addr}}"
             save_hash: "transfer_hash_{{master_idx}}"
@@ -89,11 +87,10 @@ test:
     steps:
       - loop: 3
         steps:
-          - python: |
-              ctx.set_variable('master_idx', ctx.get_variable('i'))
-              ctx.set_variable('master_node', f"master-{ctx.get_variable('iteration')}")
-              ctx.set_variable('wallet_name', f"stagenet_master_{ctx.get_variable('i')}")
-              ctx.set_variable('cert_name', f"pvt.stagenet.master.{ctx.get_variable('i')}")
+          - set: master_idx = "{{i}}"
+          - set: master_node = "master-{{iteration}}"
+          - set: wallet_name = "stagenet_master_{{i}}"
+          - set: cert_name = "pvt.stagenet.master.{{i}}"
           
           # Get node address
           - cli: "node addr"
@@ -101,9 +98,8 @@ test:
             save_node: "master_node_addr_{{master_idx}}"
           
           # Delegate key
-          - python: |
-              node_addr_var = f"master_node_addr_{ctx.get_variable('i')}"
-              ctx.set_variable('node_addr', ctx.get_variable(node_addr_var))
+          - set: node_addr = "locals()['master_node_addr_' + str(i)]"
+            eval: true
           
           - cli: "srv_stake delegate -w {{wallet_name}} -value 100.0e+18 -cert {{cert_name}} -node_addr {{node_addr}} -fee 0.1"
             node: "{{master_node}}"
@@ -118,16 +114,14 @@ test:
     steps:
       - loop: 3
         steps:
-          - python: |
-              ctx.set_variable('node_name', f"master-{ctx.get_variable('iteration')}")
+          - set: node_name = "master-{{iteration}}"
           
           - cli: "net go sync"
             node: "{{node_name}}"
       
       - loop: 3
         steps:
-          - python: |
-              ctx.set_variable('node_name', f"root-{ctx.get_variable('iteration')}")
+          - set: node_name = "root-{{iteration}}"
           
           - cli: "net go sync"
             node: "{{node_name}}"
@@ -147,8 +141,8 @@ test:
     steps:
       - loop: 3
         steps:
-          - python: |
-              ctx.set_variable('node_name', f"master-{ctx.get_variable('iteration')}")
+          - set: node_name
+            value: "master-{{iteration}}"
           
           - cli: "global_db flush"
             node: "{{node_name}}"
@@ -170,8 +164,8 @@ test:
     steps:
       - loop: 3
         steps:
-          - python: |
-              ctx.set_variable('node_name', f"master-{ctx.get_variable('iteration')}")
+          - set: node_name
+            value: "master-{{iteration}}"
           
           - cli: "net go sync"
             node: "{{node_name}}"
@@ -191,8 +185,8 @@ test:
     steps:
       - loop: 3
         steps:
-          - python: |
-              ctx.set_variable('node_name', f"master-{ctx.get_variable('iteration')}")
+          - set: node_name
+            value: "master-{{iteration}}"
           
           - cli: "srv_stake list keys"
             node: "{{node_name}}"
@@ -216,12 +210,7 @@ test:
     steps:
       # Send transaction from master-1 (stagenet_master_0) to master-2 (stagenet_master_1)
       # This uses tokens received in zerochain to create activity in main chain
-      - python: |
-          ctx.set_variable('master_wallet', "stagenet_master_0")
-          # Get address of master-2
-          ctx.set_variable('recipient_addr', ctx.get_variable('master_addr_1'))
-      
-      - cli: "tx_create -w {{master_wallet}} -value 1.0 -to_addr {{recipient_addr}} -fee 0.1"
+      - cli: "tx_create -w stagenet_master_0 -value 1.0 -to_addr {{master_addr_1}} -fee 0.1"
         save_hash: first_tx_hash
       
       - wait_for_datum: "{{first_tx_hash}}"
@@ -238,9 +227,9 @@ test:
     nodes: [master-1, master-2, master-3]
     timeout: 60
       
-      # Step 19: Get genesis block hash
-      - cli: "block list -first 1"
-        save_hash: main_genesis_hash
+  # Step 19: Get genesis block hash
+  - cli: "block list -first 1"
+    save_hash: main_genesis_hash
   
   # Note: Steps 20-22 (update configs, disable seed_mode, sequential restart, soft reconnect)
   # require access to config_mgr and lifecycle_manager which are not available in YAML scenarios.
