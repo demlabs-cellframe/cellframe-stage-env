@@ -18,6 +18,7 @@ from .parser import ScenarioParser
 from .schema import (
     CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
     NetworkWaitStep, DockerOpStep, SnapshotStep,
+    SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     CLICheck, RPCCheck, PythonCheck, BashCheck,
     TestScenario, SuiteSetupScenario, TestStep, CheckSpec, StepDefaults, SectionConfig, DatumStatus
 )
@@ -143,7 +144,8 @@ class ScenarioExecutor:
             CLIStepExecutor, RPCStepExecutor, PythonStepExecutor,
             BashStepExecutor, ToolStepExecutor, WaitStepExecutor,
             WaitForDatumStepExecutor, LoopStepExecutor,
-            NetworkWaitStepExecutor, DockerOpStepExecutor, SnapshotStepExecutor
+            NetworkWaitStepExecutor, DockerOpStepExecutor, SnapshotStepExecutor,
+            SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor
         )
         self.cli_executor = CLIStepExecutor(self.container_manager, log_file, debug)
         self.rpc_executor = RPCStepExecutor(self.container_manager, log_file, debug)
@@ -174,6 +176,23 @@ class ScenarioExecutor:
             wait_executor=self.wait_executor
         )
         self.snapshot_executor = SnapshotStepExecutor(self.container_manager, log_file, debug)
+        self.set_executor = SetStepExecutor(self.container_manager, log_file, debug)
+        self.if_executor = IfStepExecutor(
+            self.container_manager, log_file, debug,
+            execute_steps_callback=self._execute_steps
+        )
+        self.while_executor = WhileStepExecutor(
+            self.container_manager, log_file, debug,
+            execute_steps_callback=self._execute_steps
+        )
+        self.for_executor = ForStepExecutor(
+            self.container_manager, log_file, debug,
+            execute_steps_callback=self._execute_steps
+        )
+        self.switch_executor = SwitchStepExecutor(
+            self.container_manager, log_file, debug,
+            execute_steps_callback=self._execute_steps
+        )
         
         # Check executors
         from .check import (
@@ -558,6 +577,16 @@ class ScenarioExecutor:
                 await self.docker_op_executor.execute(step, ctx)
             elif isinstance(step, SnapshotStep):
                 await self.snapshot_executor.execute(step, ctx)
+            elif isinstance(step, SetStep):
+                await self.set_executor.execute(step, ctx)
+            elif isinstance(step, IfStep):
+                await self.if_executor.execute(step, ctx, defaults)
+            elif isinstance(step, WhileStep):
+                await self.while_executor.execute(step, ctx, defaults)
+            elif isinstance(step, ForStep):
+                await self.for_executor.execute(step, ctx, defaults)
+            elif isinstance(step, SwitchStep):
+                await self.switch_executor.execute(step, ctx, defaults)
             else:
                 raise ScenarioExecutionError(f"Unknown step type: {type(step)}")
     

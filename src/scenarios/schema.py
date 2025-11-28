@@ -332,6 +332,45 @@ class SnapshotStep(BaseModel):
 
 
 # ============================================================================
+# Control Flow Steps
+# ============================================================================
+
+class SetStep(BaseModel):
+    """Set variable value."""
+    set: str = Field(..., description="Variable name")
+    value: Any = Field(..., description="Value to set (string, number, or expression)")
+    eval: bool = Field(False, description="Evaluate value as Python expression")
+
+
+class IfStep(BaseModel):
+    """Conditional execution."""
+    condition: str = Field(..., alias="if", description="Python expression condition")
+    then_steps: List["TestStep"] = Field(..., alias="then", description="Steps to execute if condition is true")
+    else_steps: Optional[List["TestStep"]] = Field(None, alias="else", description="Steps to execute if condition is false")
+
+
+class WhileStep(BaseModel):
+    """While loop execution."""
+    condition: str = Field(..., alias="while", description="Python expression condition")
+    steps: List["TestStep"] = Field(..., description="Steps to execute")
+    max_loops: int = Field(100, description="Maximum iterations (safety limit)")
+
+
+class ForStep(BaseModel):
+    """For loop execution."""
+    item_var: str = Field(..., alias="for", description="Variable name for item")
+    in_items: Union[List[Any], str] = Field(..., alias="in", description="List of items or expression evaluating to list")
+    steps: List["TestStep"] = Field(..., description="Steps to execute")
+
+
+class SwitchStep(BaseModel):
+    """Switch/Case execution."""
+    switch: str = Field(..., description="Variable or expression to switch on")
+    cases: Dict[str, List["TestStep"]] = Field(..., description="Map of cases (value -> steps)")
+    default: Optional[List["TestStep"]] = Field(None, description="Default steps if no case matches")
+
+
+# ============================================================================
 # Check/Assertion Models
 # ============================================================================
 
@@ -396,7 +435,8 @@ class StepGroup(BaseModel):
 # Update TestStep to include StepGroup and new step types
 TestStep = Union[
     CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
-    NetworkWaitStep, DockerOpStep, SnapshotStep
+    NetworkWaitStep, DockerOpStep, SnapshotStep,
+    SetStep, IfStep, WhileStep, SwitchStep, ForStep
 ]
 
 
@@ -567,4 +607,8 @@ class TestScenario(BaseModel):
 # Allow forward references for recursive models
 LoopStep.model_rebuild()
 StepGroup.model_rebuild()
+IfStep.model_rebuild()
+WhileStep.model_rebuild()
+ForStep.model_rebuild()
+SwitchStep.model_rebuild()
 
