@@ -1,9 +1,8 @@
 name: PHASE 1 - Zerochain Genesis
 description: Initialize ROOT nodes, create token and emission
 
-# NOTE: Temporarily disabled net defaults due to CLI bug with -fee parameter
-# includes:
-#   - common/set_net_default.yml
+includes:
+  - common/set_net_default.yml
 
 network:
   topology: default
@@ -193,8 +192,7 @@ test:
           
           # Transfer 10000 TCELL to each master (enough for testing)
           # Fee is 0e+18 (zero datoshi in exponential notation - workaround for CLI parsing issue with plain "0")
-          # NOTE: -net parameter is specified explicitly since defaults are disabled due to CLI bug
-          - cli: "tx_create -net stagenet -from_wallet fee_collector -value 10000.0 -to_addr {{temp_addr}} -token TCELL -chain zerochain -fee 0e+18"
+          - cli: "tx_create -from_wallet fee_collector -value 10000.0 -to_addr {{temp_addr}} -token TCELL -chain zerochain -fee 0e+18"
             node: root-1
             save_hash: "master_tx_{{i}}"
       

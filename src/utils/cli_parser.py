@@ -300,8 +300,18 @@ class CLICommandParser:
                 logger.debug(f"Option '{option}' not in available_options {available_options} for command '{command}'")
         
         # Add options to command
+        # FIX: Insert defaults after command name, not at the end
+        # This avoids CLI parser bugs when defaults are appended after user parameters
         if options_to_add:
-            result = f"{cli_command} {' '.join(options_to_add)}"
+            # Split command into name and rest
+            parts = cli_command.split(maxsplit=1)
+            if len(parts) == 2:
+                command_name, command_args = parts
+                # Insert defaults between command name and user arguments
+                result = f"{command_name} {' '.join(options_to_add)} {command_args}"
+            else:
+                # Command has no arguments, just append
+                result = f"{cli_command} {' '.join(options_to_add)}"
             logger.debug(f"apply_cli_defaults result: '{result}'")
             return result
         
