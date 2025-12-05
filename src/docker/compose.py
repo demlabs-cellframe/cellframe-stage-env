@@ -485,127 +485,71 @@ class DockerComposeManager:
         from src.utils.cli import run_command
         
         # Check if containers already exist (by label and by name pattern)
-        existing_containers = self.ps()
+        # We need to clean up potential stale/colliding containers before starting
+        # This is critical for phased startup (Phase 2) where we add new services
+        # to an existing project.
         
-        # Also check by container name pattern (more reliable)
-        # Project containers follow pattern: {project_name}-{service_name}
-        # Check ALL containers (including stopped/created ones) with project name prefix
-        if not existing_containers:
-            # Check all containers with project name prefix (including stopped/created)
-            all_containers = self.client.containers.list(all=True)
+        target_containers = []
+        if services:
+            # Find existing containers for the requested services
+            all_containers = self.ps()
             for container in all_containers:
-                if container.name.startswith(f"{self.project_name}-"):
-                    existing_containers.append(container)
-                    logger.debug("found_container_by_name_prefix", name=container.name, status=container.status)
-        
-        # If still no containers found and services specified, check specific service names
-        if not existing_containers and services:
+                svc_label = container.labels.get("com.docker.compose.service")
+                if svc_label and svc_label in services:
+                    target_containers.append(container)
+            
+            # Also check for name collisions for requested services
+            # This handles "zombie" containers that might block the new ones
             for service in services:
-                expected_name = f"{self.project_name}-{service}"
+                # Expected container name pattern: {project}-{service}
+                # Note: This is a heuristic, names might differ in compose file
+                # but standard node naming follows this.
+                potential_name = f"{self.project_name}-{service}"
                 try:
-                    container = self.client.containers.get(expected_name)
-                    if container:
-                        existing_containers.append(container)
-                        logger.debug("found_container_by_name", name=expected_name, status=container.status)
+                    # Check if container exists by name (even if not part of project)
+                    container = self.client.containers.get(potential_name)
+                    if container not in target_containers:
+                        target_containers.append(container)
+                        logger.warning("found_colliding_container_by_name", 
+                                     name=potential_name, 
+                                     id=container.short_id)
                 except NotFound:
                     pass
         
-        # Check if any containers are in "Created" state (created but not started due to errors)
-        created_containers = [c for c in existing_containers if c.status.startswith("Created")]
-        if created_containers:
-            logger.warning("found_created_containers", count=len(created_containers))
-            # Remove created containers to allow recreation
-            for container in created_containers:
+        if target_containers:
+            logger.info("removing_conflicting_containers_before_up", 
+                       count=len(target_containers),
+                       names=[c.name for c in target_containers])
+            
+            for container in target_containers:
                 try:
-                    logger.info("removing_created_container", name=container.name)
+                    logger.debug("removing_container", name=container.name)
                     container.remove(force=True)
-                    existing_containers.remove(container)
                 except Exception as e:
-                    logger.warning("failed_to_remove_created_container", name=container.name, error=str(e))
+                    logger.warning("failed_to_remove_container", 
+                                 name=container.name, 
+                                 error=str(e))
+            
+            # Brief wait to ensure Docker daemon processes removal
+            time.sleep(1)
+            
+        # Always use 'up' to ensure containers are created/recreated correctly
+        # 'start' is insufficient if containers don't exist (Phase 2 case)
+        cmd = ["docker", "compose", "-f", str(self.compose_file),
+               "-p", self.project_name, "up"]
         
-        if existing_containers:
-            # Containers exist - use 'start' instead of 'up' to avoid port conflicts
-            logger.info("containers_exist_using_start", count=len(existing_containers))
-            cmd = ["docker", "compose", "-f", str(self.compose_file),
-                   "-p", self.project_name, "start"]
-            
-            if services:
-                cmd.extend(services)
-            
+        if detach:
+            cmd.append("-d")
+        
+        if services:
+            cmd.extend(services)
+        
+        try:
             run_command(cmd, cwd=self.project_dir)
-        else:
-            # No containers exist - use 'up' to create and start them
-            # But first, ensure no stale containers exist (including "Created" state)
-            logger.info("no_existing_containers_using_up")
-            
-            # Double-check for containers in "Created" state that might have been missed
-            # This can happen if containers were created but failed to start due to port conflicts
-            try:
-                all_containers = self.client.containers.list(all=True)
-                created_containers = [
-                    c for c in all_containers 
-                    if c.name.startswith(f"{self.project_name}-") and c.status.startswith("Created")
-                ]
-                if created_containers:
-                    logger.warning("found_created_containers_before_up", count=len(created_containers))
-                    for container in created_containers:
-                        try:
-                            logger.info("removing_created_container_before_up", name=container.name)
-                            container.remove(force=True)
-                        except Exception as e:
-                            logger.warning("failed_to_remove_created_container", name=container.name, error=str(e))
-            except Exception as e:
-                logger.warning("failed_to_check_created_containers", error=str(e))
-            
-            cmd = ["docker", "compose", "-f", str(self.compose_file),
-                   "-p", self.project_name, "up"]
-            
-            if detach:
-                cmd.append("-d")
-            
-            if services:
-                cmd.extend(services)
-            
-            try:
-                run_command(cmd, cwd=self.project_dir)
-            except Exception as e:
-                # If port conflict occurred, containers may be in "Created" state
-                # Check if containers were created but failed to start
-                error_str = str(e)
-                # Check both exception message and stderr (if available)
-                stderr_str = ""
-                if hasattr(e, 'stderr'):
-                    stderr_str = str(e.stderr)
-                
-                port_conflict = "port is already allocated" in error_str or "Bind for" in error_str or \
-                               "port is already allocated" in stderr_str or "Bind for" in stderr_str
-                
-                if port_conflict:
-                    logger.warning("port_conflict_detected_checking_created_containers")
-                    # Check if containers were created (even if not started)
-                    try:
-                        all_containers = self.client.containers.list(all=True)
-                        created_containers = [
-                            c for c in all_containers 
-                            if c.name.startswith(f"{self.project_name}-") and c.status.startswith("Created")
-                        ]
-                        if created_containers:
-                            logger.info("found_created_containers_after_port_conflict", count=len(created_containers))
-                            # Try to start them instead of removing (they exist, just need to be started)
-                            # But first check if port is still occupied
-                            logger.warning("containers_created_but_port_conflict_removing_for_retry", count=len(created_containers))
-                            for container in created_containers:
-                                try:
-                                    container.remove(force=True)
-                                    logger.debug("removed_created_container_after_error", name=container.name)
-                                except Exception as cleanup_error:
-                                    logger.warning("failed_to_remove_created_container_after_error", 
-                                                 name=container.name, error=str(cleanup_error))
-                    except Exception as cleanup_error:
-                        logger.warning("failed_to_check_created_containers_after_error", error=str(cleanup_error))
-                
-                # Re-raise the original error
-                raise
+        except Exception as e:
+            # If still fails, log error and re-raise
+            logger.error("docker_up_failed", error=str(e))
+            raise
         
         if wait:
             self.wait_for_services(services)

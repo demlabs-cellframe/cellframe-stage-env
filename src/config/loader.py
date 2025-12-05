@@ -118,6 +118,11 @@ class ConfigLoader:
                     base_path=str(base_path),
                     custom_config=str(config_path) if config_path else None)
     
+    @property
+    def config_path(self) -> Path:
+        """Get resolved path to stage-env.cfg."""
+        return self.custom_config_path or (self.config_dir / "stage-env.cfg")
+    
     def load_stage_config(self) -> Dict[str, Any]:
         """
         Load stage-env configuration file.

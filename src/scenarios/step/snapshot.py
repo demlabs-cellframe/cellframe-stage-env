@@ -41,6 +41,27 @@ class SnapshotStepExecutor(StepExecutor):
                 if not result:
                     raise RuntimeError("Snapshot creation failed")
             elif operation == "restore":
+                # Pre-cleanup using Docker if available to handle root-owned files
+                # This fixes "Operation not permitted" errors when rsync tries to overwrite
+                # root-owned files created by Docker containers.
+                if hasattr(self, 'container_manager') and self.container_manager:
+                    try:
+                        # Get cache path from snapshot implementation
+                        if hasattr(snapshot_manager, 'snapshot') and snapshot_manager.snapshot:
+                            cache_path = snapshot_manager.snapshot.cache_path
+                            data_path = cache_path / "data"
+                            configs_path = cache_path / "configs"
+                            
+                            if data_path.exists():
+                                logger.info("pre_cleaning_data_volume", path=str(data_path))
+                                self.container_manager.cleanup_volume(str(data_path))
+                            
+                            if configs_path.exists():
+                                logger.info("pre_cleaning_configs_volume", path=str(configs_path))
+                                self.container_manager.cleanup_volume(str(configs_path))
+                    except Exception as cleanup_err:
+                        logger.warning("pre_restore_cleanup_failed", error=str(cleanup_err))
+
                 result = await snapshot_manager.restore_snapshot(snapshot_name)
                 if not result:
                     raise RuntimeError("Snapshot restoration failed")

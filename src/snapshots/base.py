@@ -134,3 +134,18 @@ class BaseSnapshot(ABC):
         
         return [d for d in data_path.iterdir() if d.is_dir()]
 
+    def get_config_dirs(self) -> List[Path]:
+        """
+        Get list of config directories to snapshot.
+        
+        Returns:
+            List of Path objects for config directories to include in snapshot
+        """
+        configs_path = self.cache_path / "configs"
+        
+        # Get all node config directories
+        if not configs_path.exists():
+            return []
+            
+        return [d for d in configs_path.iterdir() if d.is_dir()]
+

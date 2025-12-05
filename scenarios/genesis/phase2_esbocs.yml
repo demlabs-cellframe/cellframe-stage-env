@@ -17,69 +17,68 @@ test:
   - docker_op: restart
     services: [root-1, root-2, root-3]
   
-  - wait_network: online
-    nodes: [root-1, root-2, root-3]
-    timeout: 60
-  
-  - wait_network: links_established
-    nodes: [root-1, root-2, root-3]
-    timeout: 120
-  
-  # Create master wallets
-  - group: Create master wallets
-    steps:
-      - loop: 3
-        steps:
-          - set: master_idx = "{{i}}"
-          - set: master_node = "master-{{iteration}}"
-          - set: wallet_name = "stagenet_master_{{i}}"
-          
-          - cli: "wallet new -w {{wallet_name}}"
-            node: "{{master_node}}"
-          
-          - cli: "wallet info -w {{wallet_name}}"
-            node: "{{master_node}}"
-            save_wallet: "master_addr_{{master_idx}}"
-  
-  # Transfer to masters
-  - group: Transfer tokens to masters
-    defaults:
-      node: root-1
-      cli:
-        chain: zerochain
-        token: TCELL
-        from_wallet: fee_collector
-    steps:
-      - loop: 3
-        steps:
-          - set: master_idx = "{{i}}"
-          - set: master_addr = "locals()['master_addr_' + str(i)]"
-            eval: true
-          
-          - cli: "tx_create -value 120e18 -to_addr {{master_addr}}"
-            save_hash: "transfer_hash_{{master_idx}}"
-          
-          - wait_for_datum: "{{transfer_hash_{{master_idx}}}}"
-            timeout: 120
-  
   # Start MASTER nodes
   - docker_op: start
     services: [master-1, master-2, master-3]
     detach: true
-  
+
   - wait_network: online
-    nodes: [master-1, master-2, master-3]
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     timeout: 60
   
-  # Ensure masters are connected to roots
   - wait_network: links_established
     nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     timeout: 120
-
-  # Allow DAG synchronization
+  
+  # Sync GDB after restart to ensure emission data is loaded into ledger
+  - group: Force GDB sync after snapshot restore
+    steps:
+      # First: sync network GDB
+      - loop: 3
+        steps:
+          - set: node_name = "root-{{iteration}}"
+          - cli: "net go sync"
+            node: "{{node_name}}"
+      
+      # Second: flush GDB to ensure all data is written
+      - loop: 3
+        steps:
+          - set: node_name = "root-{{iteration}}"
+          - cli: "global_db flush"
+            node: "{{node_name}}"
+      
+      # Third: sync network to load data from GDB
+      - loop: 3
+        steps:
+          - set: node_name = "root-{{iteration}}"
+          - cli: "net sync -net stagenet"
+            node: "{{node_name}}"
+  
+  # Wait for DAG-PoA to process emission from cache into ledger
   - wait: "10s"
   
-  # Step 7: Delegate keys via srv_stake on zerochain
+  # Verify master wallets have balances (they were created in phase1 with tokens)
+  - group: Verify master wallet balances from phase1
+    steps:
+      - loop: 3
+        steps:
+          - set: master_idx = "{{i}}"
+          - set: wallet_name = "stagenet_master_{{i}}"
+          
+          # Get wallet address from root-1 where it was created in phase1
+          - cli: "wallet info -w {{wallet_name}} -net stagenet"
+            node: root-1
+            save_wallet: "master_addr_{{master_idx}}"
+          
+          # Verify balance (should be 10000 TCELL from phase1 transfer)
+          - wait: wallet_balance
+            node: root-1
+            wallet: "{{wallet_name}}"
+            token: TCELL
+            balance: "> 1000"
+            timeout: 30
+
+  # Delegate keys via srv_stake on zerochain
   - group: Delegate keys
     defaults:
       cli:
@@ -200,6 +199,16 @@ test:
   # Allow consensus algorithm to stabilize
   - wait: "10s"
   
+  # Step 16: Wait for ESBocs consensus active
+  - wait: esbocs_consensus_active
+    nodes: [master-1, master-2, master-3]
+    timeout: 300
+
+  # Step 16.5: Set minimum_fee=0 for genesis transaction (no fee required for first tx)
+  - config: set_minimum_fee
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3, full-1, full-2]
+    value: "0"
+
   # Step 17: Create first transaction → genesis block
   - group: Create genesis block
     defaults:
@@ -210,16 +219,12 @@ test:
     steps:
       # Send transaction from master-1 (stagenet_master_0) to master-2 (stagenet_master_1)
       # This uses tokens received in zerochain to create activity in main chain
-      - cli: "tx_create -w stagenet_master_0 -value 1.0 -to_addr {{master_addr_1}} -fee 0.1"
+      # Fee is 0 because minimum_fee is temporarily set to 0
+      - cli: "tx_create -w stagenet_master_0 -value 1.0 -to_addr {{master_addr_1}}"
         save_hash: first_tx_hash
       
       - wait_for_datum: "{{first_tx_hash}}"
         timeout_total: 60
-
-  # Step 16: Wait for ESBocs consensus active
-  - wait: esbocs_consensus_active
-    nodes: [master-1, master-2, master-3]
-    timeout: 300
 
   # Step 18: Wait for genesis block
   - wait: first_block
@@ -230,8 +235,8 @@ test:
   # Step 19: Get genesis block hash
   - cli: "block list -first 1"
     save_hash: main_genesis_hash
-  
-  # Note: Steps 20-22 (update configs, disable seed_mode, sequential restart, soft reconnect)
-  # require access to config_mgr and lifecycle_manager which are not available in YAML scenarios.
-  # These steps should be handled by the calling Python code after scenario execution.
 
+  # Step 19.5: Restore minimum_fee=0.1 after genesis block finalized
+  - config: set_minimum_fee
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3, full-1, full-2]
+    value: "0.1"

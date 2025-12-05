@@ -39,8 +39,8 @@ class CLIStepExecutor(StepExecutor):
             cli_parser = get_cli_parser()
             
             if self.debug:
-                self._log_to_file(f"[DEBUG] Applying CLI defaults: {defaults.cli}")
-                self._log_to_file(f"[DEBUG] Original command: {cmd}")
+                # self._log_to_file(f"[DEBUG] Applying CLI defaults: {defaults.cli}") # _log_to_file not available
+                pass
             
             # Substitute variables in CLI defaults
             cli_defaults = {
@@ -93,7 +93,7 @@ class CLIStepExecutor(StepExecutor):
                 )
             # For save/save_to, save empty string or error message
             if step.save or step.save_to:
-                variable_name = step.save or step.save_to
+                variable_name = ctx.substitute(step.save or step.save_to)
                 ctx.set_variable(variable_name, result.get("stderr", "") or "")
                 logger.debug("cli_step_saved_error", variable=variable_name)
             return result
@@ -103,13 +103,14 @@ class CLIStepExecutor(StepExecutor):
         from ..schema import ExtractType
         
         if step.save_node:
+            variable_name = ctx.substitute(step.save_node)
             pattern = DataExtractor.get_default_pattern(ExtractType.NODE_ADDRESS)
             node_addr, error = DataExtractor.extract_and_validate(
                 output, pattern, ExtractType.NODE_ADDRESS, required=True
             )
             if node_addr:
-                ctx.set_variable(step.save_node, node_addr)
-                logger.debug("cli_step_saved_node", variable=step.save_node, value=node_addr)
+                ctx.set_variable(variable_name, node_addr)
+                logger.debug("cli_step_saved_node", variable=variable_name, value=node_addr)
             else:
                 raise ScenarioExecutionError(
                     f"Failed to extract node address from output: {error}",
@@ -118,34 +119,37 @@ class CLIStepExecutor(StepExecutor):
                 )
         
         if step.save_hash:
+            variable_name = ctx.substitute(step.save_hash)
             pattern = DataExtractor.get_default_pattern(ExtractType.HASH)
-            hash_value, error = DataExtractor.extract_and_validate(
-                output, pattern, ExtractType.HASH, required=True
-            )
-            if hash_value:
-                ctx.set_variable(step.save_hash, hash_value)
-                logger.debug("cli_step_saved_hash", variable=step.save_hash, value=hash_value)
-            else:
+            try:
+                hash_value, error = DataExtractor.extract_and_validate(
+                    output, pattern, ExtractType.HASH, required=True
+                )
+                if hash_value:
+                    ctx.set_variable(variable_name, hash_value)
+                    logger.debug("cli_step_saved_hash", variable=variable_name, value=hash_value)
+            except Exception as e:
                 # Log full output for debugging hash extraction failures
                 logger.error("hash_extraction_failed",
-                          variable=step.save_hash,
-                          error=error,
+                          variable=variable_name,
+                          error=str(e),
                           output_preview=output[:1000],
                           command=cmd[:200])
                 raise ScenarioExecutionError(
-                    f"Failed to extract hash from output: {error}",
+                    f"Failed to extract hash from output: {str(e)}",
                     step=cmd[:100],
                     context={"output": output[:1000], "pattern": pattern}
                 )
         
         if step.save_wallet:
+            variable_name = ctx.substitute(step.save_wallet)
             pattern = DataExtractor.get_default_pattern(ExtractType.WALLET_ADDRESS)
             wallet_addr, error = DataExtractor.extract_and_validate(
                 output, pattern, ExtractType.WALLET_ADDRESS, required=True
             )
             if wallet_addr:
-                ctx.set_variable(step.save_wallet, wallet_addr)
-                logger.debug("cli_step_saved_wallet", variable=step.save_wallet, value=wallet_addr)
+                ctx.set_variable(variable_name, wallet_addr)
+                logger.debug("cli_step_saved_wallet", variable=variable_name, value=wallet_addr)
             else:
                 raise ScenarioExecutionError(
                     f"Failed to extract wallet address from output: {error}",
@@ -154,13 +158,14 @@ class CLIStepExecutor(StepExecutor):
                 )
         
         if step.save_token:
+            variable_name = ctx.substitute(step.save_token)
             pattern = DataExtractor.get_default_pattern(ExtractType.TOKEN_NAME)
             token_ticker, error = DataExtractor.extract_and_validate(
                 output, pattern, ExtractType.TOKEN_NAME, required=True
             )
             if token_ticker:
-                ctx.set_variable(step.save_token, token_ticker)
-                logger.debug("cli_step_saved_token", variable=step.save_token, value=token_ticker)
+                ctx.set_variable(variable_name, token_ticker)
+                logger.debug("cli_step_saved_token", variable=variable_name, value=token_ticker)
             else:
                 raise ScenarioExecutionError(
                     f"Failed to extract token ticker from output: {error}",
@@ -170,7 +175,7 @@ class CLIStepExecutor(StepExecutor):
         
         # Save raw output if requested
         if step.save or step.save_to:
-            variable_name = step.save or step.save_to
+            variable_name = ctx.substitute(step.save or step.save_to)
             ctx.set_variable(variable_name, output.strip())
             logger.debug("cli_step_saved", variable=variable_name)
         

@@ -249,9 +249,6 @@ class WaitStep(BaseModel):
     check_master: bool = Field(True, description="Check master nodes (for finalized)")
     expected_count: Optional[int] = Field(None, description="Expected count (for specific waiters)")
 
-    # Deprecated fields (kept for backward compatibility if needed, but cleaner to remove)
-    type: Optional[str] = Field(None, description="Deprecated: use wait field for type")
-
 
 class PythonStep(BaseModel):
     """Execute Python code with access to context."""
@@ -402,11 +399,14 @@ class StepGroup(BaseModel):
 
 
 # Update TestStep to include StepGroup and new step types
+# IMPORTANT: Order matters! Specific types must come before generic ones to ensure correct parsing.
+# NetworkWaitStep must come before WaitStep.
 TestStep = Union[
-    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
-    NetworkWaitStep, DockerOpStep, SnapshotStep,
+    NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep,
+    CLIStep, RPCStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
-    ConfigStep, GenConfigStep
+    ConfigStep, GenConfigStep,
+    WaitStep 
 ]
 
 
@@ -518,7 +518,7 @@ class TestScenario(BaseModel):
     name: str = Field(..., description="Scenario name")
     description: str = Field(..., description="Scenario description")
     author: Optional[str] = Field(None, description="Author name")
-    tags: List[str] = Field(default_factory=list, description="Tags")
+    tags: List[str] = Field(default_factory=list, description="Tags for categorization")
     version: str = Field("1.0", description="Version")
     
     # Includes for reusable configs
@@ -585,4 +585,3 @@ WhileStep.model_rebuild(_types_namespace=types_ctx)
 ForStep.model_rebuild(_types_namespace=types_ctx)
 SwitchStep.model_rebuild(_types_namespace=types_ctx)
 # ConfigStep doesn't need rebuild as it has no recursive refs
-

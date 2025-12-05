@@ -3,10 +3,10 @@ from typing import List, Dict, Optional, Any, Union
 import re
 from pathlib import Path
 
-from ...utils.logger import get_logger
+from src.utils.logger import get_logger
 from .base import StepExecutor
-from ..schema_config import ConfigStep, GenConfigStep
-from ..executor import ScenarioExecutionError, RuntimeContext
+from src.scenarios.schema_config import ConfigStep, GenConfigStep
+from src.scenarios.executor import ScenarioExecutionError, RuntimeContext
 
 logger = get_logger(__name__)
 
@@ -18,6 +18,7 @@ class ConfigActionHandler(ABC):
     """Abstract base class for configuration action handlers."""
     
     def __init__(self, executor: 'ConfigStepExecutor'):
+        # print(f"DEBUG: ConfigActionHandler init called with executor={executor}")
         self.executor = executor
         
     @abstractmethod
@@ -28,6 +29,9 @@ class ConfigActionHandler(ABC):
 class SetGenesisHandler(ConfigActionHandler):
     """Handler for 'set_genesis' action."""
     
+    def __init__(self, executor):
+        super().__init__(executor)
+
     async def handle(self, step: ConfigStep, ctx: RuntimeContext, node_ids: List[int]) -> None:
         if not step.chain or not step.hash:
             raise ScenarioExecutionError("chain and hash required for set_genesis", step=step)
@@ -39,6 +43,9 @@ class SetGenesisHandler(ConfigActionHandler):
 
 class SetFeeAddrHandler(ConfigActionHandler):
     """Handler for 'set_fee_addr' action."""
+
+    def __init__(self, executor):
+        super().__init__(executor)
     
     async def handle(self, step: ConfigStep, ctx: RuntimeContext, node_ids: List[int]) -> None:
         if not step.value:
@@ -49,6 +56,9 @@ class SetFeeAddrHandler(ConfigActionHandler):
 
 class DisableSeedModeHandler(ConfigActionHandler):
     """Handler for 'disable_seed_mode' action."""
+
+    def __init__(self, executor):
+        super().__init__(executor)
     
     async def handle(self, step: ConfigStep, ctx: RuntimeContext, node_ids: List[int]) -> None:
         if not hasattr(ctx, 'genesis_config_manager') or not ctx.genesis_config_manager:
@@ -73,6 +83,9 @@ class DisableSeedModeHandler(ConfigActionHandler):
 
 class EnableSeedModeHandler(ConfigActionHandler):
     """Handler for 'enable_seed_mode' action."""
+
+    def __init__(self, executor):
+        super().__init__(executor)
     
     async def handle(self, step: ConfigStep, ctx: RuntimeContext, node_ids: List[int]) -> None:
         if not hasattr(ctx, 'genesis_config_manager') or not ctx.genesis_config_manager:
@@ -82,6 +95,9 @@ class EnableSeedModeHandler(ConfigActionHandler):
 
 class UpdateHandler(ConfigActionHandler):
     """Handler for generic 'update' action."""
+
+    def __init__(self, executor):
+        super().__init__(executor)
     
     async def handle(self, step: ConfigStep, ctx: RuntimeContext, node_ids: List[int]) -> None:
         if not step.file or not step.key or step.value is None:
@@ -89,6 +105,19 @@ class UpdateHandler(ConfigActionHandler):
         
         # Implementation placeholder
         raise ScenarioExecutionError("update action not yet implemented", step=step)
+
+class SetMinimumFeeHandler(ConfigActionHandler):
+    """Handler for 'set_minimum_fee' action."""
+
+    def __init__(self, executor):
+        super().__init__(executor)
+    
+    async def handle(self, step: ConfigStep, ctx: RuntimeContext, node_ids: List[int]) -> None:
+        if step.value is None:
+            raise ScenarioExecutionError("value (minimum_fee) required for set_minimum_fee", step=step)
+        
+        minimum_fee = ctx.substitute(str(step.value))
+        await self.executor._update_minimum_fee(node_ids, minimum_fee)
 
 
 class ConfigStepExecutor(StepExecutor):
@@ -102,16 +131,19 @@ class ConfigStepExecutor(StepExecutor):
         resolve_node_alias_callback=None
     ):
         super().__init__(container_manager, log_file, debug)
+        # print(f"DEBUG: ConfigStepExecutor init called. Self is {self}")
         self.resolve_node_alias_callback = resolve_node_alias_callback
         self.base_path = container_manager.base_path
         
         # Register handlers
+        # print("DEBUG: Creating handlers...")
         self.handlers: Dict[str, ConfigActionHandler] = {
             'set_genesis': SetGenesisHandler(self),
             'set_fee_addr': SetFeeAddrHandler(self),
             'disable_seed_mode': DisableSeedModeHandler(self),
             'enable_seed_mode': EnableSeedModeHandler(self),
             'update': UpdateHandler(self),
+            'set_minimum_fee': SetMinimumFeeHandler(self),
         }
         
     async def execute(self, step: ConfigStep, ctx: RuntimeContext) -> None:
@@ -160,7 +192,7 @@ class ConfigStepExecutor(StepExecutor):
         is_dag = chain_name.lower() in ["zerochain", "zero", "0"]
         param_name = "static_genesis_event" if is_dag else "static_genesis_block"
         
-        from ..config.manager import get_config_loader
+        from src.config.manager import get_config_loader
         config_loader = get_config_loader()
         paths_config = config_loader.get_paths_config()
         cache_dir_relative = paths_config.get('cache_dir', '../testing/cache')
@@ -203,7 +235,7 @@ class ConfigStepExecutor(StepExecutor):
 
     async def _update_fee_addr(self, node_ids: List[int], fee_addr: str):
         """Update fee_addr in main.cfg."""
-        from ..config.manager import get_config_loader
+        from src.config.manager import get_config_loader
         config_loader = get_config_loader()
         paths_config = config_loader.get_paths_config()
         cache_dir_relative = paths_config.get('cache_dir', '../testing/cache')
@@ -229,6 +261,37 @@ class ConfigStepExecutor(StepExecutor):
                 
             except Exception as e:
                 logger.error(f"Failed to update fee_addr for node{node_id}: {e}")
+                raise
+
+    async def _update_minimum_fee(self, node_ids: List[int], minimum_fee: str):
+        """Update minimum_fee in main.cfg."""
+        from src.config.manager import get_config_loader
+        config_loader = get_config_loader()
+        paths_config = config_loader.get_paths_config()
+        cache_dir_relative = paths_config.get('cache_dir', '../testing/cache')
+        cache_dir = (self.base_path / cache_dir_relative).resolve()
+        
+        for node_id in node_ids:
+            try:
+                config_file = cache_dir / "configs" / f"node{node_id}" / "network" / "stagenet" / "main.cfg"
+                if not config_file.exists():
+                    logger.warning(f"Config not found for node{node_id}: {config_file}")
+                    continue
+                    
+                content = config_file.read_text()
+                pattern = re.compile(r"^minimum_fee=.*", re.MULTILINE)
+                if pattern.search(content):
+                    content = pattern.sub(f"minimum_fee={minimum_fee}", content)
+                else:
+                    if "[esbocs]" not in content:
+                        content += "\n[esbocs]\n"
+                    content += f"minimum_fee={minimum_fee}\n"
+                    
+                config_file.write_text(content)
+                logger.info(f"Updated minimum_fee={minimum_fee} for node{node_id}")
+                
+            except Exception as e:
+                logger.error(f"Failed to update minimum_fee for node{node_id}: {e}")
                 raise
 
 
@@ -293,8 +356,8 @@ class GenConfigStepExecutor(StepExecutor):
         """
         Regenerate config file from template, merging existing config values with new variables.
         """
-        from ..config.manager import get_config_loader
-        from ..config.generator import ConfigGenerator
+        from src.config.manager import get_config_loader
+        from src.config.generator import ConfigGenerator
         
         config_loader = get_config_loader()
         paths_config = config_loader.get_paths_config()

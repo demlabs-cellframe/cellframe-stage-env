@@ -338,17 +338,17 @@ class DelegationsSyncedWaiter(BaseWaiter):
 
 class CLIReadyWaiter(BaseWaiter):
     """
-    Wait for CLI server to be ready on node.
+    Wait for CLI server to be ready on nodes.
     
     Usage:
-        waiter = CLIReadyWaiter(exec_cli_func, node_id, network_name)
+        waiter = CLIReadyWaiter(exec_cli_func, nodes, network_name)
         await waiter.wait(timeout=30.0)
     """
     
     def __init__(
         self,
         exec_cli: Callable,
-        node_id: int,
+        nodes: List[NodeConfig],
         network_name: str = "stagenet",
         poll_interval: float = 0.5
     ):
@@ -357,35 +357,214 @@ class CLIReadyWaiter(BaseWaiter):
         
         Args:
             exec_cli: CLI execution function (node_id, command, check_output) -> (exit_code, stdout, stderr)
+            nodes: List of nodes to check
+            network_name: Network name
+            poll_interval: Seconds between checks
+        """
+        super().__init__(poll_interval)
+        self.exec_cli = exec_cli
+        self.nodes = nodes
+        self.network_name = network_name
+        self._start_time = None
+    
+    async def check(self) -> bool:
+        """Check if CLI is ready on all nodes."""
+        if self._start_time is None:
+            self._start_time = time.time()
+        
+        all_ready = True
+        for node in self.nodes:
+            try:
+                exit_code, stdout, stderr = self.exec_cli(
+                    node.node_id,
+                    f"net -net {self.network_name} get status",
+                    check_output=False
+                )
+                if exit_code != 0:
+                    all_ready = False
+                    break
+            except Exception:
+                all_ready = False
+                break
+        
+        if all_ready:
+            elapsed = time.time() - self._start_time
+            logger.debug("cli_ready_all_nodes",
+                       node_count=len(self.nodes),
+                       elapsed=f"{elapsed:.1f}s")
+            return True
+            
+        return False
+
+
+class WalletBalanceWaiter(BaseWaiter):
+    """
+    Wait for wallet to have specified balance of token.
+    
+    Supports flexible balance conditions:
+    - Simple value: expected_balance="1000000" (exact match)
+    - Comparison: expected_balance="> 100", ">= 1e+18", "< 500"
+    - Python expression: expected_balance="balance > (1000 + 13.4)"
+    - None: checks for any non-zero balance
+    
+    Usage:
+        waiter = WalletBalanceWaiter(exec_cli_func, node_id, wallet_name, token_ticker, expected_balance="> 1e+18")
+        await waiter.wait(timeout=60.0)
+    """
+    
+    def __init__(
+        self,
+        exec_cli: Callable,
+        node_id: int,
+        wallet_name: str,
+        token_ticker: str = "TCELL",
+        expected_balance: Optional[str] = None,
+        network_name: str = "stagenet",
+        poll_interval: float = 2.0
+    ):
+        """
+        Initialize wallet balance waiter.
+        
+        Args:
+            exec_cli: CLI execution function (node_id, command, check_output) -> (exit_code, stdout, stderr)
             node_id: Node ID to check
+            wallet_name: Wallet name to check balance for
+            token_ticker: Token ticker to check (e.g., "TCELL")
+            expected_balance: Balance condition (e.g., "> 1000", "1e+18", "balance >= 100")
+                            If None, checks for any non-zero balance
             network_name: Network name
             poll_interval: Seconds between checks
         """
         super().__init__(poll_interval)
         self.exec_cli = exec_cli
         self.node_id = node_id
+        self.wallet_name = wallet_name
+        self.token_ticker = token_ticker
+        self.expected_balance = expected_balance
         self.network_name = network_name
         self._start_time = None
     
+    def _check_balance_condition(self, balance: float) -> bool:
+        """
+        Check if balance meets the expected condition.
+        
+        Args:
+            balance: Actual balance value
+            
+        Returns:
+            True if condition is met
+        """
+        if self.expected_balance is None:
+            # No condition specified - just check for non-zero
+            return balance > 0
+        
+        condition = self.expected_balance.strip()
+        
+        # Try to parse as comparison operator
+        import re
+        comparison_match = re.match(r'^([<>=!]+)\s*(.+)$', condition)
+        
+        if comparison_match:
+            operator = comparison_match.group(1)
+            value_str = comparison_match.group(2).strip()
+            
+            try:
+                expected_value = float(value_str)
+                
+                if operator == '>':
+                    return balance > expected_value
+                elif operator == '>=':
+                    return balance >= expected_value
+                elif operator == '<':
+                    return balance < expected_value
+                elif operator == '<=':
+                    return balance <= expected_value
+                elif operator == '==' or operator == '=':
+                    return abs(balance - expected_value) < 1e-10  # Float comparison with epsilon
+                elif operator == '!=':
+                    return abs(balance - expected_value) >= 1e-10
+                else:
+                    logger.warning(f"Unknown operator: {operator}, checking for non-zero balance")
+                    return balance > 0
+            except ValueError:
+                logger.warning(f"Cannot parse expected value: {value_str}")
+                return balance > 0
+        
+        # Try to evaluate as Python expression
+        if 'balance' in condition:
+            try:
+                # Safe evaluation with balance variable
+                result = eval(condition, {"__builtins__": {}}, {"balance": balance})
+                return bool(result)
+            except Exception as e:
+                logger.warning(f"Cannot evaluate expression '{condition}': {e}")
+                return balance > 0
+        
+        # Try to parse as exact value
+        try:
+            expected_value = float(condition)
+            return abs(balance - expected_value) < 1e-10
+        except ValueError:
+            logger.warning(f"Cannot parse balance condition: {condition}, checking for non-zero")
+            return balance > 0
+    
     async def check(self) -> bool:
-        """Check if CLI is ready."""
+        """Check if wallet has expected balance of the token."""
         if self._start_time is None:
             self._start_time = time.time()
         
         try:
             exit_code, stdout, stderr = self.exec_cli(
                 self.node_id,
-                f"net -net {self.network_name} get status",
+                f"wallet info -w {self.wallet_name} -net {self.network_name}",
                 check_output=False
             )
-            if exit_code == 0:
-                elapsed = time.time() - self._start_time
-                logger.debug("cli_ready",
+            
+            if exit_code != 0:
+                return False
+            
+            # Check if token ticker appears in output with balance
+            # Looking for patterns like "TCELL: 1000000.0" or "TCELL:     12345.67"
+            import re
+            pattern = rf"{re.escape(self.token_ticker)}:\s+([0-9]+(?:\.[0-9]+)?)"
+            match = re.search(pattern, stdout)
+            
+            if match:
+                balance_str = match.group(1)
+                try:
+                    balance = float(balance_str)
+                    
+                    # Check if balance meets condition
+                    if self._check_balance_condition(balance):
+                        elapsed = time.time() - self._start_time
+                        condition_str = self.expected_balance or "> 0"
+                        logger.info("wallet_balance_condition_met",
+                                   node_id=self.node_id,
+                                   wallet=self.wallet_name,
+                                   token=self.token_ticker,
+                                   balance=balance_str,
+                                   condition=condition_str,
+                                   elapsed=f"{elapsed:.1f}s")
+                        return True
+                except ValueError:
+                    pass
+            
+            # Log progress periodically (every 10s)
+            elapsed = time.time() - self._start_time
+            if int(elapsed) % 10 == 0 and elapsed > 0:
+                condition_str = self.expected_balance or "> 0"
+                logger.debug("waiting_for_wallet_balance",
                            node_id=self.node_id,
+                           wallet=self.wallet_name,
+                           token=self.token_ticker,
+                           condition=condition_str,
                            elapsed=f"{elapsed:.1f}s")
-                return True
-        except Exception:
-            pass
+            
+        except Exception as e:
+            logger.debug("wallet_balance_check_error",
+                       node_id=self.node_id,
+                       wallet=self.wallet_name,
+                       error=str(e))
         
         return False
 

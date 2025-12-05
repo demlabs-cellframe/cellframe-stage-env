@@ -77,6 +77,13 @@ class RuntimeContext:
         if name not in self.variables:
             raise ScenarioExecutionError(f"Undefined variable: {name}")
         return self.variables[name]
+
+    def __getattr__(self, name: str) -> Any:
+        """Allow accessing variables as attributes."""
+        try:
+            return self.get_variable(name)
+        except ScenarioExecutionError:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
     
     def substitute(self, text: str) -> str:
         """Substitute variables in text."""
@@ -332,6 +339,9 @@ class ScenarioExecutor:
         
         # wait
         if defaults.wait and hasattr(step, 'wait'):
+            if not isinstance(defaults.wait, str):
+                 logger.error(f"defaults.wait IS NOT A STRING: {type(defaults.wait)}: {defaults.wait}")
+            
             if not step.wait:  # None or empty
                 step.wait = defaults.wait
         
@@ -572,6 +582,8 @@ class ScenarioExecutor:
             elif isinstance(step, RPCStep):
                 await self.rpc_executor.execute(step, ctx)
             elif isinstance(step, WaitStep):
+                step_dump = step.model_dump() if hasattr(step, 'model_dump') else str(step)
+                logger.info(f"Executing WaitStep. Dump: {step_dump}")
                 await self.wait_executor.execute(step, ctx)
             elif isinstance(step, WaitForDatumStep):
                 await self.wait_for_datum_executor.execute(step, ctx)

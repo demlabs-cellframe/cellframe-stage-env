@@ -96,6 +96,7 @@ def _initialize_registry():
         GDBSyncCompleteWaiter,
         DelegationsSyncedWaiter,
         CLIReadyWaiter,
+        WalletBalanceWaiter,
     )
     
     # Validator waiters
@@ -135,6 +136,7 @@ def _initialize_registry():
     WaitRegistry.register("gdb_sync_complete", GDBSyncCompleteWaiter)
     WaitRegistry.register("delegations_synced", DelegationsSyncedWaiter)
     WaitRegistry.register("cli_ready", CLIReadyWaiter)
+    WaitRegistry.register("wallet_balance", WalletBalanceWaiter)
     WaitRegistry.register("validator_mode_active", ValidatorModeActiveWaiter)
     WaitRegistry.register("stake_service_ready", StakeServiceReadyWaiter)
     WaitRegistry.register("esbocs_consensus_active", ESBocsConsensusActiveWaiter)

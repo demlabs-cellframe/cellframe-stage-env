@@ -261,6 +261,10 @@ class ConfigGenerator:
             auth_certs_number = root_nodes_count
             auth_certs_number_verify = max(1, root_nodes_count // 2 + 1)
             
+            # Get minimum_fee from config (default 0.1 for production, can be overridden in config)
+            stage_config = self.config_loader.load_stage_config()
+            minimum_fee = stage_config.get('minimum_fee', '0.1')
+            
             # Prepare base chain context (shared for all nodes)
             # CRITICAL: genesis_mode, static_genesis_event, fee_addr will be set per-node
             base_chain_context = {
@@ -275,7 +279,8 @@ class ConfigGenerator:
                 'is_static_genesis_block': 'false',  # Will be set per-node after genesis block creation
                 'fee_addr': '',  # Will be set per-node after fee wallet creation
                 'min_validators_count': mainchain_min_validators_count,  # Set to 2 for 2/3 consensus
-                'poa_mode': 'true'  # CRITICAL: Always use PoA mode (validators specified in config)
+                'poa_mode': 'true',  # CRITICAL: Always use PoA mode (validators specified in config)
+                'minimum_fee': str(minimum_fee)  # Default from config (0.1), can be changed by scenario
             }
             
             # Load chain templates ONCE (shared for all nodes)
@@ -498,6 +503,92 @@ class ConfigGenerator:
         logger.info("chain_configs_regenerated_with_custom_validators",
                    nodes=len(nodes),
                    chains=len(rendered_chain_configs))
+    
+    def update_minimum_fee(
+        self,
+        nodes: List[NodeConfig],
+        network_name: str,
+        minimum_fee: str
+    ) -> None:
+        """
+        Update minimum_fee in main chain configs for all nodes.
+        
+        This is used to:
+        1. Set minimum_fee=0 before genesis block creation (allow first tx without fee)
+        2. Set minimum_fee=0.1 after genesis block is finalized (enforce fees)
+        
+        Args:
+            nodes: List of all nodes
+            network_name: Network name (e.g., 'stagenet')
+            minimum_fee: New minimum_fee value (e.g., '0' or '0.1')
+        """
+        logger.info("updating_minimum_fee",
+                   network=network_name,
+                   nodes=len(nodes),
+                   minimum_fee=minimum_fee)
+        
+        chains_template_dir = self.templates_dir / "chains"
+        if not chains_template_dir.exists():
+            logger.warning("chains_template_dir_not_found", path=str(chains_template_dir))
+            return
+        
+        # Load main.cfg.j2 template
+        main_cfg_template_path = chains_template_dir / "main.cfg.j2"
+        if not main_cfg_template_path.exists():
+            logger.warning("main_cfg_template_not_found", path=str(main_cfg_template_path))
+            return
+        
+        template_content = main_cfg_template_path.read_text()
+        main_template = Template(template_content)
+        
+        # Update minimum_fee for each node
+        for node in nodes:
+            node_chains_dir = self.configs_cache / f"node{node.node_id}" / "network" / network_name
+            main_cfg_path = node_chains_dir / "main.cfg"
+            
+            if not main_cfg_path.exists():
+                logger.warning("main_cfg_not_found_for_node",
+                             node_id=node.node_id,
+                             path=str(main_cfg_path))
+                continue
+            
+            # Read current config to preserve other settings
+            current_content = main_cfg_path.read_text()
+            
+            # Parse current settings (simple regex-based extraction)
+            import re
+            
+            # Extract current values to preserve them
+            context = {'minimum_fee': minimum_fee}
+            
+            # Extract validators_addrs, min_validators_count, etc. from current config
+            for key in ['validators_addrs', 'min_validators_count', 'poa_mode', 'fee_addr', 
+                       'static_genesis_block', 'is_static_genesis_block', 'genesis_mode']:
+                match = re.search(rf'^{key}\s*=\s*(.+?)$', current_content, re.MULTILINE)
+                if match:
+                    context[key] = match.group(1).strip()
+            
+            # Also need to get mainchain_validators_addrs if it's in the template
+            match = re.search(r'validators_addrs\s*=\s*(.+?)$', current_content, re.MULTILINE)
+            if match:
+                context['mainchain_validators_addrs'] = match.group(1).strip()
+                context['validators_addrs'] = match.group(1).strip()
+            
+            # Render template with updated minimum_fee
+            try:
+                updated_content = main_template.render(**context)
+                main_cfg_path.write_text(updated_content)
+                logger.debug("updated_minimum_fee_for_node",
+                           node_id=node.node_id,
+                           minimum_fee=minimum_fee)
+            except Exception as e:
+                logger.error("failed_to_update_minimum_fee",
+                           node_id=node.node_id,
+                           error=str(e))
+        
+        logger.info("minimum_fee_updated_for_all_nodes",
+                   nodes=len(nodes),
+                   minimum_fee=minimum_fee)
     
     def _collect_validator_addresses(
         self,

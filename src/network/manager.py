@@ -13,6 +13,7 @@ import asyncio
 import re
 from pathlib import Path
 from typing import Dict, List, Optional
+import traceback
 
 from ..config.loader import NetworkTopology
 from ..config.generator import ConfigGenerator
@@ -497,7 +498,7 @@ class NetworkManager:
                                 
                                 # CRITICAL: Do NOT clean data before snapshot!
                                 # Squashfs snapshot automatically captures all mounted directories including GDB
-                                # Cleaning data would remove critical GDB data (node list) needed by MASTER nodes
+                                # Cleaning data would remove critical GDB data (node list, validator orders)
                                 # Snapshot will preserve current state including all GDB data
                                 logger.info("preserving_data_for_phase1_snapshot",
                                            note="Squashfs snapshot captures all mounted directories automatically")
@@ -566,7 +567,7 @@ class NetworkManager:
                                               note="Continuing with PHASE 2, snapshot will be created at end")
             
             except Exception as e:
-                logger.error("root_nodes_genesis_failed", error=str(e))
+                logger.error("root_nodes_genesis_failed", error=str(e), traceback=traceback.format_exc())
                 self.compose.down(volumes=False, remove_images=False)
                 raise RuntimeError(f"ROOT nodes genesis failed: {e}") from e
         else:
@@ -1011,7 +1012,24 @@ class NetworkManager:
                        note="Phase2 genesis completed via YAML scenario")
             
         except Exception as e:
-            logger.error("master_nodes_genesis_failed", error=str(e))
+            # Dump logs before tearing down
+            try:
+                logger.error("master_nodes_genesis_failed", error=str(e), traceback=traceback.format_exc())
+                # Dump logs for all running containers
+                import docker
+                docker_client = docker.from_env()
+                for container in docker_client.containers.list(all=True):
+                    if "cellframe-stage-node" in container.name:
+                        log_path = f"/tmp/{container.name}.log"
+                        try:
+                            with open(log_path, "wb") as f:
+                                f.write(container.logs())
+                            logger.info(f"Dumped log for {container.name} to {log_path}")
+                        except Exception as log_err:
+                            logger.error(f"Failed to dump log for {container.name}: {log_err}")
+            except Exception as dump_err:
+                logger.error(f"Failed to dump container logs: {dump_err}")
+
             self.compose.down(volumes=False, remove_images=False)
             raise RuntimeError(f"MASTER nodes genesis failed: {e}") from e
         
@@ -1049,7 +1067,7 @@ class NetworkManager:
                 raise RuntimeError(f"Full network failed to reach consensus: {e}")
             
         except Exception as e:
-            logger.error("full_nodes_startup_failed", error=str(e))
+            logger.error("full_nodes_startup_failed", error=str(e), traceback=traceback.format_exc())
             self.compose.down(volumes=False, remove_images=False)
             raise RuntimeError(f"FULL nodes startup failed: {e}") from e
         
@@ -1159,6 +1177,53 @@ class NetworkManager:
         logger.info("network_started",
                    nodes=len(self.nodes),
                    topology=self.topology.network.name)
+    
+    def _clean_node_data(self):
+        """
+        Clean node data directories on host.
+        
+        WARNING: This method removes ALL data including GDB (node list, validator orders).
+        Use ONLY when preparing for a fresh start (e.g., after stopping old network).
+        DO NOT call before creating snapshot - snapshot system automatically captures
+        all mounted directories including GDB data.
+        
+        This method removes and recreates data directories mounted into containers,
+        ensuring that wallets, chains, and other runtime data from previous runs
+        don't pollute the next run.
+        
+        Called ONLY before initial network setup (after stopping old network).
+        NOT called before snapshot creation - snapshot preserves current state.
+        
+        Implementation: Uses temporary Docker container (Alpine) to clean files.
+        This ensures proper permissions for root-owned files created by node containers.
+        """
+        cache_dir = self.paths_config.get('cache_dir', '../testing/cache')
+        cache_path = (self.base_path / cache_dir).resolve()
+        data_dir = cache_path / "data"
+        
+        if not data_dir.exists():
+            logger.debug("node_data_dir_not_exists", path=str(data_dir))
+            return
+        
+        logger.info("removing_node_data_directories", path=str(data_dir))
+        
+        # Use Docker container to remove files (handles root-owned files)
+        try:
+            self.compose.clean_cache_data(cache_path)
+            logger.info("node_data_removed")
+        except Exception as e:
+            logger.error("failed_to_remove_node_data", error=str(e))
+            raise
+        
+        # Recreate empty data directory structure for each node
+        data_dir.mkdir(parents=True, exist_ok=True)
+        
+        for node_id in range(1, len(self.nodes) + 1):
+            node_data_path = data_dir / f"node{node_id}"
+            node_data_path.mkdir(parents=True, exist_ok=True)
+            logger.debug("recreated_node_data_dir", node_id=node_id, path=str(node_data_path))
+        
+        logger.info("node_data_cleaned_and_recreated", nodes=len(self.nodes))
     
     async def stop(self, remove_volumes: bool = False) -> None:
         """
@@ -1493,53 +1558,6 @@ class NetworkManager:
                             node=node_name,
                             error=str(e))
     
-    def _clean_node_data(self):
-        """
-        Clean node data directories on host.
-        
-        WARNING: This method removes ALL data including GDB (node list, validator orders).
-        Use ONLY when preparing for a fresh start (e.g., after stopping old network).
-        DO NOT call before creating snapshot - snapshot system automatically captures
-        all mounted directories including GDB data.
-        
-        This method removes and recreates data directories mounted into containers,
-        ensuring that wallets, chains, and other runtime data from previous runs
-        don't pollute the next run.
-        
-        Called ONLY before initial network setup (after stopping old network).
-        NOT called before snapshot creation - snapshot preserves current state.
-        
-        Implementation: Uses temporary Docker container (Alpine) to clean files.
-        This ensures proper permissions for root-owned files created by node containers.
-        """
-        cache_dir = self.paths_config.get('cache_dir', '../testing/cache')
-        cache_path = (self.base_path / cache_dir).resolve()
-        data_dir = cache_path / "data"
-        
-        if not data_dir.exists():
-            logger.debug("node_data_dir_not_exists", path=str(data_dir))
-            return
-        
-        logger.info("removing_node_data_directories", path=str(data_dir))
-        
-        # Use Docker container to remove files (handles root-owned files)
-        try:
-            self.compose.clean_cache_data(cache_path)
-            logger.info("node_data_removed")
-        except Exception as e:
-            logger.error("failed_to_remove_node_data", error=str(e))
-            raise
-        
-        # Recreate empty data directory structure for each node
-        data_dir.mkdir(parents=True, exist_ok=True)
-        
-        for node_id in range(1, len(self.nodes) + 1):
-            node_data_path = data_dir / f"node{node_id}"
-            node_data_path.mkdir(parents=True, exist_ok=True)
-            logger.debug("recreated_node_data_dir", node_id=node_id, path=str(node_data_path))
-        
-        logger.info("node_data_cleaned_and_recreated", nodes=len(self.nodes))
-    
     async def _wait_for_master_containers_running(
         self,
         master_nodes: List[NodeConfig],
@@ -1643,4 +1661,3 @@ class NetworkManager:
         error_msg = f"Master containers failed to start within {timeout}s: {', '.join(failed_nodes)}"
         logger.error("master_containers_startup_timeout", timeout=timeout, failed=failed_nodes)
         raise RuntimeError(error_msg)
-

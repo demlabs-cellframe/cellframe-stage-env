@@ -24,10 +24,10 @@ static_genesis_block={{ static_genesis_block | default('', true) }}
 consensus_debug=true
 # Minimum number of validators for consensus
 # CRITICAL: Must match actual validators count, otherwise SDK returns -2
-min_validators_count={{ min_validators_count | default(1, true) }}
+min_validators_count={{ min_validators_count | default(2, true) }}
 # Validators addresses (required by SDK for initialization)
 # Master node addresses are pre-configured here
-validators_addrs={{ mainchain_validators_addrs | default('[]', true) }}
+validators_addrs={{ mainchain_validators_addrs | default(validators_addrs, true) }}
 # PoA mode: when true, uses validators_addrs as authorized validators
 # CRITICAL: Set to false to enable PoS (Proof of Stake) via srv_stake
 poa_mode={{ poa_mode | default('false', true) }}
@@ -36,7 +36,9 @@ poa_mode={{ poa_mode | default('false', true) }}
 auth_certs_prefix=stagenet.master
 # Minimum fee for transactions
 # Format: decimal number (e.g., "0.1" for 0.1 tokens)
-minimum_fee=0.1
+# CRITICAL: Should be 0 during genesis to allow first transactions without fee
+# After genesis block creation, should be set to non-zero value
+minimum_fee={{ minimum_fee | default('0', true) }}
 # New round delay (in seconds)
 # CRITICAL: Must be > 0 for proper consensus operation
 # Too low values (0-5) cause synchronization issues
@@ -50,4 +52,4 @@ fee_addr={{ fee_addr | default('', true) }}
 # When true, stage-env will wait longer for validators to be synchronized
 # This allows ESBocs to find validators even if they're not yet marked as active
 # After genesis block is created, this should be set to false
-genesis_mode={{ genesis_mode | default('false', true) }}
+genesis_mode={{ genesis_mode | default('true', true) }}

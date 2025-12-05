@@ -4,6 +4,7 @@ Wait step executor.
 
 import asyncio
 import re
+import traceback
 
 from ...utils.logger import get_logger
 from .base import StepExecutor
@@ -50,21 +51,26 @@ class WaitStepExecutor(StepExecutor):
     
     async def execute(self, step: WaitStep, ctx: RuntimeContext) -> None:
         """Execute wait step."""
-        # Determine wait type
-        # (WaitStep supports both duration and condition)
-        wait_value = ctx.substitute(step.wait) if step.wait else None
-        
-        # Check if wait value is a duration (e.g., '5s')
-        is_duration = wait_value and re.match(r'^\d+(s|ms|m)$', wait_value)
-        
-        if is_duration:
-            await self._execute_duration(step, ctx)
-        elif wait_value or step.type:
-            # It's a condition/waiter type
-            await self._execute_waiter(step, ctx)
-        else:
-            raise ScenarioExecutionError("WaitStep requires 'wait' (duration or condition)", step=step)
-    
+        try:
+            # Determine wait type
+            # (WaitStep supports both duration and condition)
+            wait_value = ctx.substitute(step.wait) if step.wait else None
+            
+            # Check if wait value is a duration (e.g., '5s')
+            is_duration = wait_value and re.match(r'^\d+(s|ms|m)$', wait_value)
+            
+            if is_duration:
+                await self._execute_duration(step, ctx)
+            elif wait_value or (hasattr(step, 'type') and step.type):
+                # It's a condition/waiter type
+                await self._execute_waiter(step, ctx)
+            else:
+                raise ScenarioExecutionError("WaitStep requires 'wait' (duration or condition)", step=step)
+        except Exception as e:
+            logger.error(f"WaitStep execution failed. Step: {step}. Error: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
     async def _execute_duration(self, step: WaitStep, ctx: RuntimeContext) -> None:
         """Execute duration-based wait."""
         duration_str = ctx.substitute(step.wait)
@@ -165,7 +171,7 @@ class WaitStepExecutor(StepExecutor):
             check_master_nodes=step.check_master,
             timeout_total=step.timeout,
             # Use reasonable defaults relative to total timeout or fixed defaults
-            timeout_mempool=max(30, int(step.timeout * 0.2)),
+            timeout_mempool=max(60, int(step.timeout * 0.4)),
             timeout_verification=max(60, int(step.timeout * 0.4)),
             timeout_in_blocks=max(60, int(step.timeout * 0.4))
         )
@@ -192,18 +198,28 @@ class WaitStepExecutor(StepExecutor):
 
     async def _execute_waiter(self, step: WaitStep, ctx: RuntimeContext) -> None:
         """Execute waiter-based wait."""
-        wait_type = ctx.substitute(step.wait) if step.wait else step.type
-        logger.info(f"Waiting for condition: {wait_type}")
+        # Use getattr to safely access deprecated 'type' field if it exists in runtime object
+        step_type = getattr(step, 'type', None)
+        wait_type = ctx.substitute(step.wait) if step.wait else step_type
+        
+        if wait_type is None:
+             raise ScenarioExecutionError(f"WaitStep 'wait' parameter is missing or None. Step: {step}", step=step)
+             
+        # Guard against recursive objects
+        if not isinstance(wait_type, str):
+            logger.error(f"wait_type is not a string! It is {type(wait_type)}: {wait_type}")
+            wait_type = str(wait_type)
+
         logger.info(f"Waiting for condition: {wait_type}")
         
         # Map clean names to internal waiter types if needed
-        waiter_map = {
+        WAITER_TYPE_MAPPING = {
             "mempool": "datum_in_mempool",
             "finalized": "datum_finalized",
             "network_online": "network_online",
         }
         
-        registry_type = waiter_map.get(wait_type, wait_type)
+        registry_type = WAITER_TYPE_MAPPING.get(wait_type, wait_type)
         
         # Handle special waiters
         if registry_type == "datum_in_mempool":
@@ -308,7 +324,18 @@ class WaitStepExecutor(StepExecutor):
             )
             await waiter.wait(timeout=float(step.timeout))
             
-        elif registry_type in ["master_containers_running", "cli_ready"]:
+        elif registry_type == "master_containers_running":
+            if not step.nodes:
+                raise ScenarioExecutionError(f"nodes required for {registry_type}", step=step)
+            
+            waiter = waiter_class(
+                docker_client=self.container_manager.docker_client,
+                master_nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
+                poll_interval=1.0
+            )
+            await waiter.wait(timeout=float(step.timeout))
+
+        elif registry_type == "cli_ready":
             if not step.nodes:
                 raise ScenarioExecutionError(f"nodes required for {registry_type}", step=step)
             
@@ -323,12 +350,32 @@ class WaitStepExecutor(StepExecutor):
                 poll_interval=1.0
             )
             await waiter.wait(timeout=float(step.timeout))
+        
+        elif registry_type == "wallet_balance":
+            # Get node (single node for wallet balance check)
+            if not step.node:
+                raise ScenarioExecutionError(f"node required for {registry_type}", step=step)
             
-        elif registry_type == "delegations_synced":
-            if not step.nodes:
-                raise ScenarioExecutionError("nodes required for delegations_synced", step=step)
-            if step.expected_count is None:
-                raise ScenarioExecutionError("expected_count required for delegations_synced", step=step)
+            node_alias = ctx.substitute(step.node)
+            node_name = self.resolve_node_alias_callback(node_alias)
+            
+            # Extract node ID from node name (e.g., "node1" -> 1, "root-1" -> 1)
+            import re
+            match = re.search(r'(\d+)$', node_name)
+            if not match:
+                raise ScenarioExecutionError(f"Cannot extract node ID from: {node_name}", step=step)
+            node_id = int(match.group(1))
+            
+            # Get wallet, token and balance parameters
+            wallet_name = ctx.substitute(step.wallet) if hasattr(step, 'wallet') and step.wallet else "fee_collector"
+            token_ticker = ctx.substitute(step.token) if hasattr(step, 'token') and step.token else "TCELL"
+            
+            # Get expected balance condition (optional)
+            expected_balance = None
+            if hasattr(step, 'balance') and step.balance:
+                expected_balance = ctx.substitute(str(step.balance))
+            elif hasattr(step, 'wait_for') and step.wait_for:
+                expected_balance = ctx.substitute(str(step.wait_for))
             
             exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
             if not exec_cli_func:
@@ -336,24 +383,10 @@ class WaitStepExecutor(StepExecutor):
             
             waiter = waiter_class(
                 exec_cli=exec_cli_func,
-                nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
-                expected_count=step.expected_count,
-                network_name=network_name,
-                poll_interval=2.0
-            )
-            await waiter.wait(timeout=float(step.timeout))
-
-        elif registry_type == "stake_service_ready":
-            if not step.nodes:
-                raise ScenarioExecutionError("nodes required for stake_service_ready", step=step)
-            
-            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
-            if not exec_cli_func:
-                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
-            
-            waiter = waiter_class(
-                exec_cli=exec_cli_func,
-                nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
+                node_id=node_id,
+                wallet_name=wallet_name,
+                token_ticker=token_ticker,
+                expected_balance=expected_balance,
                 network_name=network_name,
                 poll_interval=2.0
             )
@@ -364,4 +397,3 @@ class WaitStepExecutor(StepExecutor):
         
         logger.info(f"✅ Waiter '{wait_type}' completed")
         ctx.add_result("wait", True, {"type": wait_type, "nodes": nodes})
-

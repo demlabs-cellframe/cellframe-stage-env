@@ -72,8 +72,11 @@ class DockerIPWaiter:
                                    container=container_name,
                                    ip=ip_address)
                 except docker.errors.NotFound:
-                    logger.error("container_not_found", container=container_name)
-                    raise
+                    # Container might not be created yet (race condition with docker-compose up)
+                    # Log warning but continue retrying until timeout
+                    logger.debug("container_not_found_retrying", container=container_name)
+                    # Do not raise - allow retry loop to continue
+                    pass
                 except Exception as e:
                     logger.debug("container_ip_check_error",
                                container=container_name,
