@@ -394,10 +394,24 @@ class DockerContainerManager:
             }
         
         # Container is running - execute command
+        # Use shell mode to ensure proper argument passing through docker exec
+        import shlex
+        cmd_args = command.split()
+        cli_cmd_quoted = " ".join(shlex.quote(arg) for arg in cmd_args)
+        shell_cmd = f"{self.node_cli_path} {cli_cmd_quoted}"
+        
         full_cmd = [
             "docker", "exec", container_name,
-            self.node_cli_path, *command.split()
+            "sh", "-c", shell_cmd
         ]
+        
+        # Debug: log full command and parsed args
+        logger.info("exec_cli_command_debug", 
+                    container=container_name,
+                    command_original=command,
+                    command_split=cmd_args,
+                    shell_cmd=shell_cmd,
+                    full_cmd_list=full_cmd)
         
         process = await asyncio.create_subprocess_exec(
             *full_cmd,
