@@ -192,8 +192,7 @@ test:
           
           # Transfer 10000 TCELL to each master (enough for testing)
           # Fee is 0 (zero datoshi, valid for zerochain without minimum_fee)
-          # -net must be explicitly set before -fee to avoid parameter truncation issues
-          - cli: "tx_create -from_wallet fee_collector -value 10000.0 -to_addr {{temp_addr}} -chain zerochain -token TCELL -net stagenet -fee 0"
+          - cli: "tx_create -from_wallet fee_collector -value 10000.0 -to_addr {{temp_addr}} -chain zerochain -token TCELL -fee 0"
             node: root-1
             save_hash: "master_tx_{{i}}"
       
