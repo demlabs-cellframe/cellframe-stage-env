@@ -399,12 +399,6 @@ class DockerContainerManager:
             self.node_cli_path, *command.split()
         ]
         
-        # Debug: log full command for troubleshooting
-        logger.info("exec_cli_full_command", 
-                    container=container_name,
-                    command_str=command,
-                    full_cmd=" ".join(full_cmd))
-        
         process = await asyncio.create_subprocess_exec(
             *full_cmd,
             stdout=asyncio.subprocess.PIPE,
