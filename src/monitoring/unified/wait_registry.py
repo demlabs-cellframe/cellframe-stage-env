@@ -115,7 +115,7 @@ def _initialize_registry():
     # Network consensus monitor (special case - has wait_for_links_established method)
     from ..network_consensus import NetworkConsensusMonitor
     
-    from ..waiter.datum_waiters import DatumInMempoolWaiter
+    from ..waiter.datum_waiters import DatumInMempoolWaiter, DatumInChainWaiter
     
     # Register all waiters
     WaitRegistry.register("network_online", NetworkOnlineWaiter)
@@ -129,6 +129,7 @@ def _initialize_registry():
     WaitRegistry.register("network_sync", NetworkSyncWaiter)
     WaitRegistry.register("token_in_mempool", TokenInMempoolWaiter)
     WaitRegistry.register("datum_in_mempool", DatumInMempoolWaiter)
+    WaitRegistry.register("datum_in_chain", DatumInChainWaiter)
     WaitRegistry.register("emission_synced", EmissionSyncedInLedgerWaiter)
     WaitRegistry.register("master_containers_running", MasterContainersRunningWaiter)
     WaitRegistry.register("emission_in_ledger", EmissionInLedgerWaiter)

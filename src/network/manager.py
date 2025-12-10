@@ -398,7 +398,7 @@ class NetworkManager:
                 logger.info("zerochain_genesis_complete",
                            emission_hash=emission_hash[:16] if emission_hash else None,
                            fee_addr=fee_addr,
-                           note="Phase1 genesis completed via YAML scenario")
+                           note="Phase1 genesis completed - emission ready for Phase2 transfers")
                 
                 # =================================================================
                 # PHASE 1.5: CREATE PHASE 1 SNAPSHOT (zerochain + genesis LN + emission + transfer)

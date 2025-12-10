@@ -1,5 +1,7 @@
 cache/
+.cache/
 *.pyc
 __pycache__/
 .venv/
 *.log
+.stage-env.pid

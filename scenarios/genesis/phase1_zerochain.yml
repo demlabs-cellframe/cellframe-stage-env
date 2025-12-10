@@ -9,12 +9,14 @@ network:
   name: stagenet
 
 setup:
+  # CRITICAL: Start ALL nodes (root + master) at once to avoid container restart between phases
+  # Restart loses emission from ledger memory, causing "Specified emission not found"
   - docker_op: start
-    services: [root-1, root-2, root-3]
+    services: [root-1, root-2, root-3, master-1, master-2, master-3]
     detach: true
   
   - wait_network: online
-    nodes: [root-1, root-2, root-3]
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     timeout: 60
   
   # Allow brief stabilization after coming online before executing commands
@@ -98,7 +100,9 @@ test:
       - cli: "net go online"
         node: root-3
   
-  - wait_network: links_established
+  # Wait for links only between root nodes  
+  # Masters are running but won't participate in consensus yet (no certs loaded)
+  - wait_network: links_established  
     nodes: [root-1, root-2, root-3]
     timeout: 120
   
@@ -137,9 +141,11 @@ test:
         chain: zerochain
         timeout: 80
       
-      # Create emission with 2/3 consensus (requires 2 signatures out of 3)
-      # BUT: In practice, may need all 3 signatures to match token declaration
-      # Adding all 3 signatures to ensure emission finalizes
+      # CRITICAL: Create ONE large emission to fee_collector
+      # Ledger allows only ONE active emission in cache at a time per token  
+      # Make emission VERY large so it persists after multiple uses
+      # Total needed: 3 masters * 10000 + fees = ~30100 TCELL
+      # Create 1000000 to have plenty left in supply
       - cli: "token_emit -chain zerochain -token TCELL -emission_value 1000000.0e+18 -addr {{fee_addr}} -certs pvt.stagenet.root.0,pvt.stagenet.root.1,pvt.stagenet.root.2"
         node: root-1
         save_hash: emission_hash
@@ -147,89 +153,94 @@ test:
       # Allow propagation
       - wait: "5s"
 
-      # Wait for emission to be finalized (2 signatures = threshold reached)
+      # Wait for emission to be finalized and added to cache
       - wait: finalized
         datum: "{{emission_hash}}"
         node: root-1
         chain: zerochain
         timeout: 80
       
-      # Additional wait for ledger sync and force flush
-      - wait: "10s"
+      # Wait for emission to propagate and be ready for use
+      - wait: "5s"
       
       - cli: "global_db flush"
         node: root-1
   
-  # Create master wallets and transfer tokens BEFORE snapshot
-  # This ensures balances are in the snapshot and will be available after restore
-  - group: Prepare master wallets with tokens
+  # Create master wallets and fund them IMMEDIATELY while emission is in cache
+  # CRITICAL: Must do transfers in Phase1 before any container restarts
+  # Container restart loses emission from cache
+  - group: Create master wallets and fund immediately
     steps:
-      # Create 3 master wallets (they will be used in phase2 by master nodes)
+      # Create all wallets first
       - loop: 3
         steps:
           - set: master_idx = "{{i}}"
           - set: wallet_name = "stagenet_master_{{i}}"
           
-          # Create wallet on root-1 (will be copied to masters in phase2)
           - cli: "wallet new -w {{wallet_name}}"
             node: root-1
           
-          # Get wallet address
           - cli: "wallet info -w {{wallet_name}} -net stagenet"
             node: root-1
-            save_wallet: "master_addr_{{i}}"
+            save_wallet: "master_wallet_addr_{{i}}"
       
-      # Transfer tokens from fee_collector to each master wallet
-      # This way masters will have balance after snapshot restore
-      - loop: 3
-        steps:
-          - set: i_val = "{{i}}"
-          
-          # Get the address that was saved earlier (master_addr_0, master_addr_1, master_addr_2)
-          - cli: "wallet info -w stagenet_master_{{i}} -net stagenet"
-            node: root-1
-            save_wallet: "temp_addr"
-          
-          # Transfer 10000 TCELL to each master (enough for testing)
-          # Fee is 0e+18 (zero datoshi in exponential notation - workaround for CLI parsing issue with plain "0")
-          - cli: "tx_create -from_wallet fee_collector -value 10000.0 -to_addr {{temp_addr}} -token TCELL -chain zerochain -fee 0e+18"
-            node: root-1
-            save_hash: "master_tx_{{i}}"
+      # Transfer to master_0  
+      - cli: "tx_create -from_emission {{emission_hash}} -value 10000.0 -to_addr {{master_wallet_addr_0}} -token TCELL -chain zerochain -fee 1 -wallet_fee fee_collector"
+        node: root-1
+        save_hash: "master_tx_0"
       
-      # Wait for all transfers to finalize
-      - loop: 3
-        steps:
-          - set: master_idx = "{{i}}"
-          - wait: finalized
-            datum: "{{master_tx_{{i}}}}"
-            node: root-1
-            chain: zerochain
-            timeout: 60
+      - wait: finalized
+        datum: "{{master_tx_0}}"
+        node: root-1
+        chain: zerochain
+        timeout: 80
       
-      # Force GDB flush to ensure all transactions are written
+      # Transfer to master_1
+      - cli: "tx_create -from_emission {{emission_hash}} -value 10000.0 -to_addr {{master_wallet_addr_1}} -token TCELL -chain zerochain -fee 1 -wallet_fee fee_collector"
+        node: root-1
+        save_hash: "master_tx_1"
+      
+      - wait: finalized
+        datum: "{{master_tx_1}}"
+        node: root-1
+        chain: zerochain
+        timeout: 80
+      
+      # Transfer to master_2
+      - cli: "tx_create -from_emission {{emission_hash}} -value 10000.0 -to_addr {{master_wallet_addr_2}} -token TCELL -chain zerochain -fee 1 -wallet_fee fee_collector"
+        node: root-1
+        save_hash: "master_tx_2"
+      
+      - wait: finalized
+        datum: "{{master_tx_2}}"
+        node: root-1
+        chain: zerochain
+        timeout: 80
+      
+      # CRITICAL: Wait for DAG-PoA to process ALL transfers into ledger
+      # Finalized transactions are in mempool, need DAG rounds + consensus + ledger processing
+      # This requires multiple round cycles (15s each) + ledger updates
+      # Total: 3 transactions * ~20s/tx + buffer = 90s minimum
+      - wait: "90s"
+      
       - cli: "global_db flush"
         node: root-1
       
-      # Wait for ledger sync
-      - wait: "5s"
+      # Additional wait for balance propagation
+      - wait: "10s"
   
-  # Save genesis configuration explicitly before snapshot
-  # Using new Generic Config Generation syntax
-  
-  # Set genesis hash for Zerochain
+  # Save genesis configuration for all nodes (root + master)
   - gen_config: "stagenet/zerochain"
-    nodes: [root-1, root-2, root-3]
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     set:
       static_genesis_event: "{{token_hash}}"
       is_static_genesis_event: "true"
       
-  # Set fee address for Mainchain
   - gen_config: "stagenet/main"
-    nodes: [root-1, root-2, root-3]
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     set:
       fee_addr: "{{fee_addr}}"
-
-  # Create snapshot
-  - snapshot: create
-    name: phase1_zerochain_genesis
-    phase: phase1
+  
+  # Phase1 complete - emission in cache, wallets funded
+  # Masters already running - continue directly to Phase2 delegation
+  # NO container restart = emission stays in ledger memory

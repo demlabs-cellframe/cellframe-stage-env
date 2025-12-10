@@ -35,6 +35,11 @@ from .token_waiters import (
     TokenInMempoolWaiter,
 )
 
+from .datum_waiters import (
+    DatumInMempoolWaiter,
+    DatumInChainWaiter,
+)
+
 from .emission_waiters import (
     EmissionSyncedInLedgerWaiter,
 )
@@ -72,6 +77,9 @@ __all__ = [
     "GDBClustersReadyWaiter",
     # Token waiters
     "TokenInMempoolWaiter",
+    # Datum waiters
+    "DatumInMempoolWaiter",
+    "DatumInChainWaiter",
     # Emission waiters
     "EmissionSyncedInLedgerWaiter",
     # Chain waiters

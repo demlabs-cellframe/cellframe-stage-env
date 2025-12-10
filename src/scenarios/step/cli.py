@@ -105,6 +105,12 @@ class CLIStepExecutor(StepExecutor):
         if step.save_node:
             variable_name = ctx.substitute(step.save_node)
             pattern = DataExtractor.get_default_pattern(ExtractType.NODE_ADDRESS)
+            # Log output for debugging node address extraction issues
+            logger.info("cli_save_node_output_debug", 
+                       command=cmd[:100],
+                       output_length=len(output),
+                       output_preview=output[:500] if output else "EMPTY",
+                       pattern=pattern)
             node_addr, error = DataExtractor.extract_and_validate(
                 output, pattern, ExtractType.NODE_ADDRESS, required=True
             )

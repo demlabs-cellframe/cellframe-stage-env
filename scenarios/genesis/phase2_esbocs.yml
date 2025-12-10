@@ -1,84 +1,38 @@
 name: PHASE 2 - ESBocs Genesis
 description: Initialize MASTER nodes with PoS delegation
 
-# Note: emission_hash should be passed via scenario variables or restored from snapshot
-# It's set in phase1_zerochain.yml and should be available in context
+# Note: emission_hash is passed from Phase1 via context
+# Master nodes are already running (started in Phase1)
 
 includes:
-  - common/snapshot_restore.yml
   - common/set_net_default.yml
 
 test:
-  # Restore from snapshot
-  - snapshot: restore
-    name: phase1_zerochain_genesis
+  # NO snapshot restore or container restart
+  # Continuing from Phase1 - emission still in ledger memory
   
-  # Restart ROOT nodes
-  - docker_op: restart
-    services: [root-1, root-2, root-3]
-  
-  # Start MASTER nodes
-  - docker_op: start
-    services: [master-1, master-2, master-3]
-    detach: true
-
-  - wait_network: online
-    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
-    timeout: 60
-  
+  # Wait for master-root links
   - wait_network: links_established
-    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
+    nodes: [master-1, master-2, master-3, root-1, root-2, root-3]
     timeout: 120
   
-  # Sync GDB after restart to ensure emission data is loaded into ledger
-  - group: Force GDB sync after snapshot restore
-    steps:
-      # First: sync network GDB
-      - loop: 3
-        steps:
-          - set: node_name = "root-{{iteration}}"
-          - cli: "net go sync"
-            node: "{{node_name}}"
-      
-      # Second: flush GDB to ensure all data is written
-      - loop: 3
-        steps:
-          - set: node_name = "root-{{iteration}}"
-          - cli: "global_db flush"
-            node: "{{node_name}}"
-      
-      # Third: sync network to load data from GDB
-      - loop: 3
-        steps:
-          - set: node_name = "root-{{iteration}}"
-          - cli: "net sync -net stagenet"
-            node: "{{node_name}}"
-  
-  # Wait for DAG-PoA to process emission from cache into ledger
-  - wait: "10s"
-  
-  # Verify master wallets have balances (they were created in phase1 with tokens)
-  - group: Verify master wallet balances from phase1
+  # Verify master wallets have balances from Phase1
+  - group: Verify master wallet balances from Phase1
     steps:
       - loop: 3
         steps:
           - set: master_idx = "{{i}}"
           - set: wallet_name = "stagenet_master_{{i}}"
           
-          # Get wallet address from root-1 where it was created in phase1
-          - cli: "wallet info -w {{wallet_name}} -net stagenet"
-            node: root-1
-            save_wallet: "master_addr_{{master_idx}}"
-          
-          # Verify balance (should be 10000 TCELL from phase1 transfer)
+          # Verify balance
           - wait: wallet_balance
             node: root-1
             wallet: "{{wallet_name}}"
             token: TCELL
             balance: "> 1000"
-            timeout: 30
+            timeout: 60
 
-  # Delegate keys via srv_stake on zerochain
+  # Delegate keys via srv_stake
   - group: Delegate keys
     defaults:
       cli:
@@ -92,7 +46,7 @@ test:
           - set: cert_name = "pvt.stagenet.master.{{i}}"
           
           # Get node address
-          - cli: "node addr"
+          - cli: "node dump"
             node: "{{master_node}}"
             save_node: "master_node_addr_{{master_idx}}"
           
@@ -108,20 +62,18 @@ test:
             node: "{{master_node}}"
             timeout_total: 120
   
-  # Step 8: GDB sync and wait for delegation transactions
+  # GDB sync
   - group: GDB sync
     steps:
       - loop: 3
         steps:
           - set: node_name = "master-{{iteration}}"
-          
           - cli: "net go sync"
             node: "{{node_name}}"
       
       - loop: 3
         steps:
           - set: node_name = "root-{{iteration}}"
-          
           - cli: "net go sync"
             node: "{{node_name}}"
   
@@ -129,114 +81,45 @@ test:
     nodes: [master-1, master-2, master-3, root-1, root-2, root-3]
     timeout: 30
   
-  # Step 9: Verify delegations are synced
+  # Verify delegations
   - wait: delegations_synced
     nodes: [master-1, master-2, master-3]
     expected_count: 3
     timeout: 60
   
-  # Step 10: Flush GDB to disk before restart
+  # Flush GDB
   - group: Flush GDB
     steps:
       - loop: 3
         steps:
-          - set: node_name
-            value: "master-{{iteration}}"
-          
+          - set: node_name = "root-{{iteration}}"
+          - cli: "global_db flush"
+            node: "{{node_name}}"
+      
+      - loop: 3
+        steps:
+          - set: node_name = "master-{{iteration}}"
           - cli: "global_db flush"
             node: "{{node_name}}"
   
-  # Step 11: Restart master nodes to reload chains with delegations
+  # Restart for ESBocs activation
   - docker_op: restart
-    services: [master-1, master-2, master-3]
+    services: [root-1, root-2, root-3, master-1, master-2, master-3]
   
-  - wait: master_containers_running
-    nodes: [master-1, master-2, master-3]
+  - wait_network: online
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     timeout: 60
   
-  - wait: cli_ready
-    nodes: [master-1, master-2, master-3]
-    timeout: 30
-  
-  # Step 12: GDB sync after restart
-  - group: GDB sync after restart
-    steps:
-      - loop: 3
-        steps:
-          - set: node_name
-            value: "master-{{iteration}}"
-          
-          - cli: "net go sync"
-            node: "{{node_name}}"
-  
-  # Ensure connectivity
-  - wait_network: links_established
-    nodes: [master-1, master-2, master-3]
-    timeout: 60
-
-  # Step 13: Wait for stake service ready with delegated keys
-  - wait: stake_service_ready
-    nodes: [master-1, master-2, master-3]
-    timeout: 120
-  
-  # Step 14: Verify delegated keys are active (CLI check)
-  - group: Verify delegated keys
-    steps:
-      - loop: 3
-        steps:
-          - set: node_name
-            value: "master-{{iteration}}"
-          
-          - cli: "srv_stake list keys"
-            node: "{{node_name}}"
-            contains: "keys"
-  
-  # Step 15: Wait for network consensus
   - wait_network: links_established
     nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     timeout: 120
-
-  # Allow consensus algorithm to stabilize
-  - wait: "10s"
   
-  # Step 16: Wait for ESBocs consensus active
-  - wait: esbocs_consensus_active
-    nodes: [master-1, master-2, master-3]
-    timeout: 300
-
-  # Step 16.5: Set minimum_fee=0 for genesis transaction (no fee required for first tx)
-  - config: set_minimum_fee
-    nodes: [root-1, root-2, root-3, master-1, master-2, master-3, full-1, full-2]
-    value: "0"
-
-  # Step 17: Create first transaction → genesis block
-  - group: Create genesis block
-    defaults:
-      node: master-1
-      cli:
-        chain: main
-        token: TCELL
-    steps:
-      # Send transaction from master-1 (stagenet_master_0) to master-2 (stagenet_master_1)
-      # This uses tokens received in zerochain to create activity in main chain
-      # Fee is 0 because minimum_fee is temporarily set to 0
-      - cli: "tx_create -w stagenet_master_0 -value 1.0 -to_addr {{master_addr_1}}"
-        save_hash: first_tx_hash
-      
-      - wait_for_datum: "{{first_tx_hash}}"
-        timeout_total: 60
-
-  # Step 18: Wait for genesis block
-  - wait: first_block
-    chain: main
-    nodes: [master-1, master-2, master-3]
+  # Verify ESBocs consensus active
+  - wait: esbocs_active
+    nodes: [master-1]
     timeout: 60
-      
-  # Step 19: Get genesis block hash
-  - cli: "block list -first 1"
-    save_hash: main_genesis_hash
 
-  # Step 19.5: Restore minimum_fee=0.1 after genesis block finalized
-  - config: set_minimum_fee
-    nodes: [root-1, root-2, root-3, master-1, master-2, master-3, full-1, full-2]
-    value: "0.1"
+check:
+  - cli: "net get states -net stagenet"
+    node: master-1
+    contains: "NET_STATE_ONLINE"

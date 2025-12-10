@@ -82,16 +82,25 @@ def main(
         logger.info("file_logging_enabled", log_file=str(log_file))
     
     # Initialize PID manager to prevent multiple instances
+    # BUT skip PID check for stop/kill/terminate commands (they need to work even if PID is stale)
     global PID_MANAGER
     PID_MANAGER = PIDManager(BASE_PATH)
-    if not PID_MANAGER.check_and_create():
-        console.print(
-            f"[red]❌ Another instance of stage-env is already running.[/red]\n"
-            f"[yellow]PID file: {PID_MANAGER.pid_file}[/yellow]\n"
-            f"[dim]If you're sure no other instance is running, remove the PID file:[/dim]\n"
-            f"[dim]  rm {PID_MANAGER.pid_file}[/dim]"
-        )
-        raise typer.Exit(1)
+    
+    # Get the command being executed
+    command = ctx.invoked_subcommand
+    
+    # Commands that should NOT check for running instance
+    skip_pid_check_commands = {'stop', 'kill', 'terminate', 'clean'}
+    
+    if command not in skip_pid_check_commands:
+        if not PID_MANAGER.check_and_create():
+            console.print(
+                f"[red]❌ Another instance of stage-env is already running.[/red]\n"
+                f"[yellow]PID file: {PID_MANAGER.pid_file}[/yellow]\n"
+                f"[dim]If you're sure no other instance is running, remove the PID file:[/dim]\n"
+                f"[dim]  rm {PID_MANAGER.pid_file}[/dim]"
+            )
+            raise typer.Exit(1)
 
 
 # Register commands from modules

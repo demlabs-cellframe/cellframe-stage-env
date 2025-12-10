@@ -391,6 +391,88 @@ class WaitStepExecutor(StepExecutor):
                 poll_interval=2.0
             )
             await waiter.wait(timeout=float(step.timeout))
+        
+        elif registry_type == "datum_in_chain":
+            # Get node
+            if not step.node:
+                raise ScenarioExecutionError(f"node required for {registry_type}", step=step)
+            
+            node_alias = ctx.substitute(step.node)
+            node_name = self.resolve_node_alias_callback(node_alias)
+            
+            # Extract node ID
+            import re
+            match = re.search(r'(\d+)$', node_name)
+            if not match:
+                raise ScenarioExecutionError(f"Cannot extract node ID from: {node_name}", step=step)
+            node_id = int(match.group(1))
+            
+            # Get datum hash
+            has_datum_hash = hasattr(step, 'datum_hash') and step.datum_hash
+            has_datum = hasattr(step, 'datum') and step.datum
+            
+            if not has_datum_hash and not has_datum:
+                raise ScenarioExecutionError(f"datum_hash or datum required for {registry_type}", step=step)
+            
+            datum_hash = ctx.substitute(step.datum_hash) if has_datum_hash else ctx.substitute(step.datum)
+            
+            # Get chain
+            chain = ctx.substitute(step.chain) if step.chain else "zerochain"
+            
+            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
+            if not exec_cli_func:
+                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
+            
+            waiter = waiter_class(
+                exec_cli=exec_cli_func,
+                node_id=node_id,
+                datum_hash=datum_hash,
+                network_name=network_name,
+                chain=chain,
+                poll_interval=2.0
+            )
+            await waiter.wait(timeout=float(step.timeout))
+        
+        elif registry_type == "emission_in_ledger":
+            # Get node
+            if not step.node:
+                raise ScenarioExecutionError(f"node required for {registry_type}", step=step)
+            
+            node_alias = ctx.substitute(step.node)
+            node_name = self.resolve_node_alias_callback(node_alias)
+            
+            # Extract node ID
+            import re
+            match = re.search(r'(\d+)$', node_name)
+            if not match:
+                raise ScenarioExecutionError(f"Cannot extract node ID from: {node_name}", step=step)
+            node_id = int(match.group(1))
+            
+            # Get emission hash
+            has_emission_hash = hasattr(step, 'emission_hash') and step.emission_hash
+            has_datum = hasattr(step, 'datum') and step.datum
+            
+            if not has_emission_hash and not has_datum:
+                raise ScenarioExecutionError(f"emission_hash or datum required for {registry_type}", step=step)
+            
+            emission_hash = ctx.substitute(step.emission_hash) if has_emission_hash else ctx.substitute(step.datum)
+            
+            # Get chain
+            chain = ctx.substitute(step.chain) if step.chain else "zerochain"
+            
+            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
+            if not exec_cli_func:
+                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
+            
+            waiter = waiter_class(
+                exec_cli=exec_cli_func,
+                node_id=node_id,
+                emission_hash=emission_hash,
+                network_name=network_name,
+                chain=chain,
+                poll_interval=2.0
+            )
+            await waiter.wait(timeout=float(step.timeout))
             
         else:
             raise ScenarioExecutionError(f"Waiter type {wait_type} not yet implemented in executor", step=step)
