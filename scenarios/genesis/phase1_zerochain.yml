@@ -18,6 +18,7 @@ setup:
 
   # CRITICAL: Start ALL nodes (root + master) at once to avoid container restart between phases
   # Restart loses emission from ledger memory, causing "Specified emission not found"
+  # NOTE: ROOT nodes start with seed_mode=true by default (configured in generator.py)
   - docker_op: start
     services: [root-1, root-2, root-3, master-1, master-2, master-3]
     detach: true
@@ -109,16 +110,15 @@ test:
   
   # Wait for links only between root nodes  
   # Masters are running but won't participate in consensus yet (no certs loaded)
-  - wait_network: online
+  - wait_network: links_established
     nodes: [root-1, root-2, root-3]
     timeout: 120
-
+  
   # Wait for CLI to be responsive on all root nodes
   - wait: cli_ready
     nodes: [root-1, root-2, root-3]
     timeout: 40
-  
-   
+
   # Create fee wallet (preparatory step, not genesis operation)
   - cli: "wallet new -w fee_collector"
     node: root-1
@@ -131,6 +131,7 @@ test:
   # =================================================================
   # GENESIS EVENT CREATION IN SEED MODE
   # =================================================================
+  # ROOT nodes started with seed_mode=true 
   # Only token_decl is the genesis event - everything else happens after seed_mode is disabled
   
   
@@ -211,6 +212,11 @@ test:
     defaults:
       node: root-1
     steps:
+      # Additional sync before emission to ensure token_decl is fully propagated
+      - cli: "global_db flush"
+      
+      - wait: "5s"
+      
       # CRITICAL: Create ONE large emission to fee_collector
       # Ledger allows only ONE active emission in cache at a time per token  
       # Make emission VERY large so it persists after multiple uses
@@ -218,15 +224,26 @@ test:
       # Create 1000000 to have plenty left in supply
       - cli: "token_emit -chain zerochain -token TCELL -emission_value 1000000.0e+18 -addr {{fee_addr}} -certs pvt.stagenet.root.0,pvt.stagenet.root.1,pvt.stagenet.root.2"
         save_hash: emission_hash
+        expect: success
       
       # Allow propagation
       - wait: "5s"
+      
+      # Sync emission across all nodes
+      - loop: 3
+        steps:
+          - set: node_name = "root-{{iteration}}"
+          - cli: "mempool proc -net stagenet -chain zerochain"
+            node: "{{node_name}}"
+      
+      - wait: "3s"
 
       # Wait for emission to be finalized and added to cache
       - wait: finalized
         datum: "{{emission_hash}}"
         chain: zerochain
         timeout: 80
+        node: root-1
       
       # Wait for emission to propagate and be ready for use
       - wait: "5s"
