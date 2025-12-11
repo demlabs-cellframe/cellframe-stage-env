@@ -127,11 +127,27 @@ class ConfigGenerator:
             template = Template(template_content)
             
             for node in nodes:
-                # CRITICAL: seed_mode management per phase:
-                # - PHASE 1: Only ROOT nodes need seed_mode=true (for zerochain genesis event)
-                # - After genesis event: seed_mode will be disabled for ROOT nodes
-                # - PHASE 2: Only MASTER nodes need seed_mode=true (for mainchain genesis block)
-                # MASTER nodes will get seed_mode=true later via enable_seed_mode_in_configs()
+                # CRITICAL: Initial seed_mode configuration for node startup
+                # This sets the initial state - actual seed_mode management is done via YAML scenarios
+                # 
+                # Initial Configuration:
+                # - ROOT nodes: seed_mode=true (will be managed by YAML scenarios in PHASE 1)
+                # - MASTER nodes: seed_mode=false (will be enabled by YAML scenarios in PHASE 2)
+                #
+                # YAML Scenario Management (see scenarios/genesis/):
+                # - PHASE 1 (phase1_zerochain.yml):
+                #   * enable_seed_mode on ROOT nodes
+                #   * Create genesis event (token_decl)
+                #   * disable_seed_mode on ROOT nodes with zerochain_genesis_hash
+                #   * Restart nodes
+                #   * Regular operations (emission, funding) with seed_mode=false
+                #
+                # - PHASE 2 (phase2_esbocs.yml):
+                #   * Delegate keys on zerochain (seed_mode=false)
+                #   * enable_seed_mode on MASTER nodes
+                #   * Create genesis block (first mainchain transaction)
+                #   * disable_seed_mode on MASTER nodes with main_genesis_hash
+                #   * Final restart with ESBocs active
                 seed_mode = 'true' if node.role == 'root' else 'false'
                 
                 # Render template with node-specific context
@@ -142,10 +158,13 @@ class ConfigGenerator:
                 node_cfg_content = template.render(**context)
                 
                 if node.role == 'root':
-                    logger.debug("seed_mode_enabled_for_root_nodes_genesis_event", node_id=node.node_id)
+                    logger.debug("initial_seed_mode_true_for_root_node", 
+                               node_id=node.node_id,
+                               note="seed_mode will be managed by YAML scenarios (see phase1_zerochain.yml)")
                 elif node.role == 'master':
-                    logger.debug("seed_mode_disabled_for_master_nodes_initial", node_id=node.node_id,
-                               note="seed_mode will be enabled in PHASE 2 for genesis block creation")
+                    logger.debug("initial_seed_mode_false_for_master_node", 
+                               node_id=node.node_id,
+                               note="seed_mode will be enabled in PHASE 2 by YAML scenarios (see phase2_esbocs.yml)")
                 
                 node_etc_base = self.configs_cache / f"node{node.node_id}"
                 node_etc_base.mkdir(parents=True, exist_ok=True)

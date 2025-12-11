@@ -17,7 +17,7 @@ from .network_wait import NetworkWaitStepExecutor
 from .docker_op import DockerOpStepExecutor
 from .snapshot import SnapshotStepExecutor
 from .control_flow import SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor
-from .config import ConfigStepExecutor, GenConfigStepExecutor
+from .config import ConfigStepExecutor
 
 __all__ = [
     'StepExecutor',
@@ -38,5 +38,4 @@ __all__ = [
     'SwitchStepExecutor',
     'ForStepExecutor',
     'ConfigStepExecutor',
-    'GenConfigStepExecutor',
 ]

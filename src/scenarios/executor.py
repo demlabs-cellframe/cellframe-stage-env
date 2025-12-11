@@ -19,7 +19,7 @@ from .schema import (
     CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
     NetworkWaitStep, DockerOpStep, SnapshotStep,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
-    ConfigStep, GenConfigStep,
+    ConfigStep,
     CLICheck, RPCCheck, PythonCheck, BashCheck,
     TestScenario, SuiteSetupScenario, TestStep, CheckSpec, StepDefaults, SectionConfig, DatumStatus
 )
@@ -154,7 +154,7 @@ class ScenarioExecutor:
             WaitForDatumStepExecutor, LoopStepExecutor,
             NetworkWaitStepExecutor, DockerOpStepExecutor, SnapshotStepExecutor,
             SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor,
-            ConfigStepExecutor, GenConfigStepExecutor
+            ConfigStepExecutor
         )
         self.cli_executor = CLIStepExecutor(self.container_manager, log_file, debug)
         self.rpc_executor = RPCStepExecutor(self.container_manager, log_file, debug)
@@ -203,10 +203,6 @@ class ScenarioExecutor:
             execute_steps_callback=self._execute_steps
         )
         self.config_executor = ConfigStepExecutor(
-            self.container_manager, log_file, debug,
-            resolve_node_alias_callback=self._resolve_node_alias
-        )
-        self.gen_config_executor = GenConfigStepExecutor(
             self.container_manager, log_file, debug,
             resolve_node_alias_callback=self._resolve_node_alias
         )
@@ -557,8 +553,8 @@ class ScenarioExecutor:
                 step_desc = f"WaitForDatumStep ({datum_count} datum{'s' if datum_count > 1 else ''})"
             elif isinstance(step, StepGroup) and step.name:
                 step_desc = f"StepGroup: {step.name}"
-            elif isinstance(step, GenConfigStep):
-                step_desc = f"GenConfigStep ({step.name})"
+            elif isinstance(step, ConfigStep):
+                step_desc = f"ConfigStep ({step.config})"
             
             logger.info(f"Step {i}/{len(steps)}: {step_desc}")
             
@@ -613,8 +609,6 @@ class ScenarioExecutor:
                 await self.switch_executor.execute(step, ctx, defaults)
             elif isinstance(step, ConfigStep):
                 await self.config_executor.execute(step, ctx)
-            elif isinstance(step, GenConfigStep):
-                await self.gen_config_executor.execute(step, ctx)
             else:
                 raise ScenarioExecutionError(f"Unknown step type: {type(step)}")
     

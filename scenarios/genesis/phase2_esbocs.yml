@@ -1,15 +1,15 @@
 name: PHASE 2 - ESBocs Genesis
-description: Initialize MASTER nodes with PoS delegation
+description: Delegate keys on zerochain, create mainchain genesis block in seed mode
 
-# Note: emission_hash is passed from Phase1 via context
+# Note: emission_hash, token_hash, fee_addr are passed from Phase1 via context
 # Master nodes are already running (started in Phase1)
 
 includes:
   - common/set_net_default.yml
 
 test:
-  # NO snapshot restore or container restart
-  # Continuing from Phase1 - emission still in ledger memory
+  # Continuing from Phase1 with seed_mode=false
+  # Delegations will be performed on zerochain, then mainchain genesis in seed mode
   
   # Wait for master-root links
   - wait_network: links_established
@@ -102,7 +102,20 @@ test:
           - cli: "global_db flush"
             node: "{{node_name}}"
   
-  # Restart for ESBocs activation
+  # =================================================================
+  # GENESIS BLOCK CREATION IN SEED MODE
+  # =================================================================
+  # Delegations are approved on zerochain, now create mainchain genesis block
+  
+  # Enable seed_mode for MASTER nodes to create genesis block
+  - config: "cellframe-node"
+    nodes: [master-1, master-2, master-3]
+    set:
+      seed_mode: "true"
+  
+  # Restart ALL nodes to activate ESBocs with delegated keys and seed_mode
+  # Root nodes restart to sync with new validator state
+  # Master nodes restart with seed_mode=true for genesis block creation
   - docker_op: restart
     services: [root-1, root-2, root-3, master-1, master-2, master-3]
   
@@ -114,7 +127,54 @@ test:
     nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     timeout: 120
   
-  # Verify ESBocs consensus active
+  # Wait for CLI to be responsive
+  - wait: cli_ready
+    nodes: [master-1, master-2, master-3]
+    timeout: 40
+  
+  # GENESIS OPERATION: Create first transaction on mainchain
+  # This transaction becomes the genesis block of mainchain
+  - group: Genesis Block - First Mainchain Transaction
+    defaults:
+      node: master-1
+    steps:
+      - cli: "tx_create -from_wallet fee_collector -to_wallet stagenet_master_0 -value 1.0 -token TCELL -chain main -fee 0.1"
+        save_hash: mainchain_genesis_tx
+      
+      # Allow propagation
+      - wait: "5s"
+      
+      # Wait for genesis transaction to be finalized
+      - wait: finalized
+        datum: "{{mainchain_genesis_tx}}"
+        chain: main
+        timeout: 80
+  
+  # Genesis block created! Now disable seed_mode and set static genesis block hash
+  - config: "cellframe-node"
+    nodes: [master-1, master-2, master-3]
+    set:
+      seed_mode: "false"
+  
+  - config: "stagenet/main"
+    nodes: [master-1, master-2, master-3]
+    set:
+      static_genesis_block: "{{mainchain_genesis_tx}}"
+      is_static_genesis_block: "true"
+  
+  # Final restart to apply new configs (seed_mode=false, static_genesis_block set)
+  - docker_op: restart
+    services: [root-1, root-2, root-3, master-1, master-2, master-3]
+  
+  - wait_network: online
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
+    timeout: 60
+  
+  - wait_network: links_established
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
+    timeout: 120
+  
+  # Verify ESBocs consensus is active with proper configuration
   - wait: esbocs_active
     nodes: [master-1]
     timeout: 60

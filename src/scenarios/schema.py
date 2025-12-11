@@ -333,7 +333,7 @@ class SnapshotStep(BaseModel):
 # ============================================================================
 
 from .schema_control_flow import SetStep, IfStep, WhileStep, ForStep, SwitchStep
-from .schema_config import ConfigStep, GenConfigStep
+from .schema_config import ConfigStep
 
 
 # ============================================================================
@@ -398,14 +398,14 @@ class StepGroup(BaseModel):
     steps: List[Union["TestStep", "StepGroup"]] = Field(..., description="Steps in this group")
 
 
-# Update TestStep to include StepGroup and new step types
+# Update TestStep to include new step types
 # IMPORTANT: Order matters! Specific types must come before generic ones to ensure correct parsing.
 # NetworkWaitStep must come before WaitStep.
 TestStep = Union[
     NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep,
     CLIStep, RPCStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
-    ConfigStep, GenConfigStep,
+    ConfigStep,
     WaitStep 
 ]
 

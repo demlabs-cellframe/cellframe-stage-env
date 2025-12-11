@@ -3,62 +3,27 @@ from pydantic import BaseModel, Field, model_validator
 
 class ConfigStep(BaseModel):
     """
-    Manage node configuration files.
-    
-    Actions:
-    - disable_seed_mode: Disable seed mode and regenerate configs
-    - enable_seed_mode: Enable seed mode
-    - set_genesis: Set static_genesis_event/block hash
-    - set_fee_addr: Set fee address in main.cfg
-    - update: Update specific key in config file
-    """
-    config: str = Field(..., description="Action name")
-    nodes: Union[str, List[str]] = Field(..., description="Target node(s)")
-    
-    # Parameters for set_genesis
-    chain: Optional[str] = Field(None, description="Chain name (e.g. 'zerochain', 'main')")
-    hash: Optional[str] = Field(None, description="Genesis hash value")
-    
-    # Parameters for set_fee_addr / update
-    value: Optional[str] = Field(None, description="Value to set")
-    
-    # Parameters for update
-    file: Optional[str] = Field(None, description="Config file name (e.g. 'main.cfg')")
-    section: Optional[str] = Field(None, description="Config section (e.g. '[esbocs]')")
-    key: Optional[str] = Field(None, description="Config key")
-    
-    # Optional parameters for disable_seed_mode (override auto-detection)
-    zerochain_genesis_hash: Optional[str] = Field(None, description="Zerochain genesis hash (override)")
-    main_genesis_hash: Optional[str] = Field(None, description="Mainchain genesis hash (override)")
-    fee_addr: Optional[str] = Field(None, description="Fee address (override)")
-
-
-class GenConfigStep(BaseModel):
-    """
-    Generate/Regenerate config from template with arbitrary context variables.
+    Manage node configuration files by regenerating from templates.
     
     Usage:
-      - gen_config: "stagenet/zerochain"
+      # Regenerate base config with seed_mode
+      - config: "cellframe-node"
+        nodes: [root-1, root-2, root-3]
+        set:
+          seed_mode: "true"
+      
+      # Update chain config with genesis hash
+      - config: "stagenet/zerochain"
         nodes: [root-1]
         set:
           static_genesis_event: "{{token_hash}}"
+          is_static_genesis_event: "true"
           
-      - gen_config: "Update main config"
-        name: "stagenet/main"
-        nodes: [root-1]
-        set: "fee_addr={{fee_addr}}, param=value"
+      # Update with string format
+      - config: "stagenet/main"
+        nodes: [master-1]
+        set: "fee_addr={{fee_addr}}, minimum_fee=1.0"
     """
-    gen_config: Optional[str] = Field(None, description="Config name OR description")
-    name: Optional[str] = Field(None, description="Target config path/name (e.g. 'stagenet/zerochain', 'cellframe-node')")
+    config: str = Field(..., description="Config name/path (e.g. 'cellframe-node', 'stagenet/zerochain')")
     nodes: Union[str, List[str]] = Field(..., description="Target node(s)")
     set: Union[Dict[str, Any], str] = Field(default_factory=dict, description="Variables to inject (Dict or 'k=v, k2=v')")
-
-    @model_validator(mode='after')
-    def resolve_name(self) -> 'GenConfigStep':
-        """Resolve 'name' field from 'gen_config' if not provided."""
-        if not self.name and self.gen_config:
-            self.name = self.gen_config
-        
-        if not self.name:
-            raise ValueError("Config name must be provided (either in 'name' field or as 'gen_config' value)")
-        return self

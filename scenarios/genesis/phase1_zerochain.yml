@@ -106,29 +106,56 @@ test:
     nodes: [root-1, root-2, root-3]
     timeout: 120
   
-  # Genesis operations on root-1 (centralized genesis with 2/3 consensus)
-  # NOTE: root-1 has access to ALL three private certificates for testing threshold consensus
-  # WORKAROUND: Using multiple certs in single command for compatibility with nodes without token_*_sign commands
-  - group: Genesis operations
+  # =================================================================
+  # GENESIS EVENT CREATION IN SEED MODE
+  # =================================================================
+  # Only token_decl is the genesis event - everything else happens after seed_mode is disabled
+  
+  # Wait for CLI to be responsive on all root nodes
+  - wait: cli_ready
+    nodes: [root-1, root-2, root-3]
+    timeout: 40
+  
+  # Enable seed_mode explicitly for genesis event creation
+  - config: "cellframe-node"
+    nodes: [root-1, root-2, root-3]
+    set:
+      seed_mode: "true"
+  
+  # Restart nodes to apply seed_mode
+  - docker_op: restart
+    services: [root-1, root-2, root-3]
+  
+  - wait_network: online
+    nodes: [root-1, root-2, root-3]
+    timeout: 60
+  
+  # Re-establish links after restart
+  - wait_network: links_established
+    nodes: [root-1, root-2, root-3]
+    timeout: 120
+  
+  # Wait for CLI to be responsive after restart
+  - wait: cli_ready
+    nodes: [root-1, root-2, root-3]
+    timeout: 40
+  
+  # Create fee wallet (preparatory step, not genesis operation)
+  - cli: "wallet new -w fee_collector"
+    node: root-1
+  
+  # Get fee wallet address
+  - cli: "wallet info -w fee_collector"
+    node: root-1
+    save_wallet: fee_addr
+  
+  # GENESIS OPERATION: Create TCELL token declaration with 2/3 consensus
+  # This is the ONLY genesis event for zerochain - signed by all 3 root validators
+  - group: Genesis Event - Token Declaration
     defaults:
       node: root-1
     steps:
-      # Wait for CLI to be responsive on all root nodes
-      - wait: cli_ready
-        nodes: [root-1, root-2, root-3]
-        timeout: 40
-
-      # Create fee wallet
-      - cli: "wallet new -w fee_collector"
-      
-      # Get fee wallet address
-      - cli: "wallet info -w fee_collector"
-        save_wallet: fee_addr
-      
-      # Create TCELL token declaration with 2/3 consensus (signs_emission=2, signs_total=3)
-      # All three signatures added in single command using comma-separated cert list
       - cli: "token_decl -token TCELL -chain zerochain -total_supply 1000000.0e+18 -decimals 18 -signs_emission 2 -signs_total 3 -certs pvt.stagenet.root.0,pvt.stagenet.root.1,pvt.stagenet.root.2"
-        node: root-1
         save_hash: token_hash
       
       # Allow propagation
@@ -140,14 +167,52 @@ test:
         node: root-1
         chain: zerochain
         timeout: 80
-      
+  
+  # Genesis event created! Now disable seed_mode and set static genesis hash
+  - config: "cellframe-node"
+    nodes: [root-1, root-2, root-3]
+    set:
+      seed_mode: "false"
+  
+  - config: "stagenet/zerochain"
+    nodes: [root-1, root-2, root-3]
+    set:
+      static_genesis_event: "{{token_hash}}"
+      is_static_genesis_event: "true"
+  
+  # Restart nodes to apply new configs (seed_mode=false, static_genesis_event set)
+  - docker_op: restart
+    services: [root-1, root-2, root-3]
+  
+  - wait_network: online
+    nodes: [root-1, root-2, root-3]
+    timeout: 60
+  
+  # Re-establish links after restart
+  - wait_network: links_established
+    nodes: [root-1, root-2, root-3]
+    timeout: 120
+  
+  # Wait for CLI to be responsive
+  - wait: cli_ready
+    nodes: [root-1, root-2, root-3]
+    timeout: 40
+  
+  # =================================================================
+  # REGULAR OPERATIONS (NOT IN SEED MODE)
+  # =================================================================
+  # Emission and funding are NOT genesis operations, performed with seed_mode=false
+  
+  - group: Token Emission and Wallet Funding
+    defaults:
+      node: root-1
+    steps:
       # CRITICAL: Create ONE large emission to fee_collector
       # Ledger allows only ONE active emission in cache at a time per token  
       # Make emission VERY large so it persists after multiple uses
       # Total needed: 3 masters * 10000 + fees = ~30100 TCELL
       # Create 1000000 to have plenty left in supply
       - cli: "token_emit -chain zerochain -token TCELL -emission_value 1000000.0e+18 -addr {{fee_addr}} -certs pvt.stagenet.root.0,pvt.stagenet.root.1,pvt.stagenet.root.2"
-        node: root-1
         save_hash: emission_hash
       
       # Allow propagation
@@ -156,7 +221,6 @@ test:
       # Wait for emission to be finalized and added to cache
       - wait: finalized
         datum: "{{emission_hash}}"
-        node: root-1
         chain: zerochain
         timeout: 80
       
@@ -164,12 +228,12 @@ test:
       - wait: "5s"
       
       - cli: "global_db flush"
-        node: root-1
   
-  # Create master wallets and fund them IMMEDIATELY while emission is in cache
-  # CRITICAL: Must do transfers in Phase1 before any container restarts
-  # Container restart loses emission from cache
-  - group: Create master wallets and fund immediately
+  # Create master wallets and fund them
+  # These are regular operations performed with seed_mode=false
+  - group: Create master wallets and fund them
+    defaults:
+      node: root-1
     steps:
       # Create all wallets first
       - loop: 3
@@ -178,44 +242,22 @@ test:
           - set: wallet_name = "stagenet_master_{{i}}"
           
           - cli: "wallet new -w {{wallet_name}}"
-            node: root-1
           
           - cli: "wallet info -w {{wallet_name}} -net stagenet"
-            node: root-1
             save_wallet: "master_wallet_addr_{{i}}"
       
-      # Transfer to master_0  
-      - cli: "tx_create -from_emission {{emission_hash}} -value 10000.0 -to_addr {{master_wallet_addr_0}} -token TCELL -chain zerochain -fee 1 -wallet_fee fee_collector"
-        node: root-1
-        save_hash: "master_tx_0"
-      
-      - wait: finalized
-        datum: "{{master_tx_0}}"
-        node: root-1
-        chain: zerochain
-        timeout: 80
-      
-      # Transfer to master_1
-      - cli: "tx_create -from_emission {{emission_hash}} -value 10000.0 -to_addr {{master_wallet_addr_1}} -token TCELL -chain zerochain -fee 1 -wallet_fee fee_collector"
-        node: root-1
-        save_hash: "master_tx_1"
-      
-      - wait: finalized
-        datum: "{{master_tx_1}}"
-        node: root-1
-        chain: zerochain
-        timeout: 80
-      
-      # Transfer to master_2
-      - cli: "tx_create -from_emission {{emission_hash}} -value 10000.0 -to_addr {{master_wallet_addr_2}} -token TCELL -chain zerochain -fee 1 -wallet_fee fee_collector"
-        node: root-1
-        save_hash: "master_tx_2"
-      
-      - wait: finalized
-        datum: "{{master_tx_2}}"
-        node: root-1
-        chain: zerochain
-        timeout: 80
+      # Transfer tokens to master wallets
+      - loop: 3
+        steps:
+          - set: master_idx = "{{i}}"
+          
+          - cli: "tx_create -from_emission {{emission_hash}} -value 10000.0 -to_addr {{master_wallet_addr_{{i}}}} -token TCELL -chain zerochain -fee 1 -wallet_fee fee_collector"
+            save_hash: "master_tx_{{i}}"
+          
+          - wait: finalized
+            datum: "{{master_tx_{{i}}}}"
+            chain: zerochain
+            timeout: 80
       
       # CRITICAL: Wait for DAG-PoA to process ALL transfers into ledger
       # Finalized transactions are in mempool, need DAG rounds + consensus + ledger processing
@@ -223,24 +265,33 @@ test:
       # Total: 3 transactions * ~20s/tx + buffer = 90s minimum
       - wait: "90s"
       
-      - cli: "global_db flush"
-        node: root-1
+      # Force offline/online cycle to flush state
+      - cli: "net go offline"
       
-      # Additional wait for balance propagation
-      - wait: "10s"
+      - wait_network: offline
+        nodes: [root-1, root-2, root-3]
+        timeout: 10
+      
+      - cli: "net go online"
+      
+      - wait_network: online
+        nodes: [root-1, root-2, root-3]
+        timeout: 20
   
   # Save genesis configuration for all nodes (root + master)
-  - gen_config: "stagenet/zerochain"
+  # Update zerochain config with static genesis event
+  - config: "{{network_name}}/zerochain"
     nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     set:
       static_genesis_event: "{{token_hash}}"
       is_static_genesis_event: "true"
-      
-  - gen_config: "stagenet/main"
+  
+  # Update mainchain config with fee address
+  - config: "{{network_name}}/main"
     nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     set:
       fee_addr: "{{fee_addr}}"
   
-  # Phase1 complete - emission in cache, wallets funded
-  # Masters already running - continue directly to Phase2 delegation
-  # NO container restart = emission stays in ledger memory
+  # Phase1 complete - genesis event created, emission done, wallets funded
+  # Masters already running - continue directly to Phase2 for delegation
+  # Seed mode properly managed: enabled for genesis, disabled for regular operations
