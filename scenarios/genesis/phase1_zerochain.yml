@@ -9,6 +9,13 @@ network:
   name: stagenet
 
 setup:
+
+  # Enable seed_mode explicitly for genesis event creation
+  - config: "cellframe-node"
+    nodes: [root-1, root-2, root-3]
+    set:
+      seed_mode: "true"
+
   # CRITICAL: Start ALL nodes (root + master) at once to avoid container restart between phases
   # Restart loses emission from ledger memory, causing "Specified emission not found"
   - docker_op: start
@@ -102,44 +109,16 @@ test:
   
   # Wait for links only between root nodes  
   # Masters are running but won't participate in consensus yet (no certs loaded)
-  - wait_network: links_established  
+  - wait_network: online
     nodes: [root-1, root-2, root-3]
     timeout: 120
-  
-  # =================================================================
-  # GENESIS EVENT CREATION IN SEED MODE
-  # =================================================================
-  # Only token_decl is the genesis event - everything else happens after seed_mode is disabled
-  
+
   # Wait for CLI to be responsive on all root nodes
   - wait: cli_ready
     nodes: [root-1, root-2, root-3]
     timeout: 40
   
-  # Enable seed_mode explicitly for genesis event creation
-  - config: "cellframe-node"
-    nodes: [root-1, root-2, root-3]
-    set:
-      seed_mode: "true"
-  
-  # Restart nodes to apply seed_mode
-  - docker_op: restart
-    services: [root-1, root-2, root-3]
-  
-  - wait_network: online
-    nodes: [root-1, root-2, root-3]
-    timeout: 60
-  
-  # Re-establish links after restart
-  - wait_network: links_established
-    nodes: [root-1, root-2, root-3]
-    timeout: 120
-  
-  # Wait for CLI to be responsive after restart
-  - wait: cli_ready
-    nodes: [root-1, root-2, root-3]
-    timeout: 40
-  
+   
   # Create fee wallet (preparatory step, not genesis operation)
   - cli: "wallet new -w fee_collector"
     node: root-1
@@ -148,6 +127,12 @@ test:
   - cli: "wallet info -w fee_collector"
     node: root-1
     save_wallet: fee_addr
+
+  # =================================================================
+  # GENESIS EVENT CREATION IN SEED MODE
+  # =================================================================
+  # Only token_decl is the genesis event - everything else happens after seed_mode is disabled
+  
   
   # GENESIS OPERATION: Create TCELL token declaration with 2/3 consensus
   # This is the ONLY genesis event for zerochain - signed by all 3 root validators
@@ -197,6 +182,25 @@ test:
   - wait: cli_ready
     nodes: [root-1, root-2, root-3]
     timeout: 40
+  
+  # Sync GDB and mempool after restart to ensure all nodes are synchronized
+  - group: GDB and Mempool sync
+    steps:
+      - loop: 3
+        steps:
+          - set: node_name = "root-{{iteration}}"
+          - cli: "global_db sync -net stagenet"
+            node: "{{node_name}}"
+      
+      - wait: "5s"
+      
+      - loop: 3
+        steps:
+          - set: node_name = "root-{{iteration}}"
+          - cli: "mempool proc -net stagenet -chain zerochain"
+            node: "{{node_name}}"
+      
+      - wait: "5s"
   
   # =================================================================
   # REGULAR OPERATIONS (NOT IN SEED MODE)
