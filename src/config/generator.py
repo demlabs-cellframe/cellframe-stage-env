@@ -128,27 +128,29 @@ class ConfigGenerator:
             
             for node in nodes:
                 # CRITICAL: Initial seed_mode configuration for node startup
-                # This sets the initial state - actual seed_mode management is done via YAML scenarios
+                # ALL nodes start with seed_mode=false by default
+                # Actual seed_mode management is done EXPLICITLY via YAML scenarios
                 # 
-                # Initial Configuration:
-                # - ROOT nodes: seed_mode=true (will be managed by YAML scenarios in PHASE 1)
-                # - MASTER nodes: seed_mode=false (will be enabled by YAML scenarios in PHASE 2)
+                # Default Configuration:
+                # - ALL nodes (ROOT, MASTER, FULL): seed_mode=false
                 #
                 # YAML Scenario Management (see scenarios/genesis/):
                 # - PHASE 1 (phase1_zerochain.yml):
-                #   * enable_seed_mode on ROOT nodes
-                #   * Create genesis event (token_decl)
-                #   * disable_seed_mode on ROOT nodes with zerochain_genesis_hash
+                #   * Explicitly enable_seed_mode on ROOT nodes in setup section
+                #   * Create genesis event (token_decl) in seed mode
+                #   * Explicitly disable_seed_mode on ROOT nodes with zerochain_genesis_hash
                 #   * Restart nodes
                 #   * Regular operations (emission, funding) with seed_mode=false
                 #
                 # - PHASE 2 (phase2_esbocs.yml):
                 #   * Delegate keys on zerochain (seed_mode=false)
-                #   * enable_seed_mode on MASTER nodes
-                #   * Create genesis block (first mainchain transaction)
-                #   * disable_seed_mode on MASTER nodes with main_genesis_hash
+                #   * Explicitly enable_seed_mode on MASTER nodes
+                #   * Create genesis block (first mainchain transaction) in seed mode
+                #   * Explicitly disable_seed_mode on MASTER nodes with main_genesis_hash
                 #   * Final restart with ESBocs active
-                seed_mode = 'true' if node.role == 'root' else 'false'
+                #
+                # This approach provides full transparency and control over seed_mode lifecycle
+                seed_mode = 'false'  # All nodes start with seed_mode=false
                 
                 # Render template with node-specific context
                 context = {
@@ -157,14 +159,10 @@ class ConfigGenerator:
                 }
                 node_cfg_content = template.render(**context)
                 
-                if node.role == 'root':
-                    logger.debug("initial_seed_mode_true_for_root_node", 
-                               node_id=node.node_id,
-                               note="seed_mode will be managed by YAML scenarios (see phase1_zerochain.yml)")
-                elif node.role == 'master':
-                    logger.debug("initial_seed_mode_false_for_master_node", 
-                               node_id=node.node_id,
-                               note="seed_mode will be enabled in PHASE 2 by YAML scenarios (see phase2_esbocs.yml)")
+                logger.debug("initial_seed_mode_false_for_all_nodes", 
+                           node_id=node.node_id,
+                           role=node.role,
+                           note="seed_mode will be explicitly managed by YAML scenarios")
                 
                 node_etc_base = self.configs_cache / f"node{node.node_id}"
                 node_etc_base.mkdir(parents=True, exist_ok=True)
