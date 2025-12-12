@@ -682,7 +682,18 @@ class ConfigGenerator:
         
         for node in root_nodes:
             # Root nodes use node_addr.txt (not validator_addr.txt)
+            # Try primary path first, then fallback to cert_generator's default path
             addr_file = self.certs_cache / f"node{node.node_id}" / "node_addr.txt"
+            
+            # Fallback: cert_generator may use base_path/cache/certs if config not loaded correctly
+            if not addr_file.exists():
+                fallback_file = self.base_path / "cache" / "certs" / f"node{node.node_id}" / "node_addr.txt"
+                if fallback_file.exists():
+                    logger.debug("using_fallback_cert_path",
+                               node_id=node.node_id,
+                               primary=str(addr_file),
+                               fallback=str(fallback_file))
+                    addr_file = fallback_file
             
             if addr_file.exists():
                 try:

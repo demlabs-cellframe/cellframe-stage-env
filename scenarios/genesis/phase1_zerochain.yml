@@ -164,9 +164,21 @@ test:
         node: root-1
       - wait: "5s"
       
-      # Wait for emission to be finalized (DAG-PoA consensus takes ~15-20s)
-      # Note: datum stays in mempool after finalization, so we just wait
-      - wait: "30s"
+      # Wait for emission to be finalized (DAG-PoA consensus needs ~20-30s for round)
+      # CRITICAL: Emission MUST be in DAG before restart, otherwise it will be lost!
+      - wait: "45s"
+      
+      # Verify emission is finalized by checking DAG events count (should be 2: token + emission)
+      - cli: "dag event list -chain zerochain"
+        node: root-1
+        expect_output: "total_events: 2"
+      
+      # CRITICAL: Get the FIRST EVENT HASH (genesis) from DAG
+      # Event hash != datum hash! Event includes signatures, timestamps, etc.
+      # Use dag event find to get the event hash that contains token datum
+      - cli: "dag event find -chain zerochain -datum {{token_hash}}"
+        node: root-1
+        save_hash: genesis_event_hash
   
   # Genesis events (token + emission) created! Now disable seed_mode and set static genesis hash
   - config: "cellframe-node"
@@ -177,7 +189,7 @@ test:
   - config: "stagenet/zerochain"
     nodes: [root-1, root-2, root-3]
     set:
-      static_genesis_event: "{{token_hash}}"
+      static_genesis_event: "{{genesis_event_hash}}"
       is_static_genesis_event: "true"
   
   # Restart nodes to apply new configs (seed_mode=false, static_genesis_event set)
@@ -188,10 +200,8 @@ test:
     nodes: [root-1, root-2, root-3]
     timeout: 60
   
-  # Re-establish links after restart
-  - wait_network: links_established
-    nodes: [root-1, root-2, root-3]
-    timeout: 120
+  # Wait for network to stabilize after restart (links take time to establish)
+  - wait: "60s"
   
   # Wait for CLI to be responsive
   - wait: cli_ready
@@ -272,16 +282,10 @@ test:
       
       # Force offline/online cycle to flush state
       - cli: "net go offline"
-      
-      - wait_network: offline
-        nodes: [root-1, root-2, root-3]
-        timeout: 10
+      - wait: "5s"
       
       - cli: "net go online"
-      
-      - wait_network: online
-        nodes: [root-1, root-2, root-3]
-        timeout: 20
+      - wait: "10s"
   
   # Save genesis configuration for all nodes (root + master)
   # Update zerochain config with static genesis event

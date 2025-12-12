@@ -11,6 +11,19 @@ test:
   # Continuing from Phase1 with seed_mode=false
   # Delegations will be performed on zerochain, then mainchain genesis in seed mode
   
+  # Add master nodes to nodelist - each node adds itself
+  - group: Add master nodes to nodelist
+    steps:
+      - cli: "node add"
+        node: master-1
+      - cli: "node add"
+        node: master-2
+      - cli: "node add"
+        node: master-3
+      
+      # Wait for nodelist sync
+      - wait: "15s"
+  
   # Wait for master-root links
   - wait_network: links_established
     nodes: [master-1, master-2, master-3, root-1, root-2, root-3]
