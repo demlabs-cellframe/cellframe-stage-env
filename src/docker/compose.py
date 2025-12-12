@@ -448,6 +448,10 @@ class DockerComposeManager:
                            node_id=node.node_id,
                            keys=list(node.docker_extra_config.keys()))
             
+            # CRITICAL: Set pull_policy to never to use locally built image
+            # This prevents Docker from trying to pull cf-node from Docker Hub
+            node_service['pull_policy'] = 'never'
+            
             # Add to services
             compose_data['services'][service_name] = node_service
         

@@ -105,6 +105,7 @@ link_directories(
     ${CELLFRAME_SDK_BUILD}/dap-sdk/net/common/http
     ${CELLFRAME_SDK_BUILD}/dap-sdk/io
     ${CELLFRAME_SDK_BUILD}/dap-sdk/global-db
+    ${CELLFRAME_SDK_BUILD}/dap-sdk/3rdparty/libmdbx
 )
 
 # Build cf-cert-generator - multi-node certificate batch generator
@@ -123,6 +124,7 @@ target_link_libraries(cf-cert-generator
     dap_enc_server
     dap_client
     dap_global_db
+    ${CELLFRAME_SDK_BUILD}/dap-sdk/3rdparty/libmdbx/libmdbx.a
     dap_io
     # Core crypto
     dap_crypto

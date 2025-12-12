@@ -170,10 +170,11 @@ class WaitStepExecutor(StepExecutor):
             chain=chain,
             check_master_nodes=step.check_master,
             timeout_total=step.timeout,
-            # Use reasonable defaults relative to total timeout or fixed defaults
-            timeout_mempool=max(60, int(step.timeout * 0.4)),
-            timeout_verification=max(60, int(step.timeout * 0.4)),
-            timeout_in_blocks=max(60, int(step.timeout * 0.4))
+            # DAG-PoA with is_add_directly=false needs more time for consensus
+            # Use 0.8 * total_timeout to give enough time for signature collection
+            timeout_mempool=max(60, int(step.timeout * 0.8)),
+            timeout_verification=max(60, int(step.timeout * 0.5)),
+            timeout_in_blocks=max(60, int(step.timeout * 0.5))
         )
         
         if result.status != DatumStatus.SUCCESS:

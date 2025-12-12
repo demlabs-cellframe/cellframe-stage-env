@@ -57,6 +57,7 @@ RUN cmake -DCMAKE_BUILD_TYPE=Release .. && \
         dap_crypto \
         dap_chain_common \
         dap_io \
+        mdbx-static \
         dap_global_db \
         dap_session \
         dap_http_common \

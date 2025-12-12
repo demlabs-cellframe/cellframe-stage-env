@@ -211,11 +211,17 @@ class ConfigGenerator:
         # Based on dap_config.c:237 - dap_strsplit(l_val, ",", -1)
         # Array must be ONE line starting with [ and ending with ]
         # Format: IP:PORT where PORT is configurable via topology (default 8079)
+        # CRITICAL: Both seed_nodes_aliases AND seed_nodes_hosts are required!
+        # This matches tests-in-docker configuration for proper node discovery
         if root_nodes:
             hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in root_nodes])
             seed_nodes_hosts = f"[{hosts_list}]"
+            # Aliases use certificate names: network.root.N
+            aliases_list = ','.join([f"{network_name}.root.{idx}" for idx in range(len(root_nodes))])
+            seed_nodes_aliases = f"[{aliases_list}]"
         else:
             seed_nodes_hosts = "[]"
+            seed_nodes_aliases = "[]"
         
         # Permanent nodes hosts - only root nodes (network infrastructure)
         if root_nodes:
@@ -336,6 +342,7 @@ class ConfigGenerator:
             # Render template with node-specific context
             network_context = {
                 'node_role': node_role,
+                'seed_nodes_aliases': seed_nodes_aliases,  # Required for node discovery
                 'seed_nodes_hosts': seed_nodes_hosts,
                 'permanent_nodes_hosts': permanent_nodes_hosts,  # Root nodes only
                 'events_sign_cert': events_sign_cert,

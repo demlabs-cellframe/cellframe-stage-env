@@ -329,7 +329,21 @@ class DatumMonitor:
                         error_message=error_msg
                     )
                 except TimeoutError:
-                    # Datum didn't appear in mempool - this likely means it wasn't created
+                    # Datum didn't appear in mempool - check if it's already in DAG (auto_proc=true case)
+                    self._log(f"  ⚠️ Datum {datum_hash[:16]}... not found in mempool, checking DAG events...")
+                    
+                    block_info = await self._check_in_blocks(node, network, chain, datum_hash)
+                    if block_info:
+                        # Datum already in DAG! (auto_proc processed it immediately)
+                        self._log(f"  ✅ Datum {datum_hash[:16]}... already in DAG (auto_proc processed it)")
+                        return DatumMonitorResult(
+                            status=DatumStatus.SUCCESS,
+                            datum_hash=datum_hash,
+                            elapsed_time=elapsed,
+                            details={"already_in_dag": True, "event_info": str(block_info)}
+                        )
+                    
+                    # Datum not in mempool and not in DAG - likely not created
                     error = f"Datum never appeared in mempool after {mempool_wait_timeout:.1f}s - likely not created (check CLI command output for errors)"
                     self._log(f"  ❌ {error}")
                     self._log(f"  💡 Datum hash received: {datum_hash[:50]}...")

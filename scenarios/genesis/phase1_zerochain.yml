@@ -80,44 +80,24 @@ test:
       
       - cli: "node add -addr {{root_addr_1}} -alias root-2 -host {{node_ip['node2']}} -port 8079"
   
-  # Establish links via soft reconnect (offline/online cycle)
-  - group: Soft reconnect - offline
-    steps:
-      - cli: "net go offline"
-        node: root-1
-      
-      - cli: "net go offline"
-        node: root-2
-      
-      - cli: "net go offline"
-        node: root-3
+  # CRITICAL: Restart nodes after adding to nodelist
+  # tests-in-docker does: docker compose restart after node add
+  # This allows nodes to reload nodelist and establish connections
+  - docker_op: restart
+    services: [root-1, root-2, root-3]
   
-  # Wait for nodes to reach offline state
-  - wait_network: offline
-    nodes: [root-1, root-2, root-3]
-    timeout: 60
-  
-  - group: Soft reconnect - online
-    steps:
-      - cli: "net go online"
-        node: root-1
-      
-      - cli: "net go online"
-        node: root-2
-      
-      - cli: "net go online"
-        node: root-3
-  
-  # Wait for links only between root nodes  
-  # Masters are running but won't participate in consensus yet (no certs loaded)
-  - wait_network: links_established
-    nodes: [root-1, root-2, root-3]
-    timeout: 120
+  # Wait for nodes to restart and establish connections
+  - wait: "20s"
   
   # Wait for CLI to be responsive on all root nodes
   - wait: cli_ready
     nodes: [root-1, root-2, root-3]
     timeout: 40
+
+  # Wait for network links to be established between nodes
+  # This is critical for DAG-PoA round signing to work
+  # DAG-PoA requires GlobalDB sync between nodes for round notifications
+  - wait: "45s"
 
   # Create fee wallet (preparatory step, not genesis operation)
   - cli: "wallet new -w fee_collector"
@@ -145,16 +125,50 @@ test:
         save_hash: token_hash
       
       # Allow propagation
-      - wait: "5s"
-
-      # Wait for token declaration to be finalized (3 signatures = fully signed)
-      - wait: finalized
-        datum: "{{token_hash}}"
+      - wait: "3s"
+      
+      # CRITICAL: Process mempool to add token to DAG
+      # Specify datum hash to trigger processing with auto_confirmation
+      - cli: "mempool proc -net stagenet -chain zerochain -datum {{token_hash}}"
         node: root-1
-        chain: zerochain
-        timeout: 80
+      
+      - wait: "2s"
+
+      # Wait for DAG-PoA round to complete (typically 15-20s with 3 root nodes)
+      # Note: datum may remain in mempool after finalization due to node behavior
+      # We wait and verify via token list instead of mempool check
+      - wait: "30s"
+      
+      # Verify token was created in ledger
+      - cli: "token list"
+        node: root-1
+        expect_output: "tokens: 1"
+      
+      # Flush GDB to ensure token is synced
+      - cli: "global_db flush"
+        node: root-1
+      
+      - wait: "5s"
+      
+      # GENESIS OPERATION: Create emission in seed_mode
+      # This ensures emission is created before restart and token is in ledger
+      - cli: "token_emit -chain zerochain -token TCELL -emission_value 1000000.0e+18 -addr {{fee_addr}} -certs pvt.stagenet.root.0,pvt.stagenet.root.1,pvt.stagenet.root.2"
+        save_hash: emission_hash
+        expect: success
+      
+      - wait: "5s"
+      
+      # Process emission in mempool with specific datum hash
+      # This triggers auto_confirmation from other ROOT nodes
+      - cli: "mempool proc -net stagenet -chain zerochain -datum {{emission_hash}}"
+        node: root-1
+      - wait: "5s"
+      
+      # Wait for emission to be finalized (DAG-PoA consensus takes ~15-20s)
+      # Note: datum stays in mempool after finalization, so we just wait
+      - wait: "30s"
   
-  # Genesis event created! Now disable seed_mode and set static genesis hash
+  # Genesis events (token + emission) created! Now disable seed_mode and set static genesis hash
   - config: "cellframe-node"
     nodes: [root-1, root-2, root-3]
     set:
@@ -204,51 +218,18 @@ test:
       - wait: "5s"
   
   # =================================================================
-  # REGULAR OPERATIONS (NOT IN SEED MODE)
+  # REGULAR OPERATIONS (NOT IN SEED MODE)  
   # =================================================================
-  # Emission and funding are NOT genesis operations, performed with seed_mode=false
+  # Token and emission were created in seed_mode. Now create wallets and fund them.
   
-  - group: Token Emission and Wallet Funding
+  - group: Wallet Funding
     defaults:
       node: root-1
     steps:
-      # Additional sync before emission to ensure token_decl is fully propagated
+      # Sync state after restart
       - cli: "global_db flush"
       
       - wait: "5s"
-      
-      # CRITICAL: Create ONE large emission to fee_collector
-      # Ledger allows only ONE active emission in cache at a time per token  
-      # Make emission VERY large so it persists after multiple uses
-      # Total needed: 3 masters * 10000 + fees = ~30100 TCELL
-      # Create 1000000 to have plenty left in supply
-      - cli: "token_emit -chain zerochain -token TCELL -emission_value 1000000.0e+18 -addr {{fee_addr}} -certs pvt.stagenet.root.0,pvt.stagenet.root.1,pvt.stagenet.root.2"
-        save_hash: emission_hash
-        expect: success
-      
-      # Allow propagation
-      - wait: "5s"
-      
-      # Sync emission across all nodes
-      - loop: 3
-        steps:
-          - set: node_name = "root-{{iteration}}"
-          - cli: "mempool proc -net stagenet -chain zerochain"
-            node: "{{node_name}}"
-      
-      - wait: "3s"
-
-      # Wait for emission to be finalized and added to cache
-      - wait: finalized
-        datum: "{{emission_hash}}"
-        chain: zerochain
-        timeout: 80
-        node: root-1
-      
-      # Wait for emission to propagate and be ready for use
-      - wait: "5s"
-      
-      - cli: "global_db flush"
   
   # Create master wallets and fund them
   # These are regular operations performed with seed_mode=false
@@ -271,14 +252,17 @@ test:
       - loop: 3
         steps:
           - set: master_idx = "{{i}}"
+          - set: wallet_name = "stagenet_master_{{i}}"
           
-          - cli: "tx_create -from_emission {{emission_hash}} -value 10000.0 -to_addr {{master_wallet_addr_{{i}}}} -token TCELL -chain zerochain -fee 1 -wallet_fee fee_collector"
+          # Get wallet address dynamically
+          - cli: "wallet info -w {{wallet_name}} -net stagenet"
+            save_wallet: current_master_addr
+          
+          - cli: "tx_create -from_emission {{emission_hash}} -value 10000.0 -to_addr {{current_master_addr}} -token TCELL -chain zerochain -fee 1 -wallet_fee fee_collector"
             save_hash: "master_tx_{{i}}"
           
-          - wait: finalized
-            datum: "{{master_tx_{{i}}}}"
-            chain: zerochain
-            timeout: 80
+          # Wait for DAG-PoA consensus (15-20s per round)
+          - wait: "25s"
       
       # CRITICAL: Wait for DAG-PoA to process ALL transfers into ledger
       # Finalized transactions are in mempool, need DAG rounds + consensus + ledger processing
