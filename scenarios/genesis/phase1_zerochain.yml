@@ -10,7 +10,8 @@ network:
 
 setup:
 
-  # Enable seed_mode explicitly for genesis event creation
+  # Enable seed_mode for ROOT nodes to create genesis events
+  # seed_mode controls genesis acceptance, NOT networking (seed_nodes handles that)
   - config: "cellframe-node"
     nodes: [root-1, root-2, root-3]
     set:
@@ -181,23 +182,24 @@ test:
         save_hash: genesis_event_hash
   
   # Genesis events (token + emission) created! Now disable seed_mode and set static genesis hash
+  # Apply to ALL nodes so they all have the same genesis
   - config: "cellframe-node"
-    nodes: [root-1, root-2, root-3]
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     set:
       seed_mode: "false"
   
   - config: "stagenet/zerochain"
-    nodes: [root-1, root-2, root-3]
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     set:
       static_genesis_event: "{{genesis_event_hash}}"
       is_static_genesis_event: "true"
   
-  # Restart nodes to apply new configs (seed_mode=false, static_genesis_event set)
+  # Restart ALL nodes to apply new configs (seed_mode=false, static_genesis_event set)
   - docker_op: restart
-    services: [root-1, root-2, root-3]
+    services: [root-1, root-2, root-3, master-1, master-2, master-3]
   
   - wait_network: online
-    nodes: [root-1, root-2, root-3]
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     timeout: 60
   
   # Wait for network to stabilize after restart (links take time to establish)
@@ -205,7 +207,7 @@ test:
   
   # Wait for CLI to be responsive
   - wait: cli_ready
-    nodes: [root-1, root-2, root-3]
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     timeout: 40
   
   # Sync GDB and mempool after restart to ensure all nodes are synchronized

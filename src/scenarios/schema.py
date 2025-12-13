@@ -234,6 +234,7 @@ class WaitStep(BaseModel):
       - wait: mempool           # Wait for datum in mempool
       - wait: finalized         # Wait for datum finalization (DAG/Block/None)
       - wait: network_online    # Wait for network state
+      - wait: wallet_balance    # Wait for wallet balance condition
     """
     wait: str = Field(..., description="Duration (e.g., '5s') or condition ('mempool', 'finalized', ...)")
     
@@ -244,6 +245,11 @@ class WaitStep(BaseModel):
     network: Optional[str] = Field(None, description="Network name")
     chain: Optional[str] = Field(None, description="Chain name")
     timeout: int = Field(60, description="Timeout in seconds")
+    
+    # Wallet balance parameters
+    wallet: Optional[str] = Field(None, description="Wallet name (for wallet_balance)")
+    token: Optional[str] = Field(None, description="Token ticker (for wallet_balance)")
+    balance: Optional[str] = Field(None, description="Balance condition e.g. '> 1000' (for wallet_balance)")
     
     # Advanced options
     check_master: bool = Field(True, description="Check master nodes (for finalized)")
