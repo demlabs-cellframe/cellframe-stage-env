@@ -40,7 +40,7 @@ class ConfigContext:
     root_nodes_addrs: str = "[]"
     
     # Consensus parameters
-    min_validators_count: int = 2
+    min_validators_count: int = 1  # Must be <= actual validators count (tests-in-docker uses 1)
     poa_mode: str = "true"
     auth_certs_number: int = 3
     auth_certs_number_verify: int = 2

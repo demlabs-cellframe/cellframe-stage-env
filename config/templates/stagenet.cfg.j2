@@ -18,3 +18,10 @@ seed_nodes_hosts={{ seed_nodes_hosts | default('[]', true) }}
 events-sign-cert={{ events_sign_cert }}
 {% endif %}
 
+# ESBocs blocks signing certificate (for MASTER nodes only)
+# This enables master nodes to sign blocks in the main chain
+[esbocs]
+{% if blocks_sign_cert %}
+blocks-sign-cert={{ blocks_sign_cert }}
+{% endif %}
+

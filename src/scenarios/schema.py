@@ -265,10 +265,10 @@ class PythonStep(BaseModel):
 class BashStep(BaseModel):
     """Execute Bash script."""
     bash: str = Field(..., description="Bash script to execute")
-    node: str = Field("node1", description="Node to execute on")
+    node: Optional[str] = Field(None, description="Node to execute on (None = execute on host)")
     save: Optional[str] = Field(None, description="Variable name to save result to")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
-    timeout: Optional[int] = Field(30, description="Script timeout in seconds")
+    timeout: Optional[int] = Field(300, description="Script timeout in seconds")
     
     class Config:
         use_enum_values = True

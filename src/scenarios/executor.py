@@ -252,7 +252,7 @@ class ScenarioExecutor:
                 if index_str.isdigit():
                     index = int(index_str)
                     
-                    # Need to resolve from topology
+                    # Try to resolve from topology mapping first
                     if self._node_role_mapping:
                         role_nodes = [
                             node_id for node_id, node_role in self._node_role_mapping.items()
@@ -260,6 +260,18 @@ class ScenarioExecutor:
                         ]
                         if role_nodes and 1 <= index <= len(role_nodes):
                             return role_nodes[index - 1]  # 1-indexed
+                    
+                    # Fallback: hardcoded mapping based on default topology
+                    # Default: 3 root, 3 master, N full nodes
+                    # root-1 -> node1, root-2 -> node2, root-3 -> node3
+                    # master-1 -> node4, master-2 -> node5, master-3 -> node6
+                    # full-1 -> node7, full-2 -> node8, etc.
+                    if role == "root":
+                        return f"node{index}"
+                    elif role == "master":
+                        return f"node{index + 3}"  # master-1 -> node4
+                    elif role == "full":
+                        return f"node{index + 6}"  # full-1 -> node7
         
         # Fallback: return as-is (will fail later if invalid)
         return node_alias

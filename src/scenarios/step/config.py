@@ -90,6 +90,10 @@ class ConfigStepExecutor(StepExecutor):
         # config_name e.g. "cellframe-node" or "stagenet/zerochain"
         
         # Mapping heuristic
+        is_chain = False
+        is_network = False
+        parts = []
+        
         if '/' in config_name:
             # "stagenet/zerochain" -> chains template
             parts = config_name.split('/')
@@ -97,10 +101,13 @@ class ConfigStepExecutor(StepExecutor):
             chain_file = parts[1] # e.g. "zerochain"
             template_name = f"chains/{chain_file}.cfg.j2"
             is_chain = True
+        elif config_name == "stagenet":
+            # Network config (special case)
+            template_name = "stagenet.cfg.j2"
+            is_network = True
         else:
             # "cellframe-node" -> base template
             template_name = f"base/{config_name}.cfg.j2"
-            is_chain = False
             
         # Verify template exists
         template_path = generator.templates_dir / template_name
@@ -121,6 +128,9 @@ class ConfigStepExecutor(StepExecutor):
             if is_chain:
                 # network/stagenet/chain.cfg
                 target_file = node_dir / "network" / parts[0] / f"{parts[1]}.cfg"
+            elif is_network:
+                # network/stagenet.cfg
+                target_file = node_dir / "network" / f"{config_name}.cfg"
             else:
                 target_file = node_dir / f"{config_name}.cfg"
                 
@@ -167,4 +177,18 @@ class ConfigStepExecutor(StepExecutor):
                 elif v.isdigit():
                     v = int(v)
                 context[k] = v
+        
+        # Map config file key names to template variable names
+        # Config files use dashes, templates use underscores
+        key_mappings = {
+            'node-role': 'node_role',
+            'blocks-sign-cert': 'blocks_sign_cert',
+            'events-sign-cert': 'events_sign_cert',
+            'seed_nodes_aliases': 'seed_nodes_aliases',
+            'seed_nodes_hosts': 'seed_nodes_hosts',
+        }
+        for config_key, template_key in key_mappings.items():
+            if config_key in context and template_key not in context:
+                context[template_key] = context[config_key]
+        
         return context

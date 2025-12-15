@@ -109,8 +109,8 @@ services:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: url
-        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-master-amd64.deb
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.7-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     cap_add:
@@ -153,6 +153,7 @@ services:
     - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./cache/crash-artifacts/node1:/crash-artifacts/node-1
     - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - /home/olzh/demlabs/second/cellframe-node/test_build:/packages:ro
     pull_policy: never
   node-2:
     build:
@@ -160,8 +161,8 @@ services:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: url
-        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-master-amd64.deb
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.7-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     cap_add:
@@ -204,6 +205,7 @@ services:
     - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./cache/crash-artifacts/node2:/crash-artifacts/node-2
     - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - /home/olzh/demlabs/second/cellframe-node/test_build:/packages:ro
     pull_policy: never
   node-3:
     build:
@@ -211,8 +213,8 @@ services:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: url
-        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-master-amd64.deb
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.7-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     cap_add:
@@ -255,6 +257,7 @@ services:
     - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./cache/crash-artifacts/node3:/crash-artifacts/node-3
     - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - /home/olzh/demlabs/second/cellframe-node/test_build:/packages:ro
     pull_policy: never
   node-4:
     build:
@@ -262,8 +265,8 @@ services:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: url
-        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-master-amd64.deb
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.7-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     cap_add:
@@ -306,6 +309,7 @@ services:
     - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./cache/crash-artifacts/node4:/crash-artifacts/node-4
     - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - /home/olzh/demlabs/second/cellframe-node/test_build:/packages:ro
     pull_policy: never
   node-5:
     build:
@@ -313,8 +317,8 @@ services:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: url
-        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-master-amd64.deb
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.7-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     cap_add:
@@ -357,6 +361,7 @@ services:
     - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./cache/crash-artifacts/node5:/crash-artifacts/node-5
     - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - /home/olzh/demlabs/second/cellframe-node/test_build:/packages:ro
     pull_policy: never
   node-6:
     build:
@@ -364,8 +369,8 @@ services:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: url
-        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-master-amd64.deb
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.7-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     cap_add:
@@ -408,6 +413,7 @@ services:
     - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./cache/crash-artifacts/node6:/crash-artifacts/node-6
     - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - /home/olzh/demlabs/second/cellframe-node/test_build:/packages:ro
     pull_policy: never
   node-7:
     build:
@@ -415,8 +421,8 @@ services:
         BUILD_TYPE: ${BUILD_TYPE:-debug}
         CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: url
-        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-master-amd64.deb
+        NODE_SOURCE_TYPE: local
+        LOCAL_PACKAGE_NAME: cellframe-node-5.7-LOCALBUILD-dbg-amd64.deb
       context: .
       dockerfile: Dockerfile.cellframe
     cap_add:
@@ -459,57 +465,7 @@ services:
     - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./cache/crash-artifacts/node7:/crash-artifacts/node-7
     - ./cache/cellframe-packages:/var/cache/cellframe-packages
-    pull_policy: never
-  node-8:
-    build:
-      args:
-        BUILD_TYPE: ${BUILD_TYPE:-debug}
-        CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
-        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: url
-        PACKAGE_URL: https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-master-amd64.deb
-      context: .
-      dockerfile: Dockerfile.cellframe
-    cap_add:
-    - SYS_PTRACE
-    container_name: cellframe-stage-node-8
-    environment:
-      NODE_ID: '8'
-      NODE_ROLE: full
-      NODE_TYPE: full_nodes
-      NODE_IP: 172.20.0.17
-      NETWORK_NAME: stagenet
-      DAP_DEBUG: '1'
-      CELLFRAME_DEBUG: '1'
-    healthcheck:
-      interval: 10s
-      retries: 3
-      start_period: 30s
-      test:
-      - CMD
-      - sh
-      - -c
-      - pgrep -f cellframe-node > /dev/null
-      timeout: 5s
-    hostname: cellframe-stage-node-8
-    image: cf-node:${BUILD_TYPE:-debug}-${CELLFRAME_VERSION:-latest}
-    networks:
-      stagenet:
-        ipv4_address: 172.20.0.17
-    ports:
-    - 8086:8079
-    privileged: true
-    restart: 'no'
-    ulimits:
-      core: -1
-    volumes:
-    - ./cache/configs/node8/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
-    - ./cache/configs/node8/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
-    - ./cache/configs/node8/network:/opt/cellframe-node/etc/network
-    - ./cache/data/node8:/opt/cellframe-node/var
-    - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
-    - ./cache/crash-artifacts/node8:/crash-artifacts/node-8
-    - ./cache/cellframe-packages:/var/cache/cellframe-packages
+    - /home/olzh/demlabs/second/cellframe-node/test_build:/packages:ro
     pull_policy: never
 networks:
   stagenet:

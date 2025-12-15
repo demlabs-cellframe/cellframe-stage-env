@@ -99,9 +99,9 @@ pricelist=[]
 # Mempool
 [mempool]
 # gdb_group=
-# auto_proc=false for ROOT nodes - manual processing via mempool proc command
-# This matches tests-in-docker configuration
-auto_proc=false
+# Automatically false, for enabling need role master or higher
+# CRITICAL: Must be true for DAG/Block processing to work
+auto_proc=true
 
 [chain]
 # More debug output - ENABLED for chain loading and UTXO debugging
@@ -173,8 +173,8 @@ enabled=true
 debug_more=true
 # debug-cli=false
 version=2
-# Allow all commands for testing
-allowed_cmd=[node, ledger, wallet, mempool, srv_stake, poll, net_srv, net, block, dag, token, tx_create, tx_history, chain, token_decl, token_emit, dag_poa, esbocs, global_db]
+# Allow all commands for testing (matching tests-in-docker style)
+allowed_cmd=[ledger, wallet, mempool, srv_stake, poll, net_srv, net, block, dag, token, tx_create, tx_history, chain, token_decl, token_emit, dag_poa, esbocs, global_db, node]
 listen-path=[/opt/cellframe-node/var/run/node_cli]
 listen-address=[0.0.0.0:8081]
 # IMPORTANT! Its accessible for all the users in system!

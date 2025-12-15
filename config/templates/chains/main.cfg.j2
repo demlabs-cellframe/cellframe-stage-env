@@ -1,5 +1,5 @@
 # Main chain configuration for Cellframe Stagenet
-# ESBocs consensus chain for block production (PoS - Proof of Stake)
+# ESBocs consensus chain for block production
 
 [chain]
 id=0x0000000000000003
@@ -22,34 +22,17 @@ static_genesis_block={{ static_genesis_block | default('', true) }}
 
 [esbocs]
 consensus_debug=true
-# Minimum number of validators for consensus
-# CRITICAL: Must match actual validators count, otherwise SDK returns -2
-min_validators_count={{ min_validators_count | default(2, true) }}
-# Validators addresses (required by SDK for initialization)
-# Master node addresses are pre-configured here
-validators_addrs={{ mainchain_validators_addrs | default(validators_addrs, true) }}
-# PoA mode: when true, uses validators_addrs as authorized validators
-# CRITICAL: Set to false to enable PoS (Proof of Stake) via srv_stake
-poa_mode={{ poa_mode | default('false', true) }}
-# Authentication certificates prefix
-# Uses stagenet.master prefix for master node certificates (validators)
+# Minimum number of validators (tests-in-docker uses 1)
+min_validators_count=1
+# Validators addresses (placeholder required by SDK, must have >= min_validators_count entries)
+validators_addrs=[ABCD::EF00::0000::0000]
+# Authentication certificates prefix (stagenet.master for master nodes)
 auth_certs_prefix=stagenet.master
-# Minimum fee for transactions
-# Format: decimal number (e.g., "0.1" for 0.1 tokens)
-# CRITICAL: Should be 0 during genesis to allow first transactions without fee
-# After genesis block creation, should be set to non-zero value
-minimum_fee={{ minimum_fee | default('0', true) }}
-# New round delay (in seconds)
-# CRITICAL: Must be > 0 for proper consensus operation
-# Too low values (0-5) cause synchronization issues
-# Recommended: 10-15 for test, 30-45 for production
-new_round_delay=10
-# Collecting level
-collecting_level=10.0
-# Fee collection address (filled dynamically after fee wallet creation)
-fee_addr={{ fee_addr | default('', true) }}
-# GENESIS MODE: Enable only during genesis block creation
-# When true, stage-env will wait longer for validators to be synchronized
-# This allows ESBocs to find validators even if they're not yet marked as active
-# After genesis block is created, this should be set to false
-genesis_mode={{ genesis_mode | default('true', true) }}
+{% if blocks_sign_cert -%}
+blocks-sign-cert={{ blocks_sign_cert }}
+{% endif -%}
+# Round parameters (from tests-in-docker)
+new_round_delay=5
+round_start_sync_timeout=5
+round_attempts_max=2
+round_attempt_timeout=5

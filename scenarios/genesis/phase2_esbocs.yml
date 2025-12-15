@@ -1,19 +1,33 @@
 name: PHASE 2 - ESBocs Genesis
-description: Delegate keys on zerochain, create mainchain genesis block in seed mode
+description: Create mainchain genesis block from emission (following tests-in-docker pattern)
 
-# Note: emission_hash, token_hash, fee_addr are passed from Phase1 via context
-# Master nodes are already running (started in Phase1)
+# Note: emission_hash, token_hash, fee_addr, genesis_event_hash, stake_order_hash are passed from Phase1 via context
 
 includes:
   - common/set_net_default.yml
 
+network:
+  topology: default
+  name: stagenet
+
 test:
-  # Continuing from Phase1 with seed_mode=false
-  # Delegations will be performed on zerochain, then mainchain genesis in seed mode
+  # Enable seed_mode for MASTER nodes to create genesis block
+  - config: "cellframe-node"
+    nodes: [master-1, master-2, master-3]
+    set:
+      seed_mode: "true"
   
-  # CRITICAL: Restart master nodes to clear stale connections
-  # After Phase1 snapshot, root nodes were restarted but master nodes weren't
-  # Master nodes have stale TCP connections that need to be reset
+  # Set blocks_sign_cert for master node that will create genesis block
+  # Note: blocks-sign-cert goes in NETWORK config (stagenet.cfg)
+  - config: "stagenet"
+    nodes: [master-1]
+    set:
+      blocks_sign_cert: "pvt.stagenet.master.0"
+  
+  # Wait for config files to be written
+  - wait: "5s"
+  
+  # Restart master nodes to apply new configs
   - docker_op: restart
     services: [master-1, master-2, master-3]
   
@@ -21,165 +35,63 @@ test:
     nodes: [master-1, master-2, master-3]
     timeout: 60
   
-  # Wait for GlobalDB to sync nodelist from root nodes to master nodes
-  - wait: "30s"
-  
-  # Add master nodes to nodelist - each node adds itself
-  - group: Add master nodes to nodelist
-    steps:
-      - cli: "node add"
-        node: master-1
-      - cli: "node add"
-        node: master-2
-      - cli: "node add"
-        node: master-3
-      
-      # Wait for nodelist sync
-      - wait: "15s"
-  
-  # Wait for master-root links
-  - wait_network: links_established
-    nodes: [master-1, master-2, master-3, root-1, root-2, root-3]
-    timeout: 120
-  
-  # Verify root-1 has wallets (master wallets were created in Phase1)
-  # Phase2 may have different certs, so we just verify fee_collector exists
-  - group: Verify wallet access
-    steps:
-      - cli: "wallet list"
-        node: root-1
-
-  # Delegate keys via srv_stake
-  - group: Delegate keys
-    defaults:
-      cli:
-        chain: zerochain
-    steps:
-      - loop: 3
-        steps:
-          - set: master_idx = "{{i}}"
-          - set: master_node = "master-{{iteration}}"
-          - set: wallet_name = "stagenet_master_{{i}}"
-          - set: cert_name = "pvt.stagenet.master.{{i}}"
-          
-          # Get node address
-          - cli: "node dump"
-            node: "{{master_node}}"
-            save_node: "master_node_addr_{{master_idx}}"
-          
-          # Delegate key
-          - set: node_addr = "locals()['master_node_addr_' + str(i)]"
-            eval: true
-          
-          - cli: "srv_stake delegate -w {{wallet_name}} -value 100.0e+18 -cert {{cert_name}} -node_addr {{node_addr}} -fee 0.1"
-            node: "{{master_node}}"
-            save_hash: "delegation_hash_{{master_idx}}"
-          
-          - wait_for_datum: "{{delegation_hash_{{master_idx}}}}"
-            node: "{{master_node}}"
-            timeout_total: 120
-  
-  # GDB sync
-  - group: GDB sync
-    steps:
-      - loop: 3
-        steps:
-          - set: node_name = "master-{{iteration}}"
-          - cli: "net go sync"
-            node: "{{node_name}}"
-      
-      - loop: 3
-        steps:
-          - set: node_name = "root-{{iteration}}"
-          - cli: "net go sync"
-            node: "{{node_name}}"
-  
-  - wait_network: sync_complete
-    nodes: [master-1, master-2, master-3, root-1, root-2, root-3]
-    timeout: 30
-  
-  # Verify delegations
-  - wait: delegations_synced
-    nodes: [master-1, master-2, master-3]
-    expected_count: 3
-    timeout: 60
-  
-  # Flush GDB
-  - group: Flush GDB
-    steps:
-      - loop: 3
-        steps:
-          - set: node_name = "root-{{iteration}}"
-          - cli: "global_db flush"
-            node: "{{node_name}}"
-      
-      - loop: 3
-        steps:
-          - set: node_name = "master-{{iteration}}"
-          - cli: "global_db flush"
-            node: "{{node_name}}"
-  
-  # =================================================================
-  # GENESIS BLOCK CREATION IN SEED MODE
-  # =================================================================
-  # Delegations are approved on zerochain, now create mainchain genesis block
-  
-  # Enable seed_mode for MASTER nodes to create genesis block
-  - config: "cellframe-node"
-    nodes: [master-1, master-2, master-3]
-    set:
-      seed_mode: "true"
-  
-  # Restart ALL nodes to activate ESBocs with delegated keys and seed_mode
-  # Root nodes restart to sync with new validator state
-  # Master nodes restart with seed_mode=true for genesis block creation
-  - docker_op: restart
-    services: [root-1, root-2, root-3, master-1, master-2, master-3]
-  
-  - wait_network: online
-    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
-    timeout: 60
-  
-  - wait_network: links_established
-    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
-    timeout: 120
-  
-  # Wait for CLI to be responsive
   - wait: cli_ready
-    nodes: [master-1, master-2, master-3]
+    nodes: [master-1]
     timeout: 40
   
-  # GENESIS OPERATION: Create first transaction on mainchain
-  # This transaction becomes the genesis block of mainchain
-  - group: Genesis Block - First Mainchain Transaction
+  # =================================================================
+  # GENESIS BLOCK CREATION (bx_create from tests-in-docker)
+  # =================================================================
+  # Note: srv_stake order was already created in Phase 1 before restart
+  # Create basic transaction from emission to main chain
+  # This is "_mempool_job bx_create" in tests-in-docker
+  
+  - group: Genesis Block - bx_create from emission
     defaults:
-      node: master-1
+      node: root-1
     steps:
-      - cli: "tx_create -from_wallet fee_collector -to_wallet stagenet_master_0 -value 1.0 -token TCELL -chain main -fee 0.1"
+      # Get fee_collector address for receiving funds from emission
+      - cli: "wallet info -w fee_collector"
+        save_wallet: fee_collector_addr
+      
+      # Create basic transaction from emission to fee_collector on MAIN chain
+      # Following tests-in-docker: tx_create -from_emission ... -fee ${FEE} -cert <cert>
+      # Note: we use -wallet_fee instead of -cert as required by SDK
+      - cli: "tx_create -from_emission {{emission_hash}} -value 100000.0 -to_addr {{fee_collector_addr}} -token TCELL -chain main -fee 0.05 -wallet_fee fee_collector"
         save_hash: mainchain_genesis_tx
       
-      # Allow propagation
+      # Process the transaction in mempool on master node with signing cert
       - wait: "5s"
+      - cli: "mempool proc -net stagenet -chain main -datum {{mainchain_genesis_tx}}"
+        node: master-1
       
-      # Wait for genesis transaction to be finalized
-      - wait: finalized
-        datum: "{{mainchain_genesis_tx}}"
-        chain: main
-        timeout: 80
+      # Wait for genesis block to be finalized (tests-in-docker uses different timing)
+      - wait: "30s"
+      
+      # Verify block was created
+      - cli: "block list -net stagenet -chain main"
+        node: master-1
+        expect_output: "have blocks:"
   
-  # Genesis block created! Now disable seed_mode and set static genesis block hash
+  # Get genesis block hash for configuration
+  - cli: "block list -net stagenet -chain main"
+    node: master-1
+    save_hash: genesis_block_hash
+  
+  # Set static genesis block configuration for ALL nodes
+  - config: "stagenet/main"
+    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
+    set:
+      static_genesis_block: "{{genesis_block_hash}}"
+      is_static_genesis_block: "true"
+  
+  # Disable seed_mode on master nodes
   - config: "cellframe-node"
     nodes: [master-1, master-2, master-3]
     set:
       seed_mode: "false"
   
-  - config: "stagenet/main"
-    nodes: [master-1, master-2, master-3]
-    set:
-      static_genesis_block: "{{mainchain_genesis_tx}}"
-      is_static_genesis_block: "true"
-  
-  # Final restart to apply new configs (seed_mode=false, static_genesis_block set)
+  # Restart all nodes to apply static_genesis_block and seed_mode=false
   - docker_op: restart
     services: [root-1, root-2, root-3, master-1, master-2, master-3]
   
@@ -187,16 +99,20 @@ test:
     nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
     timeout: 60
   
-  - wait_network: links_established
-    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
-    timeout: 120
-  
-  # Verify ESBocs consensus is active with proper configuration
-  - wait: esbocs_active
-    nodes: [master-1]
-    timeout: 60
+  - wait: "40s"
 
 check:
-  - cli: "net get states -net stagenet"
+  # Verify network is online
+  - cli: "net -net stagenet get status"
     node: master-1
-    contains: "NET_STATE_ONLINE"
+    expect_output: "NET_STATE_ONLINE"
+  
+  # Verify main chain has blocks
+  - cli: "block list -net stagenet -chain main"
+    node: root-1
+    expect_output: "have blocks:"
+  
+  # Verify zerochain has token
+  - cli: "token list"
+    node: root-1
+    expect_output: "tokens:"

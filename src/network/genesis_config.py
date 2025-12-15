@@ -712,16 +712,16 @@ class GenesisConfigManager(BaseGenesisManager):
         if validators_addrs_value and validators_addrs_value != '[]':
             validators_list = re.findall(r'[A-Fa-f0-9:]+', validators_addrs_value)
             validator_count = len(validators_list)
-            min_validators_count = max(2, validator_count // 2 + 1)  # 2/3 consensus
+            min_validators_count = max(1, validator_count // 2 + 1)  # 2/3 consensus
             logger.info("min_validators_count_calculated_from_existing_validators",
                        validator_count=validator_count,
                        min_validators_count=min_validators_count,
                        note="Using existing validators_addrs from config")
         else:
             # No validators in config - should not happen after initial generation
-            min_validators_count = 2  # Default
+            min_validators_count = 1  # Default
             logger.warning("no_validators_addrs_in_existing_config",
-                         note="validators_addrs is empty - using default min_validators_count=2")
+                         note="validators_addrs is empty - using default min_validators_count=1")
         
         # Prepare Jinja2 context with preserved genesis hashes, fee_addr AND existing parameters
         chain_context = {
