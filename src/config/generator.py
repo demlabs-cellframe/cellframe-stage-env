@@ -334,13 +334,17 @@ class ConfigGenerator:
             blocks_sign_cert = None
             
             if node.is_seed_node:  # ROOT nodes
-                root_idx = node.node_id - 1  # node1→0, node2→1, node3→2
-                events_sign_cert = f"pvt.{network_name}.root.{root_idx}"
+                # Certificate format: stagenet.root.pvt.0 (not pvt.stagenet.root.0!)
+                root_idx = node.node_id - 1  # node1→0, node2→1
+                events_sign_cert = f"{network_name}.root.pvt.{root_idx}"
                 logger.debug("events_sign_cert_prepared", node_id=node.node_id, cert=events_sign_cert)
             
             if node.consensus_participation and not node.is_seed_node:  # MASTER nodes
-                master_idx = node.node_id - 4  # node4→0, node5→1, node6→2
-                blocks_sign_cert = f"pvt.{network_name}.master.{master_idx}"
+                # Topology: ROOT=node1,node2 MASTER=node3,node4,node5 FULL=node6
+                # master_idx: node3→0, node4→1, node5→2
+                # Certificate format: stagenet.master.pvt.0 (not pvt.stagenet.master.0!)
+                master_idx = node.node_id - 3
+                blocks_sign_cert = f"{network_name}.master.pvt.{master_idx}"
                 logger.debug("blocks_sign_cert_prepared", node_id=node.node_id, cert=blocks_sign_cert)
             
             # Render template with node-specific context
