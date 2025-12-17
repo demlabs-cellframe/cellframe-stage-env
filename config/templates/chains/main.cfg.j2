@@ -2,13 +2,15 @@
 # ESBocs consensus chain for block production
 
 [chain]
-id=0x0000000000000003
+id=0x0000000000000001
 shard_id=0x0000000000000000
 name=main
-load_priority=2
-# Possible values [token, emission, transaction, ca, sign, decree, anchor, custom] 
-datum_types=[transaction, ca, sign, anchor, custom]
-default_datum_types=[transaction, ca, sign, anchor, custom]
+load_priority=1
+# Possible values [token, emission, transaction, ca, decree, anchor] (following tests-in-docker)
+datum_types=[transaction,anchor]
+default_datum_types=[transaction,anchor]
+# CRITICAL: mempool_auto_types enables automatic processing (following tests-in-docker line 9)
+mempool_auto_types=[transaction,anchor]
 consensus=esbocs
 
 [files]
@@ -27,12 +29,13 @@ min_validators_count=1
 # Validators addresses (placeholder required by SDK, must have >= min_validators_count entries)
 validators_addrs=[ABCD::EF00::0000::0000]
 # Authentication certificates prefix (stagenet.master for master nodes)
+# NOTE: ESBocs requires auth_certs_prefix to be set - certs must exist in share/ca
 auth_certs_prefix=stagenet.master
 {% if blocks_sign_cert -%}
 blocks-sign-cert={{ blocks_sign_cert }}
 {% endif -%}
 # Round parameters (from tests-in-docker)
-new_round_delay=5
+new_round_delay=30
 round_start_sync_timeout=5
 round_attempts_max=2
 round_attempt_timeout=5

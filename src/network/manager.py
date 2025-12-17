@@ -379,8 +379,8 @@ class NetworkManager:
                 )
                 
                 # Execute phase1 scenario
-                # Pass global_context and node_configs for automatic IP collection after setup
-                root_node_configs = [n for n in node_configs if n.role == 'root']
+                # Pass ALL node_configs for automatic IP collection after setup
+                # Scenario needs IPs for all nodes (ROOT, MASTER, FULL) to add them to nodelist
                 
                 logger.info("executing_phase1_scenario")
                 
@@ -391,7 +391,7 @@ class NetworkManager:
                     genesis_config_manager=self.genesis.config_mgr,
                     initial_variables={},
                     global_context=self.scenario_context,
-                    node_configs=root_node_configs
+                    node_configs=node_configs  # All nodes, not just root
                 )
                 
                 # Extract results from context

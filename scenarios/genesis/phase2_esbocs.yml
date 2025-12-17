@@ -11,92 +11,97 @@ network:
   name: stagenet
 
 test:
-  # Enable seed_mode for MASTER nodes to create genesis block
-  - config: "cellframe-node"
-    nodes: [master-1, master-2, master-3]
-    set:
-      seed_mode: "true"
+  # NOTE: In tests-in-docker, blocks-sign-cert is NOT set before mainchain genesis
+  # Genesis block is created WITHOUT blocks-sign-cert configuration
+  # ESBocs will use auth_certs for initial block creation
   
-  # Set blocks_sign_cert for master node that will create genesis block
-  # Note: blocks-sign-cert goes in NETWORK config (stagenet.cfg)
-  - config: "stagenet"
-    nodes: [master-1]
-    set:
-      blocks_sign_cert: "pvt.stagenet.master.0"
-  
-  # Wait for config files to be written
-  - wait: "5s"
-  
-  # Restart master nodes to apply new configs
-  - docker_op: restart
-    services: [master-1, master-2, master-3]
-  
-  - wait_network: online
-    nodes: [master-1, master-2, master-3]
-    timeout: 60
-  
-  - wait: cli_ready
-    nodes: [master-1]
-    timeout: 40
+  # Verify seed_mode is already enabled from Phase 1
+  # No additional config changes needed before genesis block creation
   
   # =================================================================
   # GENESIS BLOCK CREATION (bx_create from tests-in-docker)
   # =================================================================
-  # Note: srv_stake order was already created in Phase 1 before restart
-  # Create basic transaction from emission to main chain
-  # This is "_mempool_job bx_create" in tests-in-docker
+  # Following tests-in-docker testnet.sh lines 194-197:
+  # MSG="Making a basic transaction"
+  # PARAMETERS="-cert foobar.root.pvt.0"
+  # _get_emission_hash "${ROOT[0]}"
+  # _mempool_job ${ROOT[0]} bx_create
+  #
+  # bx_create in functions.sh (439-443):
+  # tx_create -net ${NET} -chain ${CHAIN} -token ${TOKEN} \
+  #   -emission_chain ${CHAIN} -from_emission ${DATUM} -value ${VALUE} \
+  #   -to_addr ${ADDR} -fee ${FEE} ${PARAMETERS}
+  # Where CHAIN='main', VALUE='10.0e+54', FEE='5.0e+18', PARAMETERS="-cert foobar.root.pvt.0"
   
   - group: Genesis Block - bx_create from emission
     defaults:
-      node: root-1
+      node: node-1
     steps:
-      # Get fee_collector address for receiving funds from emission
-      - cli: "wallet info -w fee_collector"
-        save_wallet: fee_collector_addr
-      
-      # Create basic transaction from emission to fee_collector on MAIN chain
-      # Following tests-in-docker: tx_create -from_emission ... -fee ${FEE} -cert <cert>
-      # Note: we use -wallet_fee instead of -cert as required by SDK
-      - cli: "tx_create -from_emission {{emission_hash}} -value 100000.0 -to_addr {{fee_collector_addr}} -token TCELL -chain main -fee 0.05 -wallet_fee fee_collector"
+      # CRITICAL: bx_create is executed by ROOT[0], NOT MASTER!
+      # Following tests-in-docker testnet.sh:194-197:
+      # MSG="Making a basic transaction"
+      # PARAMETERS="-cert foobar.root.pvt.0"   <-- ROOT cert!
+      # _get_emission_hash "${ROOT[0]}"
+      # _mempool_job ${ROOT[0]} bx_create      <-- ROOT[0] executes!
+      #
+      # bx_create in functions.sh (439-443):
+      # tx_create -net ${NET} -chain ${CHAIN} -token ${TOKEN} \
+      #   -emission_chain ${CHAIN} -from_emission ${DATUM} -value ${VALUE} \
+      #   -to_addr ${ADDR} -fee ${FEE} ${PARAMETERS}
+      # Where:
+      #   CHAIN='main', VALUE='10.0e+54', FEE='5.0e+18', 
+      #   PARAMETERS="-cert foobar.root.pvt.0", ADDR=fee_addr from ROOT[0]
+      #
+      # Create basic transaction from emission on MAIN chain (executed by root-1!)
+      - cli: "tx_create -net stagenet -chain main -token TCELL -emission_chain main -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert stagenet.root.pvt.0"
         save_hash: mainchain_genesis_tx
       
-      # Process the transaction in mempool on master node with signing cert
-      - wait: "5s"
-      - cli: "mempool proc -net stagenet -chain main -datum {{mainchain_genesis_tx}}"
-        node: master-1
+      # Wait for block to be created automatically (no mempool proc needed)
+      # tests-in-docker waits up to 180s for block creation (functions.sh:819)
+      - wait: "180s"
       
-      # Wait for genesis block to be finalized (tests-in-docker uses different timing)
-      - wait: "30s"
-      
-      # Verify block was created
+      # Verify block was created on MASTER node (block producer)
       - cli: "block list -net stagenet -chain main"
-        node: master-1
+        node: node-3
         expect_output: "have blocks:"
   
   # Get genesis block hash for configuration
   - cli: "block list -net stagenet -chain main"
-    node: master-1
+    node: node-3
     save_hash: genesis_block_hash
   
   # Set static genesis block configuration for ALL nodes
+  # Following tests-in-docker testnet.sh:199-202
+  # Topology: 2 ROOT + 3 MASTER + 1 FULL = 6 nodes
   - config: "stagenet/main"
-    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
+    nodes: [node-1, node-2, node-3, node-4, node-5]
     set:
       static_genesis_block: "{{genesis_block_hash}}"
       is_static_genesis_block: "true"
   
-  # Disable seed_mode on master nodes
+  # Disable is_add_directly for production DAG-PoA consensus
+  # After genesis, we want proper multi-node confirmation for events
+  - config: "stagenet/zerochain"
+    nodes: [node-1, node-2]
+    set:
+      is_add_directly: "false"
+  
+  # Disable seed_mode (following tests-in-docker testnet.sh:205-207)
+  # _seed_mode "${MASTER[0]}" off
+  # _seed_mode "${ROOT[0]}" off
+  # _seed_mode "${ROOT[1]}" off
   - config: "cellframe-node"
-    nodes: [master-1, master-2, master-3]
+    nodes: [node-1, node-2, node-3]
     set:
       seed_mode: "false"
   
   # Restart all nodes to apply static_genesis_block and seed_mode=false
+  # Following tests-in-docker testnet.sh:208-210
   - docker_op: restart
-    services: [root-1, root-2, root-3, master-1, master-2, master-3]
+    services: [node-1, node-2, node-3, node-4, node-5, node-6]
   
   - wait_network: online
-    nodes: [root-1, root-2, root-3, master-1, master-2, master-3]
+    nodes: [node-1, node-2, node-3, node-4, node-5]
     timeout: 60
   
   - wait: "40s"
@@ -104,15 +109,15 @@ test:
 check:
   # Verify network is online
   - cli: "net -net stagenet get status"
-    node: master-1
+    node: node-3
     expect_output: "NET_STATE_ONLINE"
   
   # Verify main chain has blocks
   - cli: "block list -net stagenet -chain main"
-    node: root-1
+    node: node-1
     expect_output: "have blocks:"
   
   # Verify zerochain has token
   - cli: "token list"
-    node: root-1
+    node: node-1
     expect_output: "tokens:"

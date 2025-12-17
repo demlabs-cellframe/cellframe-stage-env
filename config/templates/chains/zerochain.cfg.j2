@@ -21,9 +21,11 @@ storage_dir=../../../var/lib/network/stagenet/zerochain/
 [dag]
 is_single_line=true
 is_celled=false
-# is_add_directly=false: Wait for auto_confirmation from other ROOT nodes
-# This matches tests-in-docker configuration for proper DAG-PoA consensus
-is_add_directly=false
+# is_add_directly: Controls whether events are added directly or via confirmation round
+# During genesis (seed_mode=true): use true to allow single-node event creation
+# After genesis: use false to require multi-node confirmation
+# This is configurable via scenario to switch between genesis and production modes
+is_add_directly={{ is_add_directly | default('false', true) }}
 datum_add_hashes_count=1
 # Enable detailed debug logging for DAG consensus (includes datums table operations)
 debug_more=true

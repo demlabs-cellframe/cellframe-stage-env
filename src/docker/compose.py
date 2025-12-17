@@ -473,6 +473,7 @@ class DockerComposeManager:
         services: Optional[List[str]] = None,
         detach: bool = True,
         wait: bool = True,
+        no_build: bool = False,
     ) -> None:
         """
         Start services.
@@ -483,10 +484,12 @@ class DockerComposeManager:
             services: List of service names (None = all)
             detach: Run in background
             wait: Wait for services to be ready
+            no_build: Skip building images (use existing)
         """
         logger.info("starting_services", services=services or "all")
         
         from src.utils.cli import run_command
+        import subprocess
         
         # Check if containers already exist (by label and by name pattern)
         # We need to clean up potential stale/colliding containers before starting
@@ -536,6 +539,31 @@ class DockerComposeManager:
             
             # Brief wait to ensure Docker daemon processes removal
             time.sleep(1)
+        
+        # Check if image already exists to avoid BuildKit "image already exists" error
+        # This happens when BuildKit tries to build an image that already exists
+        image_exists = False
+        try:
+            # Parse compose file to get image name
+            with open(self.compose_file, 'r') as f:
+                compose_data = yaml.safe_load(f)
+            
+            # Check if any service has the target image
+            for svc_name, svc_data in compose_data.get('services', {}).items():
+                if services and svc_name not in services:
+                    continue
+                image_name = svc_data.get('image')
+                if image_name:
+                    # Try to find the image
+                    try:
+                        self.client.images.get(image_name)
+                        image_exists = True
+                        logger.info("image_already_exists", image=image_name)
+                        break
+                    except NotFound:
+                        pass
+        except Exception as e:
+            logger.warning("failed_to_check_image_existence", error=str(e))
             
         # Always use 'up' to ensure containers are created/recreated correctly
         # 'start' is insufficient if containers don't exist (Phase 2 case)
@@ -545,11 +573,33 @@ class DockerComposeManager:
         if detach:
             cmd.append("-d")
         
+        # Add --no-build if image exists or explicitly requested
+        # This prevents BuildKit "image already exists" error
+        if no_build or image_exists:
+            cmd.append("--no-build")
+            logger.info("skipping_build", reason="image_exists" if image_exists else "explicit")
+        
         if services:
             cmd.extend(services)
         
         try:
             run_command(cmd, cwd=self.project_dir)
+        except subprocess.CalledProcessError as e:
+            # Check if error is "image already exists" - retry with --no-build
+            if "already exists" in str(e.stderr if hasattr(e, 'stderr') else e):
+                logger.warning("retrying_with_no_build", reason="image_already_exists")
+                cmd_retry = cmd.copy()
+                if "--no-build" not in cmd_retry:
+                    # Insert --no-build before services
+                    idx = cmd_retry.index("up") + 1
+                    if "-d" in cmd_retry:
+                        idx = cmd_retry.index("-d") + 1
+                    cmd_retry.insert(idx, "--no-build")
+                run_command(cmd_retry, cwd=self.project_dir)
+            else:
+                # If still fails, log error and re-raise
+                logger.error("docker_up_failed", error=str(e))
+                raise
         except Exception as e:
             # If still fails, log error and re-raise
             logger.error("docker_up_failed", error=str(e))

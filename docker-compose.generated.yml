@@ -222,8 +222,8 @@ services:
     container_name: cellframe-stage-node-3
     environment:
       NODE_ID: '3'
-      NODE_ROLE: root
-      NODE_TYPE: root_nodes
+      NODE_ROLE: master
+      NODE_TYPE: master_nodes
       NODE_IP: 172.20.0.12
       NETWORK_NAME: stagenet
       DAP_DEBUG: '1'
@@ -378,8 +378,8 @@ services:
     container_name: cellframe-stage-node-6
     environment:
       NODE_ID: '6'
-      NODE_ROLE: master
-      NODE_TYPE: master_nodes
+      NODE_ROLE: full
+      NODE_TYPE: full_nodes
       NODE_IP: 172.20.0.15
       NETWORK_NAME: stagenet
       DAP_DEBUG: '1'
@@ -412,58 +412,6 @@ services:
     - ./cache/data/node6:/opt/cellframe-node/var
     - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
     - ./cache/crash-artifacts/node6:/crash-artifacts/node-6
-    - ./cache/cellframe-packages:/var/cache/cellframe-packages
-    - /home/olzh/demlabs/second/cellframe-node/test_build:/packages:ro
-    pull_policy: never
-  node-7:
-    build:
-      args:
-        BUILD_TYPE: ${BUILD_TYPE:-debug}
-        CELLFRAME_VERSION: ${CELLFRAME_VERSION:-latest}
-        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        NODE_SOURCE_TYPE: local
-        LOCAL_PACKAGE_NAME: cellframe-node-5.7-LOCALBUILD-dbg-amd64.deb
-      context: .
-      dockerfile: Dockerfile.cellframe
-    cap_add:
-    - SYS_PTRACE
-    container_name: cellframe-stage-node-7
-    environment:
-      NODE_ID: '7'
-      NODE_ROLE: full
-      NODE_TYPE: full_nodes
-      NODE_IP: 172.20.0.16
-      NETWORK_NAME: stagenet
-      DAP_DEBUG: '1'
-      CELLFRAME_DEBUG: '1'
-    healthcheck:
-      interval: 10s
-      retries: 3
-      start_period: 30s
-      test:
-      - CMD
-      - sh
-      - -c
-      - pgrep -f cellframe-node > /dev/null
-      timeout: 5s
-    hostname: cellframe-stage-node-7
-    image: cf-node:${BUILD_TYPE:-debug}-${CELLFRAME_VERSION:-latest}
-    networks:
-      stagenet:
-        ipv4_address: 172.20.0.16
-    ports:
-    - 8085:8079
-    privileged: true
-    restart: 'no'
-    ulimits:
-      core: -1
-    volumes:
-    - ./cache/configs/node7/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg
-    - ./cache/configs/node7/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d
-    - ./cache/configs/node7/network:/opt/cellframe-node/etc/network
-    - ./cache/data/node7:/opt/cellframe-node/var
-    - ./cache/configs/shared/ca:/opt/cellframe-node/share/ca:ro
-    - ./cache/crash-artifacts/node7:/crash-artifacts/node-7
     - ./cache/cellframe-packages:/var/cache/cellframe-packages
     - /home/olzh/demlabs/second/cellframe-node/test_build:/packages:ro
     pull_policy: never

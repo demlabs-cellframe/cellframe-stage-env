@@ -19,9 +19,10 @@
 #   Performance/Load tests: docker build --build-arg BUILD_TYPE=release
 #   Specific version: docker build --build-arg CELLFRAME_VERSION=5.4-28
 #
-# Use Debian Trixie (testing) for GLIBC 2.38+ support required by locally built packages
-# Bookworm has GLIBC 2.36, which is too old for packages built on newer systems
-FROM debian:trixie-slim
+# Use Debian Bookworm (12) to match tests-in-docker and official package builds
+# Note: If using locally-built packages, ensure they're built in a debian:12 environment
+# or use NODE_SOURCE_TYPE=url to download official packages
+FROM debian:12-slim
 
 ARG NODE_ID=1
 ARG NODE_ROLE=root
@@ -38,13 +39,15 @@ ARG DEBIAN_MIRROR=
 RUN if [ -n "$DEBIAN_MIRROR" ]; then \
         echo "Using Debian mirror: $DEBIAN_MIRROR" && \
         sed -i "s|http://deb.debian.org/debian|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
-        (echo "deb $DEBIAN_MIRROR trixie main" > /etc/apt/sources.list && \
-         echo "deb $DEBIAN_MIRROR trixie-updates main" >> /etc/apt/sources.list && \
-         echo "deb $DEBIAN_MIRROR trixie-security main" >> /etc/apt/sources.list); \
+        (echo "deb $DEBIAN_MIRROR bookworm main" > /etc/apt/sources.list && \
+         echo "deb $DEBIAN_MIRROR bookworm-updates main" >> /etc/apt/sources.list && \
+         echo "deb http://security.debian.org/debian-security bookworm-security main" >> /etc/apt/sources.list); \
     fi
 
-# Install required packages (base packages always, debug tools conditionally)
+# Install required packages (matching tests-in-docker for compatibility)
+# Runtime dependencies for cellframe-node
 RUN apt-get update && apt-get install -y \
+    # Base utilities
     wget \
     curl \
     ca-certificates \
@@ -62,6 +65,24 @@ RUN apt-get update && apt-get install -y \
     pv \
     logrotate \
     irqbalance \
+    xz-utils \
+    psmisc \
+    # Cellframe-node runtime dependencies (same as tests-in-docker)
+    libsqlite3-0 \
+    libjson-c5 \
+    libmagic1 \
+    libzip4 \
+    iproute2 \
+    inetutils-traceroute \
+    iptables \
+    libpython3.11 \
+    debconf-utils \
+    dconf-cli \
+    libpq-dev \
+    faketime \
+    && \
+    # Install libasan conditionally (version differs between systems)
+    (apt-get -y install libasan5 || apt-get -y install libasan6 || true) \
     && \
     # Install debug tools only for debug builds
     if [ "$BUILD_TYPE" = "debug" ]; then \
@@ -84,6 +105,21 @@ RUN apt-get update && \
 # Create systemctl stub for Docker (cellframe-node postinst tries to use systemctl)
 RUN echo '#!/bin/bash\nexit 0' > /usr/bin/systemctl && \
     chmod +x /usr/bin/systemctl
+
+# Download architecture-specific cellframe tools (same as tests-in-docker)
+RUN DPKG_ARCH=$(dpkg --print-architecture) \
+    && if [ "$DPKG_ARCH" = "arm64" ] || [ "$DPKG_ARCH" = "aarch64" ]; then \
+         ARCH_SUFFIX="arm64"; \
+       else \
+         ARCH_SUFFIX="amd64"; \
+       fi \
+    && echo "Building for architecture: ${DPKG_ARCH} -> ${ARCH_SUFFIX}" \
+    && curl -O https://internal-pub.cellframe.net/linux/cellframe-tool-sign/feature/20325/cellframe-tool-sign-${ARCH_SUFFIX} \
+    && curl -O https://internal-pub.cellframe.net/linux/cellframe-tool-compose/feature/20325/cellframe-tool-compose-${ARCH_SUFFIX} \
+    && chmod +x /cellframe-tool-compose-${ARCH_SUFFIX} \
+    && chmod +x /cellframe-tool-sign-${ARCH_SUFFIX} \
+    && ln -sf /cellframe-tool-sign-${ARCH_SUFFIX} /cellframe-tool-sign \
+    && ln -sf /cellframe-tool-compose-${ARCH_SUFFIX} /cellframe-tool-compose
 
 # Create cache directory for Cellframe packages (persistent across builds)
 RUN mkdir -p /var/cache/cellframe-packages
