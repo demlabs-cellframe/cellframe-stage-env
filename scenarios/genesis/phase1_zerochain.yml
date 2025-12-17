@@ -9,28 +9,19 @@ network:
   name: stagenet
 
 setup:
-
-  # Start ALL nodes WITHOUT seed_mode first (like tests-in-docker)
-  # Certificates will be created immediately after startup
   - docker_op: start
     services: [root-1, root-2, root-3, master-1, master-2, master-3]
     detach: true
   
-  # Wait briefly for containers to be ready for cert creation
   - wait: "10s"
   
-  # CRITICAL: Create certificates INSIDE containers (like tests-in-docker)
-  # Uses cellframe-node-tool directly (not CLI which doesn't support 'tool' command)
-  # NOTE: /share/ca is mounted read-only, so we copy public certs to HOST shared directory
   - bash: |
-      set -e  # Exit on error
+      set -e
       
       TOOL=/opt/cellframe-node/bin/cellframe-node-tool
       NET=stagenet
       KTYPE=sig_dil
       
-      # Find stage-env directory by checking multiple locations
-      # Priority: current dir -> ./stage-env -> ./tests/stage-env -> parent/stage-env
       if [ -f "docker-compose.generated.yml" ]; then
         STAGE_ENV_DIR="$(pwd)"
       elif [ -f "stage-env/docker-compose.generated.yml" ]; then
@@ -40,17 +31,12 @@ setup:
       elif [ -f "../stage-env/docker-compose.generated.yml" ]; then
         STAGE_ENV_DIR="$(cd ../stage-env && pwd)"
       elif [ -d "cache/configs" ]; then
-        # Fallback: if cache/configs exists, we're in stage-env
         STAGE_ENV_DIR="$(pwd)"
       else
         echo "ERROR: Cannot find stage-env directory!"
-        echo "Current directory: $(pwd)"
-        echo "Directory contents:"
-        ls -la
         exit 1
       fi
       
-      # Use absolute path for shared CA directory
       HOST_SHARED_CA="${STAGE_ENV_DIR}/cache/configs/shared/ca"
       mkdir -p "${HOST_SHARED_CA}"
       
@@ -58,48 +44,30 @@ setup:
       echo "Stage-env directory: ${STAGE_ENV_DIR}"
       echo "Shared CA directory: ${HOST_SHARED_CA}"
       
-      # ROOT nodes (1,2): create node-addr and stagenet.root.pvt.N certificates
-      # CRITICAL: tests-in-docker topology: 2 ROOT + 3 MASTER + 1 FULL = 6 nodes
-      # Use naming like tests-in-docker: stagenet.root.pvt.N (private) and stagenet.root.N (public)
       for i in 1 2; do
         idx=$((i-1))
-        # Create certificates (ignore "already exists" errors - exit code 68)
-        # Following tests-in-docker: only pvt and pub certs, NO node-addr!
         docker exec cellframe-stage-node-${i} ${TOOL} cert create ${NET}.root.pvt.${idx} ${KTYPE} || [ $? -eq 68 ] || exit $?
         docker exec cellframe-stage-node-${i} ${TOOL} cert create_cert_pkey ${NET}.root.pvt.${idx} ${NET}.root.${idx} || [ $? -eq 145 ] || exit $?
-        # Copy public cert to HOST shared ca directory
         docker cp cellframe-stage-node-${i}:/opt/cellframe-node/var/lib/ca/${NET}.root.${idx}.dcert "${HOST_SHARED_CA}/"
         echo "ROOT node-${i}: certificates created"
       done
       
-      # MASTER nodes (3,4,5): create node-addr and stagenet.master.pvt.N certificates
-      # CRITICAL: Use naming like tests-in-docker: stagenet.master.pvt.N (private) and stagenet.master.N (public)
-      # NOTE: ESBocs requires auth_certs_prefix=stagenet.master certs to exist at startup
-      # Copy public MASTER certs to shared CA so ESBocs can initialize
       for i in 3 4 5; do
         idx=$((i-3))
-        # Create certificates (ignore "already exists" errors - exit code 68)
-        # Following tests-in-docker: only pvt and pub certs, NO node-addr!
         docker exec cellframe-stage-node-${i} ${TOOL} cert create ${NET}.master.pvt.${idx} ${KTYPE} || [ $? -eq 68 ] || exit $?
         docker exec cellframe-stage-node-${i} ${TOOL} cert create_cert_pkey ${NET}.master.pvt.${idx} ${NET}.master.${idx} || [ $? -eq 145 ] || exit $?
-        # Copy public MASTER cert to HOST shared ca directory (required for ESBocs auth_certs_prefix)
         docker cp cellframe-stage-node-${i}:/opt/cellframe-node/var/lib/ca/${NET}.master.${idx}.dcert "${HOST_SHARED_CA}/"
-        echo "MASTER node-${i}: certificates created and public cert copied to shared CA"
+        echo "MASTER node-${i}: certificates created"
       done
       
-      # Copy stagenet.root.pvt.1 from root-2 to root-1 for centralized genesis (threshold 2/2)
-      # tests-in-docker has only 2 ROOT nodes with signs_total=2
       docker cp cellframe-stage-node-2:/opt/cellframe-node/var/lib/ca/stagenet.root.pvt.1.dcert /tmp/
       docker cp /tmp/stagenet.root.pvt.1.dcert cellframe-stage-node-1:/opt/cellframe-node/var/lib/ca/
       rm -f /tmp/stagenet.root.pvt.*.dcert
       echo "Private ROOT certs copied to root-1"
       
-      # List what's in shared ca
       echo "Shared CA directory contents:"
       ls -la "${HOST_SHARED_CA}/"
   
-  # Set events_sign_cert for ROOT nodes (required for DAG-PoA event signing in seed_mode)
-  # Each ROOT node uses its own private certificate to sign events
   - config: "stagenet"
     nodes: [node-1]
     set:
@@ -110,26 +78,16 @@ setup:
     set:
       events_sign_cert: "stagenet.root.pvt.1"
   
-  # CRITICAL: Restart all nodes after creating certificates (like tests-in-docker _restart)
-  # Network will now find certificates and initialize properly
-  # Topology: 2 ROOT (1-2) + 3 MASTER (3-5) + 1 FULL (6) = 6 nodes
   - docker_op: restart
     services: [node-1, node-2, node-3, node-4, node-5, node-6]
   
-  # Now wait for network to be ONLINE (certs exist, network can initialize)
-  # CRITICAL: Only ROOT nodes should be ONLINE at this stage!
-  # MASTER nodes don't have zerochain signing certs yet
   - wait_network: online
     nodes: [node-1, node-2]
     timeout: 120
   
-  # Allow brief stabilization after restart
   - wait: "5s"
   
 test:
-  # Get addresses of ALL nodes (following tests-in-docker lines 122-126)
-  # ROOT addresses needed for authorized_nodes_addrs
-  # ALL addresses needed for node add from root-1
   - group: Get node addresses
     steps:
       - cli: "node dump"
@@ -140,8 +98,6 @@ test:
         node: node-2
         save_node: root_addr_1
       
-      # Topology: 2 ROOT + 3 MASTER + 1 FULL
-      # node-3, node-4, node-5 are MASTER nodes
       - cli: "node dump"
         node: node-3
         save_node: master_addr_0
@@ -154,33 +110,22 @@ test:
         node: node-5
         save_node: master_addr_2
       
-      # node-6 is FULL node
       - cli: "node dump"
         node: node-6
         save_node: full_addr_0
   
-  # CRITICAL: Create authorized_nodes_addrs.cfg with ROOT node addresses in NETWORK config
-  # This is REQUIRED for node add command to work (dap_chain_net_is_my_node_authorized check)
-  # tests-in-docker uses: ${PREF}/etc/network/${NET}.cfg.d/authorized_nodes_addrs.cfg with [general] section
   - bash: |
-      echo "Creating authorized_nodes_addrs.cfg for all nodes in stagenet.cfg.d/..."
-      # Topology: 2 ROOT (nodes 1-2) + 3 MASTER (nodes 3-5) + 1 FULL (node 6) = 6 nodes
+      echo "Creating authorized_nodes_addrs.cfg for all nodes..."
       for i in 1 2 3 4 5 6; do
-        # Create in stagenet.cfg.d/ (network config, not chain config)
         docker exec cellframe-stage-node-${i} mkdir -p /opt/cellframe-node/etc/network/stagenet.cfg.d/
         docker exec cellframe-stage-node-${i} /bin/bash -c "echo '[general]' > /opt/cellframe-node/etc/network/stagenet.cfg.d/authorized_nodes_addrs.cfg"
         docker exec cellframe-stage-node-${i} /bin/bash -c "echo 'authorized_nodes_addrs=[{{root_addr_0}},{{root_addr_1}}]' >> /opt/cellframe-node/etc/network/stagenet.cfg.d/authorized_nodes_addrs.cfg"
-        # Also create in zerochain.cfg.d/ for chain-level auth (token operations)
         docker exec cellframe-stage-node-${i} mkdir -p /opt/cellframe-node/etc/network/stagenet/zerochain.cfg.d/
         docker exec cellframe-stage-node-${i} /bin/bash -c "echo '[chain]' > /opt/cellframe-node/etc/network/stagenet/zerochain.cfg.d/authorized_nodes_addrs.cfg"
         docker exec cellframe-stage-node-${i} /bin/bash -c "echo 'authorized_nodes_addrs=[{{root_addr_0}},{{root_addr_1}}]' >> /opt/cellframe-node/etc/network/stagenet/zerochain.cfg.d/authorized_nodes_addrs.cfg"
-        echo "Node ${i}: authorized_nodes_addrs.cfg created in stagenet.cfg.d/ and zerochain.cfg.d/"
+        echo "Node ${i}: authorized_nodes_addrs.cfg created"
       done
-      echo "Done creating authorized_nodes_addrs.cfg"
   
-  # Restart nodes to apply authorized_nodes_addrs.cfg
-  # In tests-in-docker there is a restart BEFORE creating these configs (line 117)
-  # So nodes start fresh and read .cfg.d/ files
   - docker_op: restart
     services: [node-1, node-2, node-3, node-4, node-5]
   
@@ -190,15 +135,10 @@ test:
   
   - wait: "5s"
   
-  # Register ALL nodes in nodelist from root-1 (following tests-in-docker lines 146-154)
-  # _add_node executes: _exec "${ROOT[0]}" cli node add -net ${NET} -addr "${N_ADDR}" -host "$2" -port 8079
-  # This adds ALL nodes (including itself and masters) to root-1 nodelist
-  - group: Add all nodes to nodelist from root-1
+  - group: Add all nodes to nodelist
     defaults:
       node: node-1
     steps:
-      # Add all 6 nodes to root-1 nodelist (following tests-in-docker _add_node)
-      # Topology: nodes 1-2 ROOT, nodes 3-5 MASTER, node 6 FULL
       - cli: "node add -net stagenet -addr {{root_addr_0}} -host {{node_ip['node1']}} -port 8079"
         save: node_add_result_1
         expect: success
@@ -218,32 +158,22 @@ test:
         save: node_add_result_6
         expect: success
   
-  # List nodes to verify - should have 6 nodes
   - cli: "node list -net stagenet"
     node: node-1
     save: node_list_after_add
   
-  # Verify nodes were added - check that we have records
   - bash: |
       echo "Node list after add:"
       echo "{{node_list_after_add}}"
       if echo "{{node_list_after_add}}" | grep -q "No records"; then
-        echo "ERROR: No nodes in node list after node add commands!"
-        echo "node_add results:"
-        echo "1: {{node_add_result_1}}"
-        echo "2: {{node_add_result_2}}"
+        echo "ERROR: No nodes in node list!"
         exit 1
       fi
       echo "Node list OK - nodes were added successfully"
   
-  # Create esbocs_nodes_addrs.cfg and wallets for ALL nodes (following tests-in-docker lines 129-144)
   - bash: |
       echo "Creating esbocs_nodes_addrs.cfg and wallets for all nodes..."
-      
-      # Map node indices to names (matching tests-in-docker topology)
-      # 1-2: ROOT, 3-5: MASTER, 6: FULL
       for i in 1 2 3 4 5 6; do
-        # Determine node type and index
         if [ $i -le 2 ]; then
           NODE_TYPE="root"
           TYPE_IDX=$((i-1))
@@ -257,40 +187,28 @@ test:
         
         WALLET_NAME="stagenet_${NODE_TYPE}_${TYPE_IDX}"
         
-        # Create esbocs_nodes_addrs.cfg (following tests-in-docker line 135-136)
         docker exec cellframe-stage-node-${i} mkdir -p /opt/cellframe-node/etc/network/stagenet/main.cfg.d/
         docker exec cellframe-stage-node-${i} /bin/bash -c "echo '[esbocs]' > /opt/cellframe-node/etc/network/stagenet/main.cfg.d/esbocs_nodes_addrs.cfg"
         docker exec cellframe-stage-node-${i} /bin/bash -c "echo 'validators_addrs=[{{master_addr_0}}]' >> /opt/cellframe-node/etc/network/stagenet/main.cfg.d/esbocs_nodes_addrs.cfg"
         
-        # Create wallet (following tests-in-docker line 138)
         docker exec cellframe-stage-node-${i} cellframe-node-cli wallet new -w ${WALLET_NAME} -sign sig_dil 2>&1 | grep -q "wallet.*created" || true
         
-        # Get wallet address and set fee_addr (following tests-in-docker lines 141-142)
-        # Address format: ptV4n... (base58, ~108 characters)
         WALLET_ADDR=$(docker exec cellframe-stage-node-${i} cellframe-node-cli wallet info -w ${WALLET_NAME} -net stagenet 2>&1 | grep "addr:" | grep -oE 'pt[A-Za-z0-9]{100,120}')
         if [ -n "$WALLET_ADDR" ]; then
           docker exec cellframe-stage-node-${i} sed -i "s/fee_addr=/fee_addr=${WALLET_ADDR}/" /opt/cellframe-node/etc/network/stagenet.cfg
-          echo "Node ${i} (${WALLET_NAME}): wallet ${WALLET_ADDR}, fee_addr set"
         fi
       done
       echo "Done creating esbocs_nodes_addrs.cfg and wallets"
   
-  # Get fee_addr from root-1 for use in token_emit (following tests-in-docker line 191)
   - cli: "wallet info -w stagenet_root_0"
     node: node-1
     save_wallet: fee_addr
   
-  # Enable seed_mode for ROOT[0,1] and MASTER[0] (following tests-in-docker lines 156-158)
-  # NOTE: Using is_add_directly=false (default) with auto_confirmation=true for round-based consensus
-  # CRITICAL: tests-in-docker has only 2 ROOT nodes (ROOT=(0-root 1-root))
-  # Topology: ROOT=nodes 1-2, MASTER[0]=node-3
   - config: "cellframe-node"
     nodes: [node-1, node-2, node-3]
     set:
       seed_mode: "true"
   
-  # Restart and wait 40s (following tests-in-docker lines 160-162)
-  # CRITICAL: Restart only nodes with seed_mode enabled + all masters (following tests-in-docker _restart)
   - docker_op: restart
     services: [node-1, node-2, node-3, node-4, node-5]
   
@@ -300,76 +218,44 @@ test:
   
   - wait: "40s"
 
-  # =================================================================
-  # GENESIS EVENT CREATION IN SEED MODE (following tests-in-docker lines 171-173)
-  # =================================================================
-  
-  
-  # GENESIS OPERATION: Create TCELL token declaration with 2/3 consensus
-  # This is the ONLY genesis event for zerochain - signed by all 3 root validators
   - group: Genesis Event - Token Declaration
     defaults:
       node: node-1
     steps:
-      # Use stagenet.root.pvt.N naming (like tests-in-docker foobar.root.pvt.N)
-      # CRITICAL: total_supply=0, signs_total=2, signs_emission=2 (following tests-in-docker variables/foobar.sh:7,29)
-      # CRITICAL: Use only 2 ROOT certs (matching TKN_SGNS='2'), NOT all 3!
-      # tests-in-docker uses only 2 ROOT nodes: ROOT=(0-root 1-root)
       - cli: "token_decl -token TCELL -chain zerochain -total_supply 0 -decimals 18 -signs_emission 2 -signs_total 2 -type CF20 -certs stagenet.root.pvt.0,stagenet.root.pvt.1"
         save_hash: token_hash
       
-      # Allow propagation
       - wait: "3s"
       
-      # CRITICAL: Process mempool to add token to DAG
-      # Specify datum hash to trigger processing with auto_confirmation
       - cli: "mempool proc -net stagenet -chain zerochain -datum {{token_hash}}"
         node: node-1
       
       - wait: "2s"
-
-      # Wait for DAG-PoA round to complete (typically 15-20s with 3 root nodes)
-      # Note: datum may remain in mempool after finalization due to node behavior
-      # We wait and verify via token list instead of mempool check
       - wait: "30s"
       
-      # Verify token was created in ledger
       - cli: "token list"
         node: node-1
         expect_output: "tokens: 1"
       
-      # Flush GDB to ensure token is synced
       - cli: "global_db flush"
         node: node-1
       
       - wait: "5s"
       
-      # CRITICAL: Get the GENESIS EVENT HASH from DAG (following tests-in-docker)
-      # Use dag event last to get the last event (token_decl event)
-      # Following tests-in-docker _get_last_atom: dag;event;last;-net;${NET};-chain;${CHAIN0}
       - cli: "dag event last -net stagenet -chain zerochain"
         node: node-1
         save_hash: genesis_event_hash
   
-  # Add static_genesis_event to config (following tests-in-docker testnet.sh:175-178)
-  # This happens AFTER token_decl but BEFORE order create
-  # All nodes get same static_genesis_event
   - config: "stagenet/zerochain"
     nodes: [node-1, node-2, node-3, node-4, node-5]
     set:
       static_genesis_event: "{{genesis_event_hash}}"
       is_static_genesis_event: "true"
   
-  # CRITICAL: Create validator order (following tests-in-docker testnet.sh:181)
-  # Order create happens AFTER token_decl and static_genesis_event
-  # But BEFORE restart and BEFORE token_emit!
-  # Certificate name: stagenet.master.pvt.0 (NOT pvt.stagenet.master.0!)
-  # MASTER[0] = node-3 in our topology
   - cli: "srv_stake order create -net stagenet -value 0.05e+18 -cert stagenet.master.pvt.0"
     node: node-3
     expect: success
   
-  # Restart ALL nodes to apply configs (following tests-in-docker testnet.sh:182-183)
   - docker_op: restart
     services: [node-1, node-2, node-3, node-4, node-5]
   
@@ -377,11 +263,8 @@ test:
     nodes: [node-1, node-2, node-3, node-4, node-5]
     timeout: 60
   
-  # Wait for nodes to stabilize and sync (tests-in-docker waits 40s after restart)
   - wait: "40s"
   
-  # Ensure static_genesis_event is preserved after restart
-  # Using round-based consensus with auto_confirmation=true (no is_add_directly=true needed)
   - config: "stagenet/zerochain"
     nodes: [node-1, node-2]
     set:
@@ -394,44 +277,23 @@ test:
   
   - wait: "10s"
   
-  # =================================================================
-  # TOKEN EMISSION (following tests-in-docker testnet.sh:190-192)
-  # =================================================================
-  # Create emission of TCELL token
-  # Signs with 2 ROOT certs (same as token_decl) for threshold consensus
-  # NOTE: is_add_directly=true should allow direct event creation
-  
   - group: Token Emission
     defaults:
       node: node-1
     steps:
-      # =================================================================
-      # Token emission with distributed signing (like tests-in-docker _mempool_job)
-      # 1. ROOT[0] creates emission with 1 signature
-      # 2. Wait for mempool sync to ROOT[1]
-      # 3. ROOT[1] adds second signature (token_emit sign)
-      # 4. Wait for mempool sync back
-      # 5. mempool proc creates event via round-based consensus
-      # =================================================================
-      
-      # Step 1: Create emission datum with FIRST signature only (on node-1)
       - cli: "token_emit -net stagenet -chain zerochain -token TCELL -no_base_tx -emission_value 10.0e+54 -addr {{fee_addr}} -certs stagenet.root.pvt.0"
         save_hash: emission_datum_hash
       
-      # Step 2: Wait for mempool sync to node-2
       - wait: "15s"
       
-      # Verify datum appeared in node-2 mempool
       - cli: "mempool check -net stagenet -chain zerochain -datum {{emission_datum_hash}}"
         node: node-2
         save: mempool_check_result
       
-      # Step 3: Add SECOND signature on node-2 (like tests-in-docker _mempool_sign)
       - cli: "token_emit sign -net stagenet -chain zerochain -emission {{emission_datum_hash}} -certs stagenet.root.pvt.1"
         node: node-2
         save: token_emit_sign_output
       
-      # Extract the new hash from token_emit sign output
       - bash: |
           OUTPUT='{{token_emit_sign_output}}'
           HASH=$(echo "$OUTPUT" | grep -oE '0x[a-fA-F0-9]{64}' | grep -v "{{emission_datum_hash}}" | tr -d '[:space:]')
@@ -441,70 +303,39 @@ test:
           echo "$HASH"
         save: signed_emission_hash
       
-      # Step 4: Wait for mempool sync back to node-1
       - wait: "15s"
       
-      # Get the CURRENT last event before mempool proc
       - cli: "dag event last -net stagenet -chain zerochain"
         node: node-1
         save_hash: last_event_before_emission
       
-      # Step 5: Process the SIGNED emission datum (use the new hash after second signature)
       - cli: "mempool proc -net stagenet -chain zerochain -datum {{signed_emission_hash}}"
         node: node-1
         save: mempool_proc_output
       
-      # Wait for round-based consensus to complete and create event
       - wait: "30s"
       
-      # Get the NEW last event (should be emission event)
       - cli: "dag event last -net stagenet -chain zerochain"
         node: node-1
         save_hash: emission_event_hash
       
-      # CRITICAL: Extract emission_hash from DAG event dump
       - cli: "dag event dump -net stagenet -chain zerochain -event {{emission_event_hash}} -from events"
         node: node-1
         save: emission_event_dump
       
-      # Extract emission_hash from the event dump
       - bash: |
           DUMP='{{emission_event_dump}}'
           HASH=$(echo "$DUMP" | grep -oE 'emission_hash: 0x[a-fA-F0-9]+' | sed 's/emission_hash: //' | tr -d '[:space:]')
           if [ -z "$HASH" ]; then
             echo "ERROR: emission_hash not found in event dump" >&2
-            echo "mempool_check_result: {{mempool_check_result}}"
-            echo "token_emit_sign_output: {{token_emit_sign_output}}"
-            echo "signed_emission_hash: {{signed_emission_hash}}"
-            echo "mempool_proc_output: {{mempool_proc_output}}"
-            echo "Event dump:"
-            echo "$DUMP"
+            echo "Event dump: $DUMP"
             exit 1
           fi
           echo "$HASH"
         save: emission_hash
   
-  # Verify DAG events
   - cli: "dag event list -chain zerochain"
     node: node-1
   
-  # Verify genesis event exists
   - cli: "dag event last -net stagenet -chain zerochain"
     node: node-1
-  
-  # =================================================================
-  # PHASE 1 COMPLETE (following tests-in-docker testnet.sh:171-192)
-  # =================================================================
-  # Completed steps:
-  # 1. Certificates created and nodes restarted
-  # 2. seed_mode=true enabled for ROOT[0,1] and MASTER[0]
-  # 3. token_decl (zerochain genesis event)
-  # 4. static_genesis_event added to config
-  # 5. srv_stake order create (validator order for MASTER[0])
-  # 6. Restart
-  # 7. token_emit (emission in zerochain)
-  #
-  # NOTE: seed_mode is STILL ON - it will be disabled in Phase 2
-  # AFTER mainchain genesis block (following tests-in-docker testnet.sh:205-207)
-  #
-  # Next: Phase 2 will create mainchain genesis block (bx_create)
