@@ -186,6 +186,7 @@ class ConfigStepExecutor(StepExecutor):
             'events-sign-cert': 'events_sign_cert',
             'seed_nodes_aliases': 'seed_nodes_aliases',
             'seed_nodes_hosts': 'seed_nodes_hosts',
+            'ext_address': 'node_ip',  # ext_address in config -> node_ip in template
         }
         for config_key, template_key in key_mappings.items():
             if config_key in context and template_key not in context:

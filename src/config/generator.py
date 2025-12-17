@@ -157,6 +157,10 @@ class ConfigGenerator:
                     'node_ip': node.ip_address,
                     'seed_mode': seed_mode
                 }
+                logger.info("generating_cellframe_node_cfg", 
+                           node_id=node.node_id, 
+                           node_ip=node.ip_address,
+                           context=context)
                 node_cfg_content = template.render(**context)
                 
                 logger.debug("initial_seed_mode_false_for_all_nodes", 

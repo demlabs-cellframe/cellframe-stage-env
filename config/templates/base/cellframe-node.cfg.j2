@@ -25,7 +25,8 @@ news_url_enabled=false
 bugreport_url_enabled=false
 # Standard Cellframe port 8079 for all communications
 # Listen on all interfaces (0.0.0.0) to accept connections from other Docker containers
-listen-address=[0.0.0.0:8079]
+# CRITICAL: Must be listen_address with underscore (not hyphen) for Cellframe!
+listen_address=[0.0.0.0:8079]
 # External port for node registration in Global DB (required for announce)
 ext_port=8079
 # External IPv4 address (node IP in Docker network)
