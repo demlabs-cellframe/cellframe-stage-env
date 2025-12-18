@@ -261,6 +261,14 @@ test:
   - cli: "srv_stake order create -net stagenet -value 0.05e+18 -cert stagenet.master.pvt.0"
     node: node-3
     expect: success
+
+  - cli: "srv_stake order create -net stagenet -value 0.05e+18 -cert stagenet.master.pvt.1"
+    node: node-4
+    expect: success
+
+  - cli: "srv_stake order create -net stagenet -value 0.05e+18 -cert stagenet.master.pvt.2"
+    node: node-5
+    expect: success
   
   - docker_op: restart
     services: [node-1, node-2, node-3, node-4, node-5]

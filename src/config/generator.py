@@ -215,8 +215,8 @@ class ConfigGenerator:
         # Based on dap_config.c:237 - dap_strsplit(l_val, ",", -1)
         # Array must be ONE line starting with [ and ending with ]
         # Format: IP:PORT where PORT is configurable via topology (default 8079)
-        # CRITICAL: Both seed_nodes_aliases AND seed_nodes_hosts are required!
-        # This matches tests-in-docker configuration for proper node discovery
+        # CRITICAL: Only ROOT nodes can be seed nodes (entry points for the network)
+        # From docs: "only root nodes can serve for this purpose"
         if root_nodes:
             hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in root_nodes])
             seed_nodes_hosts = f"[{hosts_list}]"

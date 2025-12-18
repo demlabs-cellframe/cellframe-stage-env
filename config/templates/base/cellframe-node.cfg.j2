@@ -127,6 +127,14 @@ debug_more=true
 [stake]
 # debug_more=true
 
+[esbocs]
+# Collecting level - when specified sum (in native token) is accumulated, 
+# validator's wallet automatically collects it
+collecting_level=10.0
+# Fee address - wallet address for collecting fees
+# Set dynamically via scenario after wallet creation
+fee_addr={{ fee_addr | default('', true) }}
+
 [crypto]
 # debug_more=true
 

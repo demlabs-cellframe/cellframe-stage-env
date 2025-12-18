@@ -8,12 +8,26 @@ network:
   topology: default
   name: stagenet
 
+setup:
+  # Enable seed_mode on ALL root and master nodes to accept genesis block
+  - config: "cellframe-node"
+    nodes: [node-1, node-2, node-3, node-4, node-5]
+    set:
+      seed_mode: "true"
+  
+  - docker_op: restart
+    services: [node-1, node-2, node-3, node-4, node-5]
+  
+  - wait_network: online
+    nodes: [node-1, node-2, node-3, node-4, node-5]
+    timeout: 60
+
 test:
   - group: Genesis Block - Create from emission
     defaults:
       node: node-1
     steps:
-      - cli: "tx_create -net stagenet -chain main -token TCELL -emission_chain main -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert stagenet.root.pvt.0"
+      - cli: "tx_create -net stagenet -chain main -token TCELL -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert stagenet.root.pvt.0"
         save_hash: mainchain_genesis_tx
       
       - wait: "180s"
