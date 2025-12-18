@@ -81,13 +81,15 @@ setup:
   - docker_op: restart
     services: [node-1, node-2, node-3, node-4, node-5, node-6]
   
+  # First wait_network with placeholder validators_addrs (from template)
   - wait_network: online
     nodes: [node-1, node-2]
     timeout: 120
   
   - wait: "5s"
-  
+
 test:
+  # Get ALL node addresses (network is now online)
   - group: Get node addresses
     steps:
       - cli: "node dump"
@@ -113,6 +115,12 @@ test:
       - cli: "node dump"
         node: node-6
         save_node: full_addr_0
+  
+  # Set real validators_addrs on ALL nodes
+  - config: "stagenet/main"
+    nodes: [node-1, node-2, node-3, node-4, node-5, node-6]
+    set:
+      validators_addrs: "[{{master_addr_0}},{{master_addr_1}},{{master_addr_2}}]"
   
   - bash: |
       echo "Creating authorized_nodes_addrs.cfg for all nodes..."
@@ -171,8 +179,9 @@ test:
       fi
       echo "Node list OK - nodes were added successfully"
   
+  # validators_addrs already configured via config: step above
   - bash: |
-      echo "Creating esbocs_nodes_addrs.cfg and wallets for all nodes..."
+      echo "Creating wallets for all nodes..."
       for i in 1 2 3 4 5 6; do
         if [ $i -le 2 ]; then
           NODE_TYPE="root"
@@ -187,18 +196,15 @@ test:
         
         WALLET_NAME="stagenet_${NODE_TYPE}_${TYPE_IDX}"
         
-        docker exec cellframe-stage-node-${i} mkdir -p /opt/cellframe-node/etc/network/stagenet/main.cfg.d/
-        docker exec cellframe-stage-node-${i} /bin/bash -c "echo '[esbocs]' > /opt/cellframe-node/etc/network/stagenet/main.cfg.d/esbocs_nodes_addrs.cfg"
-        docker exec cellframe-stage-node-${i} /bin/bash -c "echo 'validators_addrs=[{{master_addr_0}}]' >> /opt/cellframe-node/etc/network/stagenet/main.cfg.d/esbocs_nodes_addrs.cfg"
-        
         docker exec cellframe-stage-node-${i} cellframe-node-cli wallet new -w ${WALLET_NAME} -sign sig_dil 2>&1 | grep -q "wallet.*created" || true
         
         WALLET_ADDR=$(docker exec cellframe-stage-node-${i} cellframe-node-cli wallet info -w ${WALLET_NAME} -net stagenet 2>&1 | grep "addr:" | grep -oE 'pt[A-Za-z0-9]{100,120}')
         if [ -n "$WALLET_ADDR" ]; then
           docker exec cellframe-stage-node-${i} sed -i "s/fee_addr=/fee_addr=${WALLET_ADDR}/" /opt/cellframe-node/etc/network/stagenet.cfg
         fi
+        echo "Node ${i}: wallet ${WALLET_NAME} configured"
       done
-      echo "Done creating esbocs_nodes_addrs.cfg and wallets"
+      echo "Done creating wallets for all nodes"
   
   - cli: "wallet info -w stagenet_root_0"
     node: node-1
