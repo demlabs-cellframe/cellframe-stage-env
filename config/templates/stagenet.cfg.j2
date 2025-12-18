@@ -10,6 +10,8 @@ node-role={{ node_role | default('full', true) }}
 # Both aliases and hosts are required for node discovery
 seed_nodes_aliases={{ seed_nodes_aliases | default('[]', true) }}
 seed_nodes_hosts={{ seed_nodes_hosts | default('[]', true) }}
+# NOTE: authorized_nodes_addrs is NOT read from this file!
+# It MUST be in zerochain.cfg [chain] section for node add command to work
 
 # DAG-PoA events signing certificate (for ROOT nodes only)
 # Other dag-poa parameters (auth_certs, confirmations_timeout) are in zerochain.cfg
@@ -24,4 +26,8 @@ events-sign-cert={{ events_sign_cert }}
 {% if blocks_sign_cert %}
 blocks-sign-cert={{ blocks_sign_cert }}
 {% endif %}
+{% if fee_addr %}
+fee_addr={{ fee_addr }}
+{% endif %}
+collecting_level=10.0
 

@@ -50,6 +50,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         rebuild: bool = typer.Option(False, "--rebuild", help="Rebuild images"),
         clean: bool = typer.Option(False, "--clean", help="Clean all data"),
         wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for nodes"),
+        keep_running: bool = typer.Option(False, "--keep-running", help="Keep containers running on failure (for debugging)"),
     ):
         """▶️  Start the test network."""
         from ..network.manager import NetworkManager
@@ -101,6 +102,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         # NetworkManager will use global config loader
         network_mgr = NetworkManager(base_path, topology_name=topology, config_path=get_config_path())
+        network_mgr.keep_running = keep_running
         
         async def _start():
             await network_mgr.start(rebuild=rebuild, wait_ready=wait)

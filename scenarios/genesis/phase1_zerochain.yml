@@ -122,17 +122,12 @@ test:
     set:
       validators_addrs: "[{{master_addr_0}},{{master_addr_1}},{{master_addr_2}}]"
   
-  - bash: |
-      echo "Creating authorized_nodes_addrs.cfg for all nodes..."
-      for i in 1 2 3 4 5 6; do
-        docker exec cellframe-stage-node-${i} mkdir -p /opt/cellframe-node/etc/network/stagenet.cfg.d/
-        docker exec cellframe-stage-node-${i} /bin/bash -c "echo '[general]' > /opt/cellframe-node/etc/network/stagenet.cfg.d/authorized_nodes_addrs.cfg"
-        docker exec cellframe-stage-node-${i} /bin/bash -c "echo 'authorized_nodes_addrs=[{{root_addr_0}},{{root_addr_1}}]' >> /opt/cellframe-node/etc/network/stagenet.cfg.d/authorized_nodes_addrs.cfg"
-        docker exec cellframe-stage-node-${i} mkdir -p /opt/cellframe-node/etc/network/stagenet/zerochain.cfg.d/
-        docker exec cellframe-stage-node-${i} /bin/bash -c "echo '[chain]' > /opt/cellframe-node/etc/network/stagenet/zerochain.cfg.d/authorized_nodes_addrs.cfg"
-        docker exec cellframe-stage-node-${i} /bin/bash -c "echo 'authorized_nodes_addrs=[{{root_addr_0}},{{root_addr_1}}]' >> /opt/cellframe-node/etc/network/stagenet/zerochain.cfg.d/authorized_nodes_addrs.cfg"
-        echo "Node ${i}: authorized_nodes_addrs.cfg created"
-      done
+  # Set authorized_nodes_addrs in ZEROCHAIN config (root nodes have special permissions)
+  # MUST be in zerochain [chain] section for node add command to work
+  - config: "stagenet/zerochain"
+    nodes: [node-1, node-2, node-3, node-4, node-5, node-6]
+    set:
+      authorized_nodes_addrs: "[{{root_addr_0}},{{root_addr_1}}]"
   
   - docker_op: restart
     services: [node-1, node-2, node-3, node-4, node-5]
@@ -148,67 +143,59 @@ test:
       node: node-1
     steps:
       - cli: "node add -net stagenet -addr {{root_addr_0}} -host {{node_ip['node1']}} -port 8079"
+        contains: "Successfully"
         save: node_add_result_1
-        expect: success
       - cli: "node add -net stagenet -addr {{root_addr_1}} -host {{node_ip['node2']}} -port 8079"
+        contains: "Successfully"
         save: node_add_result_2
-        expect: success
       - cli: "node add -net stagenet -addr {{master_addr_0}} -host {{node_ip['node3']}} -port 8079"
+        contains: "Successfully"
         save: node_add_result_3
-        expect: success
       - cli: "node add -net stagenet -addr {{master_addr_1}} -host {{node_ip['node4']}} -port 8079"
+        contains: "Successfully"
         save: node_add_result_4
-        expect: success
       - cli: "node add -net stagenet -addr {{master_addr_2}} -host {{node_ip['node5']}} -port 8079"
+        contains: "Successfully"
         save: node_add_result_5
-        expect: success
       - cli: "node add -net stagenet -addr {{full_addr_0}} -host {{node_ip['node6']}} -port 8079"
+        contains: "Successfully"
         save: node_add_result_6
-        expect: success
+  
+  - wait: "5s"
   
   - cli: "node list -net stagenet"
     node: node-1
+    not_contains: "No records"
     save: node_list_after_add
   
-  - bash: |
-      echo "Node list after add:"
-      echo "{{node_list_after_add}}"
-      if echo "{{node_list_after_add}}" | grep -q "No records"; then
-        echo "ERROR: No nodes in node list!"
-        exit 1
-      fi
-      echo "Node list OK - nodes were added successfully"
-  
   # validators_addrs already configured via config: step above
-  - bash: |
-      echo "Creating wallets for all nodes..."
-      for i in 1 2 3 4 5 6; do
-        if [ $i -le 2 ]; then
-          NODE_TYPE="root"
-          TYPE_IDX=$((i-1))
-        elif [ $i -le 5 ]; then
-          NODE_TYPE="master"
-          TYPE_IDX=$((i-3))
-        else
-          NODE_TYPE="full"
-          TYPE_IDX=0
-        fi
-        
-        WALLET_NAME="stagenet_${NODE_TYPE}_${TYPE_IDX}"
-        
-        docker exec cellframe-stage-node-${i} cellframe-node-cli wallet new -w ${WALLET_NAME} -sign sig_dil 2>&1 | grep -q "wallet.*created" || true
-        
-        WALLET_ADDR=$(docker exec cellframe-stage-node-${i} cellframe-node-cli wallet info -w ${WALLET_NAME} -net stagenet 2>&1 | grep "addr:" | grep -oE 'pt[A-Za-z0-9]{100,120}')
-        if [ -n "$WALLET_ADDR" ]; then
-          docker exec cellframe-stage-node-${i} sed -i "s/fee_addr=/fee_addr=${WALLET_ADDR}/" /opt/cellframe-node/etc/network/stagenet.cfg
-        fi
-        echo "Node ${i}: wallet ${WALLET_NAME} configured"
-      done
-      echo "Done creating wallets for all nodes"
   
+  # Create wallets for all nodes
+  - group: Create wallets
+    steps:
+      - cli: "wallet new -w stagenet_root_0 -sign sig_dil"
+        node: node-1
+      - cli: "wallet new -w stagenet_root_1 -sign sig_dil"
+        node: node-2
+      - cli: "wallet new -w stagenet_master_0 -sign sig_dil"
+        node: node-3
+      - cli: "wallet new -w stagenet_master_1 -sign sig_dil"
+        node: node-4
+      - cli: "wallet new -w stagenet_master_2 -sign sig_dil"
+        node: node-5
+      - cli: "wallet new -w stagenet_full_0 -sign sig_dil"
+        node: node-6
+  
+  # Get fee_addr from root_0 wallet for emission target
   - cli: "wallet info -w stagenet_root_0"
     node: node-1
     save_wallet: fee_addr
+  
+  # Set fee_addr on master nodes (validators collect fees)
+  - config: "stagenet"
+    nodes: [node-3, node-4, node-5]
+    set:
+      fee_addr: "{{fee_addr}}"
   
   - config: "cellframe-node"
     nodes: [node-1, node-2, node-3]
@@ -306,16 +293,7 @@ test:
       
       - cli: "token_emit sign -net stagenet -chain zerochain -emission {{emission_datum_hash}} -certs stagenet.root.pvt.1"
         node: node-2
-        save: token_emit_sign_output
-      
-      - bash: |
-          OUTPUT='{{token_emit_sign_output}}'
-          HASH=$(echo "$OUTPUT" | grep -oE '0x[a-fA-F0-9]{64}' | grep -v "{{emission_datum_hash}}" | tr -d '[:space:]')
-          if [ -z "$HASH" ]; then
-            HASH=$(echo "$OUTPUT" | grep -oE '0x[a-fA-F0-9]{64}')
-          fi
-          echo "$HASH"
-        save: signed_emission_hash
+        save_hash: signed_emission_hash
       
       - wait: "15s"
       
@@ -337,15 +315,13 @@ test:
         node: node-1
         save: emission_event_dump
       
-      - bash: |
-          DUMP='{{emission_event_dump}}'
-          HASH=$(echo "$DUMP" | grep -oE 'emission_hash: 0x[a-fA-F0-9]+' | sed 's/emission_hash: //' | tr -d '[:space:]')
-          if [ -z "$HASH" ]; then
-            echo "ERROR: emission_hash not found in event dump" >&2
-            echo "Event dump: $DUMP"
-            exit 1
-          fi
-          echo "$HASH"
+      - python: |
+          import re
+          dump = ctx.get('emission_event_dump', '')
+          match = re.search(r'emission_hash:\s*(0x[a-fA-F0-9]+)', dump)
+          if not match:
+              raise ValueError(f"emission_hash not found in event dump: {dump[:500]}")
+          result = match.group(1)
         save: emission_hash
   
   - cli: "dag event list -chain zerochain"

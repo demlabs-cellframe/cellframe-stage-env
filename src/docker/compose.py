@@ -86,20 +86,22 @@ class DockerComposeManager:
         from src.utils.cli import run_command
         import os
         
-        cmd = ["docker", "compose", "-f", str(self.compose_file),
-               "-p", self.project_name, "build"]
-        
-        if no_cache:
-            cmd.append("--no-cache")
-        
         # Set environment variable for mirror (docker-compose reads from env)
         env = os.environ.copy()
         if debian_mirror:
             env["DEBIAN_MIRROR"] = debian_mirror
             logger.info("setting_debian_mirror_env", mirror=debian_mirror)
         
-        if services:
-            cmd.extend(services)
+        # Build only the first node service to create shared image
+        # (all nodes use the same image: cf-node:debug-latest)
+        # This avoids "image already exists" conflicts when building in parallel
+        first_node_service = services[0] if services else "node-1"
+        
+        cmd = ["docker", "compose", "-f", str(self.compose_file),
+               "-p", self.project_name, "build", first_node_service]
+        
+        if no_cache:
+            cmd.append("--no-cache")
         
         # Print informative messages before starting Docker build
         from ..cli.common import print_info, print_success

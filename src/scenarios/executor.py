@@ -77,6 +77,10 @@ class RuntimeContext:
         if name not in self.variables:
             raise ScenarioExecutionError(f"Undefined variable: {name}")
         return self.variables[name]
+    
+    def get(self, name: str, default: Any = None) -> Any:
+        """Get runtime variable with optional default (dict-like interface)."""
+        return self.variables.get(name, default)
 
     def __getattr__(self, name: str) -> Any:
         """Allow accessing variables as attributes."""

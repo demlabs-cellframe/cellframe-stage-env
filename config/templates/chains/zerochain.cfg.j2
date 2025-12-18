@@ -11,9 +11,12 @@ default_datum_types=[token,emission,ca,decree]
 # With values here, datums are processed before other nodes can sign
 mempool_auto_types=[]
 consensus=dag_poa
-# NOTE: Do NOT add authorized_nodes_addrs here!
-# It causes "You have no access rights" for node add command
-# tests-in-docker does NOT use this parameter
+# Authorized nodes have special permissions (can write to nodelist, mempool)
+# This MUST be in zerochain [chain] section for node add command to work
+# Read by dap_chain.c for zerochain only (id=0)
+{% if authorized_nodes_addrs %}
+authorized_nodes_addrs={{ authorized_nodes_addrs }}
+{% endif %}
 
 [files]
 storage_dir=../../../var/lib/network/stagenet/zerochain/
