@@ -853,35 +853,53 @@ blocks-sign-cert=pvt.{network_name}.master.{master_idx}
         force: bool = False
     ) -> None:
         """
-        Prepare certificate directories for all nodes.
+        Generate certificates for all nodes using cf-cert-generator Docker image.
         
-        NOTE: Certificates are now generated INSIDE containers using cellframe-node-tool
-        after container startup. This method only prepares directories.
+        Generates certificates BEFORE container startup:
+        1. Uses Docker-based cf-cert-generator for proper DAP SDK crypto
+        2. Copies public certificates to shared/ca (mounted to /share/ca)
+        3. Copies private certificates to each node's data/nodeN/lib/ca
         
         Args:
             nodes: List of node configurations
             topology: Network topology
-            force: Force regeneration (unused - certs created at runtime)
+            force: Force regeneration even if certificates exist
         """
-        logger.info("preparing_certificate_directories",
-                   count=len(nodes),
-                   note="Certificates will be created inside containers after startup")
-        
         network_name = topology.network.name
+        node_count = len(nodes)
         
-        # Prepare data directories for certificates (will be populated by containers)
-        for node in nodes:
-            node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
-            node_data_cert_dir.mkdir(parents=True, exist_ok=True)
-            logger.debug("prepared_cert_dir", node_id=node.node_id, dir=str(node_data_cert_dir))
+        logger.info("generating_certificates_with_docker",
+                   network=network_name,
+                   count=node_count)
         
-        # Create shared public certificates directory (will be populated by containers)
+        if self.cert_generator.certs_exist() and not force:
+            logger.info("certificates_already_exist_skipping")
+            return
+        
+        if force:
+            self.cert_generator.clean()
+        
+        # ROOT nodes are seed nodes (DAG-PoA on zerochain)
+        root_count = len([n for n in nodes if n.is_seed_node])
+        
+        self.cert_generator.generate_all(
+            network_name=network_name,
+            node_count=node_count,
+            root_count=root_count
+        )
+        
         shared_certs_dir = self.configs_cache / "shared" / "ca"
-        shared_certs_dir.mkdir(parents=True, exist_ok=True)
-        logger.debug("prepared_shared_ca_dir", dir=str(shared_certs_dir))
+        self.cert_generator.copy_certs_to_shared_ca(shared_certs_dir, network_name)
         
-        logger.info("certificate_directories_prepared",
-                   note="Run create_certificates_in_containers() after container startup")
+        self.cert_generator.copy_private_certs_to_node_data(
+            self.data_cache,
+            node_count,
+            network_name
+        )
+        
+        logger.info("certificates_generated_and_distributed",
+                   network=network_name,
+                   nodes=node_count)
     
     def clean(self, clean_certs: bool = False) -> None:
         """
