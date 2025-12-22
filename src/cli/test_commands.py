@@ -173,11 +173,23 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 test_path = Path(test_dir).resolve()
                 
                 if not test_path.exists():
-                    print_warning(f"Directory not found: {test_path}")
+                    print_warning(f"Directory or file not found: {test_path}")
                     continue
                 
                 # Find all YAML scenario files
-                yml_files = list(test_path.glob("**/*.yml")) + list(test_path.glob("**/*.yaml"))
+                # Support both directories and individual files
+                yml_files = []
+                if test_path.is_file() and test_path.suffix in ['.yml', '.yaml']:
+                    # Single file provided
+                    yml_files = [test_path]
+                    logger.debug("single_yml_file_provided", file=str(test_path))
+                elif test_path.is_dir():
+                    # Directory provided - scan recursively
+                    yml_files = list(test_path.glob("**/*.yml")) + list(test_path.glob("**/*.yaml"))
+                    logger.debug("directory_scan", path=str(test_path), found=len(yml_files))
+                else:
+                    print_warning(f"Path is neither a YAML file nor a directory: {test_path}")
+                    continue
                 
                 if not yml_files:
                     print_warning(f"No YAML scenario files found in {test_path.name}")
@@ -224,6 +236,101 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     
                     if not suite_found:
                         standalone_scenarios.append(yml_file)
+                
+                # Process standalone scenarios FIRST (they don't belong to any suite)
+                if standalone_scenarios:
+                    print_info(f"\n📦 Running {len(standalone_scenarios)} standalone scenario(s)")
+                    
+                    # Create suite dir for standalone scenarios
+                    suite_name = "Standalone Scenarios"
+                    suite_dir = run_dir_base / "standalone"
+                    suite_dir.mkdir(exist_ok=True)
+                    scenario_logs_dir = suite_dir / "scenario-logs"
+                    scenario_logs_dir.mkdir(exist_ok=True)
+                    
+                    for scenario_file in standalone_scenarios:
+                        suite_relative_path = scenario_file.relative_to(test_path) if test_path.is_dir() else Path(scenario_file.name)
+                        
+                        print_info(f"\n{'─' * 60}")
+                        print_info(f"▶ Running scenario: {scenario_file.name}")
+                        
+                        total_scenarios += 1
+                        
+                        # Create scenario log
+                        scenario_log_name = f"{scenario_file.stem}.log"
+                        scenario_log_file = scenario_logs_dir / scenario_log_name
+                        
+                        # Parse and execute scenario
+                        common_root = base_path / "tests"
+                        parser = ScenarioParser(scenarios_root=scenario_file.parent, common_root=common_root)
+                        
+                        try:
+                            scenario = parser.load_scenario(scenario_file.name)
+                            
+                            # Execute scenario
+                            with open(scenario_log_file, 'w', encoding='utf-8') as log_f:
+                                log_f.write(f"Scenario: {scenario.name}\n")
+                                log_f.write(f"File: {scenario_file}\n")
+                                log_f.write(f"\n{'=' * 60}\n\n")
+                            
+                            executor = ScenarioExecutor(
+                                node_cli_path="cellframe-node-cli",
+                                log_file=scenario_log_file,
+                                debug=False,
+                                base_path=base_path
+                            )
+                            
+                            async def _run_standalone():
+                                await executor.execute_scenario(
+                                    scenario,
+                                    compose_manager=network_mgr.compose if network_mgr else None,
+                                    snapshot_manager=network_mgr.snapshot_manager if network_mgr else None,
+                                    genesis_config_manager=network_mgr.genesis if network_mgr else None,
+                                    node_configs=None  # Will be initialized from running network
+                                )
+                            
+                            asyncio.run(_run_standalone())
+                            
+                            passed_scenarios += 1
+                            print_success(f"  ✓ Scenario passed")
+                            
+                            scenario_results.append({
+                                'name': scenario.name,
+                                'file': scenario_file.name,
+                                'suite': suite_name,
+                                'path': str(suite_relative_path),
+                                'status': 'passed',
+                                'log_file': str(scenario_log_file.relative_to(run_dir_base))
+                            })
+                            
+                        except ScenarioExecutionError as e:
+                            failed_scenarios += 1
+                            print_error(f"  ❌ Scenario failed: {str(e)}")
+                            
+                            scenario_results.append({
+                                'name': scenario_file.stem,
+                                'file': scenario_file.name,
+                                'suite': suite_name,
+                                'path': str(suite_relative_path),
+                                'status': 'failed',
+                                'error': str(e),
+                                'log_file': str(scenario_log_file.relative_to(run_dir_base))
+                            })
+                        
+                        except Exception as e:
+                            failed_scenarios += 1
+                            print_error(f"  ❌ Unexpected error: {str(e)}")
+                            logger.exception("standalone_scenario_error", scenario=str(scenario_file))
+                            
+                            scenario_results.append({
+                                'name': scenario_file.stem,
+                                'file': scenario_file.name,
+                                'suite': suite_name,
+                                'path': str(suite_relative_path),
+                                'status': 'error',
+                                'error': str(e),
+                                'log_file': str(scenario_log_file.relative_to(run_dir_base))
+                            })
                 
                 # Process each suite
                 for suite_key, suite_info in suites.items():
