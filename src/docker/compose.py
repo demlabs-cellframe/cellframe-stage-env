@@ -33,7 +33,18 @@ class DockerComposeManager:
         """
         self.project_dir = project_dir
         self.project_name = project_name
-        self.compose_file = project_dir / "docker-compose.yml"
+        
+        # CRITICAL: Prefer generated file over template if it exists
+        # This allows run-tests to work with already-started network
+        generated_file = project_dir / "docker-compose.generated.yml"
+        template_file = project_dir / "docker-compose.yml"
+        
+        if generated_file.exists():
+            self.compose_file = generated_file
+            logger.debug("using_generated_compose_file", file=str(generated_file))
+        else:
+            self.compose_file = template_file
+            logger.debug("using_template_compose_file", file=str(template_file))
         
         try:
             self.client = docker.from_env()
