@@ -191,6 +191,13 @@ test:
     set:
       seed_mode: "true"
   
+  # CRITICAL: Enable is_add_directly for genesis event creation
+  # Without this, events won't be added to DAG even in seed_mode
+  - config: "stagenet/zerochain"
+    nodes: [node-1, node-2, node-3]
+    set:
+      is_add_directly: "true"
+  
   - docker_op: restart
     services: [node-1, node-2, node-3, node-4, node-5]
   
@@ -228,11 +235,19 @@ test:
         node: node-1
         save_hash: genesis_event_hash
   
+  # Set static genesis event and DISABLE is_add_directly for normal consensus
   - config: "stagenet/zerochain"
     nodes: [node-1, node-2, node-3, node-4, node-5]
     set:
       static_genesis_event: "{{genesis_event_hash}}"
       is_static_genesis_event: "true"
+      is_add_directly: "false"
+  
+  # Disable seed_mode for production operation
+  - config: "cellframe-node"
+    nodes: [node-1, node-2, node-3]
+    set:
+      seed_mode: "false"
   
   - cli: "srv_stake order create -net stagenet -value 0.05e+18 -cert stagenet.master.pvt.0"
     node: node-3
@@ -260,6 +275,7 @@ test:
     set:
       static_genesis_event: "{{genesis_event_hash}}"
       is_static_genesis_event: "true"
+      is_add_directly: "false"
   
   - wait_network: online
     nodes: [node-1, node-2]
