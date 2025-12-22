@@ -26,17 +26,20 @@ test:
   - group: Genesis Block - Create from emission
     defaults:
       node: node-1
+      cli:
+        chain: "main"
+        token: "TCELL"
     steps:
-      - cli: "tx_create -net stagenet -chain main -token TCELL -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert stagenet.root.pvt.0"
+      - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert stagenet.root.pvt.0"
         save_hash: mainchain_genesis_tx
       
       - wait: "180s"
       
-      - cli: "block list -net stagenet -chain main"
+      - cli: "block list"
         node: node-3
         expect_output: "have blocks:"
   
-  - cli: "block list -net stagenet -chain main"
+  - cli: "block list -chain main"
     node: node-3
     save_hash: genesis_block_hash
   
@@ -66,11 +69,11 @@ test:
   - wait: "40s"
 
 check:
-  - cli: "net -net stagenet get status"
+  - cli: "net get status"
     node: node-3
     expect_output: "NET_STATE_ONLINE"
   
-  - cli: "block list -net stagenet -chain main"
+  - cli: "block list -chain main"
     node: node-1
     expect_output: "have blocks:"
   

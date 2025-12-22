@@ -70,7 +70,6 @@ setup:
   - docker_op: restart
     services: [node-1, node-2, node-3, node-4, node-5, node-6]
   
-  # First wait_network with placeholder validators_addrs (from template)
   - wait_network: online
     nodes: [node-1, node-2]
     timeout: 120
@@ -112,7 +111,6 @@ test:
       validators_addrs: "[{{master_addr_0}},{{master_addr_1}},{{master_addr_2}}]"
   
   # Set authorized_nodes_addrs in ZEROCHAIN config (root nodes have special permissions)
-  # MUST be in zerochain [chain] section for node add command to work
   - config: "stagenet/zerochain"
     nodes: [node-1, node-2, node-3, node-4, node-5, node-6]
     set:
@@ -127,52 +125,55 @@ test:
   
   - wait: "5s"
   
+  # Add all nodes to nodelist
+  # Note: -net and -port are applied automatically from defaults
   - group: Add all nodes to nodelist
     defaults:
       node: node-1
     steps:
-      - cli: "node add -net stagenet -addr {{root_addr_0}} -host {{node_ip['node1']}} -port 8079"
+      - cli: "node add -addr {{root_addr_0}} -host {{node_ip['node1']}}"
         contains: "Successfully"
         save: node_add_result_1
-      - cli: "node add -net stagenet -addr {{root_addr_1}} -host {{node_ip['node2']}} -port 8079"
+      - cli: "node add -addr {{root_addr_1}} -host {{node_ip['node2']}}"
         contains: "Successfully"
         save: node_add_result_2
-      - cli: "node add -net stagenet -addr {{master_addr_0}} -host {{node_ip['node3']}} -port 8079"
+      - cli: "node add -addr {{master_addr_0}} -host {{node_ip['node3']}}"
         contains: "Successfully"
         save: node_add_result_3
-      - cli: "node add -net stagenet -addr {{master_addr_1}} -host {{node_ip['node4']}} -port 8079"
+      - cli: "node add -addr {{master_addr_1}} -host {{node_ip['node4']}}"
         contains: "Successfully"
         save: node_add_result_4
-      - cli: "node add -net stagenet -addr {{master_addr_2}} -host {{node_ip['node5']}} -port 8079"
+      - cli: "node add -addr {{master_addr_2}} -host {{node_ip['node5']}}"
         contains: "Successfully"
         save: node_add_result_5
-      - cli: "node add -net stagenet -addr {{full_addr_0}} -host {{node_ip['node6']}} -port 8079"
+      - cli: "node add -addr {{full_addr_0}} -host {{node_ip['node6']}}"
         contains: "Successfully"
         save: node_add_result_6
   
   - wait: "5s"
   
-  - cli: "node list -net stagenet"
+  - cli: "node list"
     node: node-1
     not_contains: "No records"
     save: node_list_after_add
   
-  # validators_addrs already configured via config: step above
-  
   # Create wallets for all nodes
   - group: Create wallets
+    defaults:
+      cli:
+        sign: "sig_dil"
     steps:
-      - cli: "wallet new -w stagenet_root_0 -sign sig_dil"
+      - cli: "wallet new -w stagenet_root_0"
         node: node-1
-      - cli: "wallet new -w stagenet_root_1 -sign sig_dil"
+      - cli: "wallet new -w stagenet_root_1"
         node: node-2
-      - cli: "wallet new -w stagenet_master_0 -sign sig_dil"
+      - cli: "wallet new -w stagenet_master_0"
         node: node-3
-      - cli: "wallet new -w stagenet_master_1 -sign sig_dil"
+      - cli: "wallet new -w stagenet_master_1"
         node: node-4
-      - cli: "wallet new -w stagenet_master_2 -sign sig_dil"
+      - cli: "wallet new -w stagenet_master_2"
         node: node-5
-      - cli: "wallet new -w stagenet_full_0 -sign sig_dil"
+      - cli: "wallet new -w stagenet_full_0"
         node: node-6
   
   # Get fee_addr from root_0 wallet for emission target
@@ -192,7 +193,6 @@ test:
       seed_mode: "true"
   
   # CRITICAL: Enable is_add_directly for genesis event creation
-  # Without this, events won't be added to DAG even in seed_mode
   - config: "stagenet/zerochain"
     nodes: [node-1, node-2, node-3]
     set:
@@ -210,29 +210,27 @@ test:
   - group: Genesis Event - Token Declaration
     defaults:
       node: node-1
+      cli:
+        chain: "zerochain"
     steps:
-      - cli: "token_decl -token TCELL -chain zerochain -total_supply 0 -decimals 18 -signs_emission 2 -signs_total 2 -type CF20 -certs stagenet.root.pvt.0,stagenet.root.pvt.1"
+      - cli: "token_decl -token TCELL -total_supply 0 -decimals 18 -signs_emission 2 -signs_total 2 -type CF20 -certs stagenet.root.pvt.0,stagenet.root.pvt.1"
         save_hash: token_hash
       
       - wait: "3s"
       
-      - cli: "mempool proc -net stagenet -chain zerochain -datum {{token_hash}}"
-        node: node-1
+      - cli: "mempool proc -datum {{token_hash}}"
       
       - wait: "2s"
       - wait: "30s"
       
       - cli: "token list"
-        node: node-1
         expect_output: "tokens: 1"
       
       - cli: "global_db flush"
-        node: node-1
       
       - wait: "5s"
       
-      - cli: "dag event last -net stagenet -chain zerochain"
-        node: node-1
+      - cli: "dag event last -chain zerochain"
         save_hash: genesis_event_hash
   
   # Set static genesis event and DISABLE is_add_directly for normal consensus
@@ -249,17 +247,22 @@ test:
     set:
       seed_mode: "false"
   
-  - cli: "srv_stake order create -net stagenet -value 0.05e+18 -cert stagenet.master.pvt.0"
-    node: node-3
-    expect: success
+  - group: Create stake orders for validators
+    defaults:
+      cli:
+        value: "0.05e+18"
+    steps:
+      - cli: "srv_stake order create -cert stagenet.master.pvt.0"
+        node: node-3
+        expect: success
 
-  - cli: "srv_stake order create -net stagenet -value 0.05e+18 -cert stagenet.master.pvt.1"
-    node: node-4
-    expect: success
+      - cli: "srv_stake order create -cert stagenet.master.pvt.1"
+        node: node-4
+        expect: success
 
-  - cli: "srv_stake order create -net stagenet -value 0.05e+18 -cert stagenet.master.pvt.2"
-    node: node-5
-    expect: success
+      - cli: "srv_stake order create -cert stagenet.master.pvt.2"
+        node: node-5
+        expect: success
   
   - docker_op: restart
     services: [node-1, node-2, node-3, node-4, node-5]
@@ -286,38 +289,37 @@ test:
   - group: Token Emission
     defaults:
       node: node-1
+      cli:
+        chain: "zerochain"
+        token: "TCELL"
     steps:
-      - cli: "token_emit -net stagenet -chain zerochain -token TCELL -no_base_tx -emission_value 10.0e+54 -addr {{fee_addr}} -certs stagenet.root.pvt.0"
+      - cli: "token_emit -no_base_tx -emission_value 10.0e+54 -addr {{fee_addr}} -certs stagenet.root.pvt.0"
         save_hash: emission_datum_hash
       
       - wait: "15s"
       
-      - cli: "mempool check -net stagenet -chain zerochain -datum {{emission_datum_hash}}"
+      - cli: "mempool check -datum {{emission_datum_hash}}"
         node: node-2
         save: mempool_check_result
       
-      - cli: "token_emit sign -net stagenet -chain zerochain -emission {{emission_datum_hash}} -certs stagenet.root.pvt.1"
+      - cli: "token_emit sign -emission {{emission_datum_hash}} -certs stagenet.root.pvt.1"
         node: node-2
         save_hash: signed_emission_hash
       
       - wait: "15s"
       
-      - cli: "dag event last -net stagenet -chain zerochain"
-        node: node-1
+      - cli: "dag event last"
         save_hash: last_event_before_emission
       
-      - cli: "mempool proc -net stagenet -chain zerochain -datum {{signed_emission_hash}}"
-        node: node-1
+      - cli: "mempool proc -datum {{signed_emission_hash}}"
         save: mempool_proc_output
       
       - wait: "30s"
       
-      - cli: "dag event last -net stagenet -chain zerochain"
-        node: node-1
+      - cli: "dag event last"
         save_hash: emission_event_hash
       
-      - cli: "dag event dump -net stagenet -chain zerochain -event {{emission_event_hash}} -from events"
-        node: node-1
+      - cli: "dag event dump -event {{emission_event_hash}} -from events"
         save: emission_event_dump
       
       - python: |
@@ -332,5 +334,5 @@ test:
   - cli: "dag event list -chain zerochain"
     node: node-1
   
-  - cli: "dag event last -net stagenet -chain zerochain"
+  - cli: "dag event last -chain zerochain"
     node: node-1
