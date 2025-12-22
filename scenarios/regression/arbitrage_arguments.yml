@@ -10,17 +10,17 @@ network:
 
 setup:
   - docker_op: start
-    services: [root-1]
+    services: "{{root_nodes}}"
     detach: true
   
   - wait_network: online
-    nodes: [root-1]
+    nodes: "{{root_nodes}}"
     timeout: 60
 
 test:
   - group: Setup Wallet and Token
     defaults:
-      node: root-1
+      node: "{{first_root}}"
       cli:
         chain: "zerochain"
     steps:
@@ -32,10 +32,10 @@ test:
       - cli: "wallet info -addr -w fee_wallet_args"
         save_wallet: fee_addr
 
-      - cli: "token_decl -token ARB_ARGS -total_supply 2000000000000000000 -decimals 18 -signs_emission 1 -signs_total 1 -certs pvt.stagenet.root.0"
+      - cli: "token_decl -token ARB_ARGS -total_supply 2000000000000000000 -decimals 18 -signs_emission 1 -signs_total 1 -certs stagenet.root.pvt.0"
         save_hash: token_hash
       
-      - cli: "token_emit -token ARB_ARGS -emission_value 2000000000000000000 -addr {{owner_addr}} -certs pvt.stagenet.root.0"
+      - cli: "token_emit -token ARB_ARGS -emission_value 2000000000000000000 -addr {{owner_addr}} -certs stagenet.root.pvt.0"
         save_hash: emission_hash
       
       - wait_for_datum: "{{emission_hash}}"
@@ -44,14 +44,13 @@ test:
 
   - group: Create Normal Transaction (Prerequisite workaround for Bug #1 if needed)
     defaults:
-      node: root-1
+      node: "{{first_root}}"
       cli:
         chain: "zerochain"
         token: "ARB_ARGS"
         fee: "100"
     steps:
-      # Create a self-transfer first (simulating "normal activity")
-      - cli: "tx_create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 1000000000000000000 -certs pvt.stagenet.root.0"
+      - cli: "tx_create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 1000000000000000000 -certs stagenet.root.pvt.0"
         save_hash: normal_tx_hash
       
       - wait_for_datum: "{{normal_tx_hash}}"
@@ -60,26 +59,22 @@ test:
 
   - group: Test Arbitrage Arguments
     defaults:
-      node: root-1
+      node: "{{first_root}}"
       cli:
         chain: "zerochain"
         token: "ARB_ARGS"
         fee: "100"
     steps:
-      # Bug #2: -value and -token ignored.
-      # We specify a specific value (500) and check if it is respected.
-      - cli: "tx_create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 500 -arbitrage -certs pvt.stagenet.root.0"
+      - cli: "tx_create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 500 -arbitrage -certs stagenet.root.pvt.0"
         save_hash: arb_tx_hash
       
       - wait_for_datum: "{{arb_tx_hash}}"
         chain: zerochain
         timeout: 60
         
-      # Check the transaction details to verify value
       - cli: "tx_history -tx {{arb_tx_hash}}"
         save_to: tx_history_output
       
-      # Verify the value 500 is present
       - python: |
           output = ctx.get_variable("tx_history_output") or ""
           if "500" not in output and "0.000000000000000500" not in output: 

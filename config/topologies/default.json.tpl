@@ -44,9 +44,13 @@
   "consensus": {
     "type": "{{ consensus_type | default('esbocs') }}",
     "min_validators": {{ min_validators | default(2) }},
-    "new_round_delay": {{ new_round_delay | default(45) }},
+    "new_round_delay": {{ new_round_delay | default(30) }},
     "collecting_level": {{ collecting_level | default(10.0) }},
     "auth_certs_prefix": "{{ auth_certs_prefix | default('stagenet.master') }}",
+    "round_start_sync_timeout": {{ round_start_sync_timeout | default(5) }},
+    "round_attempts_max": {{ round_attempts_max | default(2) }},
+    "round_attempt_timeout": {{ round_attempt_timeout | default(5) }},
+    "consensus_debug": {{ consensus_debug | default('true') | lower }},
     "min_fee": "{{ min_fee | default('0.01') }}"
   },
   "balancer": {

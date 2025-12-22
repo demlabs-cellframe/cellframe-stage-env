@@ -1,5 +1,5 @@
 # Token Creation Test
-# Test scenario #1: Create new CF20 token
+# Test scenario #1: Create new CF20 token (dynamic topology)
 
 name: Token Creation Test
 description: Test token declaration with various parameters
@@ -8,13 +8,10 @@ tags: [token, creation]
 includes:
   - common/set_net_default.yml
 
-# This scenario uses common setup from suite.yml
-# Wallets owner_addr, receiver_addr, thirdparty_addr are already created
-
 test:
   - group: Test 1 - Simple token
     defaults:
-      node: node1
+      node: "{{first_root}}"
       cli:
         decimals: "18"
         signs_total: "1"
@@ -25,13 +22,12 @@ test:
         expect: success
         wait: 3s
       
-      # Verify token created
       - cli: "token info -token TEST1"
         contains: "TEST1"
   
   - group: Test 2 - Token with flags
     defaults:
-      node: node1
+      node: "{{first_root}}"
       cli:
         decimals: "18"
         signs_total: "1"
@@ -41,15 +37,14 @@ test:
         expect: success
         wait: 3s
       
-      # Verify second token
       - cli: "token info -token TEST2"
         contains: "TEST2"
 
 check:
   - cli: "token list"
-    node: node1
+    node: "{{first_root}}"
     contains: "TEST1"
   
   - cli: "token list"
-    node: node1
+    node: "{{first_root}}"
     contains: "TEST2"

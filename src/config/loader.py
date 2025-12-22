@@ -43,9 +43,14 @@ class NetworkTopology(BaseModel):
     class Consensus(BaseModel):
         type: str
         min_validators: int = Field(ge=1)
-        new_round_delay: int = Field(ge=1)
-        collecting_level: float = Field(ge=0.0, le=100.0)
-        auth_certs_prefix: str
+        new_round_delay: int = Field(ge=1, default=30)
+        collecting_level: float = Field(ge=0.0, le=100.0, default=10.0)
+        auth_certs_prefix: str = "stagenet.master"
+        # Additional ESBocs timing parameters
+        round_start_sync_timeout: int = Field(ge=1, default=5)
+        round_attempts_max: int = Field(ge=1, default=2)
+        round_attempt_timeout: int = Field(ge=1, default=5)
+        consensus_debug: bool = Field(default=True)
     
     class Balancer(BaseModel):
         enabled: bool = False

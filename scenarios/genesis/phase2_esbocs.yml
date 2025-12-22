@@ -1,5 +1,5 @@
 name: PHASE 2 - ESBocs Genesis
-description: Create mainchain genesis block from emission
+description: Create mainchain genesis block from emission (dynamic topology)
 
 includes:
   - common/set_net_default.yml
@@ -10,22 +10,27 @@ network:
 
 setup:
   # Enable seed_mode on ALL root and master nodes to accept genesis block
+  - python: |
+      root_nodes = ctx.get('root_nodes')
+      master_nodes = ctx.get('master_nodes')
+      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
+  
   - config: "cellframe-node"
-    nodes: [node-1, node-2, node-3, node-4, node-5]
+    nodes: "{{_active_nodes}}"
     set:
       seed_mode: "true"
   
   - docker_op: restart
-    services: [node-1, node-2, node-3, node-4, node-5]
+    services: "{{_active_nodes}}"
   
   - wait_network: online
-    nodes: [node-1, node-2, node-3, node-4, node-5]
+    nodes: "{{_active_nodes}}"
     timeout: 60
 
 test:
   - group: Genesis Block - Create from emission
     defaults:
-      node: node-1
+      node: "{{first_root}}"
       cli:
         chain: "main"
         token: "TCELL"
@@ -36,47 +41,47 @@ test:
       - wait: "180s"
       
       - cli: "block list"
-        node: node-3
+        node: "{{first_master}}"
         expect_output: "have blocks:"
   
   - cli: "block list -chain main"
-    node: node-3
+    node: "{{first_master}}"
     save_hash: genesis_block_hash
   
   - config: "stagenet/main"
-    nodes: [node-1, node-2, node-3, node-4, node-5]
+    nodes: "{{_active_nodes}}"
     set:
       static_genesis_block: "{{genesis_block_hash}}"
       is_static_genesis_block: "true"
   
   - config: "stagenet/zerochain"
-    nodes: [node-1, node-2]
+    nodes: "{{root_nodes}}"
     set:
       is_add_directly: "false"
   
   - config: "cellframe-node"
-    nodes: [node-1, node-2, node-3]
+    nodes: "{{seed_nodes}}"
     set:
       seed_mode: "false"
   
   - docker_op: restart
-    services: [node-1, node-2, node-3, node-4, node-5, node-6]
+    services: "{{all_nodes}}"
   
   - wait_network: online
-    nodes: [node-1, node-2, node-3, node-4, node-5]
+    nodes: "{{_active_nodes}}"
     timeout: 60
   
   - wait: "40s"
 
 check:
   - cli: "net get status"
-    node: node-3
+    node: "{{first_master}}"
     expect_output: "NET_STATE_ONLINE"
   
   - cli: "block list -chain main"
-    node: node-1
+    node: "{{first_root}}"
     expect_output: "have blocks:"
   
   - cli: "token list"
-    node: node-1
+    node: "{{first_root}}"
     expect_output: "tokens:"

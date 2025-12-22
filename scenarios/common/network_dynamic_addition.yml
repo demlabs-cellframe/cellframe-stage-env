@@ -1,5 +1,5 @@
 # Dynamic Node Addition Scenario
-# Tests adding new nodes to running network through balancer
+# Tests adding new nodes to running network through balancer (dynamic topology)
 
 name: Dynamic Node Addition Test
 description: Test adding nodes dynamically to running network through balancer
@@ -10,40 +10,15 @@ version: "1.0"
 includes:
   - common/set_net_default.yml
 
-# Start with minimal network
 network:
   topology: default
   name: stagenet
-  nodes:
-    - name: node1
-      role: root
-      validator: true
-    
-    - name: node2
-      role: root
-      validator: false
-    
-    - name: node3
-      role: root
-      validator: false
-    
-    - name: node4
-      role: master
-      validator: true
-    
-    - name: node5
-      role: master
-      validator: true
-    
-    - name: node6
-      role: master
-      validator: true
 
 # Setup: verify initial network
 setup:
   - group: Initial network verification
     defaults:
-      node: node1
+      node: "{{first_root}}"
     steps:
       - cli: "net list"
         save: initial_nets
@@ -54,11 +29,11 @@ setup:
   
   - wait: 10s
 
-# Test: Add new full node dynamically
+# Test: Verify network and balancer
 test:
   - group: Verify network and balancer status
     defaults:
-      node: node1
+      node: "{{first_root}}"
     steps:
       - cli: "net get status"
         expect: success
@@ -69,20 +44,23 @@ test:
         save: balancer_status
       
       - cli: "node list"
-        contains: "node1"
+        contains: "node"
   
   - wait: 5s
 
-# Check: Verify network health
+# Check: Verify network health on all nodes
 check:
   - cli: "net get status"
-    node: node1
+    node: "{{first_root}}"
     contains: "online"
   
-  - cli: "node list"
-    node: node1
-    contains: "node4"
+  - for: node_name
+    in: "{{master_nodes}}"
+    steps:
+      - cli: "net get status"
+        node: "{{node_name}}"
+        contains: "online"
   
   - cli: "node links"
-    node: node6
+    node: "{{last_master}}"
     expect: success

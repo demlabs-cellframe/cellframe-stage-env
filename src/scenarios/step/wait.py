@@ -23,6 +23,21 @@ class WaitStepExecutor(StepExecutor):
     This is a thin dispatcher layer. All waiter logic is in monitoring/dispatcher.py.
     """
     
+    def _expand_nodes_list(self, nodes, ctx) -> list:
+        """Expand nodes that can be a template string or list."""
+        if isinstance(nodes, str):
+            # Template string like "{{all_nodes}}" - substitute and parse
+            expanded = ctx.substitute(nodes)
+            if expanded.startswith('[') and expanded.endswith(']'):
+                import ast
+                try:
+                    return ast.literal_eval(expanded)
+                except (ValueError, SyntaxError):
+                    return [expanded]
+            else:
+                return [s.strip() for s in expanded.split(',') if s.strip()]
+        return list(nodes)
+    
     def __init__(
         self,
         container_manager,
@@ -217,8 +232,10 @@ class WaitStepExecutor(StepExecutor):
                 params["node"] = node_alias
         
         if step.nodes:
+            # Expand nodes list (can be template string like "{{all_nodes}}")
+            nodes_list = self._expand_nodes_list(step.nodes, ctx)
             resolved_nodes = []
-            for n in step.nodes:
+            for n in nodes_list:
                 node_alias = ctx.substitute(n)
                 if self.resolve_node_alias_callback:
                     resolved_nodes.append(self.resolve_node_alias_callback(node_alias))

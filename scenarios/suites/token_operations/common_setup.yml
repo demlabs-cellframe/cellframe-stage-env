@@ -1,7 +1,7 @@
 # Common Setup for Token Operations Suite
 
 name: Token Operations Common Setup
-description: Create wallets and initial state for token tests
+description: Create wallets and initial state for token tests (dynamic topology)
 
 includes:
   - common/set_net_default.yml
@@ -10,7 +10,7 @@ includes:
 setup:
   - group: Create test wallets
     defaults:
-      node: node1
+      node: "{{first_root}}"
     steps:
       - cli: "wallet new -w test_wallet_owner"
         save: owner_addr
@@ -30,7 +30,7 @@ setup:
 test:
   - group: Verify wallets exist
     defaults:
-      node: node1
+      node: "{{first_root}}"
     steps:
       - cli: "wallet list"
         contains: "test_wallet_owner"
