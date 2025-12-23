@@ -242,7 +242,7 @@ class WaitStep(BaseModel):
     # Context parameters
     datum: Optional[str] = Field(None, description="Datum hash (for mempool/finalized)")
     node: Optional[str] = Field(None, description="Target node")
-    nodes: Optional[List[str]] = Field(None, description="Target nodes list")
+    nodes: Optional[Union[str, List[str]]] = Field(None, description="Target nodes list (can be template like '{{all_nodes}}')")
     network: Optional[str] = Field(None, description="Network name")
     chain: Optional[str] = Field(None, description="Chain name")
     timeout: int = Field(60, description="Timeout in seconds")
@@ -311,7 +311,7 @@ class WaitForDatumStep(BaseModel):
 class NetworkWaitStep(BaseModel):
     """Wait for network state (online, offline, links_connecting, links_established, sync_complete)."""
     wait_network: str = Field(..., description="Network state to wait for: 'online', 'offline', 'links_connecting', 'links_established', 'sync_complete'")
-    nodes: List[str] = Field(default_factory=lambda: ["root-1", "root-2", "root-3"], description="Nodes to check")
+    nodes: Union[str, List[str]] = Field(default_factory=lambda: ["root-1", "root-2", "root-3"], description="Nodes to check (can be template like '{{all_nodes}}')")
     timeout: int = Field(120, description="Timeout in seconds")
     network: str = Field("stagenet", description="Network name")
     chain: Optional[str] = Field(None, description="Chain name (optional)")
@@ -320,7 +320,7 @@ class NetworkWaitStep(BaseModel):
 class DockerOpStep(BaseModel):
     """Execute Docker operations (start, stop, restart, logs, exec)."""
     docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'logs', 'exec'")
-    services: List[str] = Field(..., description="Docker services to operate on")
+    services: Union[str, List[str]] = Field(..., description="Docker services to operate on (can be template like '{{all_nodes}}')")
     command: Optional[str] = Field(None, description="Command for 'exec' operation")
     detach: bool = Field(True, description="Run in detached mode (for start/restart)")
     wait_for_ip: bool = Field(True, description="Wait for containers to receive IP addresses (for start)")
@@ -332,7 +332,7 @@ class SnapshotStep(BaseModel):
     snapshot: str = Field(..., description="Snapshot operation: 'create', 'restore', 'verify'")
     name: str = Field(..., description="Snapshot name")
     phase: str = Field("full", description="Snapshot phase: 'phase1', 'full'")
-    nodes: Optional[List[str]] = Field(None, description="Nodes to include in snapshot (for create)")
+    nodes: Optional[Union[str, List[str]]] = Field(None, description="Nodes to include in snapshot (can be template like '{{all_nodes}}')")
 
 
 # ============================================================================

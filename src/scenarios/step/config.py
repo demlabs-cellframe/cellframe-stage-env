@@ -24,10 +24,25 @@ class ConfigStepExecutor(StepExecutor):
         self.resolve_node_alias_callback = resolve_node_alias_callback
         self.base_path = container_manager.base_path
         
+    def _expand_nodes_list(self, nodes, ctx) -> list:
+        """Expand nodes that can be a template string or list."""
+        if isinstance(nodes, str):
+            # Template string like "{{all_nodes}}" - substitute and parse
+            expanded = ctx.substitute(nodes)
+            if expanded.startswith('[') and expanded.endswith(']'):
+                import ast
+                try:
+                    return ast.literal_eval(expanded)
+                except (ValueError, SyntaxError):
+                    return [expanded]
+            else:
+                return [s.strip() for s in expanded.split(',') if s.strip()]
+        return list(nodes)
+    
     async def execute(self, step: ConfigStep, ctx: RuntimeContext) -> None:
         """Execute config regeneration step."""
-        # 1. Resolve nodes
-        nodes_list = step.nodes if isinstance(step.nodes, list) else [step.nodes]
+        # 1. Resolve nodes (can be template string like "{{all_nodes}}")
+        nodes_list = self._expand_nodes_list(step.nodes, ctx)
         node_ids = []
         for node_alias in nodes_list:
             resolved = ctx.substitute(node_alias)

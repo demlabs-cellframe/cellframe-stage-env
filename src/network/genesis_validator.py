@@ -35,7 +35,8 @@ class ValidatorManager(BaseGenesisManager):
     async def create_validator_order(
         self,
         container: docker.models.containers.Container,
-        node: NodeConfig
+        node: NodeConfig,
+        root_nodes_count: int = 4
     ) -> None:
         """
         Create validator order for a node.
@@ -43,19 +44,19 @@ class ValidatorManager(BaseGenesisManager):
         Args:
             container: Docker container to execute commands in
             node: Node configuration
+            root_nodes_count: Number of root nodes (for calculating master_idx)
         """
         # Certificate name for this validator
-        # NOTE: Must use pvt. prefix for private key! Both validator_create and CLI commands need it.
-        # CRITICAL: MASTER nodes are node4,5,6 but cert indices are 0,1,2
-        # Match cert-generator.c logic: cert_idx = is_root_node ? i : (i - 3)
-        if node.node_id <= 3:
-            # ROOT nodes: node1,2,3 → cert indices 0,1,2
+        # NOTE: Certificate format is {network}.{role}.pvt.{idx}
+        if node.is_seed_node:
+            # ROOT nodes: cert indices 0,1,2,... 
             validator_idx = node.node_id - 1
-            cert_name = f"pvt.{self.network_name}.root.{validator_idx}"
+            cert_name = f"{self.network_name}.root.pvt.{validator_idx}"
         else:
-            # MASTER nodes: node4,5,6 → cert indices 0,1,2
-            validator_idx = node.node_id - 4  # node4→0, node5→1, node6→2
-            cert_name = f"pvt.{self.network_name}.master.{validator_idx}"
+            # MASTER nodes: cert indices 0,1,2,...
+            # master_idx = node_id - root_nodes_count - 1
+            validator_idx = node.node_id - root_nodes_count - 1
+            cert_name = f"{self.network_name}.master.pvt.{validator_idx}"
         
         # Read node address with retry logic
         node_addr = self._read_node_addr_from_cli(node.node_id)

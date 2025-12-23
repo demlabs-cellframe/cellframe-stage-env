@@ -29,6 +29,21 @@ class NetworkWaitStepExecutor(StepExecutor):
         self.resolve_node_alias_callback = resolve_node_alias_callback
         self.get_node_config_callback = get_node_config_callback
     
+    def _expand_nodes_list(self, nodes, ctx: RuntimeContext) -> list:
+        """Expand nodes that can be a template string or list."""
+        if isinstance(nodes, str):
+            # Template string like "{{all_nodes}}" - substitute and parse
+            expanded = ctx.substitute(nodes)
+            if expanded.startswith('[') and expanded.endswith(']'):
+                import ast
+                try:
+                    return ast.literal_eval(expanded)
+                except (ValueError, SyntaxError):
+                    return [expanded]
+            else:
+                return [s.strip() for s in expanded.split(',') if s.strip()]
+        return list(nodes)
+    
     async def execute(self, step: NetworkWaitStep, ctx: RuntimeContext) -> None:
         """Execute network wait step."""
         logger.info(f"Waiting for network state: {step.wait_network} on nodes {step.nodes}")
@@ -43,7 +58,9 @@ class NetworkWaitStepExecutor(StepExecutor):
         if not self.resolve_node_alias_callback:
             raise RuntimeError("resolve_node_alias_callback not set for NetworkWaitStepExecutor")
         
-        resolved_nodes = [self.resolve_node_alias_callback(node) for node in step.nodes]
+        # Expand nodes list (can be template string)
+        nodes_list = self._expand_nodes_list(step.nodes, ctx)
+        resolved_nodes = [self.resolve_node_alias_callback(node) for node in nodes_list]
         
         # Substitute variables
         network_name = ctx.substitute(step.network)

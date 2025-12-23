@@ -1,5 +1,6 @@
 # Main chain configuration for Cellframe Stagenet
 # ESBocs consensus chain for block production
+# All parameters are configurable via topology and scenario configs
 
 [chain]
 id=0x0000000000000001
@@ -10,9 +11,14 @@ datum_types=[transaction,anchor]
 default_datum_types=[transaction,anchor]
 mempool_auto_types=[transaction,anchor]
 consensus=esbocs
+{% if mainchain_validators_addrs and mainchain_validators_addrs != '[]' -%}
+authorized_nodes_addrs={{ mainchain_validators_addrs }}
+{% elif validators_addrs and validators_addrs != '[]' -%}
+authorized_nodes_addrs={{ validators_addrs }}
+{% endif -%}
 
 [files]
-storage_dir=../../../var/lib/network/stagenet/main/
+storage_dir=../../../var/lib/network/{{ network_name | default('stagenet') }}/main/
 
 [blocks]
 is_celled=false
@@ -21,24 +27,32 @@ is_static_genesis_block={{ is_static_genesis_block | default('false', true) }}
 static_genesis_block={{ static_genesis_block | default('', true) }}
 
 [esbocs]
-consensus_debug=true
-# Minimum number of validators (3 master nodes)
-min_validators_count=3
-# Validators addresses (dynamically set via config: step in YAML scenarios)
-{% if validators_addrs and validators_addrs != '[]' and validators_addrs != '[AAAA::0000::0000::0001,AAAA::0000::0000::0002,AAAA::0000::0000::0003]' -%}
-validators_addrs={{ validators_addrs }}
-{% elif mainchain_validators_addrs and mainchain_validators_addrs != '[]' -%}
+consensus_debug={{ consensus_debug | default('true', true) }}
+# Minimum number of validators for consensus
+# CRITICAL: Must match actual validators count, otherwise SDK returns -2
+# Calculated automatically from topology: max(1, master_nodes_count // 2 + 1)
+min_validators_count={{ min_validators_count | default(2, true) }}
+# Validators addresses (required by SDK for initialization)
+# Master node addresses are pre-configured here from topology
+{% if mainchain_validators_addrs and mainchain_validators_addrs != '[]' -%}
 validators_addrs={{ mainchain_validators_addrs }}
+{% elif validators_addrs and validators_addrs != '[]' -%}
+validators_addrs={{ validators_addrs }}
 {% else -%}
-validators_addrs=[AAAA::0000::0000::0001,AAAA::0000::0000::0002,AAAA::0000::0000::0003]
+# Placeholder - will be filled dynamically by config: step in scenarios
+validators_addrs=[]
 {% endif -%}
-# Authentication certificates prefix (stagenet.master for master nodes)
-# NOTE: ESBocs requires auth_certs_prefix to be set - certs must exist in share/ca
-auth_certs_prefix=stagenet.master
+# PoA mode: when true, uses validators_addrs as authorized validators
+# CRITICAL: Set to false to enable PoS (Proof of Stake) via srv_stake
+poa_mode={{ poa_mode | default('false', true) }}
+# Authentication certificates prefix
+# Uses stagenet.master prefix for master node certificates (validators)
+auth_certs_prefix={{ auth_certs_prefix | default('stagenet.master', true) }}
 {% if blocks_sign_cert -%}
 blocks-sign-cert={{ blocks_sign_cert }}
 {% endif -%}
-new_round_delay=30
-round_start_sync_timeout=5
-round_attempts_max=2
-round_attempt_timeout=5
+# Timing parameters (configurable via topology consensus section)
+new_round_delay={{ new_round_delay | default(30, true) }}
+round_start_sync_timeout={{ round_start_sync_timeout | default(5, true) }}
+round_attempts_max={{ round_attempts_max | default(2, true) }}
+round_attempt_timeout={{ round_attempt_timeout | default(5, true) }}

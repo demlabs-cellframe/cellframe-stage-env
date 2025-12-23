@@ -136,7 +136,8 @@ class CertificateOrderMatchChecker(BaseChecker):
         self,
         nodes: List[NodeConfig],
         network_name: str,
-        base_path: Path
+        base_path: Path,
+        root_nodes_count: int = None
     ):
         """
         Initialize certificate order match checker.
@@ -145,10 +146,16 @@ class CertificateOrderMatchChecker(BaseChecker):
             nodes: List of master nodes to verify
             network_name: Network name
             base_path: Base path to stage-env directory
+            root_nodes_count: Number of root nodes (calculated from nodes if not provided)
         """
         self.nodes = nodes
         self.network_name = network_name
         self.base_path = base_path
+        # Calculate root_nodes_count if not provided
+        if root_nodes_count is not None:
+            self.root_nodes_count = root_nodes_count
+        else:
+            self.root_nodes_count = sum(1 for n in nodes if n.is_seed_node)
     
     async def check(self) -> bool:
         """
@@ -180,8 +187,10 @@ class CertificateOrderMatchChecker(BaseChecker):
         mismatches = []
         
         for node in self.nodes:
-            validator_idx = node.node_id - 4  # node4→0, node5→1, node6→2
-            expected_cert = f"pvt.{self.network_name}.master.{validator_idx}"
+            # Calculate validator_idx based on root_nodes_count
+            validator_idx = node.node_id - self.root_nodes_count - 1
+            # Certificate format: {network}.master.pvt.{idx}
+            expected_cert = f"{self.network_name}.master.pvt.{validator_idx}"
             
             # Read blocks-sign-cert from config file directly
             # Config files are in tests/testing/cache/configs/node{X}/etc/network/{network_name}/{chain_name}
@@ -304,8 +313,8 @@ class CertificateOrderMatchChecker(BaseChecker):
             error_msg = "Certificate mismatch detected! ESBocs won't find orders.\n"
             error_msg += "Expected certificates:\n"
             for node in self.nodes:
-                validator_idx = node.node_id - 4
-                expected_cert = f"pvt.{self.network_name}.master.{validator_idx}"
+                validator_idx = node.node_id - self.root_nodes_count - 1
+                expected_cert = f"{self.network_name}.master.pvt.{validator_idx}"
                 error_msg += f"  node{node.node_id}: {expected_cert}\n"
             error_msg += "\nMismatches found:\n"
             for mismatch in mismatches:

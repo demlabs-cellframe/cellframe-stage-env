@@ -17,7 +17,7 @@
 #include <stdint.h>
 #include <stdarg.h>
 
-/* DAP SDK includes */
+/* DAP SDK includes - only crypto and chain_common (no heavy network deps) */
 #include "dap_common.h"
 #include "dap_cert.h"
 #include "dap_cert_file.h"
@@ -26,7 +26,38 @@
 #include "dap_sign.h"
 #include "dap_hash.h"
 #include "dap_chain_common.h"
-#include "dap_stream.h"
+
+/* === Inline Node Address Generation (from dap_stream.h - avoids heavy deps) === */
+
+typedef union {
+    uint64_t uint64;
+    uint16_t words[4];
+    uint8_t  raw[8];
+} dap_node_addr_t;
+
+static inline void dap_node_addr_from_hash(dap_hash_fast_t *a_hash, dap_node_addr_t *a_addr)
+{
+    a_addr->words[3] = *(uint16_t *)a_hash->raw;
+    a_addr->words[2] = *(uint16_t *)(a_hash->raw + sizeof(uint16_t));
+    a_addr->words[1] = *(uint16_t *)(a_hash->raw + DAP_CHAIN_HASH_FAST_SIZE - sizeof(uint16_t) * 2);
+    a_addr->words[0] = *(uint16_t *)(a_hash->raw + DAP_CHAIN_HASH_FAST_SIZE - sizeof(uint16_t));
+}
+
+static inline dap_node_addr_t dap_node_addr_from_cert(dap_cert_t *a_cert)
+{
+    dap_node_addr_t l_ret = { .uint64 = 0 };
+    if (!a_cert) return l_ret;
+    dap_hash_fast_t l_hash;
+    if (!dap_cert_get_pkey_hash(a_cert, &l_hash))
+        dap_node_addr_from_hash(&l_hash, &l_ret);
+    return l_ret;
+}
+
+static inline char* dap_node_addr_to_str(dap_node_addr_t a_addr)
+{
+    return dap_strdup_printf("%04hX::%04hX::%04hX::%04hX",
+        a_addr.words[3], a_addr.words[2], a_addr.words[1], a_addr.words[0]);
+}
 
 /* === Constants === */
 #define LOG_TAG "cf-cert-generator"
@@ -174,7 +205,7 @@ static int s_validator_address_generate(dap_cert_t *a_cert, char *a_addr_out, si
     
     /* Generate node address from certificate (NOT wallet address!) */
     /* cellframe network node addresses in format: 1234::5678::9ABC::DEF0 */
-    dap_stream_node_addr_t l_node_addr = dap_stream_node_addr_from_cert(a_cert);
+    dap_node_addr_t l_node_addr = dap_node_addr_from_cert(a_cert);
     
     if (l_node_addr.uint64 == 0) {
         log_it(L_ERROR, "Failed to generate node address from certificate");
@@ -184,7 +215,7 @@ static int s_validator_address_generate(dap_cert_t *a_cert, char *a_addr_out, si
     debug_if(s_debug_more, L_DEBUG, "Node address structure generated, converting to string");
     
     /* Convert node address to hex string format: 1234::5678::9ABC::DEF0 */
-    char *l_addr_str = dap_stream_node_addr_to_str(l_node_addr, false);
+    char *l_addr_str = dap_node_addr_to_str(l_node_addr);
     if (!l_addr_str) {
         log_it(L_ERROR, "Failed to convert node address to string");
         return DAP_CERT_GEN_RET_ERROR;
@@ -362,7 +393,7 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     /* Create SEPARATE CONSENSUS certificate (not related to node-addr!) */
     /* ROOT nodes: stagenet.root.N for DAG-PoA on zerochain */
     /* MASTER nodes: stagenet.master.N for ESBocs on main */
-    /* Private cert: pvt.stagenet.{root|master}.N.dcert (with private key, only for this node) */
+    /* Private cert: stagenet.{root|master}.pvt.N.dcert (with private key, only for this node) */
     /* Public cert: stagenet.{root|master}.N.dcert (without private key, for all nodes) */
     
     const char *cert_type = is_root_node ? "root" : "master";
@@ -373,9 +404,10 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     /* Generate NEW certificate for consensus (separate from node-addr!) */
     /* CRITICAL: Use UNIQUE name with index to avoid "already present in memory" errors */
     /* Use cert_idx (local index 0,1,2 for each type), NOT node_id! */
+    /* Naming convention: {network}.{type}.pvt.{idx} (e.g., stagenet.root.pvt.0) */
     char l_validator_cert_name[DAP_CERT_GEN_MAX_CERT_NAME_LEN];
     snprintf(l_validator_cert_name, sizeof(l_validator_cert_name), 
-             "pvt.%s.%s.%d", network_name, cert_type, cert_idx);
+             "%s.%s.pvt.%d", network_name, cert_type, cert_idx);
     
     dap_cert_t *l_validator_cert = dap_cert_generate_mem(l_validator_cert_name, DAP_ENC_KEY_TYPE_SIG_DILITHIUM);
     if (!l_validator_cert) {
@@ -403,12 +435,12 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
         log_it(L_INFO, "Validator address (= node address) saved: %s", node->validator_addr);
     }
     
-    log_it(L_INFO, "About to save consensus cert to: %s/pvt.%s.%s.%d.dcert", node_dir, network_name, cert_type, cert_idx);
-    /* Save private consensus certificate with pvt. prefix */
+    log_it(L_INFO, "About to save consensus cert to: %s/%s.%s.pvt.%d.dcert", node_dir, network_name, cert_type, cert_idx);
+    /* Save private consensus certificate with naming: {network}.{type}.pvt.{idx} */
     if (s_safe_snprintf(cert_file_esbocs, sizeof(cert_file_esbocs), 
-                      "%s/pvt.%s.%s.%d.dcert", node_dir, network_name, cert_type, cert_idx) == DAP_CERT_GEN_RET_SUCCESS) {
+                      "%s/%s.%s.pvt.%d.dcert", node_dir, network_name, cert_type, cert_idx) == DAP_CERT_GEN_RET_SUCCESS) {
         if (dap_cert_file_save(l_validator_cert, cert_file_esbocs) == 0) {
-            log_it(L_INFO, "%s private consensus certificate saved: pvt.%s.%s.%d", consensus, network_name, cert_type, cert_idx);
+            log_it(L_INFO, "%s private consensus certificate saved: %s.%s.pvt.%d", consensus, network_name, cert_type, cert_idx);
         }
     }
     
@@ -470,7 +502,7 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     
     log_it(L_INFO, "Certificates generated for %s", node->node_name);
     log_it(L_INFO, "  Node address (from node-addr.dcert): %s", node_addr_str);
-    log_it(L_INFO, "  Validator address (from pvt.stagenet.master.N.dcert): %s", node->validator_addr);
+    log_it(L_INFO, "  Validator address (from %s.%s.pvt.N.dcert): %s", network_name, cert_type, node->validator_addr);
     
     return DAP_CERT_GEN_RET_SUCCESS;
 }
@@ -525,7 +557,7 @@ static int s_pki_config_generate(const dap_cert_generator_node_t *nodes, int nod
         fprintf(fp, "            \"dap_cert\": \"/certs/%s/stagenet-node%d.dcert\",\n",
                 nodes[i].node_name, nodes[i].node_id);
         fprintf(fp, "            \"esbocs_cert\": \"/certs/%s/stagenet.master.pvt.%d.dcert\",\n",
-                nodes[i].node_name, cert_id);
+                nodes[i].node_name, (nodes[i].node_id > 3) ? (nodes[i].node_id - 4) : cert_id);
         fprintf(fp, "            \"validator_addr\": \"%s\",\n", nodes[i].validator_addr);
         fprintf(fp, "            \"ip\": \"172.20.0.%d\"\n", ip_last_octet);
         fprintf(fp, "        }%s\n", (i < node_count - 1) ? "," : "");
@@ -564,6 +596,7 @@ int main(int argc, char *argv[]) {
     int ret = DAP_CERT_GEN_RET_SUCCESS;
     uint64_t network_id = 0x1234;  /* Default stagenet network ID */
     int node_count = 0;
+    int root_count = 2;  /* Default: 2 ROOT nodes */
     
     /* Initialize DAP SDK FIRST - before ANY other DAP calls */
     dap_log_level_set(L_DEBUG);
@@ -573,9 +606,9 @@ int main(int argc, char *argv[]) {
     
     /* Parse command line arguments */
     if (argc < 4) {
-        log_it(L_ERROR, "Usage: %s <output_directory> <node_count> <network_name> [network_id_hex]", argv[0]);
-        log_it(L_ERROR, "Example: %s /certs 6 stagenet 0x1234  # 6 nodes for stagenet", argv[0]);
-        log_it(L_ERROR, "Example: %s /certs 3 testnet 0x5678  # 3 nodes for testnet", argv[0]);
+        log_it(L_ERROR, "Usage: %s <output_dir> <node_count> <network_name> [network_id] [root_count]", argv[0]);
+        log_it(L_ERROR, "Example: %s /certs 6 stagenet 0x1234 2  # 6 nodes, 2 ROOT, 4 MASTER", argv[0]);
+        log_it(L_ERROR, "Example: %s /certs 3 testnet 0x5678 1  # 3 nodes, 1 ROOT, 2 MASTER", argv[0]);
         dap_enc_key_deinit();
         return DAP_CERT_GEN_RET_ERROR;
     }
@@ -608,6 +641,19 @@ int main(int argc, char *argv[]) {
             return DAP_CERT_GEN_RET_ERROR;
         }
     }
+    
+    /* Parse optional root_count argument */
+    if (argc >= 6) {
+        root_count = atoi(argv[5]);
+        if (root_count < 0 || root_count > node_count) {
+            log_it(L_ERROR, "Invalid root_count: %d (must be 0-%d)", root_count, node_count);
+            dap_enc_key_deinit();
+            return DAP_CERT_GEN_RET_ERROR;
+        }
+    }
+    
+    log_it(L_INFO, "Configuration: %d nodes total, %d ROOT, %d MASTER", 
+           node_count, root_count, node_count - root_count);
     
     /* Allocate nodes array dynamically */
     nodes = DAP_NEW_Z_COUNT(dap_cert_generator_node_t, node_count);
@@ -655,11 +701,11 @@ int main(int argc, char *argv[]) {
         nodes[i].node_id = i + 1;
         
         /* Determine node type: first 3 nodes are ROOT (DAG-PoA), rest are MASTER (ESBocs) */
-        bool is_root_node = (i < 3);
+        bool is_root_node = (i < root_count);
         const char *node_type = is_root_node ? "ROOT" : "MASTER";
         
         /* Calculate LOCAL certificate index (0,1,2 for each type separately) */
-        int cert_idx = is_root_node ? i : (i - 3);  /* ROOT: 0,1,2  MASTER: 0,1,2 */
+        int cert_idx = is_root_node ? i : (i - root_count);  /* ROOT: 0,1,...  MASTER: 0,1,... */
         
         log_it(L_INFO, "Generating %s node certificate for %s (cert_idx=%d)...", node_type, nodes[i].node_name, cert_idx);
         if (s_node_certificate_generate(&nodes[i], output_dir, network_name, network_id, is_root_node, cert_idx) != DAP_CERT_GEN_RET_SUCCESS) {
