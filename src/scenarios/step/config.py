@@ -24,10 +24,25 @@ class ConfigStepExecutor(StepExecutor):
         self.resolve_node_alias_callback = resolve_node_alias_callback
         self.base_path = container_manager.base_path
         
+    def _expand_nodes_list(self, nodes, ctx) -> list:
+        """Expand nodes that can be a template string or list."""
+        if isinstance(nodes, str):
+            # Template string like "{{all_nodes}}" - substitute and parse
+            expanded = ctx.substitute(nodes)
+            if expanded.startswith('[') and expanded.endswith(']'):
+                import ast
+                try:
+                    return ast.literal_eval(expanded)
+                except (ValueError, SyntaxError):
+                    return [expanded]
+            else:
+                return [s.strip() for s in expanded.split(',') if s.strip()]
+        return list(nodes)
+    
     async def execute(self, step: ConfigStep, ctx: RuntimeContext) -> None:
         """Execute config regeneration step."""
-        # 1. Resolve nodes
-        nodes_list = step.nodes if isinstance(step.nodes, list) else [step.nodes]
+        # 1. Resolve nodes (can be template string like "{{all_nodes}}")
+        nodes_list = self._expand_nodes_list(step.nodes, ctx)
         node_ids = []
         for node_alias in nodes_list:
             resolved = ctx.substitute(node_alias)
@@ -90,6 +105,10 @@ class ConfigStepExecutor(StepExecutor):
         # config_name e.g. "cellframe-node" or "stagenet/zerochain"
         
         # Mapping heuristic
+        is_chain = False
+        is_network = False
+        parts = []
+        
         if '/' in config_name:
             # "stagenet/zerochain" -> chains template
             parts = config_name.split('/')
@@ -97,10 +116,13 @@ class ConfigStepExecutor(StepExecutor):
             chain_file = parts[1] # e.g. "zerochain"
             template_name = f"chains/{chain_file}.cfg.j2"
             is_chain = True
+        elif config_name == "stagenet":
+            # Network config (special case)
+            template_name = "stagenet.cfg.j2"
+            is_network = True
         else:
             # "cellframe-node" -> base template
             template_name = f"base/{config_name}.cfg.j2"
-            is_chain = False
             
         # Verify template exists
         template_path = generator.templates_dir / template_name
@@ -121,6 +143,9 @@ class ConfigStepExecutor(StepExecutor):
             if is_chain:
                 # network/stagenet/chain.cfg
                 target_file = node_dir / "network" / parts[0] / f"{parts[1]}.cfg"
+            elif is_network:
+                # network/stagenet.cfg
+                target_file = node_dir / "network" / f"{config_name}.cfg"
             else:
                 target_file = node_dir / f"{config_name}.cfg"
                 
@@ -167,4 +192,19 @@ class ConfigStepExecutor(StepExecutor):
                 elif v.isdigit():
                     v = int(v)
                 context[k] = v
+        
+        # Map config file key names to template variable names
+        # Config files use dashes, templates use underscores
+        key_mappings = {
+            'node-role': 'node_role',
+            'blocks-sign-cert': 'blocks_sign_cert',
+            'events-sign-cert': 'events_sign_cert',
+            'seed_nodes_aliases': 'seed_nodes_aliases',
+            'seed_nodes_hosts': 'seed_nodes_hosts',
+            'ext_address': 'node_ip',  # ext_address in config -> node_ip in template
+        }
+        for config_key, template_key in key_mappings.items():
+            if config_key in context and template_key not in context:
+                context[template_key] = context[config_key]
+        
         return context

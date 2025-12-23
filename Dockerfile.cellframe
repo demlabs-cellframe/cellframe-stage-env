@@ -7,6 +7,7 @@
 #   NODE_ROLE: Node role (root, master, full)
 #   CELLFRAME_VERSION: Cellframe Node version (default: latest)
 #   BUILD_TYPE: debug (default, includes debug symbols) or release (optimized)
+#   NODE_SOURCE_TYPE: url (download), local (use .deb), or repository (build from source)
 #
 # Architecture Support:
 #   Automatically detects system architecture (amd64, arm64, etc.)
@@ -18,10 +19,81 @@
 #   Development/Debugging: docker build --build-arg BUILD_TYPE=debug
 #   Performance/Load tests: docker build --build-arg BUILD_TYPE=release
 #   Specific version: docker build --build-arg CELLFRAME_VERSION=5.4-28
+#   Build from source: docker build --build-arg NODE_SOURCE_TYPE=repository
 #
-# Use Debian Trixie (testing) for GLIBC 2.38+ support required by locally built packages
-# Bookworm has GLIBC 2.36, which is too old for packages built on newer systems
-FROM debian:trixie-slim
+# GLIBC Compatibility:
+#   - url: Downloads official packages (must match container GLIBC)
+#   - local: Uses local .deb (MUST be built on same GLIBC version as container!)
+#   - repository: Builds from source INSIDE container (guaranteed GLIBC compatibility)
+#
+# Use Debian Trixie (13) - GLIBC 2.39 (compatible with Ubuntu 24.04)
+FROM debian:trixie-slim AS runtime-base
+
+# =============================================================================
+# BUILDER STAGE - Only used when NODE_SOURCE_TYPE=repository
+# =============================================================================
+FROM debian:trixie-slim AS builder
+
+ARG BUILD_TYPE=debug
+ARG REPOSITORY_URL=
+ARG REPOSITORY_BRANCH=master
+ARG BUILD_JOBS=0
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    pkg-config \
+    wget \
+    ca-certificates \
+    libssl-dev \
+    libsqlite3-dev \
+    python3 \
+    python3-dev \
+    libpq-dev \
+    zlib1g-dev \
+    libzip-dev \
+    libjson-c-dev \
+    libmagic-dev \
+    xsltproc \
+    file \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Clone and build cellframe-node (only if REPOSITORY_URL is set)
+# This layer is cached based on REPOSITORY_URL and REPOSITORY_BRANCH
+# Always creates /build/cellframe-node.deb (empty placeholder if not building)
+RUN mkdir -p /build && \
+    if [ -n "$REPOSITORY_URL" ]; then \
+        echo "Cloning repository: $REPOSITORY_URL branch: $REPOSITORY_BRANCH" && \
+        git clone --recursive --branch "$REPOSITORY_BRANCH" --depth 1 "$REPOSITORY_URL" cellframe-node && \
+        cd cellframe-node && \
+        mkdir -p build && cd build && \
+        CMAKE_BUILD_TYPE=$(echo "$BUILD_TYPE" | sed 's/debug/Debug/; s/release/Release/') && \
+        echo "Building with CMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE" && \
+        cmake -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
+              -DBUILD_CELLFRAME_NODE_TESTS=OFF \
+              -DBUILD_WITH_PYTHON_ENV=ON \
+              .. && \
+        JOBS=${BUILD_JOBS:-$(nproc)} && \
+        echo "Building with $JOBS parallel jobs..." && \
+        make -j"$JOBS" && \
+        echo "Build complete!" && \
+        # Create .deb package
+        cpack -G DEB && \
+        cp *.deb /build/cellframe-node.deb && \
+        echo "Package created: $(ls -lh /build/cellframe-node.deb)"; \
+    else \
+        echo "REPOSITORY_URL not set, creating placeholder" && \
+        touch /build/cellframe-node.deb.placeholder; \
+    fi
+
+# =============================================================================
+# RUNTIME STAGE - Main container
+# =============================================================================
+FROM runtime-base AS runtime
 
 ARG NODE_ID=1
 ARG NODE_ROLE=root
@@ -34,17 +106,16 @@ ARG REPOSITORY_URL=
 ARG REPOSITORY_BRANCH=master
 ARG DEBIAN_MIRROR=
 
-# Configure Debian mirror if provided (for faster package downloads)
-RUN if [ -n "$DEBIAN_MIRROR" ]; then \
-        echo "Using Debian mirror: $DEBIAN_MIRROR" && \
-        sed -i "s|http://deb.debian.org/debian|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
-        (echo "deb $DEBIAN_MIRROR trixie main" > /etc/apt/sources.list && \
-         echo "deb $DEBIAN_MIRROR trixie-updates main" >> /etc/apt/sources.list && \
-         echo "deb $DEBIAN_MIRROR trixie-security main" >> /etc/apt/sources.list); \
-    fi
+# Note: Debian Trixie (testing) is not available on most mirrors yet
+# Skip mirror substitution for Trixie - use official repos only
+# The DEBIAN_MIRROR argument is accepted but ignored for Trixie compatibility
+RUN echo "Using official Debian Trixie repositories (mirrors not supported yet)"
 
-# Install required packages (base packages always, debug tools conditionally)
+# Install required packages (matching tests-in-docker for compatibility)
+# Runtime dependencies for cellframe-node
+# Note: Package names may vary between Debian versions, using fallbacks
 RUN apt-get update && apt-get install -y \
+    # Base utilities
     wget \
     curl \
     ca-certificates \
@@ -62,6 +133,25 @@ RUN apt-get update && apt-get install -y \
     pv \
     logrotate \
     irqbalance \
+    xz-utils \
+    psmisc \
+    # Cellframe-node runtime dependencies
+    libsqlite3-0 \
+    libmagic1 \
+    iproute2 \
+    inetutils-traceroute \
+    iptables \
+    debconf-utils \
+    libpq-dev \
+    faketime \
+    && \
+    # Install version-specific packages with fallbacks
+    (apt-get -y install libjson-c5 || apt-get -y install libjson-c6 || apt-get -y install libjson-c-dev || true) && \
+    (apt-get -y install libzip4 || apt-get -y install libzip5 || true) && \
+    (apt-get -y install libpython3.12 || apt-get -y install libpython3.11 || apt-get -y install libpython3 || true) && \
+    (apt-get -y install dconf-cli || true) && \
+    # Install libasan conditionally (version differs between systems)
+    (apt-get -y install libasan8 || apt-get -y install libasan6 || apt-get -y install libasan5 || true) \
     && \
     # Install debug tools only for debug builds
     if [ "$BUILD_TYPE" = "debug" ]; then \
@@ -85,6 +175,21 @@ RUN apt-get update && \
 RUN echo '#!/bin/bash\nexit 0' > /usr/bin/systemctl && \
     chmod +x /usr/bin/systemctl
 
+# Download architecture-specific cellframe tools (same as tests-in-docker)
+RUN DPKG_ARCH=$(dpkg --print-architecture) \
+    && if [ "$DPKG_ARCH" = "arm64" ] || [ "$DPKG_ARCH" = "aarch64" ]; then \
+         ARCH_SUFFIX="arm64"; \
+       else \
+         ARCH_SUFFIX="amd64"; \
+       fi \
+    && echo "Building for architecture: ${DPKG_ARCH} -> ${ARCH_SUFFIX}" \
+    && curl -O https://internal-pub.cellframe.net/linux/cellframe-tool-sign/feature/20325/cellframe-tool-sign-${ARCH_SUFFIX} \
+    && curl -O https://internal-pub.cellframe.net/linux/cellframe-tool-compose/feature/20325/cellframe-tool-compose-${ARCH_SUFFIX} \
+    && chmod +x /cellframe-tool-compose-${ARCH_SUFFIX} \
+    && chmod +x /cellframe-tool-sign-${ARCH_SUFFIX} \
+    && ln -sf /cellframe-tool-sign-${ARCH_SUFFIX} /cellframe-tool-sign \
+    && ln -sf /cellframe-tool-compose-${ARCH_SUFFIX} /cellframe-tool-compose
+
 # Create cache directory for Cellframe packages (persistent across builds)
 RUN mkdir -p /var/cache/cellframe-packages
 
@@ -92,8 +197,12 @@ RUN mkdir -p /var/cache/cellframe-packages
 # Note: For local packages, compose.py creates symlink/copy in packages/ directory
 # We copy the entire packages/ directory (may be empty for url/repository sources)
 # Then check for .deb files in RUN command below
-RUN mkdir -p /tmp/packages
+RUN mkdir -p /tmp/packages /tmp/repo-package
 COPY --chown=root:root packages/ /tmp/packages/
+
+# Copy package from builder stage (only exists if NODE_SOURCE_TYPE=repository)
+# This COPY may fail silently if builder didn't produce a package (that's OK for url/local sources)
+COPY --from=builder /build/cellframe-node.deb* /tmp/repo-package/
 
 # Download and install Cellframe Node based on NODE_SOURCE_TYPE
 RUN set -x && \
@@ -227,10 +336,15 @@ RUN set -x && \
             echo "Cached at: $(date)"; \
         fi; \
     elif [ "$NODE_SOURCE_TYPE" = "repository" ]; then \
-        echo "ERROR: Repository source type not yet implemented in Dockerfile" && \
-        echo "  REPOSITORY_URL: $REPOSITORY_URL" && \
-        echo "  REPOSITORY_BRANCH: $REPOSITORY_BRANCH" && \
-        exit 1; \
+        echo "Using repository build (built in builder stage)" && \
+        if [ ! -f "/tmp/repo-package/cellframe-node.deb" ]; then \
+            echo "ERROR: Repository package not found. Make sure to build with --target runtime" && \
+            echo "  REPOSITORY_URL: $REPOSITORY_URL" && \
+            echo "  REPOSITORY_BRANCH: $REPOSITORY_BRANCH" && \
+            exit 1; \
+        fi && \
+        cp /tmp/repo-package/cellframe-node.deb /tmp/cellframe-node.deb && \
+        echo "Using package built from repository"; \
     else \
         echo "ERROR: Unknown NODE_SOURCE_TYPE: $NODE_SOURCE_TYPE" && \
         echo "Supported types: local, url, repository" && \

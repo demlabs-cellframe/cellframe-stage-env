@@ -3,15 +3,20 @@ id=0x0000000000000000
 shard_id=0x0000000000000000
 name=zerochain
 load_priority=0
-# Possible values [token, emission, transaction, ca, decree, anchor]
-# CRITICAL: Added transaction for stake delegation and token transfers on zerochain
-datum_types=[token,emission,transaction,decree]
-default_datum_types=[token,emission,decree]
-# Auto-process token, emission and transaction datums in mempool for DAG-PoA
-mempool_auto_types=[token,emission,transaction,decree]
+# Possible values [token, emission, ca, decree]
+# Match tests-in-docker configuration
+datum_types=[token,emission,ca,decree]
+default_datum_types=[token,emission,ca,decree]
+# mempool_auto_types empty - let auto_confirmation handle processing
+# With values here, datums are processed before other nodes can sign
+mempool_auto_types=[]
 consensus=dag_poa
-# Authorized root nodes addresses (auto-filled from validator addresses)
-authorized_nodes_addrs={{ root_nodes_addrs | default(authorized_nodes_addrs, true) }}
+# Authorized nodes have special permissions (can write to nodelist, mempool)
+# This MUST be in zerochain [chain] section for node add command to work
+# Read by dap_chain.c for zerochain only (id=0)
+{% if authorized_nodes_addrs %}
+authorized_nodes_addrs={{ authorized_nodes_addrs }}
+{% endif %}
 
 [files]
 storage_dir=../../../var/lib/network/stagenet/zerochain/
@@ -19,7 +24,11 @@ storage_dir=../../../var/lib/network/stagenet/zerochain/
 [dag]
 is_single_line=true
 is_celled=false
-is_add_directly=false
+# is_add_directly: Controls whether events are added directly or via confirmation round
+# During genesis (seed_mode=true): use true to allow single-node event creation
+# After genesis: use false to require multi-node confirmation
+# This is configurable via scenario to switch between genesis and production modes
+is_add_directly={{ is_add_directly | default('false', true) }}
 datum_add_hashes_count=1
 # Enable detailed debug logging for DAG consensus (includes datums table operations)
 debug_more=true
@@ -31,14 +40,18 @@ is_static_genesis_event={{ is_static_genesis_event | default('false', true) }}
 # Use stagenet.root prefix for ROOT node consensus certificates
 # Root nodes participate ONLY in DAG-PoA (zerochain), NOT in ESBocs
 auth_certs_prefix=stagenet.root
+# Directory with authorization certificates (matches tests-in-docker)
+auth_certs_dir=/opt/cellframe-node/share/ca
 # Number of root certificates for zerochain consensus
 auth_certs_number={{ auth_certs_number | default(auth_certs_number, true) }}
 # Minimum required signatures (usually N/2 + 1)
 auth_certs_number_verify={{ auth_certs_number_verify | default(auth_certs_number_verify, true) }}
 # Events signing certificate moved to network config (stagenet.cfg)
 # SDK loads it from l_net->pub.config, not from chain config
+# Timeout for collecting confirmations from other ROOT nodes
+# Using same values as tests-in-docker for faster consensus
 confirmations_timeout=15
-wait_sync_before_complete=120
+wait_sync_before_complete=30
 auto_confirmation=true
 auto_round_complete=true
 

@@ -126,13 +126,29 @@ class ForStepExecutor(StepExecutor):
         if isinstance(in_items, list):
             items = in_items
         else:
-            # Expression
-            try:
-                items = eval(str(in_items), {"__builtins__": __builtins__}, ctx.variables)
-                if not hasattr(items, '__iter__'):
-                    raise ValueError(f"Result is not iterable: {type(items)}")
-            except Exception as e:
-                raise ScenarioExecutionError(f"Failed to evaluate for items '{in_items}': {e}", step=step)
+            # String - could be template or expression
+            # First substitute any Jinja2 templates
+            substituted = ctx.substitute(str(in_items))
+            
+            # Try to parse as list literal first
+            if substituted.startswith('[') and substituted.endswith(']'):
+                import ast
+                try:
+                    items = ast.literal_eval(substituted)
+                except (ValueError, SyntaxError):
+                    # Fallback to eval
+                    try:
+                        items = eval(substituted, {"__builtins__": __builtins__}, ctx.variables)
+                    except Exception as e:
+                        raise ScenarioExecutionError(f"Failed to evaluate for items '{in_items}': {e}", step=step)
+            else:
+                # Try as Python expression
+                try:
+                    items = eval(substituted, {"__builtins__": __builtins__}, ctx.variables)
+                    if not hasattr(items, '__iter__'):
+                        raise ValueError(f"Result is not iterable: {type(items)}")
+                except Exception as e:
+                    raise ScenarioExecutionError(f"Failed to evaluate for items '{in_items}': {e}", step=step)
                 
         # Convert to list to avoid consuming iterators or issues with changes during iteration
         items_list = list(items)

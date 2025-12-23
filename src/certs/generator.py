@@ -205,15 +205,15 @@ class CertGenerator:
         self,
         network_name: str,
         node_count: int,
-        validator_count: int = 3,
+        root_count: int = 2,
     ) -> dict:
         """
         Generate all certificates for network using Docker-based cf-cert-generator.
         
         Args:
             network_name: Network name (e.g., "stagenet")
-            node_count: Number of nodes
-            validator_count: Number of validators
+            node_count: Total number of nodes
+            root_count: Number of ROOT nodes (rest will be MASTER)
             
         Returns:
             Dict with generated certificate paths
@@ -221,7 +221,7 @@ class CertGenerator:
         logger.info("generating_all_certificates",
                    network=network_name,
                    nodes=node_count,
-                   validators=validator_count,
+                   root_count=root_count,
                    method="docker")
         
         print_info(f"Generating {node_count} node certificates using Docker...")
@@ -246,7 +246,7 @@ class CertGenerator:
                        network_name=network_name,
                        network_id=network_id)
             
-            # Docker command: docker run --rm -v <host_path>:/output <image> /output <count> <network> <id>
+            # Docker command: docker run --rm -v <host_path>:/output <image> /output <count> <network> <id> <root_count>
             result_proc = subprocess.run(
                 [
                     "docker", "run",
@@ -257,7 +257,8 @@ class CertGenerator:
                     "/output",  # output directory inside container
                     str(node_count),  # number of nodes
                     network_name,  # network name
-                    network_id  # network ID
+                    network_id,  # network ID
+                    str(root_count)  # number of ROOT nodes
                 ],
                 capture_output=True,
                 text=True,
@@ -286,22 +287,19 @@ class CertGenerator:
         for i in range(1, node_count + 1):
             node_dir = self.certs_dir / f"node{i}"
             
-            # Main node certificate
             node_cert = node_dir / "node-addr.dcert"
             if node_cert.exists():
                 result["nodes"].append(str(node_cert))
             
-            # ESBOCS validator certificate
-            esbocs_cert = node_dir / "node-addr.esbocs.dcert"
-            if esbocs_cert.exists():
-                result["validators"].append(str(esbocs_cert))
+            for cert_file in node_dir.glob("*.pvt.*.dcert"):
+                result["validators"].append(str(cert_file))
         
         # Save PKI config
         pki_config = {
             "network": network_name,
             "network_id": network_id,
             "node_count": node_count,
-            "validator_count": validator_count,
+            "root_count": root_count,
             "generated_at": self._get_timestamp(),
             "crypto": "Dilithium (post-quantum)",
         }
@@ -316,6 +314,85 @@ class CertGenerator:
                    validators=len(result["validators"]))
         
         return result
+    
+    def copy_certs_to_shared_ca(self, shared_ca_dir: Path, network_name: str = "stagenet") -> None:
+        """
+        Copy public certificates to shared CA directory for container mounting.
+        
+        This copies PUBLIC certificates (no private keys) to shared/ca directory
+        which is mounted to /opt/cellframe-node/share/ca in containers.
+        
+        Args:
+            shared_ca_dir: Path to shared CA directory (cache/configs/shared/ca)
+            network_name: Network name for certificate naming
+        """
+        shared_ca_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info("copying_certs_to_shared_ca",
+                   source=str(self.certs_dir),
+                   dest=str(shared_ca_dir))
+        
+        copied_count = 0
+        
+        for node_dir in self.certs_dir.iterdir():
+            if not node_dir.is_dir() or not node_dir.name.startswith("node"):
+                continue
+            
+            for cert_file in node_dir.glob("*.dcert"):
+                cert_name = cert_file.name
+                
+                if ".pvt." in cert_name:
+                    continue
+                
+                dest_file = shared_ca_dir / cert_name
+                shutil.copy2(cert_file, dest_file)
+                copied_count += 1
+                logger.debug("copied_cert_to_shared_ca",
+                           cert=cert_name,
+                           dest=str(dest_file))
+        
+        print_success(f"Copied {copied_count} public certificates to shared CA")
+        logger.info("certs_copied_to_shared_ca", count=copied_count)
+    
+    def copy_private_certs_to_node_data(
+        self,
+        data_dir: Path,
+        node_count: int,
+        network_name: str = "stagenet"
+    ) -> None:
+        """
+        Copy private certificates to node data directories.
+        
+        Private certificates (with pvt. prefix) are copied to each node's
+        var/lib/ca directory for signing operations.
+        
+        Args:
+            data_dir: Base data directory (cache/data)
+            node_count: Number of nodes
+            network_name: Network name
+        """
+        logger.info("copying_private_certs_to_node_data",
+                   data_dir=str(data_dir),
+                   node_count=node_count)
+        
+        for node_id in range(1, node_count + 1):
+            node_cert_dir = self.certs_dir / f"node{node_id}"
+            if not node_cert_dir.exists():
+                logger.warning("node_cert_dir_not_found", node_id=node_id)
+                continue
+            
+            node_ca_dir = data_dir / f"node{node_id}" / "lib" / "ca"
+            node_ca_dir.mkdir(parents=True, exist_ok=True)
+            
+            for cert_file in node_cert_dir.glob("*.dcert"):
+                dest_file = node_ca_dir / cert_file.name
+                shutil.copy2(cert_file, dest_file)
+                logger.debug("copied_cert_to_node_data",
+                           node_id=node_id,
+                           cert=cert_file.name)
+        
+        print_success(f"Copied private certificates to {node_count} node data directories")
+        logger.info("private_certs_copied_to_nodes", count=node_count)
     
     def _generate_simple_cert(
         self,

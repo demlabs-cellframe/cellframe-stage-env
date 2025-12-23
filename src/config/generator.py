@@ -157,6 +157,10 @@ class ConfigGenerator:
                     'node_ip': node.ip_address,
                     'seed_mode': seed_mode
                 }
+                logger.info("generating_cellframe_node_cfg", 
+                           node_id=node.node_id, 
+                           node_ip=node.ip_address,
+                           context=context)
                 node_cfg_content = template.render(**context)
                 
                 logger.debug("initial_seed_mode_false_for_all_nodes", 
@@ -211,11 +215,17 @@ class ConfigGenerator:
         # Based on dap_config.c:237 - dap_strsplit(l_val, ",", -1)
         # Array must be ONE line starting with [ and ending with ]
         # Format: IP:PORT where PORT is configurable via topology (default 8079)
+        # CRITICAL: Only ROOT nodes can be seed nodes (entry points for the network)
+        # From docs: "only root nodes can serve for this purpose"
         if root_nodes:
             hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in root_nodes])
             seed_nodes_hosts = f"[{hosts_list}]"
+            # Aliases use certificate names: network.root.N
+            aliases_list = ','.join([f"{network_name}.root.{idx}" for idx in range(len(root_nodes))])
+            seed_nodes_aliases = f"[{aliases_list}]"
         else:
             seed_nodes_hosts = "[]"
+            seed_nodes_aliases = "[]"
         
         # Permanent nodes hosts - only root nodes (network infrastructure)
         if root_nodes:
@@ -259,7 +269,7 @@ class ConfigGenerator:
             
             if master_validators_count > 0:
                 # Master nodes exist - use their addresses
-                mainchain_min_validators_count = max(2, master_validators_count // 2 + 1)  # 2/3 consensus
+                mainchain_min_validators_count = max(1, master_validators_count // 2 + 1)  # 2/3 consensus
                 logger.info("mainchain_validators_configured",
                            master_validators_count=master_validators_count,
                            min_validators_count=mainchain_min_validators_count,
@@ -284,20 +294,36 @@ class ConfigGenerator:
             
             # Prepare base chain context (shared for all nodes)
             # CRITICAL: genesis_mode, static_genesis_event, fee_addr will be set per-node
+            # All parameters are configurable via topology.consensus section
             base_chain_context = {
+                # Validator addresses
                 'validators_addrs': validator_addrs,  # Used for zerochain (all validators: root + master)
                 'mainchain_validators_addrs': master_validator_addrs,  # Used for mainchain (master node addresses)
                 'root_nodes_addrs': root_nodes_addrs,
+                # DAG-PoA parameters (zerochain)
                 'auth_certs_number': auth_certs_number,
                 'auth_certs_number_verify': auth_certs_number_verify,
+                # Genesis hashes (filled dynamically)
                 'static_genesis_event': '',  # Will be set per-node after genesis event creation
                 'is_static_genesis_event': 'false',  # Will be set per-node after genesis event creation
                 'static_genesis_block': '',  # Will be set per-node after genesis block creation
                 'is_static_genesis_block': 'false',  # Will be set per-node after genesis block creation
                 'fee_addr': '',  # Will be set per-node after fee wallet creation
-                'min_validators_count': mainchain_min_validators_count,  # Set to 2 for 2/3 consensus
-                'poa_mode': 'true',  # CRITICAL: Always use PoA mode (validators specified in config)
-                'minimum_fee': str(minimum_fee)  # Default from config (0.1), can be changed by scenario
+                # ESBocs consensus parameters (from topology.consensus)
+                'min_validators_count': mainchain_min_validators_count,  # Calculated from master_nodes_count
+                'poa_mode': 'false',  # PoS mode: auth certs auto-delegated, get GlobalDB write permissions
+                'auth_certs_prefix': topology.consensus.auth_certs_prefix,
+                'new_round_delay': topology.consensus.new_round_delay,
+                'collecting_level': topology.consensus.collecting_level,
+                # Additional timing parameters (from topology.consensus)
+                'round_start_sync_timeout': getattr(topology.consensus, 'round_start_sync_timeout', 5),
+                'round_attempts_max': getattr(topology.consensus, 'round_attempts_max', 2),
+                'round_attempt_timeout': getattr(topology.consensus, 'round_attempt_timeout', 5),
+                'consensus_debug': 'true' if getattr(topology.consensus, 'consensus_debug', True) else 'false',
+                # Fee parameters
+                'minimum_fee': str(minimum_fee),  # Default from config (0.1), can be changed by scenario
+                # Network name for paths
+                'network_name': network_name,
             }
             
             # Load chain templates ONCE (shared for all nodes)
@@ -324,18 +350,23 @@ class ConfigGenerator:
             blocks_sign_cert = None
             
             if node.is_seed_node:  # ROOT nodes
-                root_idx = node.node_id - 1  # node1→0, node2→1, node3→2
-                events_sign_cert = f"pvt.{network_name}.root.{root_idx}"
+                # Certificate format: stagenet.root.pvt.0 (not pvt.stagenet.root.0!)
+                root_idx = node.node_id - 1  # node1→0, node2→1
+                events_sign_cert = f"{network_name}.root.pvt.{root_idx}"
                 logger.debug("events_sign_cert_prepared", node_id=node.node_id, cert=events_sign_cert)
             
             if node.consensus_participation and not node.is_seed_node:  # MASTER nodes
-                master_idx = node.node_id - 4  # node4→0, node5→1, node6→2
-                blocks_sign_cert = f"pvt.{network_name}.master.{master_idx}"
-                logger.debug("blocks_sign_cert_prepared", node_id=node.node_id, cert=blocks_sign_cert)
+                # master_idx: first_master_node_id→0, second→1, etc.
+                # Certificate format: stagenet.master.pvt.0 (not pvt.stagenet.master.0!)
+                # Use root_nodes_count instead of hardcoded value
+                master_idx = node.node_id - root_nodes_count - 1
+                blocks_sign_cert = f"{network_name}.master.pvt.{master_idx}"
+                logger.debug("blocks_sign_cert_prepared", node_id=node.node_id, master_idx=master_idx, root_count=root_nodes_count, cert=blocks_sign_cert)
             
             # Render template with node-specific context
             network_context = {
                 'node_role': node_role,
+                'seed_nodes_aliases': seed_nodes_aliases,  # Required for node discovery
                 'seed_nodes_hosts': seed_nodes_hosts,
                 'permanent_nodes_hosts': permanent_nodes_hosts,  # Root nodes only
                 'events_sign_cert': events_sign_cert,
@@ -449,7 +480,7 @@ class ConfigGenerator:
             'validators_addrs': custom_validators_addrs,  # For zerochain compatibility
             'mainchain_validators_addrs': custom_validators_addrs,  # CRITICAL: For main.cfg.j2 template
             'min_validators_count': calculated_min_validators,  # CRITICAL: must match validators count
-            'poa_mode': 'true',  # CRITICAL: PoA mode when validators are specified
+            'poa_mode': 'false',  # PoS mode: auth certs auto-delegated for GlobalDB permissions
             'root_nodes_addrs': root_nodes_addrs,
             'auth_certs_number': auth_certs_number,
             'auth_certs_number_verify': auth_certs_number_verify,
@@ -675,7 +706,18 @@ class ConfigGenerator:
         
         for node in root_nodes:
             # Root nodes use node_addr.txt (not validator_addr.txt)
+            # Try primary path first, then fallback to cert_generator's default path
             addr_file = self.certs_cache / f"node{node.node_id}" / "node_addr.txt"
+            
+            # Fallback: cert_generator may use base_path/cache/certs if config not loaded correctly
+            if not addr_file.exists():
+                fallback_file = self.base_path / "cache" / "certs" / f"node{node.node_id}" / "node_addr.txt"
+                if fallback_file.exists():
+                    logger.debug("using_fallback_cert_path",
+                               node_id=node.node_id,
+                               primary=str(addr_file),
+                               fallback=str(fallback_file))
+                    addr_file = fallback_file
             
             if addr_file.exists():
                 try:
@@ -800,15 +842,18 @@ events_sign_cert=node-{node.node_id}-cert
 """
         
         # Add ESBocs blocks-sign-cert for MASTER nodes ONLY (not ROOT nodes)
-        # CRITICAL: Only MASTER nodes (4,5,6) participate in ESBocs consensus
-        # ROOT nodes (1,2,3) use DAG-PoA for zerochain, not ESBocs
+        # CRITICAL: Only MASTER nodes participate in ESBocs consensus
+        # ROOT nodes use DAG-PoA for zerochain, not ESBocs
         if node.consensus_participation and not node.is_seed_node and network_name:
-            # MASTER nodes: node4→master.0, node5→master.1, node6→master.2
-            master_idx = node.node_id - 4
+            # Calculate master_idx based on actual root_nodes_count from topology dict
+            root_node_cfg = topology.topology.get('root', None)
+            root_nodes_count = root_node_cfg.count if root_node_cfg else 0
+            master_idx = node.node_id - root_nodes_count - 1
+            # Format: stagenet.master.pvt.0 (matches certificate file names)
             config_content += f"""[esbocs]
 # Blocks signing certificate (validator-specific)
-# CRITICAL: Must use pvt. prefix (private key) for signing
-blocks-sign-cert=pvt.{network_name}.master.{master_idx}
+# Certificate format: {network_name}.master.pvt.N
+blocks-sign-cert={network_name}.master.pvt.{master_idx}
 
 """
         
@@ -827,246 +872,53 @@ blocks-sign-cert=pvt.{network_name}.master.{master_idx}
         force: bool = False
     ) -> None:
         """
-        Generate certificates for all nodes using cf-cert-generator utility.
+        Generate certificates for all nodes using cf-cert-generator Docker image.
+        
+        Generates certificates BEFORE container startup:
+        1. Uses Docker-based cf-cert-generator for proper DAP SDK crypto
+        2. Copies public certificates to shared/ca (mounted to /share/ca)
+        3. Copies private certificates to each node's data/nodeN/lib/ca
         
         Args:
             nodes: List of node configurations
             topology: Network topology
-            force: Force regeneration
+            force: Force regeneration even if certificates exist
         """
-        logger.info("generating_certificates",
-                   count=len(nodes),
-                   force=force)
-        
         network_name = topology.network.name
         node_count = len(nodes)
         
-        # Check if certificates already exist (using standard node-addr name)
-        first_node_cert = self.data_cache / "node1" / "lib" / "ca" / "node-addr.dcert"
-        first_node_addr = self.certs_cache / "node1" / "node_addr.txt"
+        logger.info("generating_certificates_with_docker",
+                   network=network_name,
+                   count=node_count)
         
-        if not force and first_node_cert.exists() and first_node_addr.exists():
-            logger.info("certificates_already_exist", count=node_count)
+        if self.cert_generator.certs_exist() and not force:
+            logger.info("certificates_already_exist_skipping")
             return
         
-        # Generate all certificates using cf-cert-generator
-        # This creates files in temporary certs_dir: nodeX/{network}-nodeX.dcert
-        # Note: force flag handled by ConfigGenerator level, cert_generator always regenerates
-        result = self.cert_generator.generate_all(
+        if force:
+            self.cert_generator.clean()
+        
+        # ROOT nodes are seed nodes (DAG-PoA on zerochain)
+        root_count = len([n for n in nodes if n.is_seed_node])
+        
+        self.cert_generator.generate_all(
             network_name=network_name,
             node_count=node_count,
-            validator_count=min(3, node_count)  # Use min 3 validators
+            root_count=root_count
         )
         
-        # Copy generated certificates to data/lib/ca directories for each node
-        import shutil
-        for node_idx in range(1, node_count + 1):
-            node_data_cert_dir = self.data_cache / f"node{node_idx}" / "lib" / "ca"
-            node_data_cert_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Copy main node certificate (standard name: node-addr.dcert)
-            src_node_cert = self.certs_cache / f"node{node_idx}" / "node-addr.dcert"
-            dst_node_cert = node_data_cert_dir / "node-addr.dcert"
-            
-            if src_node_cert.exists():
-                shutil.copy2(src_node_cert, dst_node_cert)
-                logger.debug("copied_node_cert",
-                           node_id=node_idx,
-                           src=str(src_node_cert),
-                           dst=str(dst_node_cert))
-            else:
-                logger.warning("node_cert_not_found",
-                             node_id=node_idx,
-                             expected=str(src_node_cert))
-            
-        # Organize validator certificates according to ESBocs requirements:
-        # 1. Public certificates (stagenet.master.N) → /opt/cellframe-node/share/ca (mounted, shared for all)
-        # 2. Private certificates (pvt.stagenet.master.N) → copied to /opt/cellframe-node/var/lib/ca at runtime
-        # Note: ESBocs uses auth_certs_prefix=stagenet.master in chain config
-        logger.info("organizing_validator_certificates")
-        
-        # Create shared public certificates directory (will be mounted to all containers)
         shared_certs_dir = self.configs_cache / "shared" / "ca"
-        shared_certs_dir.mkdir(parents=True, exist_ok=True)
+        self.cert_generator.copy_certs_to_shared_ca(shared_certs_dir, network_name)
         
-        # Copy ONLY PUBLIC validator certificates (WITHOUT pvt. prefix) to shared directory
-        # CRITICAL: Private certificates (pvt.stagenet.master.N) should NEVER be in /share/ca!
-        # Only public certificates (stagenet.master.N) for verification
-        master_nodes = [n for n in nodes if n.consensus_participation and not n.is_seed_node]
-        root_nodes = [n for n in nodes if n.is_seed_node]
+        self.cert_generator.copy_private_certs_to_node_data(
+            self.data_cache,
+            node_count,
+            network_name
+        )
         
-        # Copy public ROOT certs (for DAG-PoA verification)
-        for idx, node in enumerate(root_nodes):
-            src_public_cert = self.certs_cache / f"node{node.node_id}" / f"{network_name}.root.{idx}.dcert"
-            
-            if src_public_cert.exists():
-                dst_cert = shared_certs_dir / f"{network_name}.root.{idx}.dcert"
-                shutil.copy2(src_public_cert, dst_cert)
-                logger.debug("copied_public_root_cert_to_shared",
-                           node_id=node.node_id,
-                           cert_idx=idx,
-                           dst=str(dst_cert))
-            else:
-                logger.warning("public_root_cert_not_found",
-                             node_id=node.node_id,
-                             cert_idx=idx,
-                             expected=str(src_public_cert))
-        
-        # Copy public MASTER certs (for ESBocs verification)
-        for idx, node in enumerate(master_nodes):
-            src_public_cert = self.certs_cache / f"node{node.node_id}" / f"{network_name}.master.{idx}.dcert"
-            
-            if src_public_cert.exists():
-                dst_cert = shared_certs_dir / f"{network_name}.master.{idx}.dcert"
-                shutil.copy2(src_public_cert, dst_cert)
-                logger.debug("copied_public_master_cert_to_shared",
-                           node_id=node.node_id,
-                           cert_idx=idx,
-                           dst=str(dst_cert))
-            else:
-                logger.warning("public_master_cert_not_found",
-                             node_id=node.node_id,
-                             cert_idx=idx,
-                             expected=str(src_public_cert))
-        
-        # Copy node-addr.dcert to ALL nodes FIRST (CRITICAL - must exist before node starts!)
-        # This certificate is used for node identification and MUST match authorized_nodes_addrs
-        for node in nodes:
-            node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
-            node_data_cert_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Copy node-addr.dcert (node identification certificate)
-            src_node_cert = self.certs_cache / f"node{node.node_id}" / "node-addr.dcert"
-            if src_node_cert.exists():
-                dst_node_cert = node_data_cert_dir / "node-addr.dcert"
-                shutil.copy2(src_node_cert, dst_node_cert)
-                logger.debug("copied_node_addr_cert",
-                           node_id=node.node_id,
-                           dst=str(dst_node_cert))
-        
-        # Copy PRIVATE consensus certificates to /var/lib/ca for validator nodes
-        # Each node gets ONLY its OWN PRIVATE certificate (with pvt. prefix)
-        # ROOT nodes (1,2,3): pvt.stagenet.root.{0,1,2} for DAG-PoA events
-        # MASTER nodes (4,5,6): pvt.stagenet.master.{0,1,2} for ESBocs blocks
-        for node in nodes:
-            if not (node.is_seed_node or node.consensus_participation):
-                continue  # Skip FULL nodes
-            
-            node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
-            node_data_cert_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Determine certificate type and index
-            if node.is_seed_node:  # ROOT nodes
-                cert_type = "root"
-                cert_idx = node.node_id - 1  # node1→0, node2→1, node3→2
-            else:  # MASTER nodes
-                cert_type = "master"
-                cert_idx = node.node_id - 4  # node4→0, node5→1, node6→2
-            
-            # Copy PRIVATE certificate (keeps pvt. prefix for signing operations)
-            src_cert = self.certs_cache / f"node{node.node_id}" / f"pvt.{network_name}.{cert_type}.{cert_idx}.dcert"
-            if src_cert.exists():
-                dst_cert = node_data_cert_dir / f"pvt.{network_name}.{cert_type}.{cert_idx}.dcert"
-                shutil.copy2(src_cert, dst_cert)
-                logger.debug("copied_private_consensus_cert",
-                           node_id=node.node_id,
-                           cert_type=cert_type,
-                           cert_idx=cert_idx,
-                           dst=str(dst_cert))
-            else:
-                logger.warning("private_consensus_cert_not_found", 
-                             node_id=node.node_id,
-                             expected=str(src_cert))
-            
-            # SPECIAL CASE: root-1 (node1) receives ALL private certificates for centralized genesis
-            # This allows testing threshold consensus (2/3) with all signatures from single node
-            if node.node_id == 1 and node.is_seed_node:
-                logger.info("copying_all_private_certs_to_root1_for_centralized_genesis")
-                all_pvt_certs_copied = 0
-                
-                # Copy all ROOT private certificates (pvt.stagenet.root.{0,1,2})
-                for root_idx in range(3):
-                    root_node_id = root_idx + 1
-                    if root_node_id == node.node_id:
-                        # Skip own certificate (already copied above)
-                        continue
-                    
-                    src_pvt_cert = self.certs_cache / f"node{root_node_id}" / f"pvt.{network_name}.root.{root_idx}.dcert"
-                    if src_pvt_cert.exists():
-                        dst_pvt_cert = node_data_cert_dir / f"pvt.{network_name}.root.{root_idx}.dcert"
-                        shutil.copy2(src_pvt_cert, dst_pvt_cert)
-                        all_pvt_certs_copied += 1
-                        logger.debug("copied_private_root_cert_to_root1",
-                                   root_idx=root_idx,
-                                   dst=str(dst_pvt_cert))
-                    else:
-                        logger.warning("private_root_cert_not_found_for_root1",
-                                     root_idx=root_idx,
-                                     expected_path=str(src_pvt_cert))
-                
-                logger.info("all_private_certs_copied_to_root1",
-                           own_cert=1,
-                           additional_certs=all_pvt_certs_copied,
-                           total_pvt_certs=all_pvt_certs_copied + 1,
-                           note="root-1 can now perform centralized genesis with threshold consensus")
-        
-        # Copy ALL PUBLIC consensus certificates to EVERY node's /var/lib/ca
-        # All nodes need all public certs for signature verification:
-        # - stagenet.root.{0,1,2} for DAG-PoA event verification
-        # - stagenet.master.{0,1,2} for ESBocs block verification
-        logger.info("distributing_public_certs_to_all_nodes", 
-                   total_nodes=len(nodes), 
-                   network=network_name)
-        
-        for node in nodes:
-            node_data_cert_dir = self.data_cache / f"node{node.node_id}" / "lib" / "ca"
-            node_data_cert_dir.mkdir(parents=True, exist_ok=True)
-            
-            root_certs_copied = 0
-            master_certs_copied = 0
-            
-            # Copy all ROOT public certs (stagenet.root.{0,1,2})
-            for root_idx in range(3):
-                root_node_id = root_idx + 1
-                src_pub_cert = self.certs_cache / f"node{root_node_id}" / f"{network_name}.root.{root_idx}.dcert"
-                if src_pub_cert.exists():
-                    dst_pub_cert = node_data_cert_dir / f"{network_name}.root.{root_idx}.dcert"
-                    shutil.copy2(src_pub_cert, dst_pub_cert)
-                    root_certs_copied += 1
-                    logger.debug("copied_public_root_cert",
-                               node_id=node.node_id,
-                               root_idx=root_idx,
-                               dst=str(dst_pub_cert))
-                else:
-                    logger.warning("public_root_cert_not_found",
-                                 node_id=node.node_id,
-                                 root_idx=root_idx,
-                                 expected_path=str(src_pub_cert))
-            
-            # Copy all MASTER public certs (stagenet.master.{0,1,2})
-            for master_idx in range(3):
-                master_node_id = master_idx + 4
-                src_pub_cert = self.certs_cache / f"node{master_node_id}" / f"{network_name}.master.{master_idx}.dcert"
-                if src_pub_cert.exists():
-                    dst_pub_cert = node_data_cert_dir / f"{network_name}.master.{master_idx}.dcert"
-                    shutil.copy2(src_pub_cert, dst_pub_cert)
-                    master_certs_copied += 1
-                    logger.debug("copied_public_master_cert",
-                               node_id=node.node_id,
-                               master_idx=master_idx,
-                               dst=str(dst_pub_cert))
-                else:
-                    logger.warning("public_master_cert_not_found",
-                                 node_id=node.node_id,
-                                 master_idx=master_idx,
-                                 expected_path=str(src_pub_cert))
-            
-            logger.info("public_certs_distributed_to_node",
-                       node_id=node.node_id,
-                       root_certs=root_certs_copied,
-                       master_certs=master_certs_copied)
-        
-        logger.info("certificates_generated", count=node_count)
+        logger.info("certificates_generated_and_distributed",
+                   network=network_name,
+                   nodes=node_count)
     
     def clean(self, clean_certs: bool = False) -> None:
         """

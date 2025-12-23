@@ -47,6 +47,9 @@ class NetworkManager:
         self.topology_name = topology_name
         self.config_path = config_path
         
+        # Keep containers running after tests (for debugging)
+        self.keep_running = False
+        
         # CLI path for node commands
         self.node_cli_path = "cellframe-node-cli"
         
@@ -376,8 +379,8 @@ class NetworkManager:
                 )
                 
                 # Execute phase1 scenario
-                # Pass global_context and node_configs for automatic IP collection after setup
-                root_node_configs = [n for n in node_configs if n.role == 'root']
+                # Pass ALL node_configs for automatic IP collection after setup
+                # Scenario needs IPs for all nodes (ROOT, MASTER, FULL) to add them to nodelist
                 
                 logger.info("executing_phase1_scenario")
                 
@@ -388,16 +391,26 @@ class NetworkManager:
                     genesis_config_manager=self.genesis.config_mgr,
                     initial_variables={},
                     global_context=self.scenario_context,
-                    node_configs=root_node_configs
+                    node_configs=node_configs  # All nodes, not just root
                 )
                 
                 # Extract results from context
                 emission_hash = ctx.get_variable('emission_hash') if 'emission_hash' in ctx.variables else None
                 fee_addr = ctx.get_variable('fee_addr') if 'fee_addr' in ctx.variables else None
                 
+                # Extract root node addresses for Phase 2 (needed for master node registration)
+                root_addr_0 = ctx.get_variable('root_addr_0') if 'root_addr_0' in ctx.variables else None
+                root_addr_1 = ctx.get_variable('root_addr_1') if 'root_addr_1' in ctx.variables else None
+                root_addr_2 = ctx.get_variable('root_addr_2') if 'root_addr_2' in ctx.variables else None
+                genesis_event_hash = ctx.get_variable('genesis_event_hash') if 'genesis_event_hash' in ctx.variables else None
+                
+                # Store Phase 1 context for Phase 2
+                self._phase1_ctx = ctx
+                
                 logger.info("zerochain_genesis_complete",
                            emission_hash=emission_hash[:16] if emission_hash else None,
                            fee_addr=fee_addr,
+                           root_addrs_available=(root_addr_0 is not None, root_addr_1 is not None, root_addr_2 is not None),
                            note="Phase1 genesis completed - emission ready for Phase2 transfers")
                 
                 # =================================================================
@@ -568,7 +581,8 @@ class NetworkManager:
             
             except Exception as e:
                 logger.error("root_nodes_genesis_failed", error=str(e), traceback=traceback.format_exc())
-                self.compose.down(volumes=False, remove_images=False)
+                if not self.keep_running:
+                    self.compose.down(volumes=False, remove_images=False)
                 raise RuntimeError(f"ROOT nodes genesis failed: {e}") from e
         else:
             logger.info("=== PHASE 1 SKIPPED: Using restored phase1 snapshot ===",
@@ -1000,12 +1014,35 @@ class NetworkManager:
                 base_path=self.base_path
             )
             
-            # Execute phase2 scenario with emission_hash from phase1
+            # Execute phase2 scenario with all variables from phase1
+            # CRITICAL: Pass node_ip map (via global_context) and all context variables
+            phase2_initial_variables = {}
+            
+            # Get variables from stored Phase 1 context or restored snapshot
+            if hasattr(self, '_phase1_ctx') and self._phase1_ctx:
+                phase1_ctx = self._phase1_ctx
+                # Copy all Phase 1 variables to Phase 2
+                for var_name in ['emission_hash', 'fee_addr', 'root_addr_0', 'root_addr_1', 'root_addr_2', 
+                                 'genesis_event_hash', 'token_hash']:
+                    if var_name in phase1_ctx.variables:
+                        phase2_initial_variables[var_name] = phase1_ctx.get_variable(var_name)
+            else:
+                # Fallback: use local variables if Phase 1 context not stored
+                if emission_hash:
+                    phase2_initial_variables['emission_hash'] = emission_hash
+            
+            logger.info("phase2_initial_variables", 
+                       variables=list(phase2_initial_variables.keys()),
+                       emission_hash=phase2_initial_variables.get('emission_hash', '?')[:16] if phase2_initial_variables.get('emission_hash') else None)
+            
             ctx = await executor.execute_scenario(
                 phase2_scenario,
                 compose_manager=self.compose,
                 snapshot_manager=self.snapshot_manager,
-                initial_variables={'emission_hash': emission_hash} if emission_hash else None
+                genesis_config_manager=self.genesis.config_mgr,
+                initial_variables=phase2_initial_variables,
+                global_context=self.scenario_context,
+                node_configs=node_configs
             )
             
             logger.info("esbocs_genesis_complete_with_pos_master_nodes",
@@ -1030,7 +1067,8 @@ class NetworkManager:
             except Exception as dump_err:
                 logger.error(f"Failed to dump container logs: {dump_err}")
 
-            self.compose.down(volumes=False, remove_images=False)
+            if not self.keep_running:
+                self.compose.down(volumes=False, remove_images=False)
             raise RuntimeError(f"MASTER nodes genesis failed: {e}") from e
         
         # =================================================================
@@ -1068,7 +1106,8 @@ class NetworkManager:
             
         except Exception as e:
             logger.error("full_nodes_startup_failed", error=str(e), traceback=traceback.format_exc())
-            self.compose.down(volumes=False, remove_images=False)
+            if not self.keep_running:
+                self.compose.down(volumes=False, remove_images=False)
             raise RuntimeError(f"FULL nodes startup failed: {e}") from e
         
         # =================================================================
@@ -1121,13 +1160,16 @@ class NetworkManager:
                 logger.warning("failed_to_collect_diagnostic_metrics",
                              error=str(diag_error))
             
-            # Stop all containers
-            logger.info("stopping_failed_network")
-            try:
-                self.compose.down(volumes=False, remove_images=False)
-            except Exception as stop_error:
-                logger.warning("failed_to_stop_network",
-                             error=str(stop_error))
+            # Stop all containers (unless keep_running is set for debugging)
+            if not self.keep_running:
+                logger.info("stopping_failed_network")
+                try:
+                    self.compose.down(volumes=False, remove_images=False)
+                except Exception as stop_error:
+                    logger.warning("failed_to_stop_network",
+                                 error=str(stop_error))
+            else:
+                logger.info("keeping_containers_running_for_debugging", note="--keep-running flag is set")
             
             # Re-raise with clear message
             raise RuntimeError(
