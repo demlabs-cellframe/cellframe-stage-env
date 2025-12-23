@@ -1,0 +1,155 @@
+name: PRIMARY PHASE 1 - Basic Validator Setup
+description: Setup first validator with direct delegation (after Genesis)
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: stagenet
+
+# This scenario runs after Genesis and sets up the first validator
+# using direct key delegation (not via orders)
+
+setup:
+  # Ensure nodes are online after Genesis
+  - python: |
+      root_nodes = ctx.get('root_nodes')
+      master_nodes = ctx.get('master_nodes')
+      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
+  
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 60
+  
+  - wait: "5s"
+
+test:
+  # Get wallet addresses for transfers
+  - group: Get wallet addresses
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      # Get first root wallet address (fee_addr should already be set from Genesis)
+      - cli: "wallet info -w stagenet_root_0"
+        save_wallet: root_wallet_addr
+      
+      # Get first master wallet address
+      - python: |
+          root_count = ctx.get('root_count')
+          ctx.set_variable('_master_node', f"node-{root_count + 1}")
+      
+      - cli: "wallet info -w stagenet_master_0"
+        node: "{{_master_node}}"
+        save_wallet: master_0_wallet_addr
+  
+  # Transfer tokens to first validator (MASTER[0]) and its staker
+  - group: Fund validator wallets
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "main"
+        token: "TCELL"
+    steps:
+      # Transfer to first master node wallet for staking
+      - cli: "tx_create -from_wallet stagenet_root_0 -value 1000000.0e+18 -to_addr {{master_0_wallet_addr}} -fee 5.0e+18"
+        save_hash: transfer_to_master_0
+      
+      - wait: "60s"
+      
+      # Verify balance received
+      - cli: "wallet info -w stagenet_master_0"
+        node: "{{_master_node}}"
+        contains: "TCELL"
+  
+  # Create stake lock for first validator
+  - group: Stake lock for validator
+    steps:
+      - python: |
+          root_count = ctx.get('root_count')
+          ctx.set_variable('_validator_node', f"node-{root_count + 1}")
+      
+      - cli: "stake_lock hold -token TCELL -w stagenet_master_0 -value 10000.0e+18 -time_staking 501231 -fee 5.0e+18"
+        node: "{{_validator_node}}"
+        save_hash: stake_lock_hash_0
+      
+      - wait: "60s"
+      
+      # Verify stake lock in ledger
+      - cli: "ledger info -hash {{stake_lock_hash_0}}"
+        node: "{{first_root}}"
+        contains: "datum_tx_hash"
+  
+  # Direct key delegation for first validator
+  - group: Direct key delegation
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - python: |
+          root_count = ctx.get('root_count')
+          ctx.set_variable('_validator_node', f"node-{root_count + 1}")
+          ctx.set_variable('_validator_cert', "stagenet.master.pvt.0")
+      
+      # Delegate key using validator's certificate
+      - cli: "srv_stake delegate -w stagenet_master_0 -value 2.0e+18 -cert {{_validator_cert}} -fee 5.0e+18"
+        node: "{{_validator_node}}"
+        save_hash: delegate_tx_hash_0
+      
+      - wait: "60s"
+      
+      # Verify delegation transaction in ledger
+      - cli: "ledger info -hash {{delegate_tx_hash_0}}"
+        node: "{{first_root}}"
+        contains: "datum_tx_hash"
+  
+  # Approve delegation via decree (requires root signatures)
+  - group: Decree approve delegation
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
+    steps:
+      # Build root certs string for decree signing
+      - python: |
+          root_count = ctx.get('root_count')
+          certs = [f"stagenet.root.pvt.{i}" for i in range(root_count)]
+          certs_str = ",".join(certs)
+          ctx.set_variable('_poa_certs', certs_str)
+      
+      # Approve the delegation transaction
+      - cli: "srv_stake approve -tx {{delegate_tx_hash_0}} -poa_cert {{_poa_certs}}"
+        save_hash: decree_approve_hash_0
+      
+      - wait: "5s"
+      
+      # Process decree in mempool
+      - cli: "mempool proc -datum {{decree_approve_hash_0}}"
+      
+      - wait: "60s"
+      
+      # Verify delegation is approved by checking stake list
+      - cli: "srv_stake list keys"
+        contains: "pkey_hash"
+  
+  # Create basic stake order for the validator
+  - group: Create stake order
+    steps:
+      - python: |
+          root_count = ctx.get('root_count')
+          ctx.set_variable('_validator_node', f"node-{root_count + 1}")
+          ctx.set_variable('_validator_cert', "stagenet.master.pvt.0")
+      
+      - cli: "srv_stake order create -value 0.05e+18 -cert {{_validator_cert}}"
+        node: "{{_validator_node}}"
+        save: stake_order_result_0
+
+check:
+  # Verify validator is properly set up
+  - cli: "srv_stake list keys"
+    node: "{{first_root}}"
+    contains: "pkey_hash"
+  
+  - cli: "srv_stake list orders"
+    node: "{{first_root}}"
+    not_contains: "No orders"
+

@@ -1,0 +1,280 @@
+name: PRIMARY PHASE 2 - Delegation via Orders
+description: Setup validators using order-based delegation (validator and staker orders)
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: stagenet
+
+# This scenario demonstrates two types of order-based delegation:
+# 1. Validator creates order, staker delegates by order
+# 2. Staker creates order, validator delegates by order
+
+setup:
+  - python: |
+      root_nodes = ctx.get('root_nodes')
+      master_nodes = ctx.get('master_nodes')
+      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
+  
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 60
+
+test:
+  # Get wallet addresses
+  - group: Get wallet addresses for order delegation
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - python: |
+          root_count = ctx.get('root_count')
+          master_count = ctx.get('master_count')
+          full_count = ctx.get('full_count', 1)
+          
+          # Second master (MASTER[1]) will be validator via validator order
+          ctx.set_variable('_validator_order_node', f"node-{root_count + 2}")
+          ctx.set_variable('_validator_order_cert', "stagenet.master.pvt.1")
+          
+          # Third master (MASTER[2]) will be validator via staker order
+          if master_count >= 3:
+              ctx.set_variable('_staker_order_node', f"node-{root_count + 3}")
+              ctx.set_variable('_staker_order_cert', "stagenet.master.pvt.2")
+          
+          # Full node will be the staker for both scenarios
+          ctx.set_variable('_staker_node', f"node-{root_count + master_count + 1}")
+      
+      # Get staker wallet address (full node)
+      - cli: "wallet info -w stagenet_full_0"
+        node: "{{_staker_node}}"
+        save_wallet: staker_wallet_addr
+      
+      # Get second master wallet address
+      - cli: "wallet info -w stagenet_master_1"
+        node: "{{_validator_order_node}}"
+        save_wallet: master_1_wallet_addr
+
+  # Fund staker and validator wallets
+  - group: Fund wallets for order delegation
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "main"
+        token: "TCELL"
+    steps:
+      # Transfer to staker (full node)
+      - cli: "tx_create -from_wallet stagenet_root_0 -value 1000000.0e+18 -to_addr {{staker_wallet_addr}} -fee 5.0e+18"
+        save_hash: transfer_to_staker
+      
+      - wait: "60s"
+      
+      # Transfer to second validator
+      - cli: "tx_create -from_wallet stagenet_root_0 -value 1000000.0e+18 -to_addr {{master_1_wallet_addr}} -fee 5.0e+18"
+        save_hash: transfer_to_master_1
+      
+      - wait: "60s"
+
+  # ============================================================
+  # SCENARIO 1: Delegation by Validator Order
+  # Validator creates order with min/max value and tax
+  # Staker delegates using that order
+  # ============================================================
+  
+  - group: Create stake lock for staker (Scenario 1)
+    steps:
+      - cli: "stake_lock hold -token TCELL -w stagenet_full_0 -value 10000.0e+18 -time_staking 501231 -fee 5.0e+18"
+        node: "{{_staker_node}}"
+        save_hash: stake_lock_staker_1
+      
+      - wait: "60s"
+  
+  - group: Validator Order - Create and delegate
+    steps:
+      # Validator creates order with parameters
+      - cli: "srv_stake order create validator -value_min 2.0e+18 -value_max 5.0e+18 -tax 1.0 -cert {{_validator_order_cert}}"
+        node: "{{_validator_order_node}}"
+        save: validator_order_result
+      
+      - wait: "5s"
+      
+      # Extract order hash from result
+      - python: |
+          import re
+          result = ctx.get('validator_order_result', '')
+          match = re.search(r'order_hash[:\s]*(0x[a-fA-F0-9]+)', result)
+          if match:
+              ctx.set_variable('validator_order_hash', match.group(1))
+              print(f"Validator order hash: {match.group(1)}")
+          else:
+              print(f"Could not extract order hash from: {result}")
+      
+      # Wait for order to sync
+      - wait: "30s"
+      
+      # Staker delegates using validator's order
+      - cli: "srv_stake delegate -order {{validator_order_hash}} -w stagenet_full_0 -value 3.0e+18 -fee 5.0e+18"
+        node: "{{_staker_node}}"
+        save_hash: delegate_by_validator_order
+      
+      - wait: "60s"
+  
+  - group: Approve delegation (Scenario 1)
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
+    steps:
+      - python: |
+          root_count = ctx.get('root_count')
+          certs = [f"stagenet.root.pvt.{i}" for i in range(root_count)]
+          ctx.set_variable('_poa_certs', ",".join(certs))
+      
+      - cli: "srv_stake approve -tx {{delegate_by_validator_order}} -poa_cert {{_poa_certs}}"
+        save_hash: decree_approve_validator_order
+      
+      - wait: "5s"
+      
+      - cli: "mempool proc -datum {{decree_approve_validator_order}}"
+      
+      - wait: "60s"
+
+  # ============================================================
+  # SCENARIO 2: Delegation by Staker Order
+  # Staker creates order with value and tax
+  # Validator delegates using that order with their cert
+  # ============================================================
+  
+  - group: Invalidate previous key for re-delegation test
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
+    steps:
+      # Get pkey_hash of the validator we want to invalidate
+      - cli: "srv_stake list keys"
+        save: stake_keys_list
+      
+      - python: |
+          import re
+          keys_list = ctx.get('stake_keys_list', '')
+          # Find pkey_hash for MASTER[1] validator
+          match = re.search(r'pkey_hash[:\s]*(0x[a-fA-F0-9]+)', keys_list)
+          if match:
+              ctx.set_variable('_invalidate_pkey_hash', match.group(1))
+              print(f"Found pkey_hash to invalidate: {match.group(1)}")
+          
+          root_count = ctx.get('root_count')
+          certs = [f"stagenet.root.pvt.{i}" for i in range(root_count)]
+          ctx.set_variable('_poa_certs', ",".join(certs))
+      
+      # Invalidate the key (simulates key rotation/re-delegation)
+      - cli: "srv_stake invalidate -poa_cert {{_poa_certs}} -signing_pkey_hash {{_invalidate_pkey_hash}} -signing_pkey_type sig_dil"
+        save_hash: invalidate_decree_hash
+      
+      - wait: "5s"
+      
+      - cli: "mempool proc -datum {{invalidate_decree_hash}}"
+      
+      - wait: "60s"
+  
+  - group: Create stake lock for staker (Scenario 2)
+    steps:
+      # Create new stake lock for second scenario
+      - cli: "stake_lock hold -token TCELL -w stagenet_full_0 -value 10000.0e+18 -time_staking 501231 -fee 5.0e+18"
+        node: "{{_staker_node}}"
+        save_hash: stake_lock_staker_2
+      
+      - wait: "60s"
+  
+  - group: Staker Order - Create and delegate
+    steps:
+      # Staker creates order
+      - cli: "srv_stake order create staker -value 4.0e+18 -tax 1.0 -w stagenet_full_0 -fee 5.0e+18"
+        node: "{{_staker_node}}"
+        save: staker_order_result
+      
+      - wait: "5s"
+      
+      # Extract order hash
+      - python: |
+          import re
+          result = ctx.get('staker_order_result', '')
+          match = re.search(r'order_hash[:\s]*(0x[a-fA-F0-9]+)', result)
+          if match:
+              ctx.set_variable('staker_order_hash', match.group(1))
+              print(f"Staker order hash: {match.group(1)}")
+      
+      - wait: "30s"
+      
+      # Validator delegates using staker's order (with their cert)
+      - python: |
+          root_count = ctx.get('root_count')
+          master_count = ctx.get('master_count')
+          if master_count >= 3:
+              ctx.set_variable('_staker_order_validator_node', f"node-{root_count + 3}")
+              ctx.set_variable('_staker_order_validator_cert', "stagenet.master.pvt.2")
+          else:
+              # Fallback to second master
+              ctx.set_variable('_staker_order_validator_node', f"node-{root_count + 2}")
+              ctx.set_variable('_staker_order_validator_cert', "stagenet.master.pvt.1")
+      
+      - cli: "srv_stake delegate -order {{staker_order_hash}} -w stagenet_full_0 -cert {{_staker_order_validator_cert}} -fee 5.0e+18"
+        node: "{{_staker_order_validator_node}}"
+        save_hash: delegate_by_staker_order
+      
+      - wait: "60s"
+  
+  - group: Approve delegation (Scenario 2)
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
+    steps:
+      - python: |
+          root_count = ctx.get('root_count')
+          certs = [f"stagenet.root.pvt.{i}" for i in range(root_count)]
+          ctx.set_variable('_poa_certs', ",".join(certs))
+      
+      - cli: "srv_stake approve -tx {{delegate_by_staker_order}} -poa_cert {{_poa_certs}}"
+        save_hash: decree_approve_staker_order
+      
+      - wait: "5s"
+      
+      - cli: "mempool proc -datum {{decree_approve_staker_order}}"
+      
+      - wait: "60s"
+  
+  # Create stake orders for the new validators
+  - group: Create stake orders for new validators
+    steps:
+      - cli: "srv_stake order create -value 0.06e+18 -cert {{_validator_order_cert}}"
+        node: "{{_validator_order_node}}"
+        save: stake_order_result_1
+      
+      - python: |
+          root_count = ctx.get('root_count')
+          master_count = ctx.get('master_count')
+          if master_count >= 3:
+              ctx.set_variable('_third_validator_node', f"node-{root_count + 3}")
+              ctx.set_variable('_third_validator_cert', "stagenet.master.pvt.2")
+      
+      - cli: "srv_stake order create -value 0.04e+18 -cert {{_third_validator_cert}}"
+        node: "{{_third_validator_node}}"
+        save: stake_order_result_2
+
+check:
+  # Verify multiple validators are set up
+  - cli: "srv_stake list keys"
+    node: "{{first_root}}"
+    contains: "pkey_hash"
+  
+  - cli: "srv_stake list orders"
+    node: "{{first_root}}"
+    not_contains: "No orders"
+  
+  # Verify delegation transactions in ledger
+  - cli: "srv_stake list tx"
+    node: "{{first_root}}"
+    not_contains: "No transactions"
+

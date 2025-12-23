@@ -1,0 +1,69 @@
+name: PRIMARY - Save Snapshot
+description: Save network state snapshot after Primary scenario completion
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: stagenet
+
+# This file saves a snapshot of the network state after Primary scenario.
+# Other scenarios (Auction, Composer) will restore from this snapshot
+# to run independently.
+
+setup:
+  - python: |
+      root_nodes = ctx.get('root_nodes')
+      master_nodes = ctx.get('master_nodes')
+      full_nodes = ctx.get('full_nodes', [])
+      ctx.set_variable('_active_nodes', root_nodes + master_nodes + full_nodes)
+  
+  # Ensure all nodes are online before snapshot
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 60
+
+test:
+  # Flush all pending data to disk
+  - group: Prepare for snapshot
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      # Flush global_db on all nodes
+      - for: node_idx
+        in: "{{root_indices}}"
+        steps:
+          - python: |
+              node_idx = ctx.get('node_idx')
+              ctx.set_variable('_current_node', f"node-{node_idx}")
+          - cli: "global_db flush"
+            node: "{{_current_node}}"
+      
+      - for: node_idx
+        in: "{{master_indices}}"
+        steps:
+          - python: |
+              node_idx = ctx.get('node_idx')
+              ctx.set_variable('_current_node', f"node-{node_idx}")
+          - cli: "global_db flush"
+            node: "{{_current_node}}"
+      
+      - wait: "5s"
+  
+  # Create snapshot with name "primary_complete"
+  - snapshot: create
+    name: primary_complete
+    phase: full
+    nodes: "{{_active_nodes}}"
+
+check:
+  # Verify network is still operational after snapshot
+  - cli: "net get status"
+    node: "{{first_root}}"
+    expect_output: "NET_STATE_ONLINE"
+  
+  - cli: "block list -chain main"
+    node: "{{first_root}}"
+    expect_output: "have blocks:"
+

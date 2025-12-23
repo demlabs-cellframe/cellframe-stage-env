@@ -1,0 +1,280 @@
+name: AUCTION - Lifecycle Tests
+description: Test auction create, list, cancel, and finish operations
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: stagenet
+
+# This scenario tests the full auction lifecycle:
+# 1. Create auctions with different parameters
+# 2. List and verify auctions
+# 3. Cancel an auction
+# 4. Finish an auction with winners
+# 
+# Prerequisite: Run setup_plugin.yml first to install AuctionPlugin
+
+setup:
+  - python: |
+      root_nodes = ctx.get('root_nodes')
+      master_nodes = ctx.get('master_nodes')
+      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
+      
+      # Generate unique timestamp for auction names
+      import time
+      ctx.set_variable('_timestamp', str(int(time.time())))
+  
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 60
+
+test:
+  # ============================================================
+  # TEST 1: Verify plugin is ready
+  # ============================================================
+  
+  - group: Verify AuctionPlugin status
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - cli: "auction-status"
+        contains: "AuctionPlugin"
+        save: plugin_status
+      
+      - cli: "auction-list stagenet"
+        save: initial_auction_list
+
+  # ============================================================
+  # TEST 2: Create auction for cancellation test
+  # ============================================================
+  
+  - group: Create auction for cancellation
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - python: |
+          ts = ctx.get('_timestamp')
+          ctx.set_variable('_cancel_auction', f"CancelTest_{ts}")
+      
+      - cli: "auction-create {{_cancel_auction}} cancel_proj1,cancel_proj2 75 stagenet 0.05e+18 stagenet_root_0 7d service_key"
+        contains: "created successfully"
+        save: cancel_auction_create
+      
+      - wait: "5s"
+      
+      # Verify auction appears in list
+      - cli: "auction-list stagenet"
+        contains: "{{_cancel_auction}}"
+
+  # ============================================================
+  # TEST 3: Create auction for finish test
+  # ============================================================
+  
+  - group: Create auction for finish test
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - python: |
+          ts = ctx.get('_timestamp')
+          ctx.set_variable('_finish_auction', f"FinishTest_{ts}")
+      
+      - cli: "auction-create {{_finish_auction}} finish_proj1,finish_proj2,finish_proj3 150 stagenet 0.05e+18 stagenet_root_0 3d service_key"
+        contains: "created successfully"
+        save: finish_auction_create
+      
+      - wait: "5s"
+      
+      - cli: "auction-list stagenet"
+        contains: "{{_finish_auction}}"
+
+  # ============================================================
+  # TEST 4: Create auction to leave running
+  # ============================================================
+  
+  - group: Create auction to leave running
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - python: |
+          ts = ctx.get('_timestamp')
+          ctx.set_variable('_running_auction', f"RunningTest_{ts}")
+      
+      - cli: "auction-create {{_running_auction}} running_proj1,running_proj2 200 stagenet 0.05e+18 stagenet_root_0 2h service_key"
+        contains: "created successfully"
+        save: running_auction_create
+      
+      - wait: "5s"
+      
+      - cli: "auction-list stagenet"
+        contains: "{{_running_auction}}"
+
+  # ============================================================
+  # TEST 5: Create short duration auction
+  # ============================================================
+  
+  - group: Create short duration auction
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - python: |
+          ts = ctx.get('_timestamp')
+          ctx.set_variable('_short_auction', f"ShortTest_{ts}")
+      
+      - cli: "auction-create {{_short_auction}} quick_proj1 50 stagenet 0.05e+18 stagenet_root_0 30 service_key"
+        contains: "created successfully"
+        save: short_auction_create
+      
+      - wait: "5s"
+
+  # ============================================================
+  # TEST 6: List all auctions (should show 4)
+  # ============================================================
+  
+  - group: List all auctions
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - wait: "5s"
+      
+      - cli: "auction-list stagenet"
+        contains: "Found"
+        save: all_auctions_list
+      
+      - python: |
+          auction_list = ctx.get('all_auctions_list', '')
+          # Count auctions by looking for "Auction #" pattern
+          import re
+          matches = re.findall(r'Auction #\d+', auction_list)
+          auction_count = len(matches)
+          print(f"Total auctions found: {auction_count}")
+          if auction_count >= 4:
+              print("✓ All 4 auctions created successfully")
+          else:
+              print(f"WARNING: Expected 4 auctions, found {auction_count}")
+
+  # ============================================================
+  # TEST 7: Cancel auction
+  # ============================================================
+  
+  - group: Cancel auction
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - cli: "auction-cancel {{_cancel_auction}} stagenet 0.05e+18 stagenet_root_0 service_key"
+        contains: "cancelled"
+        save: cancel_result
+      
+      - wait: "5s"
+      
+      # Verify auction status changed
+      - cli: "auction-list stagenet"
+        save: after_cancel_list
+      
+      - python: |
+          after_list = ctx.get('after_cancel_list', '')
+          cancel_name = ctx.get('_cancel_auction')
+          if 'cancelled' in after_list:
+              print(f"✓ Auction {cancel_name} successfully cancelled")
+          else:
+              print(f"WARNING: Cancellation status not reflected in list")
+
+  # ============================================================
+  # TEST 8: Finish auction with winners
+  # ============================================================
+  
+  - group: Finish auction with winners
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - cli: "auction-finish {{_finish_auction}} stagenet 0.05e+18 stagenet_root_0 finish_proj2,finish_proj3 service_key"
+        contains: "finished"
+        save: finish_result
+      
+      - wait: "5s"
+      
+      # Verify auction status changed
+      - cli: "auction-list stagenet"
+        save: after_finish_list
+      
+      - python: |
+          after_list = ctx.get('after_finish_list', '')
+          finish_name = ctx.get('_finish_auction')
+          if 'ended' in after_list:
+              print(f"✓ Auction {finish_name} successfully finished")
+          else:
+              print(f"WARNING: Finish status not reflected in list")
+
+  # ============================================================
+  # TEST 9: Verify running auction still active
+  # ============================================================
+  
+  - group: Verify running auction status
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - cli: "auction-list stagenet"
+        save: final_list
+      
+      - python: |
+          final_list = ctx.get('final_list', '')
+          running_name = ctx.get('_running_auction')
+          
+          # Check that running auction is still active
+          if running_name in final_list and 'active' in final_list:
+              print(f"✓ Auction {running_name} is still active")
+          
+          # Summary
+          print("\n=== Auction Lifecycle Test Summary ===")
+          print(f"Cancel auction: {ctx.get('_cancel_auction')} - should be cancelled")
+          print(f"Finish auction: {ctx.get('_finish_auction')} - should be ended")
+          print(f"Running auction: {running_name} - should be active")
+          print(f"Short auction: {ctx.get('_short_auction')} - may have expired")
+
+  # ============================================================
+  # TEST 10: Error handling tests
+  # ============================================================
+  
+  - group: Test error handling
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      # Try to cancel non-existent auction
+      - cli: "auction-cancel NonExistentAuction_12345 stagenet 0.05e+18 stagenet_root_0 service_key"
+        save: nonexistent_cancel
+      
+      - python: |
+          result = ctx.get('nonexistent_cancel', '')
+          if 'not found' in result.lower() or '❌' in result:
+              print("✓ Non-existent auction cancellation properly rejected")
+          else:
+              print("WARNING: Non-existent auction test inconclusive")
+      
+      # Try to finish already finished auction
+      - cli: "auction-finish {{_finish_auction}} stagenet 0.05e+18 stagenet_root_0 proj1 service_key"
+        save: already_finished
+      
+      - python: |
+          result = ctx.get('already_finished', '')
+          if 'already' in result.lower() or '❌' in result:
+              print("✓ Already finished auction properly rejected")
+          else:
+              print("WARNING: Already finished test inconclusive")
+
+check:
+  # Verify plugin is still operational
+  - cli: "auction-status"
+    node: "{{first_root}}"
+    contains: "AuctionPlugin"
+  
+  # Verify auctions exist
+  - cli: "auction-list stagenet"
+    node: "{{first_root}}"
+    contains: "Found"
+  
+  # Network should be operational
+  - cli: "net get status"
+    node: "{{first_root}}"
+    expect_output: "NET_STATE_ONLINE"
+

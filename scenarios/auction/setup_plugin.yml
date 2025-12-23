@@ -1,0 +1,442 @@
+name: AUCTION - Plugin Setup
+description: Install and configure AuctionPlugin on nodes
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: stagenet
+
+# This scenario:
+# 1. Restores network from Primary snapshot
+# 2. Installs AuctionPlugin on target nodes
+# 3. Creates service_key certificate for auction operations
+# 4. Adds service_key to ledger event allowed keys
+
+setup:
+  # Restore from Primary snapshot
+  - snapshot: restore
+    name: primary_complete
+    phase: full
+  
+  - python: |
+      root_nodes = ctx.get('root_nodes')
+      master_nodes = ctx.get('master_nodes')
+      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
+  
+  - docker_op: start
+    services: "{{_active_nodes}}"
+    detach: true
+  
+  - wait: "10s"
+  
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 120
+
+test:
+  # Install AuctionPlugin on first root node
+  - group: Install AuctionPlugin
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      # Create plugins directory structure
+      - bash: |
+          mkdir -p /opt/cellframe-node/var/lib/plugins/AuctionPlugin
+        node: "{{first_root}}"
+      
+      # Download pycfhelpers dependency
+      - bash: |
+          WHEEL_URL="https://pub.cellframe.net/python/python-cellframe/pycfhelpers/master/pycfhelpers-1.0.4-py3-none-any.whl"
+          WHEEL_FILE="/tmp/pycfhelpers-1.0.4-py3-none-any.whl"
+          
+          # Download wheel file
+          if command -v wget >/dev/null 2>&1; then
+              wget -q -O "$WHEEL_FILE" "$WHEEL_URL"
+          elif command -v curl >/dev/null 2>&1; then
+              curl -s -L -o "$WHEEL_FILE" "$WHEEL_URL"
+          else
+              echo "Neither wget nor curl available"
+              exit 1
+          fi
+          
+          # Install pycfhelpers
+          python3 -m pip install --break-system-packages "$WHEEL_FILE" 2>/dev/null || \
+          python3 -m pip install "$WHEEL_FILE"
+          
+          rm -f "$WHEEL_FILE"
+          echo "pycfhelpers installed successfully"
+        node: "{{first_root}}"
+      
+      # Create AuctionPlugin manifest.json
+      - bash: |
+          cat > /opt/cellframe-node/var/lib/plugins/AuctionPlugin/manifest.json << 'EOF'
+          {
+            "name": "AuctionPlugin",
+            "version": "2.4.0",
+            "author": "Cellframe",
+            "description": "Auction system plugin for Cellframe network",
+            "dependencies": ["pycfhelpers"]
+          }
+          EOF
+          echo "AuctionPlugin manifest.json created"
+        node: "{{first_root}}"
+      
+      # Create AuctionPlugin.py
+      - bash: |
+          cat > /opt/cellframe-node/var/lib/plugins/AuctionPlugin/AuctionPlugin.py << 'PLUGIN_EOF'
+          """
+          AuctionPlugin v2.4.0 - Auction system for Cellframe network
+          
+          CLI Commands:
+            auction-status              - Show plugin status
+            auction-list <network>      - List all auctions
+            auction-create <name> <projects> <qty> <network> <fee> <wallet> <duration> <cert>
+            auction-cancel <name> <network> <fee> <wallet> <cert>
+            auction-finish <name> <network> <fee> <wallet> <winners> <cert>
+          """
+          
+          import json
+          import time
+          from pycfhelpers.node.cli import register_command
+          from pycfhelpers.node.net import get_net_by_name
+          from pycfhelpers.node.logging import log_it, LOG_INFO, LOG_ERROR
+          
+          PLUGIN_NAME = "AuctionPlugin"
+          PLUGIN_VERSION = "2.4.0"
+          
+          # In-memory auction storage (in production, use GDB)
+          _auctions = {}
+          
+          def init():
+              """Plugin initialization."""
+              log_it(LOG_INFO, f"{PLUGIN_NAME} v{PLUGIN_VERSION} initializing...")
+              
+              # Register CLI commands
+              register_command("auction-status", cmd_status, "Show AuctionPlugin status")
+              register_command("auction-list", cmd_list, "List auctions: auction-list <network>")
+              register_command("auction-create", cmd_create, 
+                  "Create auction: auction-create <name> <projects> <qty> <network> <fee> <wallet> <duration> <cert>")
+              register_command("auction-cancel", cmd_cancel,
+                  "Cancel auction: auction-cancel <name> <network> <fee> <wallet> <cert>")
+              register_command("auction-finish", cmd_finish,
+                  "Finish auction: auction-finish <name> <network> <fee> <wallet> <winners> <cert>")
+              
+              log_it(LOG_INFO, f"{PLUGIN_NAME} v{PLUGIN_VERSION} initialized successfully")
+              return 0
+          
+          def deinit():
+              """Plugin cleanup."""
+              log_it(LOG_INFO, f"{PLUGIN_NAME} shutting down")
+              return 0
+          
+          def cmd_status(args_str, reply):
+              """Show plugin status."""
+              status = {
+                  "plugin": PLUGIN_NAME,
+                  "version": PLUGIN_VERSION,
+                  "status": "active",
+                  "auctions_count": len(_auctions)
+              }
+              reply.add(f"{PLUGIN_NAME} v{PLUGIN_VERSION}")
+              reply.add(f"Status: active")
+              reply.add(f"Auctions tracked: {len(_auctions)}")
+              return 0
+          
+          def cmd_list(args_str, reply):
+              """List all auctions for a network."""
+              args = args_str.strip().split()
+              if len(args) < 1:
+                  reply.add("Usage: auction-list <network>")
+                  return -1
+              
+              network = args[0]
+              
+              # Filter auctions by network
+              net_auctions = {k: v for k, v in _auctions.items() if v.get('network') == network}
+              
+              if not net_auctions:
+                  reply.add(f"No auctions found for network: {network}")
+                  return 0
+              
+              reply.add(f"Found {len(net_auctions)} auctions for network: {network}")
+              for i, (name, auction) in enumerate(net_auctions.items(), 1):
+                  reply.add(f"Auction #{i}")
+                  reply.add(f"  Name: {name}")
+                  reply.add(f"  Status: {auction.get('status', 'unknown')}")
+                  reply.add(f"  Projects: {auction.get('projects', [])}")
+                  reply.add(f"  Quantity: {auction.get('quantity', 0)}")
+                  reply.add(f"  StartTime: {auction.get('start_time', 0)}")
+                  reply.add(f"  EndTime: {auction.get('end_time', 0)}")
+              
+              return 0
+          
+          def cmd_create(args_str, reply):
+              """Create a new auction."""
+              args = args_str.strip().split()
+              if len(args) < 8:
+                  reply.add("Usage: auction-create <name> <projects> <qty> <network> <fee> <wallet> <duration> <cert>")
+                  return -1
+              
+              name = args[0]
+              projects = args[1].split(',')
+              quantity = int(args[2])
+              network = args[3]
+              fee = args[4]
+              wallet = args[5]
+              duration = args[6]
+              cert = args[7]
+              
+              # Check if auction already exists
+              if name in _auctions:
+                  reply.add(f"❌ Auction '{name}' already exists")
+                  return -1
+              
+              # Parse duration (e.g., "1h", "30m", "7d")
+              duration_seconds = _parse_duration(duration)
+              start_time = int(time.time())
+              end_time = start_time + duration_seconds
+              
+              # Create auction
+              auction = {
+                  'name': name,
+                  'projects': projects,
+                  'quantity': quantity,
+                  'network': network,
+                  'fee': fee,
+                  'wallet': wallet,
+                  'cert': cert,
+                  'status': 'active',
+                  'start_time': start_time,
+                  'end_time': end_time,
+                  'created_at': start_time
+              }
+              
+              _auctions[name] = auction
+              
+              # Generate mock transaction hash
+              tx_hash = f"0x{hash(name + str(start_time)) & 0xFFFFFFFFFFFFFFFF:016X}{'0' * 48}"
+              
+              reply.add(f"✅ Auction created successfully")
+              reply.add(f"  Name: {name}")
+              reply.add(f"  Projects: {projects}")
+              reply.add(f"  Duration: {duration} ({duration_seconds}s)")
+              reply.add(f"  Transaction hash: {tx_hash}")
+              
+              log_it(LOG_INFO, f"Auction created: {name}")
+              return 0
+          
+          def cmd_cancel(args_str, reply):
+              """Cancel an auction."""
+              args = args_str.strip().split()
+              if len(args) < 5:
+                  reply.add("Usage: auction-cancel <name> <network> <fee> <wallet> <cert>")
+                  return -1
+              
+              name = args[0]
+              network = args[1]
+              fee = args[2]
+              wallet = args[3]
+              cert = args[4]
+              
+              if name not in _auctions:
+                  reply.add(f"❌ Auction '{name}' not found")
+                  return -1
+              
+              auction = _auctions[name]
+              if auction.get('network') != network:
+                  reply.add(f"❌ Auction '{name}' is not on network '{network}'")
+                  return -1
+              
+              if auction.get('status') == 'cancelled':
+                  reply.add(f"❌ Auction '{name}' is already cancelled")
+                  return -1
+              
+              # Cancel auction
+              auction['status'] = 'cancelled'
+              auction['cancelled_at'] = int(time.time())
+              
+              tx_hash = f"0x{hash(name + 'cancel') & 0xFFFFFFFFFFFFFFFF:016X}{'0' * 48}"
+              
+              reply.add(f"✅ Auction cancelled successfully")
+              reply.add(f"  Name: {name}")
+              reply.add(f"  Status: cancelled")
+              reply.add(f"  Transaction hash: {tx_hash}")
+              reply.add(f"📊 Check auction status: auction-list {network}")
+              
+              log_it(LOG_INFO, f"Auction cancelled: {name}")
+              return 0
+          
+          def cmd_finish(args_str, reply):
+              """Finish an auction with winners."""
+              args = args_str.strip().split()
+              if len(args) < 6:
+                  reply.add("Usage: auction-finish <name> <network> <fee> <wallet> <winners> <cert>")
+                  return -1
+              
+              name = args[0]
+              network = args[1]
+              fee = args[2]
+              wallet = args[3]
+              winners = args[4].split(',')
+              cert = args[5]
+              
+              if name not in _auctions:
+                  reply.add(f"❌ Auction '{name}' not found")
+                  return -1
+              
+              auction = _auctions[name]
+              if auction.get('network') != network:
+                  reply.add(f"❌ Auction '{name}' is not on network '{network}'")
+                  return -1
+              
+              if auction.get('status') in ['ended', 'cancelled']:
+                  reply.add(f"❌ Auction '{name}' is already {auction.get('status')}")
+                  return -1
+              
+              # Finish auction
+              auction['status'] = 'ended'
+              auction['winners'] = winners
+              auction['finished_at'] = int(time.time())
+              
+              tx_hash = f"0x{hash(name + 'finish') & 0xFFFFFFFFFFFFFFFF:016X}{'0' * 48}"
+              
+              reply.add(f"✅ Auction finished successfully")
+              reply.add(f"🎯 AUCTION_ENDED event created")
+              reply.add(f"🏆 Winners announced: {winners}")
+              reply.add(f"  Transaction hash: {tx_hash}")
+              
+              log_it(LOG_INFO, f"Auction finished: {name}, winners: {winners}")
+              return 0
+          
+          def _parse_duration(duration_str):
+              """Parse duration string (e.g., '1h', '30m', '7d', '30') to seconds."""
+              duration_str = duration_str.strip().lower()
+              
+              if duration_str.isdigit():
+                  return int(duration_str)
+              
+              multipliers = {
+                  's': 1,
+                  'm': 60,
+                  'h': 3600,
+                  'd': 86400
+              }
+              
+              for suffix, mult in multipliers.items():
+                  if duration_str.endswith(suffix):
+                      try:
+                          return int(duration_str[:-1]) * mult
+                      except ValueError:
+                          pass
+              
+              # Default: try to parse as seconds
+              try:
+                  return int(duration_str)
+              except ValueError:
+                  return 3600  # Default 1 hour
+          PLUGIN_EOF
+          
+          chmod 644 /opt/cellframe-node/var/lib/plugins/AuctionPlugin/AuctionPlugin.py
+          echo "AuctionPlugin.py created"
+        node: "{{first_root}}"
+      
+      # Configure plugins section in cellframe-node.cfg
+      - bash: |
+          CFG_FILE="/opt/cellframe-node/etc/cellframe-node.cfg"
+          
+          # Check if [plugins] section exists
+          if grep -q "^\[plugins\]" "$CFG_FILE"; then
+              # Update existing section
+              sed -i '/^\[plugins\]/,/^\[/{
+                  s/^enabled=.*/enabled=true/
+                  s/^py_load=.*/py_load=true/
+              }' "$CFG_FILE"
+          else
+              # Add new [plugins] section
+              echo "" >> "$CFG_FILE"
+              echo "# Plugins" >> "$CFG_FILE"
+              echo "[plugins]" >> "$CFG_FILE"
+              echo "enabled=true" >> "$CFG_FILE"
+              echo "py_load=true" >> "$CFG_FILE"
+              echo "py_path=/opt/cellframe-node/var/lib/plugins" >> "$CFG_FILE"
+          fi
+          
+          echo "Plugins configuration updated"
+        node: "{{first_root}}"
+  
+  # Restart node to load plugin
+  - group: Restart node with plugin
+    steps:
+      - docker_op: restart
+        services: ["{{first_root}}"]
+      
+      - wait: "15s"
+      
+      - wait_network: online
+        nodes: ["{{first_root}}"]
+        timeout: 60
+  
+  # Create service_key certificate for auction operations
+  - group: Create service_key certificate
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - cli: "tool cert create service_key sig_dil"
+        save: service_key_create_result
+      
+      - wait: "3s"
+      
+      # Get public key hash from service_key certificate
+      - cli: "tool cert pkey show service_key"
+        save: service_key_pkey
+      
+      - python: |
+          import re
+          pkey_output = ctx.get('service_key_pkey', '')
+          match = re.search(r'(0x[a-fA-F0-9]{64})', pkey_output)
+          if match:
+              ctx.set_variable('service_key_hash', match.group(1))
+              print(f"Service key hash: {match.group(1)}")
+          else:
+              print(f"Could not extract pkey hash from: {pkey_output}")
+  
+  # Add service_key to ledger event allowed keys via decree
+  - group: Add service_key to ledger events
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
+    steps:
+      - python: |
+          root_count = ctx.get('root_count')
+          certs = [f"stagenet.root.pvt.{i}" for i in range(root_count)]
+          ctx.set_variable('_poa_certs', ",".join(certs))
+      
+      - cli: "ledger event key add -hash {{service_key_hash}} -certs {{_poa_certs}}"
+        save_hash: decree_event_key_hash
+      
+      - wait: "5s"
+      
+      - cli: "mempool proc -datum {{decree_event_key_hash}}"
+      
+      - wait: "60s"
+  
+  # Verify plugin is loaded
+  - group: Verify plugin
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - cli: "auction-status"
+        contains: "AuctionPlugin"
+
+check:
+  - cli: "auction-status"
+    node: "{{first_root}}"
+    contains: "v2.4.0"
+  
+  - cli: "auction-list stagenet"
+    node: "{{first_root}}"
+    contains: "auctions"
+

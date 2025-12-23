@@ -1,0 +1,300 @@
+name: COMPOSER - Transaction Tests
+description: Test tx_create and tx_cond_create via cellframe-tool-compose
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: stagenet
+
+# This scenario tests transaction composition using cellframe-tool-compose:
+# 1. tx_create - regular transaction composition
+# 2. tx_cond_create - conditional transaction composition
+#
+# Flow: compose TX → sign TX → add to mempool → verify in ledger
+
+setup:
+  # Restore from Primary snapshot
+  - snapshot: restore
+    name: primary_complete
+    phase: full
+  
+  - python: |
+      root_nodes = ctx.get('root_nodes')
+      master_nodes = ctx.get('master_nodes')
+      full_nodes = ctx.get('full_nodes', [])
+      ctx.set_variable('_active_nodes', root_nodes + master_nodes + full_nodes)
+  
+  - docker_op: start
+    services: "{{_active_nodes}}"
+    detach: true
+  
+  - wait: "10s"
+  
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 120
+
+test:
+  # Get node addresses and RPC info
+  - group: Get node network info
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      # Get first root node address for RPC
+      - cli: "net get status"
+        save: net_status
+      
+      - python: |
+          import re
+          status = ctx.get('net_status', '')
+          # Extract node address
+          match = re.search(r'current_addr[:\s]*([\w\.:]+)', status)
+          if match:
+              ctx.set_variable('_rpc_node_addr', match.group(1))
+              print(f"RPC node address: {match.group(1)}")
+          
+          # Set RPC endpoint (default port 8081)
+          root_count = ctx.get('root_count')
+          ctx.set_variable('_rpc_node', f"node-{root_count + 1}")
+          ctx.set_variable('_rpc_port', "8081")
+      
+      # Get wallet addresses
+      - cli: "wallet info -w stagenet_root_0"
+        save_wallet: root_0_addr
+      
+      - python: |
+          root_count = ctx.get('root_count')
+          ctx.set_variable('_master_node', f"node-{root_count + 1}")
+      
+      - cli: "wallet info -w stagenet_master_0"
+        node: "{{_master_node}}"
+        save_wallet: master_0_addr
+      
+      # Get RPC IP from node
+      - python: |
+          root_count = ctx.get('root_count')
+          # Get IP from node_ip context variable
+          node_ip = ctx.get('node_ip', {})
+          rpc_ip = node_ip.get(f'node{root_count + 1}', '172.28.1.1')
+          ctx.set_variable('_rpc_ip', rpc_ip)
+          print(f"RPC IP: {rpc_ip}")
+
+  # ============================================================
+  # TEST 1: Regular transaction via compose
+  # ============================================================
+  
+  - group: Compose regular transaction
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - python: |
+          root_count = ctx.get('root_count')
+          ctx.set_variable('_compose_node', f"node-{root_count + 1}")
+      
+      # Use cellframe-tool-compose to create transaction
+      - bash: |
+          TX_FILE="/tmp/tx_compose.json"
+          TX_SIGNED="/tmp/tx_compose_signed.json"
+          
+          # Get wallet and addresses from environment
+          WALLET="stagenet_master_0"
+          TO_ADDR="{{root_0_addr}}"
+          VALUE="100000.0"
+          FEE="5.0e+18"
+          NET="stagenet"
+          TOKEN="TCELL"
+          RPC_IP="{{_rpc_ip}}"
+          RPC_PORT="8081"
+          
+          echo "Composing transaction:"
+          echo "  From wallet: $WALLET"
+          echo "  To address: $TO_ADDR"
+          echo "  Value: $VALUE"
+          echo "  RPC: $RPC_IP:$RPC_PORT"
+          
+          # Compose transaction
+          /cellframe-tool-compose tx_create compose \
+              -value "$VALUE" \
+              -to_addr "$TO_ADDR" \
+              -fee "$FEE" \
+              -net "$NET" \
+              -from_wallet "$WALLET" \
+              -token "$TOKEN" \
+              -url "$RPC_IP" \
+              -port "$RPC_PORT" \
+              -out "$TX_FILE"
+          
+          if [ ! -f "$TX_FILE" ]; then
+              echo "ERROR: Transaction file not created"
+              exit 1
+          fi
+          
+          echo "Transaction composed: $TX_FILE"
+          cat "$TX_FILE" | head -50
+        node: "{{_compose_node}}"
+        save: compose_tx_result
+      
+      # Sign the transaction
+      - bash: |
+          TX_FILE="/tmp/tx_compose.json"
+          TX_SIGNED="/tmp/tx_compose_signed.json"
+          WALLET_FILE="/opt/cellframe-node/var/lib/wallet/stagenet_master_0.dwallet"
+          
+          /cellframe-tool-sign -f "$TX_FILE" -o "$TX_SIGNED" -w "$WALLET_FILE"
+          
+          if [ ! -f "$TX_SIGNED" ]; then
+              echo "ERROR: Signed transaction file not created"
+              exit 1
+          fi
+          
+          echo "Transaction signed: $TX_SIGNED"
+        node: "{{_compose_node}}"
+        save: sign_tx_result
+      
+      # Add to mempool
+      - bash: |
+          TX_SIGNED="/tmp/tx_compose_signed.json"
+          
+          /opt/cellframe-node/bin/cellframe-node-cli mempool_add \
+              -net stagenet \
+              -chain main \
+              -json "$TX_SIGNED"
+        node: "{{_compose_node}}"
+        save: mempool_add_result
+      
+      - python: |
+          import re
+          result = ctx.get('mempool_add_result', '')
+          match = re.search(r'(0x[a-fA-F0-9]{64})', result)
+          if match:
+              ctx.set_variable('_compose_tx_hash', match.group(1))
+              print(f"Compose TX hash: {match.group(1)}")
+      
+      # Wait for block
+      - wait: "60s"
+      
+      # Verify transaction in ledger
+      - cli: "ledger info -hash {{_compose_tx_hash}}"
+        contains: "datum_tx_hash"
+        save: compose_tx_ledger
+      
+      # Cleanup
+      - bash: |
+          rm -f /tmp/tx_compose.json /tmp/tx_compose_signed.json
+        node: "{{_compose_node}}"
+
+  # ============================================================
+  # TEST 2: Conditional transaction via compose
+  # ============================================================
+  
+  - group: Compose conditional transaction
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - python: |
+          root_count = ctx.get('root_count')
+          ctx.set_variable('_compose_node', f"node-{root_count + 1}")
+          ctx.set_variable('_cond_cert', "stagenet.master.pvt.0")
+      
+      # Use cellframe-tool-compose to create conditional transaction
+      - bash: |
+          TX_FILE="/tmp/tx_cond.json"
+          TX_SIGNED="/tmp/tx_cond_signed.json"
+          
+          WALLET="stagenet_master_0"
+          CERT="/opt/cellframe-node/var/lib/ca/stagenet.master.pvt.0.dcert"
+          VALUE="200000.0"
+          FEE="5.0e+18"
+          NET="stagenet"
+          TOKEN="TCELL"
+          RPC_IP="{{_rpc_ip}}"
+          RPC_PORT="8081"
+          
+          echo "Composing conditional transaction:"
+          echo "  From wallet: $WALLET"
+          echo "  Value: $VALUE"
+          echo "  Certificate: $CERT"
+          
+          # Compose conditional transaction
+          /cellframe-tool-compose tx_cond_create compose \
+              -value "$VALUE" \
+              -fee "$FEE" \
+              -net "$NET" \
+              -w "$WALLET" \
+              -token "$TOKEN" \
+              -url "$RPC_IP" \
+              -port "$RPC_PORT" \
+              -out "$TX_FILE" \
+              -cert "$CERT" \
+              -unit B \
+              -srv_uid 123
+          
+          if [ ! -f "$TX_FILE" ]; then
+              echo "ERROR: Conditional transaction file not created"
+              exit 1
+          fi
+          
+          echo "Conditional transaction composed: $TX_FILE"
+        node: "{{_compose_node}}"
+        save: compose_cond_result
+      
+      # Sign the transaction
+      - bash: |
+          TX_FILE="/tmp/tx_cond.json"
+          TX_SIGNED="/tmp/tx_cond_signed.json"
+          WALLET_FILE="/opt/cellframe-node/var/lib/wallet/stagenet_master_0.dwallet"
+          
+          /cellframe-tool-sign -f "$TX_FILE" -o "$TX_SIGNED" -w "$WALLET_FILE"
+          
+          echo "Conditional transaction signed: $TX_SIGNED"
+        node: "{{_compose_node}}"
+        save: sign_cond_result
+      
+      # Add to mempool
+      - bash: |
+          TX_SIGNED="/tmp/tx_cond_signed.json"
+          
+          /opt/cellframe-node/bin/cellframe-node-cli mempool_add \
+              -net stagenet \
+              -chain main \
+              -json "$TX_SIGNED"
+        node: "{{_compose_node}}"
+        save: mempool_cond_result
+      
+      - python: |
+          import re
+          result = ctx.get('mempool_cond_result', '')
+          match = re.search(r'(0x[a-fA-F0-9]{64})', result)
+          if match:
+              ctx.set_variable('_cond_tx_hash', match.group(1))
+              print(f"Conditional TX hash: {match.group(1)}")
+      
+      # Wait for block
+      - wait: "60s"
+      
+      # Verify transaction in ledger
+      - cli: "ledger info -hash {{_cond_tx_hash}}"
+        contains: "datum_tx_hash"
+        save: cond_tx_ledger
+      
+      # Cleanup
+      - bash: |
+          rm -f /tmp/tx_cond.json /tmp/tx_cond_signed.json
+        node: "{{_compose_node}}"
+
+check:
+  # Verify both transactions processed
+  - cli: "tx_history -count"
+    node: "{{first_root}}"
+    not_contains: "0 transaction"
+  
+  - cli: "block list -chain main"
+    node: "{{first_root}}"
+    expect_output: "have blocks:"
+  
+  - cli: "net get status"
+    node: "{{first_root}}"
+    expect_output: "NET_STATE_ONLINE"
+

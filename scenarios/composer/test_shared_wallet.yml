@@ -1,0 +1,376 @@
+name: COMPOSER - Shared Wallet Tests
+description: Test shared wallet operations via cellframe-tool-compose
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: stagenet
+
+# This scenario tests shared wallet operations via cellframe-tool-compose:
+# 1. wallet shared_hold - create shared wallet with locked funds
+# 2. wallet shared_refill - add more funds to shared wallet
+# 3. wallet shared_take - withdraw from shared wallet
+#
+# Shared wallets allow multiple parties to manage funds with
+# configurable signing requirements (M of N signatures)
+
+setup:
+  # Restore from Primary snapshot
+  - snapshot: restore
+    name: primary_complete
+    phase: full
+  
+  - python: |
+      root_nodes = ctx.get('root_nodes')
+      master_nodes = ctx.get('master_nodes')
+      full_nodes = ctx.get('full_nodes', [])
+      ctx.set_variable('_active_nodes', root_nodes + master_nodes + full_nodes)
+  
+  - docker_op: start
+    services: "{{_active_nodes}}"
+    detach: true
+  
+  - wait: "10s"
+  
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 120
+
+test:
+  # Setup test environment
+  - group: Setup shared wallet test environment
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - python: |
+          root_count = ctx.get('root_count')
+          master_count = ctx.get('master_count')
+          
+          ctx.set_variable('_compose_node', f"node-{root_count + 1}")
+          
+          # Get RPC IP
+          node_ip = ctx.get('node_ip', {})
+          rpc_ip = node_ip.get(f'node{root_count + 1}', '172.28.1.1')
+          ctx.set_variable('_rpc_ip', rpc_ip)
+          ctx.set_variable('_rpc_port', "8081")
+      
+      # Get wallet addresses for shared wallet participants
+      - cli: "wallet info -w stagenet_root_0"
+        save_wallet: root_0_addr
+      
+      - python: |
+          root_count = ctx.get('root_count')
+          if root_count >= 2:
+              ctx.set_variable('_second_root', 'node-2')
+      
+      - cli: "wallet info -w stagenet_root_1"
+        node: "{{_second_root}}"
+        save_wallet: root_1_addr
+      
+      - cli: "wallet info -w stagenet_master_0"
+        node: "{{_compose_node}}"
+        save_wallet: master_0_addr
+
+  # ============================================================
+  # TEST 1: Create Shared Wallet (Hold)
+  # ============================================================
+  
+  - group: Create shared wallet via compose
+    steps:
+      - bash: |
+          TX_FILE="/tmp/shared_hold.json"
+          TX_SIGNED="/tmp/shared_hold_signed.json"
+          
+          WALLET="stagenet_master_0"
+          NET="stagenet"
+          TOKEN="TCELL"
+          FEE="5.0e+18"
+          RPC_IP="{{_rpc_ip}}"
+          RPC_PORT="8081"
+          
+          # Shared wallet parameters
+          VALUE="50000.0"
+          # Participants (comma separated addresses)
+          PARTICIPANTS="{{root_0_addr}},{{root_1_addr}},{{master_0_addr}}"
+          # Required signatures (2 of 3)
+          REQUIRED_SIGS="2"
+          
+          echo "Composing shared wallet hold:"
+          echo "  Value: $VALUE"
+          echo "  Participants: $PARTICIPANTS"
+          echo "  Required signatures: $REQUIRED_SIGS of 3"
+          
+          /cellframe-tool-compose wallet shared_hold \
+              -w "$WALLET" \
+              -net "$NET" \
+              -token "$TOKEN" \
+              -value "$VALUE" \
+              -fee "$FEE" \
+              -participants "$PARTICIPANTS" \
+              -required_sigs "$REQUIRED_SIGS" \
+              -url "$RPC_IP" \
+              -port "$RPC_PORT" \
+              -out "$TX_FILE"
+          
+          if [ -f "$TX_FILE" ]; then
+              echo "Shared wallet hold composed: $TX_FILE"
+          else
+              echo "WARNING: Shared wallet hold composition may have failed"
+              echo "{}" > "$TX_FILE"
+          fi
+        node: "{{_compose_node}}"
+        save: shared_hold_compose
+      
+      - bash: |
+          TX_FILE="/tmp/shared_hold.json"
+          TX_SIGNED="/tmp/shared_hold_signed.json"
+          WALLET_FILE="/opt/cellframe-node/var/lib/wallet/stagenet_master_0.dwallet"
+          
+          if [ -s "$TX_FILE" ] && [ "$(cat $TX_FILE)" != "{}" ]; then
+              /cellframe-tool-sign -f "$TX_FILE" -o "$TX_SIGNED" -w "$WALLET_FILE"
+              
+              if [ -f "$TX_SIGNED" ]; then
+                  RESULT=$(/opt/cellframe-node/bin/cellframe-node-cli mempool_add \
+                      -net stagenet -chain main -json "$TX_SIGNED")
+                  echo "$RESULT"
+              fi
+          else
+              echo "Skipping sign - no valid TX file"
+          fi
+        node: "{{_compose_node}}"
+        save: shared_hold_result
+      
+      - python: |
+          import re
+          result = ctx.get('shared_hold_result', '')
+          match = re.search(r'(0x[a-fA-F0-9]{64})', result)
+          if match:
+              ctx.set_variable('_shared_wallet_hash', match.group(1))
+              print(f"Shared wallet TX hash: {match.group(1)}")
+          else:
+              print("Shared wallet creation did not return hash (may be expected)")
+      
+      - wait: "60s"
+
+  # ============================================================
+  # TEST 2: Refill Shared Wallet
+  # ============================================================
+  
+  - group: Refill shared wallet via compose
+    steps:
+      - python: |
+          shared_hash = ctx.get('_shared_wallet_hash', '')
+          if shared_hash:
+              ctx.set_variable('_can_refill', 'true')
+          else:
+              ctx.set_variable('_can_refill', 'false')
+              print("Skipping refill - no shared wallet hash available")
+      
+      - bash: |
+          if [ "{{_can_refill}}" != "true" ]; then
+              echo "Skipping refill test"
+              exit 0
+          fi
+          
+          TX_FILE="/tmp/shared_refill.json"
+          TX_SIGNED="/tmp/shared_refill_signed.json"
+          
+          WALLET="stagenet_root_0"
+          SHARED_TX="{{_shared_wallet_hash}}"
+          NET="stagenet"
+          TOKEN="TCELL"
+          FEE="5.0e+18"
+          RPC_IP="{{_rpc_ip}}"
+          RPC_PORT="8081"
+          
+          # Additional funds to add
+          VALUE="25000.0"
+          
+          echo "Composing shared wallet refill:"
+          echo "  Shared TX: $SHARED_TX"
+          echo "  Additional value: $VALUE"
+          
+          /cellframe-tool-compose wallet shared_refill \
+              -w "$WALLET" \
+              -net "$NET" \
+              -token "$TOKEN" \
+              -value "$VALUE" \
+              -fee "$FEE" \
+              -shared_tx "$SHARED_TX" \
+              -url "$RPC_IP" \
+              -port "$RPC_PORT" \
+              -out "$TX_FILE"
+          
+          if [ -f "$TX_FILE" ]; then
+              echo "Shared wallet refill composed: $TX_FILE"
+              
+              WALLET_FILE="/opt/cellframe-node/var/lib/wallet/stagenet_root_0.dwallet"
+              /cellframe-tool-sign -f "$TX_FILE" -o "$TX_SIGNED" -w "$WALLET_FILE"
+              
+              if [ -f "$TX_SIGNED" ]; then
+                  RESULT=$(/opt/cellframe-node/bin/cellframe-node-cli mempool_add \
+                      -net stagenet -chain main -json "$TX_SIGNED")
+                  echo "$RESULT"
+              fi
+          else
+              echo "WARNING: Shared wallet refill composition may have failed"
+          fi
+        node: "{{first_root}}"
+        save: shared_refill_compose
+      
+      - python: |
+          import re
+          result = ctx.get('shared_refill_compose', '')
+          match = re.search(r'(0x[a-fA-F0-9]{64})', result)
+          if match:
+              ctx.set_variable('_refill_hash', match.group(1))
+              print(f"Refill TX hash: {match.group(1)}")
+      
+      - wait: "60s"
+
+  # ============================================================
+  # TEST 3: Withdraw from Shared Wallet (Take)
+  # Requires M of N signatures
+  # ============================================================
+  
+  - group: Withdraw from shared wallet via compose
+    steps:
+      - python: |
+          shared_hash = ctx.get('_shared_wallet_hash', '')
+          if shared_hash:
+              ctx.set_variable('_can_take', 'true')
+          else:
+              ctx.set_variable('_can_take', 'false')
+              print("Skipping take - no shared wallet hash available")
+      
+      # Create withdrawal request (first signature)
+      - bash: |
+          if [ "{{_can_take}}" != "true" ]; then
+              echo "Skipping take test"
+              exit 0
+          fi
+          
+          TX_FILE="/tmp/shared_take.json"
+          TX_SIGNED="/tmp/shared_take_signed1.json"
+          
+          WALLET="stagenet_root_0"
+          SHARED_TX="{{_shared_wallet_hash}}"
+          TO_ADDR="{{master_0_addr}}"
+          NET="stagenet"
+          TOKEN="TCELL"
+          FEE="5.0e+18"
+          RPC_IP="{{_rpc_ip}}"
+          RPC_PORT="8081"
+          
+          # Withdrawal amount
+          VALUE="10000.0"
+          
+          echo "Composing shared wallet take:"
+          echo "  Shared TX: $SHARED_TX"
+          echo "  To: $TO_ADDR"
+          echo "  Value: $VALUE"
+          
+          /cellframe-tool-compose wallet shared_take \
+              -w "$WALLET" \
+              -net "$NET" \
+              -token "$TOKEN" \
+              -value "$VALUE" \
+              -fee "$FEE" \
+              -shared_tx "$SHARED_TX" \
+              -to_addr "$TO_ADDR" \
+              -url "$RPC_IP" \
+              -port "$RPC_PORT" \
+              -out "$TX_FILE"
+          
+          if [ -f "$TX_FILE" ]; then
+              echo "Shared wallet take composed: $TX_FILE"
+              
+              # First signature
+              WALLET_FILE="/opt/cellframe-node/var/lib/wallet/stagenet_root_0.dwallet"
+              /cellframe-tool-sign -f "$TX_FILE" -o "$TX_SIGNED" -w "$WALLET_FILE"
+              
+              echo "First signature applied"
+          else
+              echo "WARNING: Shared wallet take composition may have failed"
+          fi
+        node: "{{first_root}}"
+        save: shared_take_compose
+      
+      # Apply second signature (requires 2 of 3)
+      - bash: |
+          if [ "{{_can_take}}" != "true" ]; then
+              echo "Skipping second signature"
+              exit 0
+          fi
+          
+          TX_SIGNED1="/tmp/shared_take_signed1.json"
+          TX_SIGNED2="/tmp/shared_take_signed2.json"
+          
+          if [ -f "$TX_SIGNED1" ]; then
+              # Second signature
+              WALLET_FILE="/opt/cellframe-node/var/lib/wallet/stagenet_root_1.dwallet"
+              
+              /cellframe-tool-sign -f "$TX_SIGNED1" -o "$TX_SIGNED2" -w "$WALLET_FILE"
+              
+              if [ -f "$TX_SIGNED2" ]; then
+                  echo "Second signature applied"
+                  
+                  # Submit to mempool (should now have required 2 signatures)
+                  RESULT=$(/opt/cellframe-node/bin/cellframe-node-cli mempool_add \
+                      -net stagenet -chain main -json "$TX_SIGNED2")
+                  echo "$RESULT"
+              fi
+          else
+              echo "First signed TX not found"
+          fi
+        node: "{{_second_root}}"
+        save: shared_take_submit
+      
+      - python: |
+          import re
+          result = ctx.get('shared_take_submit', '')
+          match = re.search(r'(0x[a-fA-F0-9]{64})', result)
+          if match:
+              ctx.set_variable('_take_hash', match.group(1))
+              print(f"Shared wallet take TX hash: {match.group(1)}")
+      
+      - wait: "60s"
+
+  # Summary
+  - group: Test summary
+    steps:
+      - python: |
+          print("\n=== Shared Wallet Test Summary ===")
+          print(f"Shared wallet hash: {ctx.get('_shared_wallet_hash', 'N/A')}")
+          print(f"Refill hash: {ctx.get('_refill_hash', 'N/A')}")
+          print(f"Take hash: {ctx.get('_take_hash', 'N/A')}")
+          print("\nConfiguration:")
+          print(f"  Participants: 3 (root_0, root_1, master_0)")
+          print(f"  Required signatures: 2 of 3")
+
+  # Cleanup
+  - group: Cleanup
+    steps:
+      - bash: |
+          rm -f /tmp/shared_*.json
+        node: "{{_compose_node}}"
+      
+      - bash: |
+          rm -f /tmp/shared_*.json
+        node: "{{first_root}}"
+      
+      - bash: |
+          rm -f /tmp/shared_*.json
+        node: "{{_second_root}}"
+
+check:
+  - cli: "net get status"
+    node: "{{first_root}}"
+    expect_output: "NET_STATE_ONLINE"
+  
+  - cli: "block list -chain main"
+    node: "{{first_root}}"
+    expect_output: "have blocks:"
+

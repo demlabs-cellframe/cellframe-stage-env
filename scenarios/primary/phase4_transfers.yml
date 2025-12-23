@@ -1,0 +1,240 @@
+name: PRIMARY PHASE 4 - Transfers and Batch Transactions
+description: Test regular transfers and batch transactions with time locks
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: stagenet
+
+# This scenario tests:
+# - Regular token transfers between wallets
+# - Batch transactions with time-locked outputs
+
+setup:
+  - python: |
+      root_nodes = ctx.get('root_nodes')
+      master_nodes = ctx.get('master_nodes')
+      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
+  
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 60
+
+test:
+  # Get wallet addresses for transfers
+  - group: Get wallet addresses
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - cli: "wallet info -w stagenet_root_0"
+        save_wallet: root_0_addr
+      
+      - python: |
+          root_count = ctx.get('root_count')
+          if root_count >= 2:
+              ctx.set_variable('_second_root_node', f"node-2")
+      
+      - cli: "wallet info -w stagenet_root_1"
+        node: "{{_second_root_node}}"
+        save_wallet: root_1_addr
+      
+      - python: |
+          root_count = ctx.get('root_count')
+          ctx.set_variable('_master_node', f"node-{root_count + 1}")
+      
+      - cli: "wallet info -w stagenet_master_0"
+        node: "{{_master_node}}"
+        save_wallet: master_0_addr
+      
+      - python: |
+          root_count = ctx.get('root_count')
+          master_count = ctx.get('master_count')
+          ctx.set_variable('_full_node', f"node-{root_count + master_count + 1}")
+      
+      - cli: "wallet info -w stagenet_full_0"
+        node: "{{_full_node}}"
+        save_wallet: full_0_addr
+
+  # ============================================================
+  # TEST 1: Regular Token Transfer
+  # Simple transfer from root wallet to another wallet
+  # ============================================================
+  
+  - group: Regular transfer test
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "main"
+        token: "TCELL"
+    steps:
+      # Get initial balance
+      - cli: "wallet info -w stagenet_root_1"
+        node: "{{_second_root_node}}"
+        save: initial_balance_root_1
+      
+      # Transfer tokens
+      - cli: "tx_create -from_wallet stagenet_root_0 -value 1000.0e+18 -to_addr {{root_1_addr}} -fee 5.0e+18"
+        save_hash: regular_transfer_hash
+      
+      - wait: "60s"
+      
+      # Verify transfer in ledger
+      - cli: "ledger info -hash {{regular_transfer_hash}}"
+        contains: "datum_tx_hash"
+      
+      # Check transaction history
+      - cli: "tx_history -addr {{root_1_addr}}"
+        contains: "ACCEPTED"
+      
+      # Verify balance changed
+      - cli: "wallet info -w stagenet_root_1"
+        node: "{{_second_root_node}}"
+        save: final_balance_root_1
+
+  # ============================================================
+  # TEST 2: Multiple Transfers in Sequence
+  # Tests transaction throughput
+  # ============================================================
+  
+  - group: Multiple transfers test
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "main"
+        token: "TCELL"
+    steps:
+      # Transfer 1
+      - cli: "tx_create -from_wallet stagenet_root_0 -value 100.0e+18 -to_addr {{master_0_addr}} -fee 5.0e+18"
+        save_hash: multi_transfer_1
+      
+      - wait: "30s"
+      
+      # Transfer 2
+      - cli: "tx_create -from_wallet stagenet_root_0 -value 200.0e+18 -to_addr {{master_0_addr}} -fee 5.0e+18"
+        save_hash: multi_transfer_2
+      
+      - wait: "30s"
+      
+      # Transfer 3
+      - cli: "tx_create -from_wallet stagenet_root_0 -value 300.0e+18 -to_addr {{master_0_addr}} -fee 5.0e+18"
+        save_hash: multi_transfer_3
+      
+      - wait: "60s"
+      
+      # Verify all transfers
+      - cli: "tx_history -addr {{master_0_addr}}"
+        save: master_tx_history
+
+  # ============================================================
+  # TEST 3: Batch Transaction with Time Locks
+  # Single transaction with multiple outputs locked until specific times
+  # ============================================================
+  
+  - group: Batch transaction with time locks
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "main"
+        token: "TCELL"
+    steps:
+      # Create batch of addresses for multiple outputs
+      - python: |
+          # Full node address will receive 3 locked outputs
+          full_addr = ctx.get('full_0_addr')
+          # Create comma-separated list of same address (3 outputs to same recipient)
+          addr_list = f"{full_addr},{full_addr},{full_addr}"
+          ctx.set_variable('_batch_addrs', addr_list)
+          
+          # Amount for each output
+          ctx.set_variable('_batch_amounts', "1.0e+18,2.0e+18,3.0e+18")
+          
+          # Lock times (YYMMDD format) - 3 different unlock dates
+          ctx.set_variable('_batch_locks', "300101,310202,320303")
+          
+          print(f"Batch addresses: {addr_list}")
+          print(f"Batch amounts: 1.0e+18, 2.0e+18, 3.0e+18")
+          print(f"Lock times: 2030-01-01, 2031-02-02, 2032-03-03")
+      
+      # Create batch transaction with time-locked outputs
+      - cli: "tx_create -from_wallet stagenet_root_0 -value {{_batch_amounts}} -to_addr {{_batch_addrs}} -fee 5.0e+18 -lock_before {{_batch_locks}}"
+        save_hash: batch_tx_hash
+      
+      - wait: "60s"
+      
+      # Verify batch transaction in ledger
+      - cli: "ledger info -hash {{batch_tx_hash}}"
+        contains: "datum_tx_hash"
+      
+      # Check transaction details
+      - cli: "tx_history -addr {{full_0_addr}}"
+        save: full_tx_history
+
+  # ============================================================
+  # TEST 4: Transfer to Multiple Recipients
+  # Single transaction to different addresses
+  # ============================================================
+  
+  - group: Multi-recipient transfer
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "main"
+        token: "TCELL"
+    steps:
+      - python: |
+          root_1 = ctx.get('root_1_addr')
+          master_0 = ctx.get('master_0_addr')
+          full_0 = ctx.get('full_0_addr')
+          
+          # Multiple different recipients
+          addrs = f"{root_1},{master_0},{full_0}"
+          ctx.set_variable('_multi_addrs', addrs)
+          ctx.set_variable('_multi_amounts', "10.0e+18,20.0e+18,30.0e+18")
+      
+      - cli: "tx_create -from_wallet stagenet_root_0 -value {{_multi_amounts}} -to_addr {{_multi_addrs}} -fee 5.0e+18"
+        save_hash: multi_recipient_tx_hash
+      
+      - wait: "60s"
+      
+      # Verify transaction
+      - cli: "ledger info -hash {{multi_recipient_tx_hash}}"
+        contains: "datum_tx_hash"
+
+  # Final balance verification
+  - group: Verify final balances
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - cli: "wallet info -w stagenet_root_0"
+        save: final_root_0_balance
+      
+      - cli: "wallet info -w stagenet_root_1"
+        node: "{{_second_root_node}}"
+        save: final_root_1_balance
+      
+      - cli: "wallet info -w stagenet_master_0"
+        node: "{{_master_node}}"
+        save: final_master_0_balance
+      
+      - cli: "wallet info -w stagenet_full_0"
+        node: "{{_full_node}}"
+        save: final_full_0_balance
+
+check:
+  # Verify all transactions were processed
+  - cli: "block list -chain main"
+    node: "{{first_root}}"
+    expect_output: "have blocks:"
+  
+  # Verify transaction count increased
+  - cli: "tx_history -count"
+    node: "{{first_root}}"
+    not_contains: "0 transaction"
+  
+  # Network should be operational
+  - cli: "net get status"
+    node: "{{first_root}}"
+    expect_output: "NET_STATE_ONLINE"
+
