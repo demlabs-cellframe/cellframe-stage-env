@@ -77,6 +77,10 @@ class RuntimeContext:
         if name not in self.variables:
             raise ScenarioExecutionError(f"Undefined variable: {name}")
         return self.variables[name]
+    
+    def get(self, name: str, default: Any = None) -> Any:
+        """Get runtime variable with optional default (dict-like interface)."""
+        return self.variables.get(name, default)
 
     def __getattr__(self, name: str) -> Any:
         """Allow accessing variables as attributes."""
@@ -252,7 +256,7 @@ class ScenarioExecutor:
                 if index_str.isdigit():
                     index = int(index_str)
                     
-                    # Need to resolve from topology
+                    # Try to resolve from topology mapping first
                     if self._node_role_mapping:
                         role_nodes = [
                             node_id for node_id, node_role in self._node_role_mapping.items()
@@ -260,6 +264,18 @@ class ScenarioExecutor:
                         ]
                         if role_nodes and 1 <= index <= len(role_nodes):
                             return role_nodes[index - 1]  # 1-indexed
+                    
+                    # Fallback: hardcoded mapping based on default topology
+                    # Default: 3 root, 3 master, N full nodes
+                    # root-1 -> node1, root-2 -> node2, root-3 -> node3
+                    # master-1 -> node4, master-2 -> node5, master-3 -> node6
+                    # full-1 -> node7, full-2 -> node8, etc.
+                    if role == "root":
+                        return f"node{index}"
+                    elif role == "master":
+                        return f"node{index + 3}"  # master-1 -> node4
+                    elif role == "full":
+                        return f"node{index + 6}"  # full-1 -> node7
         
         # Fallback: return as-is (will fail later if invalid)
         return node_alias
@@ -418,6 +434,24 @@ class ScenarioExecutor:
             for key, value in initial_variables.items():
                 ctx.set_variable(key, value)
         
+        # CRITICAL: Pre-inject static node lists BEFORE setup phase
+        # These variables (all_nodes, root_nodes, etc.) are needed by docker_op: start
+        # IPs will be refreshed AFTER containers are running
+        if global_context and node_configs:
+            # Set counts and static IPs from topology
+            global_context.set_static_node_info(node_configs)
+            
+            # Inject all static variables (node lists, counts, static IPs)
+            static_vars = global_context.to_dict()
+            for key, value in static_vars.items():
+                ctx.set_variable(key, value)
+            
+            logger.info("static_context_pre_injected",
+                       all_nodes_count=len(static_vars.get('all_nodes', [])),
+                       root_count=global_context.root_count,
+                       master_count=global_context.master_count,
+                       static_ips=len(static_vars.get('node_ip', {})))
+        
         self._running = True
         
         try:
@@ -439,24 +473,23 @@ class ScenarioExecutor:
                 # CRITICAL: After setup phase, collect node IPs into global context
                 # Setup phase typically starts containers, so IPs should now be available
                 if self._global_context and self._node_configs:
-                    logger.info("collecting_global_context_after_setup", 
+                    logger.info("collecting_node_ips_after_setup", 
                                nodes=len(self._node_configs))
                     try:
                         self._global_context.collect_node_ips(self._node_configs, wait_for_ips=True)
                         
-                        # Inject global variables into scenario context
+                        # Re-inject global variables with IPs now available
                         global_vars = self._global_context.to_dict()
                         for key, value in global_vars.items():
                             ctx.set_variable(key, value)
                         
-                        logger.info("global_context_injected_into_scenario",
-                                   variables=list(global_vars.keys()),
+                        logger.info("global_context_with_ips_injected",
                                    node_count=self._global_context.node_count,
-                                   node_ip_map=self._global_context._node_ip_map)
+                                   node_ip_count=len(self._global_context._node_ip_map))
                     except Exception as e:
-                        logger.warning("failed_to_collect_global_context", 
+                        logger.warning("failed_to_collect_node_ips", 
                                      error=str(e),
-                                     note="Continuing without global context")
+                                     note="Continuing without node IPs")
             
             # Initialize CLI parser after setup (containers should be running now)
             # This ensures CLI defaults can be applied to commands in test phase

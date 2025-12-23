@@ -43,9 +43,14 @@ class NetworkTopology(BaseModel):
     class Consensus(BaseModel):
         type: str
         min_validators: int = Field(ge=1)
-        new_round_delay: int = Field(ge=1)
-        collecting_level: float = Field(ge=0.0, le=100.0)
-        auth_certs_prefix: str
+        new_round_delay: int = Field(ge=1, default=30)
+        collecting_level: float = Field(ge=0.0, le=100.0, default=10.0)
+        auth_certs_prefix: str = "stagenet.master"
+        # Additional ESBocs timing parameters
+        round_start_sync_timeout: int = Field(ge=1, default=5)
+        round_attempts_max: int = Field(ge=1, default=2)
+        round_attempt_timeout: int = Field(ge=1, default=5)
+        consensus_debug: bool = Field(default=True)
     
     class Balancer(BaseModel):
         enabled: bool = False
@@ -627,6 +632,12 @@ class ConfigLoader:
         """
         Load node_source configuration from stage-env.cfg.
         
+        Source types:
+            - url: Download .deb from URL (default)
+            - local: Use specific .deb from local_path
+            - build: Auto-detect .deb from project's test_build/ directory
+            - repository: Build from git inside container
+        
         Returns:
             Dict with node_source configuration (type, url, local_path, etc.)
         """
@@ -639,6 +650,7 @@ class ConfigLoader:
             'build_type': 'debug',
             'checksum': None,
             'headers': None,
+            'build_dir': None,  # For type=build: path to test_build/
         }
         
         config_file = self.custom_config_path or (self.config_dir / "stage-env.cfg")
@@ -669,7 +681,74 @@ class ConfigLoader:
                 node_source['checksum'] = config.get('node_source', 'checksum')
             if config.has_option('node_source', 'headers'):
                 node_source['headers'] = config.get('node_source', 'headers')
+            if config.has_option('node_source', 'build_dir'):
+                node_source['build_dir'] = config.get('node_source', 'build_dir')
+        
+        # Handle type=build: auto-detect .deb from project's test_build/
+        if node_source['type'] == 'build':
+            node_source = self._resolve_build_source(node_source)
         
         logger.debug("node_source_config_loaded", **node_source)
+        return node_source
+    
+    def _resolve_build_source(self, node_source: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Resolve type=build to find the latest .deb in test_build/ directory.
+        
+        Searches in order:
+        1. Explicit build_dir from config
+        2. ../test_build/ (relative to stage-env)
+        3. ../../test_build/ (if stage-env is in tests/)
+        """
+        from pathlib import Path
+        import glob
+        
+        build_dir = None
+        
+        # Try explicit build_dir
+        if node_source.get('build_dir'):
+            build_dir = Path(node_source['build_dir']).expanduser().resolve()
+        
+        # Try relative paths from stage-env directory
+        if not build_dir or not build_dir.exists():
+            # stage-env is typically in cellframe-node/tests/stage-env/
+            # test_build is in cellframe-node/test_build/
+            candidates = [
+                self.config_dir.parent.parent / "test_build",  # ../../test_build
+                self.config_dir.parent / "test_build",          # ../test_build
+                Path.cwd() / "test_build",                      # ./test_build
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    build_dir = candidate.resolve()
+                    break
+        
+        if not build_dir or not build_dir.exists():
+            logger.warning("build_dir_not_found", 
+                          msg="type=build specified but test_build/ not found. Falling back to url.")
+            node_source['type'] = 'url'
+            return node_source
+        
+        # Find latest .deb file
+        deb_files = list(build_dir.glob("cellframe-node-*.deb"))
+        if not deb_files:
+            logger.warning("no_deb_in_build_dir", 
+                          build_dir=str(build_dir),
+                          msg="No .deb files found. Falling back to url.")
+            node_source['type'] = 'url'
+            return node_source
+        
+        # Sort by modification time, get the latest
+        latest_deb = max(deb_files, key=lambda p: p.stat().st_mtime)
+        
+        # Convert to 'local' type with auto-detected path
+        node_source['type'] = 'local'
+        node_source['local_path'] = str(latest_deb)
+        node_source['build_dir'] = str(build_dir)
+        
+        logger.info("build_source_resolved", 
+                   deb_file=latest_deb.name, 
+                   build_dir=str(build_dir))
+        
         return node_source
 

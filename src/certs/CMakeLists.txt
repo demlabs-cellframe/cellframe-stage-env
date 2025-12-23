@@ -1,15 +1,14 @@
 # Certificate Tools for Cellframe Node E2E Testing
+# Minimal build - only crypto dependencies, no network stack
 cmake_minimum_required(VERSION 3.10)
 project(CellframeCertTools C)
 
 # Allow overriding paths via command-line (for Docker builds)
 if(NOT DEFINED CELLFRAME_SDK_BUILD)
-    # Default: relative path from tests/stage-env/src/certs
     set(CELLFRAME_SDK_BUILD "${CMAKE_CURRENT_SOURCE_DIR}/../../../../cellframe-sdk/build")
 endif()
 
 if(NOT DEFINED CELLFRAME_SDK_SRC)
-    # Default: relative path from tests/stage-env/src/certs
     set(CELLFRAME_SDK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../cellframe-sdk")
 endif()
 
@@ -19,7 +18,7 @@ message(STATUS "Cellframe SDK Build: ${CELLFRAME_SDK_BUILD}")
 message(STATUS "Cellframe SDK Source: ${CELLFRAME_SDK_SRC}")
 message(STATUS "DAP SDK Source: ${DAP_SDK_SRC}")
 
-# Detect target architecture (same way as DAP SDK does)
+# Detect target architecture
 include(${DAP_SDK_SRC}/cmake/TargetArch_Detection.cmake)
 target_architecture(TARGET_ARCH)
 
@@ -35,7 +34,7 @@ else()
     message(WARNING "Unknown architecture ${TARGET_ARCH}, using reference XKCP implementation")
 endif()
 
-# Check if compiler supports -march=native
+# Check for -march=native support
 include(CheckCCompilerFlag)
 CHECK_C_COMPILER_FLAG(-march=native COMPILER_SUPPORTS_MARCH_NATIVE)
 if(COMPILER_SUPPORTS_MARCH_NATIVE)
@@ -51,11 +50,16 @@ set(XKCP_BUILD_INCLUDES "${XKCP_BUILD_DIR}/bin/${XKCP_TARGET}.headers")
 
 message(STATUS "Target architecture: ${TARGET_ARCH}")
 message(STATUS "XKCP target: ${XKCP_TARGET}")
-message(STATUS "XKCP headers: ${XKCP_BUILD_INCLUDES}")
 
-# Include directories
+# Include directories - MINIMAL set for crypto only
 include_directories(
+    # Core
     ${DAP_SDK_SRC}/core/include
+    ${DAP_SDK_SRC}/core/src
+    ${DAP_SDK_SRC}/core/src/unix
+    ${CELLFRAME_SDK_BUILD}/dap-sdk/core
+    
+    # Crypto (full post-quantum support)
     ${DAP_SDK_SRC}/crypto/include
     ${DAP_SDK_SRC}/crypto/include/liboqs
     ${DAP_SDK_SRC}/crypto/include/oqs
@@ -65,77 +69,54 @@ include_directories(
     ${DAP_SDK_SRC}/crypto/include/sig_falcon
     ${DAP_SDK_SRC}/crypto/include/seed
     ${XKCP_BUILD_INCLUDES}
+    
+    # 3rdparty
     ${DAP_SDK_SRC}/3rdparty/uthash/src
     ${CELLFRAME_SDK_BUILD}/dap-sdk/core/json-c
     ${DAP_SDK_SRC}/3rdparty/json-c
-    ${CELLFRAME_SDK_SRC}/modules/common/include
-    ${DAP_SDK_SRC}/net/stream/stream/include
-    ${DAP_SDK_SRC}/net/stream/session/include
-    ${DAP_SDK_SRC}/net/stream/ch/include
-    ${DAP_SDK_SRC}/net/server/http_server/include
-    ${DAP_SDK_SRC}/net/server/http_server/http_client/include
-    ${DAP_SDK_SRC}/net/server/notify_server/include
-    ${DAP_SDK_SRC}/net/server/enc_server/include
-    ${DAP_SDK_SRC}/net/server/json_rpc/include
-    ${DAP_SDK_SRC}/net/client/include
-    ${DAP_SDK_SRC}/net/common/http/include
-    ${DAP_SDK_SRC}/net/common/include
+    
+    # I/O (for basic types)
     ${DAP_SDK_SRC}/io/include
-    ${DAP_SDK_SRC}/core/src
-    ${DAP_SDK_SRC}/core/src/unix
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/core
+    
+    # Chain common (for dap_chain_addr_t)
+    ${CELLFRAME_SDK_SRC}/modules/common/include
 )
 
-# Add necessary definitions
+# Definitions
 add_definitions(-DDAP_OS_UNIX -DDAP_OS_LINUX)
 
-# Link directories
+# Link directories - minimal
 link_directories(
     ${CELLFRAME_SDK_BUILD}/dap-sdk/crypto
     ${CELLFRAME_SDK_BUILD}/dap-sdk/core
     ${CELLFRAME_SDK_BUILD}/dap-sdk/core/json-c
     ${CELLFRAME_SDK_BUILD}/modules/common
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/net/stream/stream
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/net/stream/ch
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/net/stream/session
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/net/link_manager
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/net/server/http_server
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/net/server/enc_server
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/net/client
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/net/common/http
     ${CELLFRAME_SDK_BUILD}/dap-sdk/io
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/global-db
 )
 
-# Build cf-cert-generator - multi-node certificate batch generator
+# === cf-cert-generator ===
 add_executable(cf-cert-generator cert-generator.c)
 
 target_link_libraries(cf-cert-generator
-    # Chain layer
+    # Chain common (for address types)
     dap_chain_common
-    # Network layer (order matters - dependencies first)
-    dap_stream
-    dap_stream_ch
-    dap_session
-    dap_link_manager
-    dap_http_server
-    dap_http_common
-    dap_enc_server
-    dap_client
-    dap_global_db
+    # I/O
     dap_io
-    # Core crypto
+    # Crypto (full post-quantum)
     dap_crypto
+    # Core
     dap_core
     dap_json-c
+    # XKCP (hashing)
     ${XKCP_BUILD_DIR}/bin/${XKCP_TARGET}
+    # Kyber (post-quantum KEM)
     ${CELLFRAME_SDK_BUILD}/dap-sdk/crypto/src/Kyber/crypto_kem/kyber512/optimized/libdap_crypto_kyber512.a
-    # System libraries
+    # System
     pthread
     m
 )
 
-# Build dap-cert - single certificate management utility
+# === dap-cert (simple utility) ===
 add_executable(dap-cert dap-cert.c)
 
 target_link_libraries(dap-cert

@@ -70,6 +70,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             print_info("\n🚀 Starting test network...")
             config_path = get_config_path()
             network_mgr = NetworkManager(base_path, topology_name="default", config_path=config_path)
+            # Pass keep_running flag to prevent network shutdown on errors
+            network_mgr.keep_running = not stop_after
             
             async def _start_network():
                 await network_mgr.start(rebuild=False, wait_ready=True)
@@ -106,6 +108,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             print_info("🔗 Connecting to running network...")
             config_path = get_config_path()
             network_mgr = NetworkManager(base_path, topology_name="default", config_path=config_path)
+            # Pass keep_running flag to prevent network shutdown on errors
+            network_mgr.keep_running = not stop_after
             
             # Still need to initialize CLI parser
             print_info("📖 Initializing CLI parser from running network...")

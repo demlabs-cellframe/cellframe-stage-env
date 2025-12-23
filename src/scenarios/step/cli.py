@@ -185,6 +185,27 @@ class CLIStepExecutor(StepExecutor):
             ctx.set_variable(variable_name, output.strip())
             logger.debug("cli_step_saved", variable=variable_name)
         
+        # Check contains/not_contains assertions
+        if step.contains:
+            expected_text = ctx.substitute(step.contains)
+            if expected_text not in output:
+                raise ScenarioExecutionError(
+                    f"Output does not contain expected text: '{expected_text}'",
+                    step=cmd[:100],
+                    context={"output": output[:500], "expected": expected_text}
+                )
+            logger.debug("cli_step_contains_passed", expected=expected_text)
+        
+        if step.not_contains:
+            unexpected_text = ctx.substitute(step.not_contains)
+            if unexpected_text in output:
+                raise ScenarioExecutionError(
+                    f"Output contains unexpected text: '{unexpected_text}'",
+                    step=cmd[:100],
+                    context={"output": output[:500], "unexpected": unexpected_text}
+                )
+            logger.debug("cli_step_not_contains_passed", unexpected=unexpected_text)
+        
         # Record success result
         ctx.add_result("CLI", True, {
             "command": cmd,

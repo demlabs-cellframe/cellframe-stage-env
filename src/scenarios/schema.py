@@ -187,6 +187,7 @@ class CLIStep(BaseModel):
     wait: Optional[str] = Field(None, description="Wait duration after command (e.g., '5s')")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     contains: Optional[str] = Field(None, description="Expected substring in output")
+    not_contains: Optional[str] = Field(None, description="Unexpected substring (fails if found)")
     timeout: Optional[int] = Field(30, description="Command timeout in seconds")
     
     def get_extraction_info(self) -> List[str]:
@@ -234,16 +235,22 @@ class WaitStep(BaseModel):
       - wait: mempool           # Wait for datum in mempool
       - wait: finalized         # Wait for datum finalization (DAG/Block/None)
       - wait: network_online    # Wait for network state
+      - wait: wallet_balance    # Wait for wallet balance condition
     """
     wait: str = Field(..., description="Duration (e.g., '5s') or condition ('mempool', 'finalized', ...)")
     
     # Context parameters
     datum: Optional[str] = Field(None, description="Datum hash (for mempool/finalized)")
     node: Optional[str] = Field(None, description="Target node")
-    nodes: Optional[List[str]] = Field(None, description="Target nodes list")
+    nodes: Optional[Union[str, List[str]]] = Field(None, description="Target nodes list (can be template like '{{all_nodes}}')")
     network: Optional[str] = Field(None, description="Network name")
     chain: Optional[str] = Field(None, description="Chain name")
     timeout: int = Field(60, description="Timeout in seconds")
+    
+    # Wallet balance parameters
+    wallet: Optional[str] = Field(None, description="Wallet name (for wallet_balance)")
+    token: Optional[str] = Field(None, description="Token ticker (for wallet_balance)")
+    balance: Optional[str] = Field(None, description="Balance condition e.g. '> 1000' (for wallet_balance)")
     
     # Advanced options
     check_master: bool = Field(True, description="Check master nodes (for finalized)")
@@ -259,10 +266,10 @@ class PythonStep(BaseModel):
 class BashStep(BaseModel):
     """Execute Bash script."""
     bash: str = Field(..., description="Bash script to execute")
-    node: str = Field("node1", description="Node to execute on")
+    node: Optional[str] = Field(None, description="Node to execute on (None = execute on host)")
     save: Optional[str] = Field(None, description="Variable name to save result to")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
-    timeout: Optional[int] = Field(30, description="Script timeout in seconds")
+    timeout: Optional[int] = Field(300, description="Script timeout in seconds")
     
     class Config:
         use_enum_values = True
@@ -304,7 +311,7 @@ class WaitForDatumStep(BaseModel):
 class NetworkWaitStep(BaseModel):
     """Wait for network state (online, offline, links_connecting, links_established, sync_complete)."""
     wait_network: str = Field(..., description="Network state to wait for: 'online', 'offline', 'links_connecting', 'links_established', 'sync_complete'")
-    nodes: List[str] = Field(default_factory=lambda: ["root-1", "root-2", "root-3"], description="Nodes to check")
+    nodes: Union[str, List[str]] = Field(default_factory=lambda: ["root-1", "root-2", "root-3"], description="Nodes to check (can be template like '{{all_nodes}}')")
     timeout: int = Field(120, description="Timeout in seconds")
     network: str = Field("stagenet", description="Network name")
     chain: Optional[str] = Field(None, description="Chain name (optional)")
@@ -313,7 +320,7 @@ class NetworkWaitStep(BaseModel):
 class DockerOpStep(BaseModel):
     """Execute Docker operations (start, stop, restart, logs, exec)."""
     docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'logs', 'exec'")
-    services: List[str] = Field(..., description="Docker services to operate on")
+    services: Union[str, List[str]] = Field(..., description="Docker services to operate on (can be template like '{{all_nodes}}')")
     command: Optional[str] = Field(None, description="Command for 'exec' operation")
     detach: bool = Field(True, description="Run in detached mode (for start/restart)")
     wait_for_ip: bool = Field(True, description="Wait for containers to receive IP addresses (for start)")
@@ -325,7 +332,7 @@ class SnapshotStep(BaseModel):
     snapshot: str = Field(..., description="Snapshot operation: 'create', 'restore', 'verify'")
     name: str = Field(..., description="Snapshot name")
     phase: str = Field("full", description="Snapshot phase: 'phase1', 'full'")
-    nodes: Optional[List[str]] = Field(None, description="Nodes to include in snapshot (for create)")
+    nodes: Optional[Union[str, List[str]]] = Field(None, description="Nodes to include in snapshot (can be template like '{{all_nodes}}')")
 
 
 # ============================================================================

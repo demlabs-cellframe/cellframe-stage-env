@@ -2,6 +2,7 @@
 Bash script step executor.
 """
 
+import asyncio
 from typing import Any, Dict
 
 from ...utils.logger import get_logger
@@ -20,12 +21,18 @@ class BashStepExecutor(StepExecutor):
         # Substitute variables in bash script
         script = ctx.substitute(step.bash)
         
-        # Execute via container manager
-        result = await self.container_manager.exec_bash_command(
-            script=script,
-            node=step.node,
-            timeout=step.timeout
-        )
+        # If node is specified, execute in container; otherwise execute on host
+        if step.node:
+            # Execute in container via container manager
+            result = await self.container_manager.exec_bash_command(
+                script=script,
+                node=step.node,
+                timeout=step.timeout
+            )
+        else:
+            # Execute on HOST (not in container) - for docker commands etc.
+            logger.info("executing_bash_on_host", script_preview=script[:100])
+            result = await self._exec_on_host(script, step.timeout)
         
         # Save result if requested
         if step.save:
@@ -47,4 +54,35 @@ class BashStepExecutor(StepExecutor):
             )
         
         return result
+    
+    async def _exec_on_host(self, script: str, timeout: int = 300) -> Dict[str, Any]:
+        """Execute bash script on host machine (not in container)."""
+        process = await asyncio.create_subprocess_shell(
+            script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            shell=True
+        )
+        
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout
+            )
+            
+            result = {
+                "stdout": stdout.decode('utf-8', errors='replace'),
+                "stderr": stderr.decode('utf-8', errors='replace'),
+                "returncode": process.returncode
+            }
+            
+            logger.info("bash_host_execution_completed",
+                       returncode=result["returncode"],
+                       stdout_preview=result["stdout"][:200] if result["stdout"] else "")
+            
+            return result
+        except asyncio.TimeoutError:
+            process.kill()
+            logger.error("bash_host_execution_timeout", timeout=timeout)
+            raise
 

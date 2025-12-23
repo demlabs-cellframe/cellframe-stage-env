@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 *.log
 .stage-env.pid
+docker-compose.generated.yml

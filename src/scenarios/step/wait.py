@@ -1,5 +1,7 @@
 """
 Wait step executor.
+
+Thin dispatcher layer that delegates to monitoring/dispatcher.py for all waiter logic.
 """
 
 import asyncio
@@ -14,12 +16,27 @@ from ..executor import ScenarioExecutionError, RuntimeContext
 logger = get_logger(__name__)
 
 
-from ...monitoring.unified.wait_registry import WaitRegistry
-from ...monitoring import MonitoringManager
-from ..schema import DatumStatus
-
 class WaitStepExecutor(StepExecutor):
-    """Executor for wait steps - supports both duration and waiter types."""
+    """
+    Executor for wait steps - supports both duration and waiter types.
+    
+    This is a thin dispatcher layer. All waiter logic is in monitoring/dispatcher.py.
+    """
+    
+    def _expand_nodes_list(self, nodes, ctx) -> list:
+        """Expand nodes that can be a template string or list."""
+        if isinstance(nodes, str):
+            # Template string like "{{all_nodes}}" - substitute and parse
+            expanded = ctx.substitute(nodes)
+            if expanded.startswith('[') and expanded.endswith(']'):
+                import ast
+                try:
+                    return ast.literal_eval(expanded)
+                except (ValueError, SyntaxError):
+                    return [expanded]
+            else:
+                return [s.strip() for s in expanded.split(',') if s.strip()]
+        return list(nodes)
     
     def __init__(
         self,
@@ -48,12 +65,36 @@ class WaitStepExecutor(StepExecutor):
         self.resolve_node_alias_callback = resolve_node_alias_callback
         self.get_node_config_callback = get_node_config_callback
         self.create_exec_cli_callback = create_exec_cli_callback
+        
+        # Lazy-initialized dispatcher
+        self._dispatcher = None
+    
+    def _get_dispatcher(self):
+        """Get or create waiter dispatcher."""
+        if self._dispatcher is None:
+            from ...monitoring.dispatcher import WaiterDispatcher
+            self._dispatcher = WaiterDispatcher(
+                exec_cli_callback=self.create_exec_cli_callback,
+                get_node_config_callback=self._wrap_get_node_config,
+                docker_client=self.container_manager.docker_client if self.container_manager else None,
+                node_cli_path=self.node_cli_path,
+                log_file=self.log_file
+            )
+        return self._dispatcher
+    
+    def _wrap_get_node_config(self, node_name: str):
+        """Wrap get_node_config to resolve aliases first."""
+        if self.resolve_node_alias_callback:
+            resolved = self.resolve_node_alias_callback(node_name)
+            if self.get_node_config_callback:
+                return self.get_node_config_callback(resolved)
+        if self.get_node_config_callback:
+            return self.get_node_config_callback(node_name)
+        return None
     
     async def execute(self, step: WaitStep, ctx: RuntimeContext) -> None:
         """Execute wait step."""
         try:
-            # Determine wait type
-            # (WaitStep supports both duration and condition)
             wait_value = ctx.substitute(step.wait) if step.wait else None
             
             # Check if wait value is a duration (e.g., '5s')
@@ -62,7 +103,6 @@ class WaitStepExecutor(StepExecutor):
             if is_duration:
                 await self._execute_duration(step, ctx)
             elif wait_value or (hasattr(step, 'type') and step.type):
-                # It's a condition/waiter type
                 await self._execute_waiter(step, ctx)
             else:
                 raise ScenarioExecutionError("WaitStep requires 'wait' (duration or condition)", step=step)
@@ -75,7 +115,6 @@ class WaitStepExecutor(StepExecutor):
         """Execute duration-based wait."""
         duration_str = ctx.substitute(step.wait)
         
-        # Parse duration (e.g., '5s', '100ms', '2m')
         match = re.match(r'(\d+)(s|ms|m)', duration_str)
         if not match:
             raise ScenarioExecutionError(f"Invalid duration format: {duration_str}")
@@ -95,124 +134,22 @@ class WaitStepExecutor(StepExecutor):
         logger.info(f"Waiting {duration_str} ({seconds}s)")
         await asyncio.sleep(seconds)
     
-    async def _execute_datum_mempool_waiter(self, step: WaitStep, ctx: RuntimeContext) -> None:
-        """Execute datum_in_mempool waiter."""
-        # Check required params
-        # We can use 'datum' field or try to find it in other fields if needed
-        datum_hash = ctx.substitute(step.datum) if step.datum else None
-        if not datum_hash:
-            raise ScenarioExecutionError("wait: mempool requires 'datum' parameter", step=step)
-            
-        # Check node
-        nodes = step.nodes or ([step.node] if step.node else [])
-        if not nodes:
-            raise ScenarioExecutionError("wait: mempool requires 'node' or 'nodes' parameter", step=step)
-            
-        node_alias = ctx.substitute(nodes[0]) # Use first node
-        resolved_node = self.resolve_node_alias_callback(node_alias)
-        
-        # Extract node ID from various formats: node-N, root-N, master-N, full-N
-        import re
-        match = re.search(r'(?:node|root|master|full)-(\d+)', resolved_node)
-        if not match:
-            raise ValueError(f"Could not extract node ID from resolved name: {resolved_node}")
-        node_id = int(match.group(1))
-        
-        network = ctx.substitute(step.network) if step.network else ctx.get_variable('network_name')
-        chain = ctx.substitute(step.chain) if step.chain else "zerochain"
-        
-        exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
-        if not exec_cli_func:
-            raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
-            
-        from ...monitoring.waiter.datum_waiters import DatumInMempoolWaiter
-        
-        waiter = DatumInMempoolWaiter(
-            exec_cli=exec_cli_func,
-            node_id=node_id,
-            datum_hash=datum_hash,
-            network_name=network,
-            chain=chain,
-            poll_interval=0.5
-        )
-        
-        await waiter.wait(timeout=float(step.timeout))
-        
-        logger.info(f"✅ Datum {datum_hash} found in mempool")
-        ctx.add_result("wait_in_mempool", True, {
-            "hash": datum_hash,
-            "node": node_alias
-        })
-
-    async def _execute_datum_finalized_waiter(self, step: WaitStep, ctx: RuntimeContext) -> None:
-        """Execute datum_finalized waiter (wait for full processing)."""
-        datum_hash = ctx.substitute(step.datum) if step.datum else None
-        if not datum_hash:
-            raise ScenarioExecutionError("wait: finalized requires 'datum' parameter", step=step)
-            
-        node = ctx.substitute(step.node) if step.node else "node1"
-        network = ctx.substitute(step.network) if step.network else "stagenet"
-        chain = ctx.substitute(step.chain) if step.chain else "main"
-        
-        logger.info(f"Waiting for datum {datum_hash[:16]}... to be finalized")
-        
-        # Get monitoring manager singleton
-        monitoring = MonitoringManager.get_instance(
-            node_cli_path=self.node_cli_path,
-            log_file=self.log_file
-        )
-        
-        # Monitor datum
-        result = await monitoring.datum.wait_for_datum(
-            datum_hash=datum_hash,
-            node=node,
-            network=network,
-            chain=chain,
-            check_master_nodes=step.check_master,
-            timeout_total=step.timeout,
-            # Use reasonable defaults relative to total timeout or fixed defaults
-            timeout_mempool=max(60, int(step.timeout * 0.4)),
-            timeout_verification=max(60, int(step.timeout * 0.4)),
-            timeout_in_blocks=max(60, int(step.timeout * 0.4))
-        )
-        
-        if result.status != DatumStatus.SUCCESS:
-             error_msg = f"Datum finalization failed: {result.error_message}"
-             logger.error(error_msg)
-             raise ScenarioExecutionError(
-                error_msg,
-                step=step,
-                context={
-                    "datum_hash": datum_hash,
-                    "status": result.status.value,
-                    "elapsed_time": result.elapsed_time,
-                    "details": result.details
-                }
-            )
-            
-        logger.info(f"✅ Datum {datum_hash[:16]}... finalized successfully in {result.elapsed_time:.1f}s")
-        ctx.add_result("wait_finalized", True, {
-            "hash": datum_hash,
-            "elapsed": result.elapsed_time
-        })
-
     async def _execute_waiter(self, step: WaitStep, ctx: RuntimeContext) -> None:
-        """Execute waiter-based wait."""
-        # Use getattr to safely access deprecated 'type' field if it exists in runtime object
+        """Execute waiter-based wait by dispatching to monitoring layer."""
+        # Determine waiter type
         step_type = getattr(step, 'type', None)
         wait_type = ctx.substitute(step.wait) if step.wait else step_type
         
         if wait_type is None:
-             raise ScenarioExecutionError(f"WaitStep 'wait' parameter is missing or None. Step: {step}", step=step)
-             
-        # Guard against recursive objects
+            raise ScenarioExecutionError(f"WaitStep 'wait' parameter is missing or None. Step: {step}", step=step)
+        
         if not isinstance(wait_type, str):
             logger.error(f"wait_type is not a string! It is {type(wait_type)}: {wait_type}")
             wait_type = str(wait_type)
 
         logger.info(f"Waiting for condition: {wait_type}")
         
-        # Map clean names to internal waiter types if needed
+        # Map clean names to internal waiter types
         WAITER_TYPE_MAPPING = {
             "mempool": "datum_in_mempool",
             "finalized": "datum_finalized",
@@ -221,261 +158,112 @@ class WaitStepExecutor(StepExecutor):
         
         registry_type = WAITER_TYPE_MAPPING.get(wait_type, wait_type)
         
-        # Handle special waiters
-        if registry_type == "datum_in_mempool":
-            await self._execute_datum_mempool_waiter(step, ctx)
-            return
-        elif registry_type == "datum_finalized":
-            await self._execute_datum_finalized_waiter(step, ctx)
-            return
-
-        # Get waiter class from registry
-        waiter_class = None
+        # Get dispatcher
+        dispatcher = self._get_dispatcher()
+        
+        # Build params from step
+        params = self._build_params(step, ctx)
+        
         try:
-            waiter_class = WaitRegistry.get(registry_type)
-        except KeyError:
-            pass
-            
-        if not waiter_class:
-            raise ScenarioExecutionError(f"Unknown waiter type: {wait_type}")
-        
-        # Resolve nodes
-        if not self.resolve_node_alias_callback:
-            raise RuntimeError("resolve_node_alias_callback not set for WaitStepExecutor")
-        
-        nodes = [self.resolve_node_alias_callback(ctx.substitute(n)) for n in (step.nodes or [])]
-        network_name = ctx.substitute(step.network) if step.network else ctx.get_variable('network_name')
-        
-        # Create waiter instance based on type
-        if registry_type == "delegations_synced":
-            if not step.nodes or step.expected_count is None:
-                raise ScenarioExecutionError("nodes and expected_count required for delegations_synced", step=step)
-            
-            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
-            if not exec_cli_func:
-                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
-            
-            waiter = waiter_class(
-                exec_cli=exec_cli_func,
-                nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
-                expected_count=step.expected_count,
-                network_name=network_name,
-                poll_interval=2.0
-            )
-            await waiter.wait(timeout=float(step.timeout))
-            
-        elif registry_type == "stake_service_ready":
-            if not step.nodes:
-                raise ScenarioExecutionError("nodes required for stake_service_ready", step=step)
-            
-            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
-            if not exec_cli_func:
-                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
-            
-            waiter = waiter_class(
-                exec_cli=exec_cli_func,
-                nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
-                network_name=network_name,
-                poll_interval=2.0
-            )
-            await waiter.wait(timeout=float(step.timeout))
-            
-        elif registry_type == "esbocs_consensus_active":
-            if not step.nodes:
-                raise ScenarioExecutionError("nodes required for esbocs_consensus_active", step=step)
-            
-            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
-            if not exec_cli_func:
-                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
-            
-            # Create factory for stake_service_waiter
-            def create_stake_waiter():
-                from ...monitoring.waiter.validator_waiters import StakeServiceReadyWaiter
-                return StakeServiceReadyWaiter(
-                    exec_cli=exec_cli_func,
-                    nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
-                    network_name=network_name,
-                    poll_interval=2.0
+            # Handle special waiters that have dedicated dispatcher methods
+            if registry_type == "datum_in_mempool":
+                result = await dispatcher.execute_datum_in_mempool(
+                    datum_hash=params["datum_hash"],
+                    node=params["node"],
+                    network=params.get("network", "stagenet"),
+                    chain=params.get("chain", "zerochain"),
+                    timeout=float(step.timeout)
+                )
+            elif registry_type == "datum_finalized":
+                result = await dispatcher.execute_datum_finalized(
+                    datum_hash=params["datum_hash"],
+                    node=params["node"],
+                    network=params.get("network", "stagenet"),
+                    chain=params.get("chain", "main"),
+                    timeout=float(step.timeout),
+                    check_master_nodes=step.check_master if hasattr(step, 'check_master') else True
+                )
+            else:
+                # Generic waiter dispatch
+                result = await dispatcher.execute_waiter(
+                    waiter_type=registry_type,
+                    params=params,
+                    timeout=float(step.timeout)
                 )
             
-            waiter = waiter_class(
-                exec_cli=exec_cli_func,
-                nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
-                network_name=network_name,
-                poll_interval=3.0,
-                stake_service_waiter_factory=create_stake_waiter
+            logger.info(f"✅ Waiter '{wait_type}' completed")
+            ctx.add_result("wait", True, {"type": wait_type, **result})
+            
+        except TimeoutError as e:
+            raise ScenarioExecutionError(
+                f"Waiter '{wait_type}' timeout: {str(e)}",
+                step=step,
+                context=params
             )
-            await waiter.wait(timeout=float(step.timeout))
-            
-        elif registry_type == "first_block":
-            if not step.nodes or not step.chain:
-                raise ScenarioExecutionError("nodes and chain required for first_block", step=step)
-            
-            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
-            if not exec_cli_func:
-                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
-            
-            waiter = waiter_class(
-                exec_cli=exec_cli_func,
-                network_name=network_name,
-                chain_name=ctx.substitute(step.chain),
-                master_nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
-                poll_interval=3.0
+        except RuntimeError as e:
+            raise ScenarioExecutionError(
+                f"Waiter '{wait_type}' failed: {str(e)}",
+                step=step,
+                context=params
             )
-            await waiter.wait(timeout=float(step.timeout))
-            
-        elif registry_type == "master_containers_running":
-            if not step.nodes:
-                raise ScenarioExecutionError(f"nodes required for {registry_type}", step=step)
-            
-            waiter = waiter_class(
-                docker_client=self.container_manager.docker_client,
-                master_nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
-                poll_interval=1.0
-            )
-            await waiter.wait(timeout=float(step.timeout))
-
-        elif registry_type == "cli_ready":
-            if not step.nodes:
-                raise ScenarioExecutionError(f"nodes required for {registry_type}", step=step)
-            
-            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
-            if not exec_cli_func:
-                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
-            
-            waiter = waiter_class(
-                exec_cli=exec_cli_func,
-                nodes=[self.get_node_config_callback(n) for n in nodes] if self.get_node_config_callback else [],
-                network_name=network_name,
-                poll_interval=1.0
-            )
-            await waiter.wait(timeout=float(step.timeout))
+    
+    def _build_params(self, step: WaitStep, ctx: RuntimeContext) -> dict:
+        """
+        Build parameters dict from step for dispatcher.
         
-        elif registry_type == "wallet_balance":
-            # Get node (single node for wallet balance check)
-            if not step.node:
-                raise ScenarioExecutionError(f"node required for {registry_type}", step=step)
-            
+        Extracts and substitutes all relevant parameters from WaitStep.
+        """
+        params = {}
+        
+        # Datum hash
+        if step.datum:
+            params["datum_hash"] = ctx.substitute(step.datum)
+        if hasattr(step, 'datum_hash') and step.datum_hash:
+            params["datum_hash"] = ctx.substitute(step.datum_hash)
+        if hasattr(step, 'emission_hash') and step.emission_hash:
+            params["emission_hash"] = ctx.substitute(step.emission_hash)
+        
+        # Node(s)
+        if step.node:
             node_alias = ctx.substitute(step.node)
-            node_name = self.resolve_node_alias_callback(node_alias)
-            
-            # Extract node ID from node name (e.g., "node1" -> 1, "root-1" -> 1)
-            import re
-            match = re.search(r'(\d+)$', node_name)
-            if not match:
-                raise ScenarioExecutionError(f"Cannot extract node ID from: {node_name}", step=step)
-            node_id = int(match.group(1))
-            
-            # Get wallet, token and balance parameters
-            wallet_name = ctx.substitute(step.wallet) if hasattr(step, 'wallet') and step.wallet else "fee_collector"
-            token_ticker = ctx.substitute(step.token) if hasattr(step, 'token') and step.token else "TCELL"
-            
-            # Get expected balance condition (optional)
-            expected_balance = None
-            if hasattr(step, 'balance') and step.balance:
-                expected_balance = ctx.substitute(str(step.balance))
-            elif hasattr(step, 'wait_for') and step.wait_for:
-                expected_balance = ctx.substitute(str(step.wait_for))
-            
-            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
-            if not exec_cli_func:
-                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
-            
-            waiter = waiter_class(
-                exec_cli=exec_cli_func,
-                node_id=node_id,
-                wallet_name=wallet_name,
-                token_ticker=token_ticker,
-                expected_balance=expected_balance,
-                network_name=network_name,
-                poll_interval=2.0
-            )
-            await waiter.wait(timeout=float(step.timeout))
+            if self.resolve_node_alias_callback:
+                params["node"] = self.resolve_node_alias_callback(node_alias)
+            else:
+                params["node"] = node_alias
         
-        elif registry_type == "datum_in_chain":
-            # Get node
-            if not step.node:
-                raise ScenarioExecutionError(f"node required for {registry_type}", step=step)
-            
-            node_alias = ctx.substitute(step.node)
-            node_name = self.resolve_node_alias_callback(node_alias)
-            
-            # Extract node ID
-            import re
-            match = re.search(r'(\d+)$', node_name)
-            if not match:
-                raise ScenarioExecutionError(f"Cannot extract node ID from: {node_name}", step=step)
-            node_id = int(match.group(1))
-            
-            # Get datum hash
-            has_datum_hash = hasattr(step, 'datum_hash') and step.datum_hash
-            has_datum = hasattr(step, 'datum') and step.datum
-            
-            if not has_datum_hash and not has_datum:
-                raise ScenarioExecutionError(f"datum_hash or datum required for {registry_type}", step=step)
-            
-            datum_hash = ctx.substitute(step.datum_hash) if has_datum_hash else ctx.substitute(step.datum)
-            
-            # Get chain
-            chain = ctx.substitute(step.chain) if step.chain else "zerochain"
-            
-            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
-            if not exec_cli_func:
-                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
-            
-            waiter = waiter_class(
-                exec_cli=exec_cli_func,
-                node_id=node_id,
-                datum_hash=datum_hash,
-                network_name=network_name,
-                chain=chain,
-                poll_interval=2.0
-            )
-            await waiter.wait(timeout=float(step.timeout))
+        if step.nodes:
+            # Expand nodes list (can be template string like "{{all_nodes}}")
+            nodes_list = self._expand_nodes_list(step.nodes, ctx)
+            resolved_nodes = []
+            for n in nodes_list:
+                node_alias = ctx.substitute(n)
+                if self.resolve_node_alias_callback:
+                    resolved_nodes.append(self.resolve_node_alias_callback(node_alias))
+                else:
+                    resolved_nodes.append(node_alias)
+            params["nodes"] = resolved_nodes
+            # Use first node as default "node" if not set
+            if "node" not in params and resolved_nodes:
+                params["node"] = resolved_nodes[0]
         
-        elif registry_type == "emission_in_ledger":
-            # Get node
-            if not step.node:
-                raise ScenarioExecutionError(f"node required for {registry_type}", step=step)
-            
-            node_alias = ctx.substitute(step.node)
-            node_name = self.resolve_node_alias_callback(node_alias)
-            
-            # Extract node ID
-            import re
-            match = re.search(r'(\d+)$', node_name)
-            if not match:
-                raise ScenarioExecutionError(f"Cannot extract node ID from: {node_name}", step=step)
-            node_id = int(match.group(1))
-            
-            # Get emission hash
-            has_emission_hash = hasattr(step, 'emission_hash') and step.emission_hash
-            has_datum = hasattr(step, 'datum') and step.datum
-            
-            if not has_emission_hash and not has_datum:
-                raise ScenarioExecutionError(f"emission_hash or datum required for {registry_type}", step=step)
-            
-            emission_hash = ctx.substitute(step.emission_hash) if has_emission_hash else ctx.substitute(step.datum)
-            
-            # Get chain
-            chain = ctx.substitute(step.chain) if step.chain else "zerochain"
-            
-            exec_cli_func = self.create_exec_cli_callback() if self.create_exec_cli_callback else None
-            if not exec_cli_func:
-                raise RuntimeError("create_exec_cli_callback not set for WaitStepExecutor")
-            
-            waiter = waiter_class(
-                exec_cli=exec_cli_func,
-                node_id=node_id,
-                emission_hash=emission_hash,
-                network_name=network_name,
-                chain=chain,
-                poll_interval=2.0
-            )
-            await waiter.wait(timeout=float(step.timeout))
-            
-        else:
-            raise ScenarioExecutionError(f"Waiter type {wait_type} not yet implemented in executor", step=step)
+        # Network and chain
+        params["network"] = ctx.substitute(step.network) if step.network else ctx.get_variable('network_name', 'stagenet')
+        if step.chain:
+            params["chain"] = ctx.substitute(step.chain)
         
-        logger.info(f"✅ Waiter '{wait_type}' completed")
-        ctx.add_result("wait", True, {"type": wait_type, "nodes": nodes})
+        # Optional parameters
+        if hasattr(step, 'expected_count') and step.expected_count is not None:
+            params["expected_count"] = step.expected_count
+        
+        if hasattr(step, 'wallet') and step.wallet:
+            params["wallet"] = ctx.substitute(step.wallet)
+        
+        if hasattr(step, 'token') and step.token:
+            params["token"] = ctx.substitute(step.token)
+        
+        if hasattr(step, 'balance') and step.balance:
+            params["balance"] = ctx.substitute(str(step.balance))
+        elif hasattr(step, 'wait_for') and step.wait_for:
+            params["balance"] = ctx.substitute(str(step.wait_for))
+        
+        return params

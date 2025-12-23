@@ -140,9 +140,9 @@ class DatumMonitor:
         chain: str = "main",
         check_master_nodes: bool = True,
         timeout_total: float = 300,
-        timeout_mempool: float = 60,
-        timeout_verification: float = 120,
-        timeout_in_blocks: float = 180,
+        timeout_mempool: Optional[float] = None,
+        timeout_verification: Optional[float] = None,
+        timeout_in_blocks: Optional[float] = None,
         check_interval: float = 2.0
     ) -> DatumMonitorResult:
         """
@@ -155,14 +155,26 @@ class DatumMonitor:
             chain: Chain name
             check_master_nodes: Whether to check master nodes
             timeout_total: Total timeout in seconds
-            timeout_mempool: Max time in mempool
-            timeout_verification: Max time after verification
-            timeout_in_blocks: Max time after block inclusion
+            timeout_mempool: Max time in mempool (default: 80% of timeout_total, min 60s)
+            timeout_verification: Max time after verification (default: 50% of timeout_total, min 60s)
+            timeout_in_blocks: Max time after block inclusion (default: 50% of timeout_total, min 60s)
             check_interval: Polling interval in seconds
             
         Returns:
             DatumMonitorResult with status and details
+            
+        Note:
+            If individual timeouts are not provided, they are calculated from timeout_total
+            using sensible defaults that allow enough time for each stage.
         """
+        # Calculate default timeouts if not provided
+        # These defaults are based on typical DAG-PoA consensus timing
+        if timeout_mempool is None:
+            timeout_mempool = max(60.0, timeout_total * 0.8)
+        if timeout_verification is None:
+            timeout_verification = max(60.0, timeout_total * 0.5)
+        if timeout_in_blocks is None:
+            timeout_in_blocks = max(60.0, timeout_total * 0.5)
         # Validate datum hash format
         hash_pattern = r'^0x[0-9a-fA-F]{64,}$'
         if not re.match(hash_pattern, datum_hash):
@@ -329,7 +341,21 @@ class DatumMonitor:
                         error_message=error_msg
                     )
                 except TimeoutError:
-                    # Datum didn't appear in mempool - this likely means it wasn't created
+                    # Datum didn't appear in mempool - check if it's already in DAG (auto_proc=true case)
+                    self._log(f"  ⚠️ Datum {datum_hash[:16]}... not found in mempool, checking DAG events...")
+                    
+                    block_info = await self._check_in_blocks(node, network, chain, datum_hash)
+                    if block_info:
+                        # Datum already in DAG! (auto_proc processed it immediately)
+                        self._log(f"  ✅ Datum {datum_hash[:16]}... already in DAG (auto_proc processed it)")
+                        return DatumMonitorResult(
+                            status=DatumStatus.SUCCESS,
+                            datum_hash=datum_hash,
+                            elapsed_time=elapsed,
+                            details={"already_in_dag": True, "event_info": str(block_info)}
+                        )
+                    
+                    # Datum not in mempool and not in DAG - likely not created
                     error = f"Datum never appeared in mempool after {mempool_wait_timeout:.1f}s - likely not created (check CLI command output for errors)"
                     self._log(f"  ❌ {error}")
                     self._log(f"  💡 Datum hash received: {datum_hash[:50]}...")

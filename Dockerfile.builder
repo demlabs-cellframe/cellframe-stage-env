@@ -15,7 +15,8 @@
 #       cellframe-builder-env
 #
 # =============================================================================
-FROM debian:bookworm-slim
+# Use Debian Trixie (13) - GLIBC 2.39 (compatible with Ubuntu 24.04)
+FROM debian:trixie-slim
 
 ARG BUILD_TYPE=debug
 
