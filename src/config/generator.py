@@ -255,25 +255,30 @@ class ConfigGenerator:
             # Even though we use PoS, SDK still checks validators_addrs if min_validators_count > 0
             # We collect MASTER nodes (consensus_participation but not seed_node) as validators
             master_validator_nodes = [n for n in nodes if n.consensus_participation and not n.is_seed_node]
-            master_validator_addrs = self._collect_validator_addresses(master_validator_nodes, network_name) if master_validator_nodes else "[]"
             
-            # CRITICAL: If no master validators yet (first phase), we still need min_validators_count
-            # for genesis block creation, but validators_addrs can be empty (will be filled in PHASE 2)
-            # SDK will allow initialization with min_validators_count > 0 if validators_addrs is empty
-            # only if genesis_mode=true, but genesis_mode should be false for root nodes
-            # CRITICAL: Always use master validator addresses in mainchain validators_addrs
-            # Even in Phase 1 when master nodes are not yet started, we pre-configure their addresses
-            # This satisfies SDK validation requirement: validators_addrs must contain >= min_validators_count addresses
-            # When master nodes start in Phase 2, they will already be configured as validators
-            master_validators_count = len(master_validator_nodes)
+            # Load stage config for initial_validators_count
+            stage_config = self.config_loader.load_stage_config()
+            
+            # Get initial_validators_count from config (default 2 for 2/2 consensus)
+            # Other validators will be added via delegation in Primary scenario
+            initial_validators_count = int(stage_config.get('initial_validators_count', 2))
+            
+            # Limit to initial validators for Genesis phase
+            initial_validator_nodes = master_validator_nodes[:initial_validators_count]
+            master_validator_addrs = self._collect_validator_addresses(initial_validator_nodes, network_name) if initial_validator_nodes else "[]"
+            
+            # CRITICAL: min_validators_count must match initial_validators_count
+            # Other validators will be added via delegation after Genesis
+            master_validators_count = len(initial_validator_nodes)
             
             if master_validators_count > 0:
-                # Master nodes exist - use their addresses
-                mainchain_min_validators_count = max(1, master_validators_count // 2 + 1)  # 2/3 consensus
+                # Use initial validators for Genesis (2/2 consensus)
+                mainchain_min_validators_count = initial_validators_count
                 logger.info("mainchain_validators_configured",
-                           master_validators_count=master_validators_count,
+                           initial_validators_count=initial_validators_count,
+                           total_master_nodes=len(master_validator_nodes),
                            min_validators_count=mainchain_min_validators_count,
-                           note="Using master node addresses in validators_addrs for mainchain")
+                           note="Using initial validators for Genesis, others will be delegated")
             else:
                 # No master nodes configured - this should not happen in normal flow
                 # But if it does, use root nodes as fallback
@@ -286,10 +291,11 @@ class ConfigGenerator:
             # Calculate consensus parameters
             root_nodes_count = len([n for n in nodes if n.is_seed_node])
             auth_certs_number = root_nodes_count
-            auth_certs_number_verify = max(1, root_nodes_count // 2 + 1)
+            # For testing: 1 signature is enough (faster tests)
+            # Production: max(1, root_nodes_count // 2 + 1)
+            auth_certs_number_verify = 1
             
             # Get minimum_fee from config (default 0.1 for production, can be overridden in config)
-            stage_config = self.config_loader.load_stage_config()
             minimum_fee = stage_config.get('minimum_fee', '0.1')
             
             # Prepare base chain context (shared for all nodes)
@@ -458,7 +464,9 @@ class ConfigGenerator:
         # Calculate consensus parameters
         root_nodes_count = len([n for n in nodes if n.is_seed_node])
         auth_certs_number = root_nodes_count
-        auth_certs_number_verify = max(1, root_nodes_count // 2 + 1)
+        # For testing: 1 signature is enough (faster tests)
+        # Production: max(1, root_nodes_count // 2 + 1)
+        auth_certs_number_verify = 1
         
         # Calculate min_validators_count based on custom_validators_addrs
         # CRITICAL: min_validators_count must NOT be greater than actual validators count

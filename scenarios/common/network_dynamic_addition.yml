@@ -8,7 +8,7 @@ tags: [network, balancer, dynamic]
 version: "1.0"
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default

@@ -2,7 +2,7 @@ name: PRIMARY - Save Snapshot
 description: Save network state snapshot after Primary scenario completion
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default

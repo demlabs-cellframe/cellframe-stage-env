@@ -2,7 +2,7 @@ name: COMPOSER - Transaction Tests
 description: Test tx_create and tx_cond_create via cellframe-tool-compose
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default

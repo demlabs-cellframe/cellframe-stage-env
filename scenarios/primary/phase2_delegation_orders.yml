@@ -2,7 +2,7 @@ name: PRIMARY PHASE 2 - Delegation via Orders
 description: Setup validators using order-based delegation (validator and staker orders)
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default

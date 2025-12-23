@@ -2,7 +2,7 @@ name: PHASE 1 - Zerochain Genesis
 description: Initialize ROOT nodes, create token and emission (dynamic topology)
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default
@@ -143,13 +143,17 @@ test:
             node: "{{_node_name}}"
             save_node: "{{_addr_var}}"
   
-  # Build validators_addrs dynamically from master node addresses
+  # Build validators_addrs dynamically - ONLY first 2 master nodes for initial 2/2 consensus
+  # Other validators will be added via delegation in Primary scenario
   - python: |
       master_count = ctx.get('master_count')
-      addrs = [ctx.get(f'master_addr_{i}') for i in range(master_count)]
+      # Only use first 2 master nodes as initial validators
+      initial_validator_count = min(2, master_count)
+      addrs = [ctx.get(f'master_addr_{i}') for i in range(initial_validator_count)]
       validators_str = "[" + ",".join(addrs) + "]"
       ctx.set_variable('validators_addrs_str', validators_str)
-      print(f"Validators addresses: {validators_str}")
+      ctx.set_variable('initial_validator_count', initial_validator_count)
+      print(f"Initial validators (2/2 consensus): {validators_str}")
   
   # Build authorized_nodes_addrs from root node addresses
   - python: |
@@ -356,12 +360,21 @@ test:
     set:
       seed_mode: "false"
   
-  # Create stake orders for all master/validator nodes
+  # Create stake orders ONLY for initial 2 validators (node-5, node-6)
+  # Other validators will be added via delegation in Primary scenario
   # CRITICAL: Orders must be signed with same cert used for blocks-sign-cert
-  - group: Create stake orders for validators
+  - group: Create stake orders for initial validators
     steps:
+      - python: |
+          # Only create orders for first 2 master nodes (initial validators)
+          root_count = ctx.get('root_count')
+          initial_count = ctx.get('initial_validator_count', 2)
+          initial_master_indices = list(range(root_count + 1, root_count + initial_count + 1))
+          ctx.set_variable('_initial_master_indices', initial_master_indices)
+          print(f"Creating stake orders for initial validators: nodes {initial_master_indices}")
+      
       - for: node_idx
-        in: "{{master_indices}}"
+        in: "{{_initial_master_indices}}"
         steps:
           - python: |
               node_idx = ctx.get('node_idx')

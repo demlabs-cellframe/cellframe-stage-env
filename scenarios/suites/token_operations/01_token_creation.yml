@@ -6,7 +6,7 @@ description: Test token declaration with various parameters
 tags: [token, creation]
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 test:
   - group: Test 1 - Simple token

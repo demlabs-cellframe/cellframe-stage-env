@@ -2,7 +2,7 @@ name: AUCTION - Plugin Setup
 description: Install and configure AuctionPlugin on nodes
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default

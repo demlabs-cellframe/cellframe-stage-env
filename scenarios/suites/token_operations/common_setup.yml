@@ -4,7 +4,7 @@ name: Token Operations Common Setup
 description: Create wallets and initial state for token tests (dynamic topology)
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 # Create test wallets
 setup:

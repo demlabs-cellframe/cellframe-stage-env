@@ -2,7 +2,7 @@ name: PRIMARY PHASE 3 - Network Decrees
 description: Configure network parameters via decrees (fee, reward, min_validators)
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default

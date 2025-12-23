@@ -33,7 +33,7 @@ DEBIAN_MIRRORS = [
     "http://mirror.truenetwork.ru/debian",  # TrueNetwork (Moscow)
     "http://mirror.1h.ru/debian",  # 1H.ru mirror (Moscow)
     "http://mirror.timeweb.ru/debian",  # Timeweb (Moscow)
-    "http://mirror.beget.ru/debian",  # Beget (Moscow)
+    # "http://mirror.beget.ru/debian",  # Beget (Moscow) - disabled: doesn't have Trixie
     "http://debian.volia.net/debian",  # Volia (Ukraine, but good connectivity to Russia)
     
     # CIS mirrors (good connectivity from Siberia)

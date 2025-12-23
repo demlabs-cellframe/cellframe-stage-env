@@ -2,7 +2,7 @@ name: Regression - Arbitrage Availability
 description: Verify arbitrage transaction can be created immediately after token creation (Bug #1)
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default

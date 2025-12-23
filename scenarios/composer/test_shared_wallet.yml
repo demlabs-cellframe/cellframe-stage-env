@@ -2,7 +2,7 @@ name: COMPOSER - Shared Wallet Tests
 description: Test shared wallet operations via cellframe-tool-compose
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default

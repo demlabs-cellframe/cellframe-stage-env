@@ -2,7 +2,7 @@ name: COMPOSER - Poll Tests
 description: Test poll create and vote operations via cellframe-tool-compose
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default

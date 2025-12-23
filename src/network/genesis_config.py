@@ -946,6 +946,81 @@ class GenesisConfigManager(BaseGenesisManager):
                         error=str(e))
             return None
     
+    def read_fee_addr_from_stagenet_config(self, node_id: int) -> Optional[str]:
+        """
+        Read fee_addr from stagenet.cfg (network config) on HOST filesystem.
+        Used for master nodes where fee_addr is stored in stagenet.cfg.
+        
+        Args:
+            node_id: Node ID
+            
+        Returns:
+            Fee address or None if not found
+        """
+        try:
+            from ..config.manager import get_config_loader
+            config_loader = get_config_loader()
+            paths_config = config_loader.get_paths_config()
+            if 'cache_dir' not in paths_config:
+                raise RuntimeError(
+                    "CRITICAL: cache_dir not found in paths_config! "
+                    "Cannot proceed without cache directory configuration."
+                )
+            cache_dir_relative = paths_config['cache_dir']
+            cache_dir = (self.base_path / cache_dir_relative).resolve()
+            
+            # Read from stagenet.cfg (network-level config) instead of main.cfg (chain config)
+            config_file = cache_dir / "configs" / f"node{node_id}" / "network" / f"{self.network_name}.cfg"
+            
+            if not config_file.exists():
+                logger.warning("stagenet_cfg_not_found_for_reading_fee_addr",
+                             node_id=node_id,
+                             path=str(config_file))
+                return None
+            
+            config = config_loader.load_config_file(config_file)
+            
+            # fee_addr is directly in the config, not in a section
+            if 'fee_addr' not in config or not config.get('DEFAULT', {}).get('fee_addr'):
+                # Try to get from first section or default
+                fee_addr = None
+                for section in config.sections():
+                    if config.has_option(section, 'fee_addr'):
+                        fee_addr = config.get(section, 'fee_addr').strip()
+                        if fee_addr:
+                            break
+                
+                # If still not found, try DEFAULT section
+                if not fee_addr:
+                    # ConfigParser puts items without section into DEFAULT
+                    for key, value in config.items('DEFAULT'):
+                        if key == 'fee_addr':
+                            fee_addr = value.strip()
+                            break
+                
+                if not fee_addr:
+                    logger.warning("fee_addr_not_in_stagenet_cfg",
+                                 node_id=node_id,
+                                 path=str(config_file))
+                    return None
+            else:
+                fee_addr = config.get('DEFAULT', 'fee_addr', fallback='').strip()
+            
+            if fee_addr:
+                logger.info("fee_addr_read_from_stagenet_config",
+                          node_id=node_id,
+                          fee_addr=fee_addr[:16],
+                          path=str(config_file))
+                return fee_addr
+            
+            return None
+            
+        except Exception as e:
+            logger.error("failed_to_read_fee_addr_from_stagenet_config",
+                        node_id=node_id,
+                        error=str(e))
+            return None
+    
     def disable_genesis_mode_in_chain_configs(self, chain_name: str, node_ids: List[int]) -> None:
         """
         Disable genesis_mode in chain config files after genesis block is created.

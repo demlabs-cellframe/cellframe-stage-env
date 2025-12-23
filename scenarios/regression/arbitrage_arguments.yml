@@ -2,7 +2,7 @@ name: Regression - Arbitrage Arguments
 description: Verify tx_create -arbitrage respects -value and -token arguments (Bug #2)
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default

@@ -640,19 +640,22 @@ class NetworkManager:
             static_genesis_hash = None
             fee_addr = None
             
-            for root_node in root_nodes[:1]:  # Check first ROOT node (configs are same for all nodes)
+            for root_node in root_nodes[:1]:  # Check first ROOT node
                 # Read static_genesis_event from zerochain.cfg
                 static_genesis_hash = self.genesis.config_mgr.read_static_genesis_event_from_config(
                     chain_name="zerochain",
                     node_id=root_node.node_id
                 )
-                
-                # Read fee_addr from main.cfg
-                fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(
-                    node_id=root_node.node_id
-                )
-                
                 break  # Only need to check first node
+            
+            # Read fee_addr from first MASTER node (fee_addr is in stagenet.cfg on master nodes)
+            master_nodes = [n for n in node_configs if n.role in ('master', 'validator')]
+            if master_nodes:
+                fee_addr = self.genesis.config_mgr.read_fee_addr_from_stagenet_config(
+                    node_id=master_nodes[0].node_id
+                )
+            else:
+                fee_addr = None
             
             # CRITICAL: Verify values were read from configs BEFORE starting containers
             # If these values are missing, nodes will fail to load network

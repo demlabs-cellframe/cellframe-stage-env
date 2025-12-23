@@ -2,7 +2,7 @@
 # Creates test wallet and exports address (dynamic topology)
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 setup:
   - cli: "wallet new -w test_wallet"

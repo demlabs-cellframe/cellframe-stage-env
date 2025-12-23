@@ -2,7 +2,7 @@ name: PRIMARY PHASE 4 - Transfers and Batch Transactions
 description: Test regular transfers and batch transactions with time locks
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default

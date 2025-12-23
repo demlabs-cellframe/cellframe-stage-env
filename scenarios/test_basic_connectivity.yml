@@ -5,7 +5,7 @@ tags: [connectivity, basic, sanity]
 version: "1.0"
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   name: stagenet

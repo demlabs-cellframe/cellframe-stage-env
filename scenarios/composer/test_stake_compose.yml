@@ -2,7 +2,7 @@ name: COMPOSER - Stake Operations Tests
 description: Test stake_lock and srv_stake via cellframe-tool-compose
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default
