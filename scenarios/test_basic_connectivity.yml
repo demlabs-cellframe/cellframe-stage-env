@@ -1,5 +1,5 @@
 name: Basic Connectivity Test
-description: Verify that stagenet nodes are connected and network is operational (dynamic topology)
+description: Verify that {{network_name}} nodes are connected and network is operational (dynamic topology)
 author: Stage-Env Team
 tags: [connectivity, basic, sanity]
 version: "1.0"
@@ -8,7 +8,7 @@ includes:
   - common/set_net_default.yml
 
 network:
-  name: stagenet
+  name: "{{network_name}}"
 
 test:
   - group: Check first root node status

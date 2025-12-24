@@ -6,7 +6,7 @@ setup:
   - wait: 3s
     description: "Wait for network to come online"
   
-  - cli: net -net stagenet get status
+  - cli: net -net {{network_name}} get status
     node: node1
     expect: success
     save: network_status

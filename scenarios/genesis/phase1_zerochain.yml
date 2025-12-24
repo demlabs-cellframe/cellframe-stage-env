@@ -6,7 +6,7 @@ includes:
 
 network:
   topology: default
-  name: stagenet
+  name: "{{network_name}}"
 
 setup:
   # Start all nodes dynamically based on topology
@@ -25,9 +25,10 @@ setup:
           - python: |
               import subprocess
               node_idx = ctx.get('node_idx')
+              network_name = ctx.get('network_name')
               cert_idx = node_idx - 1
               container = f"cellframe-stage-node-{node_idx}"
-              cert_path = f"/opt/cellframe-node/var/lib/ca/stagenet.root.pvt.{cert_idx}.dcert"
+              cert_path = f"/opt/cellframe-node/var/lib/ca/{network_name}.root.pvt.{cert_idx}.dcert"
               
               result = subprocess.run(
                   ["docker", "exec", container, "test", "-f", cert_path],
@@ -46,9 +47,10 @@ setup:
               import subprocess
               node_idx = ctx.get('node_idx')
               root_count = ctx.get('root_count')
+              network_name = ctx.get('network_name')
               cert_idx = node_idx - root_count - 1
               container = f"cellframe-stage-node-{node_idx}"
-              cert_path = f"/opt/cellframe-node/var/lib/ca/stagenet.master.pvt.{cert_idx}.dcert"
+              cert_path = f"/opt/cellframe-node/var/lib/ca/{network_name}.master.pvt.{cert_idx}.dcert"
               
               result = subprocess.run(
                   ["docker", "exec", container, "test", "-f", cert_path],
@@ -64,11 +66,12 @@ setup:
       import os
       
       root_count = ctx.get('root_count')
+      network_name = ctx.get('network_name')
       dst_container = "cellframe-stage-node-1"
       
       # Copy all root certs except first one to first root node
       for i in range(1, root_count):
-          cert_name = f"stagenet.root.pvt.{i}.dcert"
+          cert_name = f"{network_name}.root.pvt.{i}.dcert"
           cert_path = f"/opt/cellframe-node/var/lib/ca/{cert_name}"
           tmp_path = f"/tmp/{cert_name}"
           src_container = f"cellframe-stage-node-{i+1}"
@@ -86,10 +89,11 @@ setup:
     steps:
       - python: |
           node_idx = ctx.get('node_idx')
+          network_name = ctx.get('network_name')
           cert_idx = node_idx - 1
           ctx.set_variable('_current_node', f"node-{node_idx}")
-          ctx.set_variable('_current_cert', f"stagenet.root.pvt.{cert_idx}")
-      - config: "stagenet"
+          ctx.set_variable('_current_cert', f"{network_name}.root.pvt.{cert_idx}")
+      - config: "{{network_name}}"
         nodes: ["{{_current_node}}"]
         set:
           events_sign_cert: "{{_current_cert}}"
@@ -160,13 +164,13 @@ test:
       print(f"Authorized nodes: {authorized_str}")
   
   # Set validators_addrs on ALL nodes
-  - config: "stagenet/main"
+  - config: "{{network_name}}/main"
     nodes: "{{all_nodes}}"
     set:
       validators_addrs: "{{validators_addrs_str}}"
   
   # Set authorized_nodes_addrs in ZEROCHAIN config
-  - config: "stagenet/zerochain"
+  - config: "{{network_name}}/zerochain"
     nodes: "{{all_nodes}}"
     set:
       authorized_nodes_addrs: "{{authorized_nodes_str}}"
@@ -248,8 +252,9 @@ test:
         steps:
           - python: |
               node_idx = ctx.get('node_idx')
+              network_name = ctx.get('network_name')
               ctx.set_variable('_wallet_node', f"node-{node_idx}")
-              ctx.set_variable('_wallet_name', f"stagenet_root_{node_idx - 1}")
+              ctx.set_variable('_wallet_name', f"{network_name}_root_{node_idx - 1}")
           - cli: "wallet new -w {{_wallet_name}}"
             node: "{{_wallet_node}}"
       
@@ -259,8 +264,9 @@ test:
           - python: |
               node_idx = ctx.get('node_idx')
               root_count = ctx.get('root_count')
+              network_name = ctx.get('network_name')
               ctx.set_variable('_wallet_node', f"node-{node_idx}")
-              ctx.set_variable('_wallet_name', f"stagenet_master_{node_idx - root_count - 1}")
+              ctx.set_variable('_wallet_name', f"{network_name}_master_{node_idx - root_count - 1}")
           - cli: "wallet new -w {{_wallet_name}}"
             node: "{{_wallet_node}}"
       
@@ -271,18 +277,19 @@ test:
               node_idx = ctx.get('node_idx')
               root_count = ctx.get('root_count')
               master_count = ctx.get('master_count')
+              network_name = ctx.get('network_name')
               ctx.set_variable('_wallet_node', f"node-{node_idx}")
-              ctx.set_variable('_wallet_name', f"stagenet_full_{node_idx - root_count - master_count - 1}")
+              ctx.set_variable('_wallet_name', f"{network_name}_full_{node_idx - root_count - master_count - 1}")
           - cli: "wallet new -w {{_wallet_name}}"
             node: "{{_wallet_node}}"
   
   # Get fee_addr from first root wallet
-  - cli: "wallet info -w stagenet_root_0"
+  - cli: "wallet info -w {{network_name}}_root_0"
     node: "{{first_root}}"
     save_wallet: fee_addr
   
   # Set fee_addr on master nodes
-  - config: "stagenet"
+  - config: "{{network_name}}"
     nodes: "{{master_nodes}}"
     set:
       fee_addr: "{{fee_addr}}"
@@ -294,7 +301,7 @@ test:
       seed_mode: "true"
   
   # Enable is_add_directly for genesis event creation on seed nodes
-  - config: "stagenet/zerochain"
+  - config: "{{network_name}}/zerochain"
     nodes: "{{seed_nodes}}"
     set:
       is_add_directly: "true"
@@ -312,7 +319,8 @@ test:
   # Build dynamic certs string for token_decl
   - python: |
       root_count = ctx.get('root_count')
-      certs = [f"stagenet.root.pvt.{i}" for i in range(root_count)]
+      network_name = ctx.get('network_name')
+      certs = [f"{network_name}.root.pvt.{i}" for i in range(root_count)]
       certs_str = ",".join(certs)
       ctx.set_variable('root_certs_str', certs_str)
       print(f"Root certs for signing: {certs_str}")
@@ -323,7 +331,7 @@ test:
       cli:
         chain: "zerochain"
     steps:
-      - cli: "token_decl -token TCELL -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
+      - cli: "token_decl -token {{native_ticker}} -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
         save_hash: token_hash
       
       - wait: "3s"
@@ -343,7 +351,7 @@ test:
         save_hash: genesis_event_hash
   
   # Set static genesis event on all active nodes
-  - config: "stagenet/zerochain"
+  - config: "{{network_name}}/zerochain"
     nodes: "{{_active_nodes}}"
     set:
       static_genesis_event: "{{genesis_event_hash}}"
@@ -366,10 +374,11 @@ test:
           - python: |
               node_idx = ctx.get('node_idx')
               root_count = ctx.get('root_count')
+              network_name = ctx.get('network_name')
               cert_idx = node_idx - root_count - 1
               ctx.set_variable('_stake_node', f"node-{node_idx}")
-              ctx.set_variable('_stake_cert', f"stagenet.master.pvt.{cert_idx}")
-          - cli: "srv_stake order create -net stagenet -value 0.05e+18 -cert {{_stake_cert}}"
+              ctx.set_variable('_stake_cert', f"{network_name}.master.pvt.{cert_idx}")
+          - cli: "srv_stake order create -net {{network_name}} -value 0.05e+18 -cert {{_stake_cert}}"
             node: "{{_stake_node}}"
             save: stake_order_result
   
@@ -382,7 +391,7 @@ test:
   
   - wait: "40s"
   
-  - config: "stagenet/zerochain"
+  - config: "{{network_name}}/zerochain"
     nodes: "{{root_nodes}}"
     set:
       static_genesis_event: "{{genesis_event_hash}}"
@@ -401,12 +410,13 @@ test:
       node: "{{first_root}}"
       cli:
         chain: "zerochain"
-        token: "TCELL"
+        token: "{{native_ticker}}"
     steps:
       # Build comma-separated list of all root certs for single emission command
       - python: |
           root_count = ctx.get('root_count')
-          all_certs = ','.join([f"stagenet.root.pvt.{i}" for i in range(root_count)])
+          network_name = ctx.get('network_name')
+          all_certs = ','.join([f"{network_name}.root.pvt.{i}" for i in range(root_count)])
           ctx.set_variable('all_root_certs', all_certs)
           print(f"Using all root certs for emission: {all_certs}")
       

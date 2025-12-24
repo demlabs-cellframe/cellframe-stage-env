@@ -312,7 +312,8 @@ class ConfigGenerator:
                 # ESBocs consensus parameters (from topology.consensus)
                 'min_validators_count': mainchain_min_validators_count,  # Calculated from master_nodes_count
                 'poa_mode': 'false',  # PoS mode: auth certs auto-delegated, get GlobalDB write permissions
-                'auth_certs_prefix': topology.consensus.auth_certs_prefix,
+                # Auto-generate auth_certs_prefix from network_name if not specified
+                'auth_certs_prefix': topology.consensus.auth_certs_prefix or f"{network_name}.master",
                 'new_round_delay': topology.consensus.new_round_delay,
                 'collecting_level': topology.consensus.collecting_level,
                 # Additional timing parameters (from topology.consensus)
@@ -322,8 +323,12 @@ class ConfigGenerator:
                 'consensus_debug': 'true' if getattr(topology.consensus, 'consensus_debug', True) else 'false',
                 # Fee parameters
                 'minimum_fee': str(minimum_fee),  # Default from config (0.1), can be changed by scenario
-                # Network name for paths
+                # Network identity
                 'network_name': network_name,
+                'network_id': topology.network.network_id,
+                'native_ticker': getattr(topology.network, 'native_ticker', 'TCELL'),
+                # Network settings
+                'node_port': topology.network_settings.node_port,
             }
             
             # Load chain templates ONCE (shared for all nodes)

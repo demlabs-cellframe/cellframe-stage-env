@@ -30,7 +30,8 @@ class ScenarioGlobalContext:
         self,
         network_name: str,
         topology_name: str,
-        docker_client: Optional[docker.DockerClient] = None
+        docker_client: Optional[docker.DockerClient] = None,
+        native_ticker: Optional[str] = None
     ):
         """
         Initialize global context.
@@ -39,9 +40,11 @@ class ScenarioGlobalContext:
             network_name: Network name (e.g., 'stagenet')
             topology_name: Topology template name
             docker_client: Docker client for IP resolution (optional, will create if needed)
+            native_ticker: Native token ticker (from config)
         """
         self.network_name = network_name
         self.topology_name = topology_name
+        self.native_ticker = native_ticker
         self._docker_client = docker_client or docker.from_env()
         
         # Cached node information
@@ -212,6 +215,7 @@ class ScenarioGlobalContext:
             # Network configuration
             'network_name': self.network_name,
             'topology_name': self.topology_name,
+            'native_ticker': self.native_ticker,
             
             # Node IP addresses
             'node_ips': self._node_ips,  # Array: [ip1, ip2, ip3, ...]

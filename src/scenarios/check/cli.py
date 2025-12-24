@@ -18,12 +18,13 @@ class CLICheckExecutor(CheckExecutor):
     async def execute(self, check: CLICheck, ctx: RuntimeContext) -> None:
         """Execute CLI check."""
         cmd = ctx.substitute(check.cli)
-        logger.debug(f"Checking CLI: {cmd}")
+        node = ctx.substitute(check.node) if check.node else "node1"
+        logger.debug(f"Checking CLI: {cmd} on {node}")
         
         try:
             result = await self.container_manager.exec_cli_command(
                 command=cmd,
-                node=check.node,
+                node=node,
                 timeout=check.timeout
             )
             output = result["stdout"]

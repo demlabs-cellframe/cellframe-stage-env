@@ -134,7 +134,8 @@ class NetworkManager:
         self.scenario_context = ScenarioGlobalContext(
             network_name=self.topology.network.name,
             topology_name=topology_name,
-            docker_client=self.genesis.docker_client
+            docker_client=self.genesis.docker_client,
+            native_ticker=getattr(self.topology.network, 'native_ticker', 'TCELL')
         )
         
         logger.info("network_manager_initialized",

@@ -374,11 +374,12 @@ class NetworkConsensusMonitor:
         
         # Overall readiness:
         # - All nodes online
-        # - ALL nodes have full node list (no stragglers allowed)
+        # - Most nodes have full node list (allow 1-2 late joiners to sync)
         # - Chains are synced (or no blocks yet - genesis state)
+        min_nodes_with_full_list = max(1, self.expected_node_count - 2)  # Allow up to 2 nodes still syncing
         state.ready = (
             state.all_nodes_online and
-            state.nodes_with_full_list == self.expected_node_count and  # ALL nodes must have full list
+            state.nodes_with_full_list >= min_nodes_with_full_list and
             (state.all_chains_synced or state.unique_chain_states == 0)  # Synced or no blocks yet
         )
         

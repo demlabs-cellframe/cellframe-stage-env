@@ -31,6 +31,7 @@ class NetworkTopology(BaseModel):
         name: str
         network_id: str
         consensus: str
+        native_ticker: str = "TCELL"
     
     class TopologyNode(BaseModel):
         count: int = Field(ge=0)
@@ -45,7 +46,8 @@ class NetworkTopology(BaseModel):
         min_validators: int = Field(ge=1)
         new_round_delay: int = Field(ge=1, default=30)
         collecting_level: float = Field(ge=0.0, le=100.0, default=10.0)
-        auth_certs_prefix: str = "stagenet.master"
+        # If None, will be auto-generated as {network_name}.master
+        auth_certs_prefix: Optional[str] = None
         # Additional ESBocs timing parameters
         round_start_sync_timeout: int = Field(ge=1, default=5)
         round_attempts_max: int = Field(ge=1, default=2)

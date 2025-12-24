@@ -6,7 +6,7 @@ includes:
 
 network:
   topology: default
-  name: stagenet
+  name: "{{network_name}}"
 
 setup:
   # Enable seed_mode on ALL root and master nodes to accept genesis block
@@ -33,7 +33,7 @@ test:
       node: "{{first_root}}"
       cli:
         chain: "main"
-        token: "TCELL"
+        token: "{{native_ticker}}"
     steps:
       - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert stagenet.root.pvt.0"
         save_hash: mainchain_genesis_tx
@@ -48,13 +48,13 @@ test:
     node: "{{first_master}}"
     save_hash: genesis_block_hash
   
-  - config: "stagenet/main"
+  - config: "{{network_name}}/main"
     nodes: "{{_active_nodes}}"
     set:
       static_genesis_block: "{{genesis_block_hash}}"
       is_static_genesis_block: "true"
   
-  - config: "stagenet/zerochain"
+  - config: "{{network_name}}/zerochain"
     nodes: "{{root_nodes}}"
     set:
       is_add_directly: "false"
