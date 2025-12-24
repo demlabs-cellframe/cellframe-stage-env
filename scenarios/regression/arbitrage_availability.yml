@@ -11,15 +11,20 @@ network:
 setup:
   - docker_op: start
     services: "{{root_nodes}}"
+    services: "{{root_nodes}}"
     detach: true
   
   - wait_network: online
+    nodes: "{{root_nodes}}"
     nodes: "{{root_nodes}}"
     timeout: 60
 
 test:
   - group: Setup Wallet and Token
     defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
       node: "{{first_root}}"
       cli:
         chain: "zerochain"
@@ -44,6 +49,11 @@ test:
 
   - group: Test Arbitrage Creation (Immediate)
     defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
+        token: "ARB_TEST"
+        fee: "100"
       node: "{{first_root}}"
       cli:
         chain: "zerochain"

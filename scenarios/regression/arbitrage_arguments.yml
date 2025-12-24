@@ -11,15 +11,20 @@ network:
 setup:
   - docker_op: start
     services: "{{root_nodes}}"
+    services: "{{root_nodes}}"
     detach: true
   
   - wait_network: online
+    nodes: "{{root_nodes}}"
     nodes: "{{root_nodes}}"
     timeout: 60
 
 test:
   - group: Setup Wallet and Token
     defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
       node: "{{first_root}}"
       cli:
         chain: "zerochain"
@@ -43,7 +48,13 @@ test:
         timeout: 60
 
   - group: Create Normal Transaction (Prerequisite workaround for Bug #1 if needed)
+  - group: Create Normal Transaction (Prerequisite workaround for Bug #1 if needed)
     defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
+        token: "ARB_ARGS"
+        fee: "100"
       node: "{{first_root}}"
       cli:
         chain: "zerochain"
@@ -64,6 +75,11 @@ test:
         chain: "zerochain"
         token: "ARB_ARGS"
         fee: "100"
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
+        token: "ARB_ARGS"
+        fee: "100"
     steps:
       - cli: "tx_create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 500 -arbitrage -certs {{network_name}}.root.pvt.0"
         save_hash: arb_tx_hash
@@ -72,6 +88,7 @@ test:
         chain: zerochain
         timeout: 60
         
+      - cli: "tx_history -tx {{arb_tx_hash}}"
       - cli: "tx_history -tx {{arb_tx_hash}}"
         save_to: tx_history_output
       
