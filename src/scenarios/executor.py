@@ -265,17 +265,31 @@ class ScenarioExecutor:
                         if role_nodes and 1 <= index <= len(role_nodes):
                             return role_nodes[index - 1]  # 1-indexed
                     
-                    # Fallback: hardcoded mapping based on default topology
-                    # Default: 3 root, 3 master, N full nodes
-                    # root-1 -> node1, root-2 -> node2, root-3 -> node3
-                    # master-1 -> node4, master-2 -> node5, master-3 -> node6
-                    # full-1 -> node7, full-2 -> node8, etc.
+                    # Fallback: dynamic mapping based on topology counts (fast fail if not available)
+                    if not self._global_context:
+                        raise RuntimeError(
+                            f"Cannot resolve node alias '{node_alias}': global_context not initialized. "
+                            "Ensure topology is loaded before using role-based aliases."
+                        )
+                    
+                    root_count = getattr(self._global_context, 'root_count', None)
+                    master_count = getattr(self._global_context, 'master_count', None)
+                    
+                    if root_count is None or master_count is None:
+                        raise RuntimeError(
+                            f"Cannot resolve node alias '{node_alias}': root_count or master_count not set in global_context. "
+                            f"root_count={root_count}, master_count={master_count}"
+                        )
+                    
+                    # root-1 -> node1, root-2 -> node2, ...
+                    # master-1 -> node{root_count+1}, master-2 -> node{root_count+2}, ...
+                    # full-1 -> node{root_count+master_count+1}, ...
                     if role == "root":
                         return f"node{index}"
                     elif role == "master":
-                        return f"node{index + 3}"  # master-1 -> node4
+                        return f"node{index + root_count}"
                     elif role == "full":
-                        return f"node{index + 6}"  # full-1 -> node7
+                        return f"node{index + root_count + master_count}"
         
         # Fallback: return as-is (will fail later if invalid)
         return node_alias

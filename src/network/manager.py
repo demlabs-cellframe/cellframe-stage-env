@@ -1346,8 +1346,9 @@ class NetworkManager:
                     container_name = f"cellframe-stage-{node_name}"
                 
                 container = self.compose.client.containers.get(container_name)
+                network_name = self.topology.network.name
                 cli_result = container.exec_run(
-                    'cellframe-node-cli net get status -net stagenet',
+                    f'cellframe-node-cli net get status -net {network_name}',
                     demux=False
                 )
                 
@@ -1384,15 +1385,21 @@ class NetworkManager:
         # Build nodes array with combined info
         nodes_data = []
         for node_name, config in self.nodes.items():
-            # Get container status
-            container_status = service_status.get(node_name, {})
+            # Convert node_name to docker service name (node1 -> node-1)
+            if node_name.startswith('node'):
+                docker_service = f"node-{node_name[4:]}"
+            else:
+                docker_service = node_name
+            
+            # Get container status (service_status values are strings, not dicts)
+            container_status = service_status.get(docker_service, "unknown")
             # Get health status
             health = health_status.get(node_name, {})
             
             nodes_data.append({
                 "name": node_name,
                 "role": config.role,
-                "container_status": container_status.get("status", "unknown"),
+                "container_status": container_status,
                 "health_status": health.get("state", "unknown"),
                 "healthy": health.get("healthy", False),
                 "rpc_port": config.rpc_port,
