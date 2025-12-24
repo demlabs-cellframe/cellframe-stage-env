@@ -23,10 +23,12 @@ class BashStepExecutor(StepExecutor):
         
         # If node is specified, execute in container; otherwise execute on host
         if step.node:
+            # Substitute variables in node name
+            node = ctx.substitute(step.node)
             # Execute in container via container manager
             result = await self.container_manager.exec_bash_command(
                 script=script,
-                node=step.node,
+                node=node,
                 timeout=step.timeout
             )
         else:

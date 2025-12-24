@@ -318,13 +318,16 @@ class NetworkWaitStep(BaseModel):
 
 
 class DockerOpStep(BaseModel):
-    """Execute Docker operations (start, stop, restart, logs, exec)."""
-    docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'logs', 'exec'")
-    services: Union[str, List[str]] = Field(..., description="Docker services to operate on (can be template like '{{all_nodes}}')")
+    """Execute Docker operations (start, stop, restart, logs, exec, cp)."""
+    docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'logs', 'exec', 'cp'")
+    services: Optional[Union[str, List[str]]] = Field(None, description="Docker services to operate on (can be template like '{{all_nodes}}')")
     command: Optional[str] = Field(None, description="Command for 'exec' operation")
     detach: bool = Field(True, description="Run in detached mode (for start/restart)")
     wait_for_ip: bool = Field(True, description="Wait for containers to receive IP addresses (for start)")
     wait: Optional[str] = Field(None, description="Wait duration after operation (e.g., '5s')")
+    # Fields for 'cp' operation
+    src: Optional[str] = Field(None, description="Source path for 'cp' operation (format: 'node-1:/path' or '/host/path')")
+    dst: Optional[str] = Field(None, description="Destination path for 'cp' operation (format: 'node-1:/path' or '/host/path')")
 
 
 class SnapshotStep(BaseModel):

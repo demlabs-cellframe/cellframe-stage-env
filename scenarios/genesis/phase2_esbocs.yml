@@ -9,11 +9,12 @@ network:
   name: "{{network_name}}"
 
 setup:
+  # Build active nodes list (root + master)
+  - set: _active_nodes
+    value: "root_nodes + master_nodes"
+    eval: true
+  
   # Enable seed_mode on ALL root and master nodes to accept genesis block
-  - python: |
-      root_nodes = ctx.get('root_nodes')
-      master_nodes = ctx.get('master_nodes')
-      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
   
   - config: "cellframe-node"
     nodes: "{{_active_nodes}}"
