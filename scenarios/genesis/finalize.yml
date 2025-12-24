@@ -1,0 +1,53 @@
+name: Finalize Genesis - Create Base Topology Snapshot
+description: Create base snapshot of complete genesis topology after all phases
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: "{{network_name}}"
+
+setup:
+  # Restore from last phase (phase2)
+  - snapshot: restore
+    name: phase2
+  
+  # Start all nodes
+  - docker_op: start
+    services: "{{all_nodes}}"
+    detach: true
+  
+  - wait: "10s"
+  
+  # Verify network is healthy before creating base snapshot
+  - wait_network: online
+    nodes: "{{all_nodes}}"
+    timeout: 120
+
+test:
+  # Final health checks
+  - cli: "net get status"
+    node: "{{first_master}}"
+    expect_output: "NET_STATE_ONLINE"
+  
+  - cli: "block list -chain main"
+    node: "{{first_root}}"
+    expect_output: "have blocks:"
+  
+  - cli: "srv_stake order list fee"
+    node: "{{first_master}}"
+    expect_output: "order"
+
+check:
+  - cli: "net get status"
+    node: "{{first_root}}"
+    expect_output: "NET_STATE_ONLINE"
+
+# Create base topology snapshot (used by all suites by default)
+teardown:
+  - snapshot: create
+    name: "{{topology_name}}"
+    is_base: true
+    stop_containers: true
+

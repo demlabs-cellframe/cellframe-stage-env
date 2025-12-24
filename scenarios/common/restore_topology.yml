@@ -1,0 +1,36 @@
+name: Restore Topology Snapshot
+description: Restore base topology snapshot and start all nodes
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: "{{network_name}}"
+
+setup:
+  # Try to restore base topology snapshot (created after all genesis phases)
+  # If not found, scenarios will need to run genesis phases first
+  - snapshot: verify
+    name: "{{topology_name}}"
+  
+  - snapshot: restore
+    name: "{{topology_name}}"
+  
+  # Start all nodes from restored state
+  - docker_op: start
+    services: "{{all_nodes}}"
+    detach: true
+  
+  - wait: "10s"
+  
+  # Wait for network to be online
+  - wait_network: online
+    nodes: "{{all_nodes}}"
+    timeout: 120
+
+check:
+  - cli: "net get status"
+    node: "{{first_root}}"
+    expect_output: "NET_STATE_ONLINE"
+
