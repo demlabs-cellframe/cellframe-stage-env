@@ -896,22 +896,25 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
                    network=network_name,
                    count=node_count)
         
-        if self.cert_generator.certs_exist() and not force:
-            logger.info("certificates_already_exist_skipping")
-            return
+        certs_exist = self.cert_generator.certs_exist()
         
-        if force:
-            self.cert_generator.clean()
+        if certs_exist and not force:
+            logger.info("certificates_already_exist_skipping_generation")
+        else:
+            if force:
+                self.cert_generator.clean()
+            
+            # ROOT nodes are seed nodes (DAG-PoA on zerochain)
+            root_count = len([n for n in nodes if n.is_seed_node])
+            
+            self.cert_generator.generate_all(
+                network_name=network_name,
+                node_count=node_count,
+                root_count=root_count
+            )
         
-        # ROOT nodes are seed nodes (DAG-PoA on zerochain)
-        root_count = len([n for n in nodes if n.is_seed_node])
-        
-        self.cert_generator.generate_all(
-            network_name=network_name,
-            node_count=node_count,
-            root_count=root_count
-        )
-        
+        # Always copy certificates to ensure they're in place
+        # (data directories may have been cleaned while certs remain)
         shared_certs_dir = self.configs_cache / "shared" / "ca"
         self.cert_generator.copy_certs_to_shared_ca(shared_certs_dir, network_name)
         

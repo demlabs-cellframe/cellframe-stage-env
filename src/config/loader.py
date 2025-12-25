@@ -177,6 +177,11 @@ class ConfigLoader:
                 else:
                     result[key] = value
         
+        # Add aliases for config keys used in topology templates
+        # Template uses 'network_name' but config has 'name' in [network] section
+        if 'name' in result and 'network_name' not in result:
+            result['network_name'] = result['name']
+        
         logger.debug("config_loaded", keys=len(result))
         return result
     
