@@ -18,7 +18,9 @@ from .parser import ScenarioParser
 from .schema import (
     CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
     NetworkWaitStep, DockerOpStep, SnapshotStep,
-    SetStep, IfStep, WhileStep, SwitchStep, ForStep,
+    SetStep, IfStep, WhileStep, SwitchStep, ForStep, 
+    AssertStep, LogStep, ExtractStep, CountStep, NodeListStep, JoinStep,
+    ComputeStep, FormatStep,
     ConfigStep,
     CLICheck, RPCCheck, PythonCheck, BashCheck,
     TestScenario, SuiteSetupScenario, TestStep, CheckSpec, StepDefaults, SectionConfig, DatumStatus
@@ -158,6 +160,9 @@ class ScenarioExecutor:
             WaitForDatumStepExecutor, LoopStepExecutor,
             NetworkWaitStepExecutor, DockerOpStepExecutor, SnapshotStepExecutor,
             SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor,
+            AssertStepExecutor, LogStepExecutor,
+            ExtractStepExecutor, CountStepExecutor, NodeListStepExecutor, JoinStepExecutor,
+            ComputeStepExecutor, FormatStepExecutor,
             ConfigStepExecutor
         )
         self.cli_executor = CLIStepExecutor(self.container_manager, log_file, debug)
@@ -210,6 +215,14 @@ class ScenarioExecutor:
             self.container_manager, log_file, debug,
             resolve_node_alias_callback=self._resolve_node_alias
         )
+        self.assert_executor = AssertStepExecutor(self.container_manager, log_file, debug)
+        self.log_executor = LogStepExecutor(self.container_manager, log_file, debug)
+        self.extract_executor = ExtractStepExecutor(self.container_manager, log_file, debug)
+        self.count_executor = CountStepExecutor(self.container_manager, log_file, debug)
+        self.node_list_executor = NodeListStepExecutor(self.container_manager, log_file, debug)
+        self.join_executor = JoinStepExecutor(self.container_manager, log_file, debug)
+        self.compute_executor = ComputeStepExecutor(self.container_manager, log_file, debug)
+        self.format_executor = FormatStepExecutor(self.container_manager, log_file, debug)
         
         # Check executors
         from .check import (
@@ -642,6 +655,22 @@ class ScenarioExecutor:
                 await self.switch_executor.execute(step, ctx, defaults)
             elif isinstance(step, ConfigStep):
                 await self.config_executor.execute(step, ctx)
+            elif isinstance(step, AssertStep):
+                await self.assert_executor.execute(step, ctx)
+            elif isinstance(step, LogStep):
+                await self.log_executor.execute(step, ctx)
+            elif isinstance(step, ExtractStep):
+                await self.extract_executor.execute(step, ctx)
+            elif isinstance(step, CountStep):
+                await self.count_executor.execute(step, ctx)
+            elif isinstance(step, NodeListStep):
+                await self.node_list_executor.execute(step, ctx)
+            elif isinstance(step, JoinStep):
+                await self.join_executor.execute(step, ctx)
+            elif isinstance(step, ComputeStep):
+                await self.compute_executor.execute(step, ctx)
+            elif isinstance(step, FormatStep):
+                await self.format_executor.execute(step, ctx)
             else:
                 raise ScenarioExecutionError(f"Unknown step type: {type(step)}")
     
@@ -739,6 +768,10 @@ class ScenarioExecutor:
                 await self.python_check_executor.execute(check, ctx)
             elif isinstance(check, BashCheck):
                 await self.bash_check_executor.execute(check, ctx)
+            elif isinstance(check, LogStep):
+                await self.log_executor.execute(check, ctx)
+            elif isinstance(check, AssertStep):
+                await self.assert_executor.execute(check, ctx)
             else:
                 raise ScenarioExecutionError(f"Unknown check type: {type(check)}")
     

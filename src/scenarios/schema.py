@@ -339,7 +339,11 @@ class SnapshotStep(BaseModel):
 # Control Flow Steps
 # ============================================================================
 
-from .schema_control_flow import SetStep, IfStep, WhileStep, ForStep, SwitchStep
+from .schema_control_flow import (
+    SetStep, IfStep, WhileStep, ForStep, SwitchStep, 
+    AssertStep, LogStep, ExtractStep, CountStep, NodeListStep, JoinStep,
+    ComputeStep, FormatStep
+)
 from .schema_config import ConfigStep
 
 
@@ -379,7 +383,8 @@ class BashCheck(BaseModel):
     timeout: Optional[int] = Field(30, description="Script timeout")
 
 
-CheckSpec = Union[CLICheck, RPCCheck, PythonCheck, BashCheck]
+# CheckSpec now supports basic operations like logging and assertions
+CheckSpec = Union[CLICheck, RPCCheck, PythonCheck, BashCheck, LogStep, AssertStep]
 
 
 # ============================================================================
@@ -411,7 +416,9 @@ class StepGroup(BaseModel):
 TestStep = Union[
     NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep,
     CLIStep, RPCStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
-    SetStep, IfStep, WhileStep, SwitchStep, ForStep,
+    SetStep, IfStep, WhileStep, SwitchStep, ForStep, 
+    AssertStep, LogStep, ExtractStep, CountStep, NodeListStep, JoinStep,
+    ComputeStep, FormatStep,
     ConfigStep,
     WaitStep 
 ]

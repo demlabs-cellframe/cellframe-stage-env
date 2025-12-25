@@ -786,14 +786,14 @@ class NetworkManager:
             import re
             emission_hash = None
             
-            # Method 1: Try to get emission hash from DAG events (most reliable)
+            # Method 1: Get emission hash from DAG event dump (most reliable)
+            # First get list of events, then dump each to find the one with emission type
             for root_node in root_nodes[:1]:  # Check first ROOT node
                 exit_code, stdout, _ = self.genesis._exec_cli(
                     root_node.node_id,
                     f"dag event list -net {self.topology.network.name} -chain zerochain -from events -limit 20",
                     check_output=False
                 )
-                # CRITICAL: Log full output for debugging
                 logger.info("dag_events_list_check",
                            node_id=root_node.node_id,
                            exit_code=exit_code,
@@ -801,60 +801,42 @@ class NetworkManager:
                            stdout_full=stdout[:2000] if stdout else "EMPTY")
                 
                 if exit_code == 0 and stdout:
-                    # Look for emission event hash in DAG events
-                    # Format: "event hash: 0x..." or "datum: 0x..." with emission type
-                    # Try multiple patterns to catch different formats
-                    hash_matches = re.findall(r'(?:event\s+hash|datum|hash):\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                    # Also try finding all hashes in text
-                    all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                    
-                    logger.info("dag_events_hash_search",
+                    # Extract all event_hash values from the list
+                    event_hashes = re.findall(r'event_hash:\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                    logger.info("dag_events_found",
                                node_id=root_node.node_id,
-                               hash_matches_count=len(hash_matches),
-                               all_hashes_count=len(all_hashes),
-                               hashes_preview=all_hashes[:5] if all_hashes else [])
+                               event_count=len(event_hashes),
+                               events_preview=[h[:16] for h in event_hashes[:5]])
                     
-                    if hash_matches:
-                        # Emission is typically the second or last event (after token_decl)
-                        # Check all events and find the one with emission type
-                        lines = stdout.split('\n')
-                        for i, line in enumerate(lines):
-                            if 'emission' in line.lower() or ('datum' in line.lower() and 'tx' in line.lower()):
-                                # Look for hash in current or nearby lines
-                                for j in range(max(0, i-2), min(len(lines), i+5)):
-                                    hash_match = re.search(r'(0x[A-Fa-f0-9]{64})', lines[j])
-                                    if hash_match:
-                                        emission_hash = hash_match.group(1)
-                                        logger.info("emission_hash_found_in_dag_events",
-                                                   hash=emission_hash[:16],
-                                                   line_preview=lines[j].strip()[:100])
-                                        break
-                                if emission_hash:
+                    # Dump each event to find the one with datum_type: emission
+                    for event_hash in event_hashes:
+                        dump_exit_code, dump_stdout, _ = self.genesis._exec_cli(
+                            root_node.node_id,
+                            f"dag event dump -net {self.topology.network.name} -chain zerochain -event {event_hash} -from events",
+                            check_output=False
+                        )
+                        if dump_exit_code == 0 and dump_stdout:
+                            # Check if this is an emission event
+                            if 'datum_type: emission' in dump_stdout.lower():
+                                # Extract the internal emission_hash (not event_hash!)
+                                emission_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]{64})', dump_stdout, re.IGNORECASE)
+                                if emission_match:
+                                    emission_hash = emission_match.group(1)
+                                    logger.info("emission_hash_found_in_dag_event_dump",
+                                               hash=emission_hash[:16],
+                                               event_hash=event_hash[:16])
                                     break
-                        
-                        # Fallback: if no emission-specific event found, use second/last hash
-                        # (emission usually comes after token_decl)
-                        if not emission_hash and len(hash_matches) >= 2:
-                            emission_hash = hash_matches[-1]  # Last hash is usually emission
-                            logger.info("emission_hash_found_using_last_hash",
-                                       hash=emission_hash[:16],
-                                       total_hashes=len(hash_matches))
-                        elif not emission_hash and len(hash_matches) == 1:
-                            # If only one hash found, it might be emission
-                            emission_hash = hash_matches[0]
-                            logger.info("emission_hash_found_using_single_hash",
-                                       hash=emission_hash[:16],
-                                       note="Only one hash found, assuming it's emission")
-                        
-                        if emission_hash:
-                            break
-                    elif all_hashes:
-                        # If no structured hash matches but we found hashes in text, use last one
-                        emission_hash = all_hashes[-1]
-                        logger.info("emission_hash_found_from_all_hashes",
-                                   hash=emission_hash[:16],
-                                   total_hashes=len(all_hashes),
-                                   note="Using last hash from unstructured search")
+                                else:
+                                    # Fallback: use datum_hash if emission_hash not found
+                                    datum_match = re.search(r'datum_hash:\s*(0x[A-Fa-f0-9]{64})', dump_stdout, re.IGNORECASE)
+                                    if datum_match:
+                                        emission_hash = datum_match.group(1)
+                                        logger.info("emission_hash_found_via_datum_hash",
+                                                   hash=emission_hash[:16],
+                                                   event_hash=event_hash[:16])
+                                        break
+                    
+                    if emission_hash:
                         break
             
             # Method 2: Fallback - try ledger list (less reliable but sometimes works)
@@ -973,106 +955,128 @@ class NetworkManager:
         
         # =================================================================
         # PHASE 2: START MASTER NODES FOR ESBOCS GENESIS
+        # (SKIP if genesis_complete snapshot exists - means Phase 2 already completed)
         # =================================================================
-        logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
         
-        try:
-            # Define all validator nodes (ROOT + MASTER)
-            all_validator_nodes = root_nodes + master_nodes
-            
-            # Create consensus monitor for all validator nodes
-            from ..monitoring.network_consensus import NetworkConsensusMonitor
-            all_validator_nodes_dict = {f"node{n.node_id}": n for n in all_validator_nodes}
-            consensus_monitor_all = NetworkConsensusMonitor(
-                nodes=all_validator_nodes_dict,
-                node_cli_path=self.node_cli_path,
-                network_name=self.topology.network.name
-            )
-            
-            # CRITICAL: Verify emission_hash is set before proceeding to PHASE 2
-            if emission_hash is None:
-                raise RuntimeError(
-                    f"CRITICAL: emission_hash is None before PHASE 2! "
-                    f"This should not happen - emission_hash must be set either: "
-                    f"1. After phase1 YAML scenario execution, or "
-                    f"2. After snapshot restore (via restore_emission_hash_from_snapshot). "
-                    f"Cannot proceed to ESBocs genesis without emission_hash."
-                )
-            
-            # Use YAML scenario for phase2 genesis
-            # CLI parser should already be initialized after phase1, but executor will reinitialize if needed
-            from ..scenarios.executor import ScenarioExecutor
-            from ..scenarios.parser import ScenarioParser
-            
-            scenario_parser = ScenarioParser(self.base_path / "scenarios")
-            phase2_scenario = scenario_parser.load_scenario("genesis/phase2_esbocs.yml")
-            
-            # Get scenario debug setting from config
-            scenarios_config = self.config_loader.get_scenarios_config()
-            
-            executor = ScenarioExecutor(
-                node_cli_path=self.node_cli_path,
-                log_file=None,
-                debug=scenarios_config.get('debug', False),
-                base_path=self.base_path
-            )
-            
-            # Execute phase2 scenario with all variables from phase1
-            # CRITICAL: Pass node_ip map (via global_context) and all context variables
-            phase2_initial_variables = {}
-            
-            # Get variables from stored Phase 1 context or restored snapshot
-            if hasattr(self, '_phase1_ctx') and self._phase1_ctx:
-                phase1_ctx = self._phase1_ctx
-                # Copy all Phase 1 variables to Phase 2
-                for var_name in ['emission_hash', 'fee_addr', 'root_addr_0', 'root_addr_1', 'root_addr_2', 
-                                 'genesis_event_hash', 'token_hash']:
-                    if var_name in phase1_ctx.variables:
-                        phase2_initial_variables[var_name] = phase1_ctx.get_variable(var_name)
-            else:
-                # Fallback: use local variables if Phase 1 context not stored
-                if emission_hash:
-                    phase2_initial_variables['emission_hash'] = emission_hash
-            
-            logger.info("phase2_initial_variables", 
-                       variables=list(phase2_initial_variables.keys()),
-                       emission_hash=phase2_initial_variables.get('emission_hash', '?')[:16] if phase2_initial_variables.get('emission_hash') else None)
-            
-            ctx = await executor.execute_scenario(
-                phase2_scenario,
-                compose_manager=self.compose,
-                snapshot_manager=self.snapshot_manager,
-                genesis_config_manager=self.genesis.config_mgr,
-                initial_variables=phase2_initial_variables,
-                global_context=self.scenario_context,
-                node_configs=node_configs
-            )
-            
-            logger.info("esbocs_genesis_complete_with_pos_master_nodes",
-                       note="Phase2 genesis completed via YAML scenario")
-            
-        except Exception as e:
-            # Dump logs before tearing down
+        # Check if genesis_complete snapshot exists (indicates Phase 2 was already completed)
+        genesis_complete_exists = False
+        if self.snapshot_manager and hasattr(self.snapshot_manager, 'snapshot'):
+            if self.snapshot_manager.mode == SnapshotMode.FILESYSTEM:
+                genesis_complete_dir = self.snapshot_manager.snapshot.snapshots_path / "genesis_complete"
+                genesis_complete_exists = genesis_complete_dir.exists()
+            elif self.snapshot_manager.mode == SnapshotMode.SQUASHFS:
+                genesis_complete_file = self.snapshot_manager.snapshot.snapshots_path / "genesis_complete.sqfs"
+                genesis_complete_exists = genesis_complete_file.exists()
+        
+        skip_phase2 = genesis_complete_exists and phase1_snapshot_exists
+        
+        if skip_phase2:
+            logger.info("=== PHASE 2 SKIPPED: genesis_complete snapshot exists ===",
+                       note="Phase 2 (ESBocs genesis) already completed in previous run")
+            # Just start all nodes from snapshot - they already have all configs from snapshot
+            all_services = [f"node-{nid}" for nid in (root_node_ids + master_node_ids)]
+            self.compose.up(services=all_services, detach=True, wait=False)
+            await self.state_manager.wait_for_nodes_online(root_nodes + master_nodes, timeout=60.0)
+        else:
+            logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
+        
             try:
-                logger.error("master_nodes_genesis_failed", error=str(e), traceback=traceback.format_exc())
-                # Dump logs for all running containers
-                import docker
-                docker_client = docker.from_env()
-                for container in docker_client.containers.list(all=True):
-                    if "cellframe-stage-node" in container.name:
-                        log_path = f"/tmp/{container.name}.log"
-                        try:
-                            with open(log_path, "wb") as f:
-                                f.write(container.logs())
-                            logger.info(f"Dumped log for {container.name} to {log_path}")
-                        except Exception as log_err:
-                            logger.error(f"Failed to dump log for {container.name}: {log_err}")
-            except Exception as dump_err:
-                logger.error(f"Failed to dump container logs: {dump_err}")
+                # Define all validator nodes (ROOT + MASTER)
+                all_validator_nodes = root_nodes + master_nodes
+                
+                # Create consensus monitor for all validator nodes
+                from ..monitoring.network_consensus import NetworkConsensusMonitor
+                all_validator_nodes_dict = {f"node{n.node_id}": n for n in all_validator_nodes}
+                consensus_monitor_all = NetworkConsensusMonitor(
+                    nodes=all_validator_nodes_dict,
+                    node_cli_path=self.node_cli_path,
+                    network_name=self.topology.network.name
+                )
+                
+                # CRITICAL: Verify emission_hash is set before proceeding to PHASE 2
+                if emission_hash is None:
+                    raise RuntimeError(
+                        f"CRITICAL: emission_hash is None before PHASE 2! "
+                        f"This should not happen - emission_hash must be set either: "
+                        f"1. After phase1 YAML scenario execution, or "
+                        f"2. After snapshot restore (via restore_emission_hash_from_snapshot). "
+                        f"Cannot proceed to ESBocs genesis without emission_hash."
+                    )
+                
+                # Use YAML scenario for phase2 genesis
+                # CLI parser should already be initialized after phase1, but executor will reinitialize if needed
+                from ..scenarios.executor import ScenarioExecutor
+                from ..scenarios.parser import ScenarioParser
+                
+                scenario_parser = ScenarioParser(self.base_path / "scenarios")
+                phase2_scenario = scenario_parser.load_scenario("genesis/phase2_esbocs.yml")
+                
+                # Get scenario debug setting from config
+                scenarios_config = self.config_loader.get_scenarios_config()
+                
+                executor = ScenarioExecutor(
+                    node_cli_path=self.node_cli_path,
+                    log_file=None,
+                    debug=scenarios_config.get('debug', False),
+                    base_path=self.base_path
+                )
+                
+                # Execute phase2 scenario with all variables from phase1
+                # CRITICAL: Pass node_ip map (via global_context) and all context variables
+                phase2_initial_variables = {}
+                
+                # Get variables from stored Phase 1 context or restored snapshot
+                if hasattr(self, '_phase1_ctx') and self._phase1_ctx:
+                    phase1_ctx = self._phase1_ctx
+                    # Copy all Phase 1 variables to Phase 2
+                    for var_name in ['emission_hash', 'fee_addr', 'root_addr_0', 'root_addr_1', 'root_addr_2', 
+                                     'genesis_event_hash', 'token_hash']:
+                        if var_name in phase1_ctx.variables:
+                            phase2_initial_variables[var_name] = phase1_ctx.get_variable(var_name)
+                else:
+                    # Fallback: use local variables if Phase 1 context not stored
+                    if emission_hash:
+                        phase2_initial_variables['emission_hash'] = emission_hash
+                
+                logger.info("phase2_initial_variables", 
+                           variables=list(phase2_initial_variables.keys()),
+                           emission_hash=phase2_initial_variables.get('emission_hash', '?')[:16] if phase2_initial_variables.get('emission_hash') else None)
+                
+                ctx = await executor.execute_scenario(
+                    phase2_scenario,
+                    compose_manager=self.compose,
+                    snapshot_manager=self.snapshot_manager,
+                    genesis_config_manager=self.genesis.config_mgr,
+                    initial_variables=phase2_initial_variables,
+                    global_context=self.scenario_context,
+                    node_configs=node_configs
+                )
+                
+                logger.info("esbocs_genesis_complete_with_pos_master_nodes",
+                           note="Phase2 genesis completed via YAML scenario")
+                
+            except Exception as e:
+                # Dump logs before tearing down
+                try:
+                    logger.error("master_nodes_genesis_failed", error=str(e), traceback=traceback.format_exc())
+                    # Dump logs for all running containers
+                    import docker
+                    docker_client = docker.from_env()
+                    for container in docker_client.containers.list(all=True):
+                        if "cellframe-stage-node" in container.name:
+                            log_path = f"/tmp/{container.name}.log"
+                            try:
+                                with open(log_path, "wb") as f:
+                                    f.write(container.logs())
+                                logger.info(f"Dumped log for {container.name} to {log_path}")
+                            except Exception as log_err:
+                                logger.error(f"Failed to dump log for {container.name}: {log_err}")
+                except Exception as dump_err:
+                    logger.error(f"Failed to dump container logs: {dump_err}")
 
-            if not self.keep_running:
-                self.compose.down(volumes=False, remove_images=False)
-            raise RuntimeError(f"MASTER nodes genesis failed: {e}") from e
+                if not self.keep_running:
+                    self.compose.down(volumes=False, remove_images=False)
+                raise RuntimeError(f"MASTER nodes genesis failed: {e}") from e
         
         # =================================================================
         # PHASE 3: START FULL NODES

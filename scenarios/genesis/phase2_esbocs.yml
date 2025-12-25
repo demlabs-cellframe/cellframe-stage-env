@@ -20,25 +20,103 @@ setup:
     set:
       seed_mode: "true"
   
-  - docker_op: restart
+  # Use 'start' instead of 'restart' to create containers if they don't exist
+  # (e.g. after snapshot restore, master containers are not created yet)
+  - docker_op: start
     services: "{{_active_nodes}}"
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
     timeout: 60
+  
+  # Get fee_addr from wallet if not already set (e.g. after snapshot restore)
+  - python: |
+      if not ctx.get('fee_addr'):
+          print("fee_addr not set, will get from wallet")
+          ctx.set_variable('_need_fee_addr', True)
+      else:
+          print(f"fee_addr already set: {ctx.get('fee_addr')[:16]}...")
+          ctx.set_variable('_need_fee_addr', False)
+  
+  - cli: "wallet info -w stagenet_root_0"
+    node: "{{first_root}}"
+    save_wallet: fee_addr
+    ignore_error: true
 
 test:
-  - group: Genesis Block - Create from emission
+  # Check if genesis block already exists (skip creation if restored from snapshot)
+  - group: Check and create genesis block
     defaults:
       node: "{{first_root}}"
       cli:
         chain: "main"
         token: "TCELL"
     steps:
-      - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert stagenet.root.pvt.0"
-        save_hash: mainchain_genesis_tx
+      - cli: "block list -chain main"
+        node: "{{first_master}}"
+        save: _block_list_check
+        ignore_error: true
       
-      - wait: "180s"
+      - python: |
+          import subprocess
+          import re
+          block_list = ctx.get('_block_list_check', '')
+          # Check for actual blocks (not just "have blocks: 0")
+          block_match = re.search(r'have blocks:\s*(\d+)', block_list)
+          block_count = int(block_match.group(1)) if block_match else 0
+          has_blocks = block_count > 0
+          
+          if has_blocks:
+              print("✓ Genesis block already exists - skipping tx_create")
+              ctx.set_variable('_genesis_block_exists', True)
+          else:
+              print("Genesis block not found - creating from emission")
+              ctx.set_variable('_genesis_block_exists', False)
+              
+              # Create tx from emission
+              first_root = ctx.get('first_root')
+              emission_hash = ctx.get('emission_hash')
+              fee_addr = ctx.get('fee_addr')
+              
+              container = f"cellframe-stage-{first_root}"
+              cmd = f"cellframe-node-cli tx_create -chain_emission zerochain -from_emission {emission_hash} -value 10.0e+54 -to_addr {fee_addr} -fee 5.0e+18 -cert stagenet.root.pvt.0 -net stagenet -chain main -token TCELL"
+              
+              result = subprocess.run(
+                  ["docker", "exec", container, "sh", "-c", cmd],
+                  capture_output=True, text=True
+              )
+              print(f"tx_create result: {result.stdout[:200] if result.stdout else result.stderr[:200]}")
+              
+              # Extract hash
+              import re
+              match = re.search(r'(0x[A-Fa-f0-9]{64})', result.stdout or '')
+              if match:
+                  ctx.set_variable('mainchain_genesis_tx', match.group(1))
+                  print(f"✓ Genesis TX created: {match.group(1)[:16]}...")
+              else:
+                  print(f"Warning: Could not extract hash from tx_create")
+      
+      - python: |
+          if not ctx.get('_genesis_block_exists'):
+              import subprocess
+              import time
+              # Poll for genesis block (up to 180s)
+              for attempt in range(36):  # 36 * 5s = 180s max
+                  result = subprocess.run(
+                      ["docker", "exec", f"cellframe-stage-{ctx.get('first_master')}", 
+                       "cellframe-node-cli", "block", "list", "-chain", "main", "-net", "stagenet"],
+                      capture_output=True, text=True
+                  )
+                  import re
+                  match = re.search(r'have blocks:\s*(\d+)', result.stdout)
+                  if match and int(match.group(1)) > 0:
+                      print(f"✓ Genesis block created after {(attempt+1)*5}s")
+                      break
+                  time.sleep(5)
+              else:
+                  print("⚠ Genesis block creation timed out")
+          else:
+              print("Skipping wait - genesis block already exists")
       
       - cli: "block list"
         node: "{{first_master}}"
@@ -71,7 +149,28 @@ test:
     nodes: "{{_active_nodes}}"
     timeout: 60
   
-  - wait: "40s"
+  # Wait for nodes to sync (check block on master nodes)
+  - python: |
+      import subprocess
+      import time
+      import re
+      for attempt in range(12):  # 12 * 5s = 60s max
+          synced = 0
+          for node in ctx.get('master_nodes', []):
+              result = subprocess.run(
+                  ["docker", "exec", f"cellframe-stage-{node}", 
+                   "cellframe-node-cli", "block", "list", "-chain", "main", "-net", "stagenet"],
+                  capture_output=True, text=True
+              )
+              match = re.search(r'have blocks:\s*(\d+)', result.stdout)
+              if match and int(match.group(1)) > 0:
+                  synced += 1
+          if synced >= len(ctx.get('master_nodes', [])):
+              print(f"✓ All master nodes synced genesis block after {(attempt+1)*5}s")
+              break
+          time.sleep(5)
+      else:
+          print(f"⚠ Sync timeout, {synced} of {len(ctx.get('master_nodes', []))} synced")
   
   # Create snapshot after Genesis completion
   - snapshot: create

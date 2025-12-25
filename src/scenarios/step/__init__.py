@@ -16,7 +16,14 @@ from .loop import LoopStepExecutor
 from .network_wait import NetworkWaitStepExecutor
 from .docker_op import DockerOpStepExecutor
 from .snapshot import SnapshotStepExecutor
-from .control_flow import SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor
+from .control_flow import (
+    SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, 
+    ForStepExecutor, AssertStepExecutor, LogStepExecutor
+)
+from .data import (
+    ExtractStepExecutor, CountStepExecutor, NodeListStepExecutor, JoinStepExecutor,
+    ComputeStepExecutor, FormatStepExecutor
+)
 from .config import ConfigStepExecutor
 
 __all__ = [
@@ -37,5 +44,13 @@ __all__ = [
     'WhileStepExecutor',
     'SwitchStepExecutor',
     'ForStepExecutor',
+    'AssertStepExecutor',
+    'LogStepExecutor',
+    'ExtractStepExecutor',
+    'CountStepExecutor',
+    'NodeListStepExecutor',
+    'JoinStepExecutor',
+    'ComputeStepExecutor',
+    'FormatStepExecutor',
     'ConfigStepExecutor',
 ]

@@ -1,10 +1,10 @@
 """
-Control flow step executors (If, While, Switch, Set).
+Control flow step executors (Set, If, While, For, Switch, Assert, Log).
 """
 
 from ...utils.logger import get_logger
 from .base import StepExecutor
-from ..schema import SetStep, IfStep, WhileStep, SwitchStep, ForStep
+from ..schema import SetStep, IfStep, WhileStep, SwitchStep, ForStep, AssertStep, LogStep
 from ..executor import ScenarioExecutionError, RuntimeContext
 
 logger = get_logger(__name__)
@@ -198,3 +198,53 @@ class SwitchStepExecutor(StepExecutor):
             
         ctx.add_result("switch", True, {"switch": switch_expr, "value": match_value, "matched": bool(matched_steps)})
 
+
+class AssertStepExecutor(StepExecutor):
+    """Executor for assert steps."""
+    
+    async def execute(self, step: AssertStep, ctx: RuntimeContext) -> None:
+        """Execute assert step."""
+        condition = step.condition
+        
+        # Substitute variables in condition
+        substituted_condition = ctx.substitute(condition)
+        
+        try:
+            result = eval(substituted_condition, {"__builtins__": __builtins__}, ctx.variables)
+        except Exception as e:
+            raise ScenarioExecutionError(f"Failed to evaluate assertion '{condition}': {e}", step=step)
+        
+        if not result:
+            message = step.message or f"Assertion failed: {condition}"
+            # Substitute variables in message
+            message = ctx.substitute(message)
+            raise ScenarioExecutionError(message, step=step)
+        
+        logger.info(f"✓ Assertion passed: {condition}")
+        ctx.add_result("assert", True, {"condition": condition})
+
+
+class LogStepExecutor(StepExecutor):
+    """Executor for log steps."""
+    
+    async def execute(self, step: LogStep, ctx: RuntimeContext) -> None:
+        """Execute log step."""
+        message = ctx.substitute(step.message)
+        level = step.level.lower()
+        
+        if level == "debug":
+            logger.debug(message)
+        elif level == "info":
+            logger.info(message)
+            print(message)  # Also print to stdout for visibility
+        elif level == "warning":
+            logger.warning(message)
+            print(f"⚠️ {message}")
+        elif level == "error":
+            logger.error(message)
+            print(f"❌ {message}")
+        else:
+            logger.info(message)
+            print(message)
+        
+        ctx.add_result("log", True, {"message": message, "level": level})

@@ -39,13 +39,13 @@ test:
       node: "{{first_root}}"
     steps:
       - cli: "wallet new -w network_fee_wlt -sign sig_dil"
-        ignore_error: true
+        allow_fail: true
       
       - cli: "wallet info -w network_fee_wlt"
         save_wallet: network_fee_addr
       
       # Step 1: Create fee decree (first signature)
-      - cli: "decree create common -decree_chain main -certs stagenet.root.pvt.0 -fee 0.05e+18 -to_addr {{network_fee_addr}}"
+      - cli: "decree create common -chain zerochain -decree_chain main -certs stagenet.root.pvt.0 -fee 0.05e+18 -to_addr {{network_fee_addr}}"
         save_hash: decree_fee_hash
       
       # Step 2: Sign decree with second root
@@ -56,17 +56,23 @@ test:
       # Step 3: Process decree in DAG
       - cli: "mempool proc -datum {{decree_fee_signed}} -chain zerochain"
       
-      - wait_for_datum: "{{decree_fee_signed}}"
-        chain: zerochain
-        timeout_total: 60
+      # Wait for decree to be processed in DAG
+      - wait: mempool
+        datum: "{{decree_fee_signed}}"
+        node: "node-1"
+        chain: "zerochain"
+        timeout: 30
       
       # Step 4: Create anchor in mainchain
       - cli: "decree anchor -datum {{decree_fee_signed}} -chain main -certs stagenet.root.pvt.0"
         save_hash: decree_fee_anchor
       
-      - wait_for_datum: "{{decree_fee_anchor}}"
-        chain: main
-        timeout_total: 90
+      # Wait for anchor to be finalized
+      - wait: finalized
+        datum: "{{decree_fee_anchor}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
       - python: |
           print("✓ Network fee decree created and anchored")
@@ -85,56 +91,83 @@ test:
       
       - cli: "mempool proc -datum {{decree_reward_signed}} -chain zerochain"
       
-      - wait_for_datum: "{{decree_reward_signed}}"
-        chain: zerochain
-        timeout_total: 60
+      # Wait for decree to be processed in DAG
+      - wait: mempool
+        datum: "{{decree_reward_signed}}"
+        node: "node-1"
+        chain: "zerochain"
+        timeout: 30
       
       - cli: "decree anchor -datum {{decree_reward_signed}} -chain main -certs stagenet.root.pvt.0"
         save_hash: decree_reward_anchor
       
-      - wait_for_datum: "{{decree_reward_anchor}}"
-        chain: main
-        timeout_total: 90
+      # Wait for anchor to be finalized
+      - wait: finalized
+        datum: "{{decree_reward_anchor}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
       - python: |
           print("✓ Block reward decree created and anchored")
 
-  # === PART 3: min_validators_count decree (optional) ===
-  - group: Test min_validators_count decree
+  # === PART 3: Setup min_validators_count ===
+  - group: Set min_validators_count decree
     defaults:
       node: "{{first_root}}"
     steps:
       - python: |
-          master_count = ctx.get('master_count')
-          new_min = max(1, master_count // 2 + 1)
+          # Keep min_validators_count at 2 for network stability
+          # (in case one validator crashes, network can still produce blocks)
+          new_min = 2
           ctx.set_variable('_new_min_validators', new_min)
           print(f"Setting min_validators_count to {new_min}")
       
-      - cli: "decree create common -decree_chain main -certs stagenet.root.pvt.0 -min_validators_count {{_new_min_validators}}"
+      # Create decree with esbocs command (not decree create common)
+      - cli: "esbocs min_validators_count set -chain main -val_count {{_new_min_validators}} -cert stagenet.root.pvt.0"
         save_hash: decree_min_val_hash
-        ignore_error: true
       
+      # Sign decree with second root
       - cli: "decree sign -datum {{decree_min_val_hash}} -chain zerochain -certs stagenet.root.pvt.1"
         node: "{{second_root}}"
         save_hash: decree_min_val_signed
-        ignore_error: true
       
       - cli: "mempool proc -datum {{decree_min_val_signed}} -chain zerochain"
-        ignore_error: true
       
-      - wait_for_datum: "{{decree_min_val_signed}}"
-        chain: zerochain
-        timeout_total: 60
+      # Wait for decree to be processed in DAG
+      - wait: mempool
+        datum: "{{decree_min_val_signed}}"
+        node: "node-1"
+        chain: "zerochain"
+        timeout: 30
       
       - cli: "decree anchor -datum {{decree_min_val_signed}} -chain main -certs stagenet.root.pvt.0"
         save_hash: decree_min_val_anchor
-        ignore_error: true
       
-      - wait_for_datum: "{{decree_min_val_anchor}}"
-        chain: main
-        timeout_total: 90
+      # Wait for anchor to be finalized
+      - wait: finalized
+        datum: "{{decree_min_val_anchor}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
+      
+      # Verify the value was set
+      - cli: "esbocs min_validators_count show"
+        save: _min_val_result
+      
+      - python: |
+          result = ctx.get('_min_val_result', '')
+          print(f"✓ min_validators_count decree applied: {result[:100]}")
+  
+  # Create snapshot
+  - group: Create phase 2 snapshot
+    steps:
+      - snapshot: create
+        name: primary_phase2_complete
+      
+      - python: |
+          print("✓ Phase 2 snapshot created")
 
 check:
   - python: |
       print("✓ Phase 2 completed: Network fee and block reward decrees applied")
-

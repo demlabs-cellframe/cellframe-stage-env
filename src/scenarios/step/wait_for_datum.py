@@ -35,7 +35,12 @@ class WaitForDatumStepExecutor(StepExecutor):
         # Substitute variables in hashes
         datum_hashes = [ctx.substitute(h) for h in datum_hashes]
         
-        logger.info(f"Monitoring {len(datum_hashes)} datum(s)")
+        # Substitute variables in node and network/chain
+        node = ctx.substitute(step.node) if step.node else "node-1"
+        network = ctx.substitute(step.network) if step.network else "stagenet"
+        chain = ctx.substitute(step.chain) if step.chain else "main"
+        
+        logger.info(f"Monitoring {len(datum_hashes)} datum(s) on {node}")
         
         # Get monitoring manager singleton
         monitoring = MonitoringManager.get_instance(
@@ -51,9 +56,9 @@ class WaitForDatumStepExecutor(StepExecutor):
             # Wait for datum to complete processing
             result = await monitoring.datum.wait_for_datum(
                 datum_hash=datum_hash,
-                node=step.node,
-                network=step.network,
-                chain=step.chain,
+                node=node,
+                network=network,
+                chain=chain,
                 check_master_nodes=step.check_master_nodes,
                 timeout_total=step.timeout_total,
                 timeout_mempool=step.timeout_mempool,

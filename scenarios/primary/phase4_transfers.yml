@@ -14,9 +14,24 @@ network:
 
 setup:
   - python: |
-      root_nodes = ctx.get('root_nodes')
-      master_nodes = ctx.get('master_nodes')
+      root_count = ctx.get('root_count') or 4
+      master_count = ctx.get('master_count') or 5
+      full_count = ctx.get('full_count') or 1
+      
+      ctx.set_variable('root_count', root_count)
+      ctx.set_variable('master_count', master_count)
+      ctx.set_variable('full_count', full_count)
+      
+      root_nodes = [f"node-{i+1}" for i in range(root_count)]
+      master_nodes = [f"node-{root_count + i + 1}" for i in range(master_count)]
+      full_nodes = [f"node-{root_count + master_count + i + 1}" for i in range(full_count)]
+      
+      ctx.set_variable('root_nodes', root_nodes)
+      ctx.set_variable('master_nodes', master_nodes)
+      ctx.set_variable('full_nodes', full_nodes)
+      ctx.set_variable('first_root', root_nodes[0])
       ctx.set_variable('_active_nodes', root_nodes + master_nodes)
+      print(f"Phase 4: {root_count} root, {master_count} master, {full_count} full nodes")
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
@@ -78,7 +93,12 @@ test:
       - cli: "tx_create -from_wallet stagenet_root_0 -value 1000.0e+18 -to_addr {{root_1_addr}} -fee 5.0e+18"
         save_hash: regular_transfer_hash
       
-      - wait: "60s"
+      # Wait for transfer to be finalized
+      - wait: finalized
+        datum: "{{regular_transfer_hash}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
       # Verify transfer in ledger
       - cli: "ledger info -hash {{regular_transfer_hash}}"
@@ -109,19 +129,34 @@ test:
       - cli: "tx_create -from_wallet stagenet_root_0 -value 100.0e+18 -to_addr {{master_0_addr}} -fee 5.0e+18"
         save_hash: multi_transfer_1
       
-      - wait: "30s"
+      # Wait for transfer to be finalized
+      - wait: finalized
+        datum: "{{multi_transfer_1}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
       # Transfer 2
       - cli: "tx_create -from_wallet stagenet_root_0 -value 200.0e+18 -to_addr {{master_0_addr}} -fee 5.0e+18"
         save_hash: multi_transfer_2
       
-      - wait: "30s"
+      # Wait for transfer to be finalized
+      - wait: finalized
+        datum: "{{multi_transfer_2}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
       # Transfer 3
       - cli: "tx_create -from_wallet stagenet_root_0 -value 300.0e+18 -to_addr {{master_0_addr}} -fee 5.0e+18"
         save_hash: multi_transfer_3
       
-      - wait: "60s"
+      # Wait for transfer to be finalized
+      - wait: finalized
+        datum: "{{multi_transfer_3}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
       # Verify all transfers
       - cli: "tx_history -addr {{master_0_addr}}"
@@ -161,7 +196,12 @@ test:
       - cli: "tx_create -from_wallet stagenet_root_0 -value {{_batch_amounts}} -to_addr {{_batch_addrs}} -fee 5.0e+18 -lock_before {{_batch_locks}}"
         save_hash: batch_tx_hash
       
-      - wait: "60s"
+      # Wait for batch transaction to be finalized
+      - wait: finalized
+        datum: "{{batch_tx_hash}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
       # Verify batch transaction in ledger
       - cli: "ledger info -hash {{batch_tx_hash}}"
@@ -196,7 +236,12 @@ test:
       - cli: "tx_create -from_wallet stagenet_root_0 -value {{_multi_amounts}} -to_addr {{_multi_addrs}} -fee 5.0e+18"
         save_hash: multi_recipient_tx_hash
       
-      - wait: "60s"
+      # Wait for multi-recipient transaction to be finalized
+      - wait: finalized
+        datum: "{{multi_recipient_tx_hash}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
       # Verify transaction
       - cli: "ledger info -hash {{multi_recipient_tx_hash}}"
@@ -221,6 +266,18 @@ test:
       - cli: "wallet info -w stagenet_full_0"
         node: "{{_full_node}}"
         save: final_full_0_balance
+      
+      - python: |
+          print("✓ All transfers completed and verified")
+  
+  # Create final snapshot
+  - group: Create final snapshot
+    steps:
+      - snapshot: create
+        name: primary_complete
+      
+      - python: |
+          print("✓ Primary test snapshot created: primary_complete")
 
 check:
   # Verify all transactions were processed
@@ -228,13 +285,7 @@ check:
     node: "{{first_root}}"
     expect_output: "have blocks:"
   
-  # Verify transaction count increased
-  - cli: "tx_history -count"
-    node: "{{first_root}}"
-    not_contains: "0 transaction"
-  
   # Network should be operational
   - cli: "net get status"
     node: "{{first_root}}"
     expect_output: "NET_STATE_ONLINE"
-

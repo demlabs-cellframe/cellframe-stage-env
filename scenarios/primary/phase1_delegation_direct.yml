@@ -1,5 +1,5 @@
-name: PRIMARY PHASE 1 - Direct Delegation
-description: Declare mTCELL token, stake lock, and direct key delegation with decree approval
+name: PRIMARY PHASE 1 - Direct Delegation and Revoke
+description: "Declare mTCELL token, delegate 2 keys, revoke 1 key (final: 2 PoA + 1 delegated = 3 keys)"
 
 defaults:
   cli:
@@ -10,15 +10,21 @@ network:
   topology: default
   name: stagenet
 
+# Phase 1 workflow:
+# 1. Start with 2 PoA keys (genesis validators on node-5, node-6)
+# 2. Declare mTCELL token
+# 3. Delegate key on node-7 (master_2)
+# 4. Delegate key on node-8 (master_3)
+# 5. Revoke key on node-8 (test revocation)
+# Final state: 3 keys (2 PoA + 1 delegated)
+
 setup:
   - python: |
       root_count = ctx.get('root_count') or 4
       master_count = ctx.get('master_count') or 5
-      initial_validator_count = ctx.get('initial_validator_count') or 2
       
       ctx.set_variable('root_count', root_count)
       ctx.set_variable('master_count', master_count)
-      ctx.set_variable('initial_validator_count', initial_validator_count)
       
       root_nodes = [f"node-{i+1}" for i in range(root_count)]
       master_nodes = [f"node-{root_count + i + 1}" for i in range(master_count)]
@@ -26,201 +32,356 @@ setup:
       ctx.set_variable('root_nodes', root_nodes)
       ctx.set_variable('master_nodes', master_nodes)
       ctx.set_variable('first_root', root_nodes[0])
+      ctx.set_variable('second_root', root_nodes[1])
       ctx.set_variable('_active_nodes', root_nodes + master_nodes)
       
-      new_validator_indices = list(range(initial_validator_count, master_count))
-      ctx.set_variable('_new_validator_indices', new_validator_indices)
-      
-      print(f"Root nodes: {root_count}, Initial validators: {initial_validator_count}")
-      print(f"New validators to add: indices {new_validator_indices}")
+      # Validators to delegate: master_2 (node-7) and master_3 (node-8)
+      # Validator to revoke: master_3 (node-8)
+      print(f"Phase 1: {root_count} root nodes, {master_count} master nodes")
+      print("Will delegate: master_2 (node-7), master_3 (node-8)")
+      print("Will revoke: master_3 (node-8)")
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
     timeout: 60
 
 test:
-  # === PART 1: Declare mTCELL (delegated token) ===
+  # === PART 1: Check initial state (should have 2 PoA keys) ===
+  - group: Check initial validators
+    defaults:
+      node: "node-1"
+    steps:
+      - cli: "srv_stake list keys"
+        save: _initial_keys
+      
+      - python: |
+          keys_output = ctx.get('_initial_keys', '')
+          key_count = keys_output.count('pkey_hash:')
+          print(f"Initial validators: {key_count} (expected: 2 PoA)")
+          if key_count != 2:
+              raise RuntimeError(f"Expected 2 initial validators, got {key_count}")
+
+  # === PART 2: Declare mTCELL (delegated token) ===
   - group: Declare mTCELL token
     defaults:
-      node: "{{first_root}}"
+      node: "node-1"
       cli:
         chain: "zerochain"
     steps:
+      - cli: "token info -name mTCELL"
+        save: _mtcell_check
+        allow_fail: true
+      
       - python: |
-          root_count = ctx.get('root_count')
-          certs = [f"stagenet.root.pvt.{i}" for i in range(root_count)]
-          ctx.set_variable('_all_root_certs', ",".join(certs))
+          mtcell_info = ctx.get('_mtcell_check', '')
+          mtcell_exists = 'token_name: mTCELL' in mtcell_info
+          ctx.set_variable('_mtcell_exists', mtcell_exists)
+          if mtcell_exists:
+              print("✓ mTCELL already declared")
+          else:
+              print("mTCELL not found - will declare")
       
-      - cli: "token_decl -token mTCELL -delegated_token_from TCELL -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{_all_root_certs}}"
-        save_hash: mtcell_decl_hash
-      
-      - cli: "mempool proc -datum {{mtcell_decl_hash}}"
-      
-      # Wait for token declaration to be processed in DAG
-      - wait_for_datum: "{{mtcell_decl_hash}}"
-        chain: zerochain
-        timeout_total: 60
-        timeout_mempool: 30
+      - python: |
+          import subprocess
+          if not ctx.get('_mtcell_exists'):
+              root_count = ctx.get('root_count')
+              certs = ",".join([f"stagenet.root.pvt.{i}" for i in range(root_count)])
+              cmd = f"cellframe-node-cli token_decl -token mTCELL -delegated_token_from TCELL -total_supply 0 -decimals 18 -signs_emission {root_count} -signs_total {root_count} -type CF20 -certs {certs} -net stagenet -chain zerochain"
+              
+              result = subprocess.run(
+                  ["docker", "exec", "cellframe-stage-node-1", "sh", "-c", cmd],
+                  capture_output=True, text=True
+              )
+              print(f"token_decl: {result.stdout[:150] if result.stdout else result.stderr[:150]}")
+              
+              import re
+              match = re.search(r'(0x[A-Fa-f0-9]{64})', result.stdout or '')
+              if match:
+                  ctx.set_variable('mtcell_decl_hash', match.group(1))
+                  proc_cmd = f"cellframe-node-cli mempool proc -datum {match.group(1)} -net stagenet -chain zerochain"
+                  subprocess.run(["docker", "exec", "cellframe-stage-node-1", "sh", "-c", proc_cmd])
+                  import time
+                  time.sleep(15)  # DAG-PoA consensus needs time
+              else:
+                  raise RuntimeError("Failed to declare mTCELL token")
       
       - cli: "token info -name mTCELL"
         contains: "token_name: mTCELL"
 
-  # === PART 2: Setup validator 2 (node-7) ===
-  - group: Setup validator 2 (node-7) - direct delegation
+  # === PART 3: Delegate validator on node-7 (master_2) ===
+  - group: Delegate validator on node-7 (master_2)
     defaults:
-      node: "{{first_root}}"
+      node: "node-1"
     steps:
       - python: |
           root_count = ctx.get('root_count')
-          val_idx = 2
-          node_num = root_count + val_idx + 1
-          ctx.set_variable('_val_node', f"node-{node_num}")
-          ctx.set_variable('_val_wallet', f"stagenet_master_{val_idx}")
-          ctx.set_variable('_val_cert', f"stagenet.master.pvt.{val_idx}")
-          print(f"Setting up validator {val_idx}: node-{node_num}")
+          val_idx = 2  # master_2
+          node_num = root_count + val_idx + 1  # node-7
+          ctx.set_variable('_val2_node', f"node-{node_num}")
+          ctx.set_variable('_val2_wallet', f"stagenet_master_{val_idx}")
+          ctx.set_variable('_val2_cert', f"stagenet.master.pvt.{val_idx}")
+          print(f"Delegating validator: master_{val_idx} on node-{node_num}")
       
-      - cli: "wallet info -w {{_val_wallet}}"
-        node: "{{_val_node}}"
+      - cli: "wallet info -w {{_val2_wallet}}"
+        node: "{{_val2_node}}"
         save_wallet: _val2_addr
       
-      # Transfer tokens
+      # Transfer TCELL and wait for finalization
       - cli: "tx_create -from_wallet stagenet_root_0 -value 1000000.0e+18 -to_addr {{_val2_addr}} -token TCELL -fee 5.0e+18 -chain main"
-        save_hash: transfer_2
+        save_hash: transfer_val2
       
-      - wait_for_datum: "{{transfer_2}}"
-        chain: main
-        timeout_total: 90
+      - wait: finalized
+        datum: "{{transfer_val2}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
-      # Stake lock
-      - cli: "stake_lock hold -token TCELL -w {{_val_wallet}} -value 10000.0e+18 -time_staking 501231 -fee 5.0e+18"
-        node: "{{_val_node}}"
-        save_hash: stake_lock_2
+      # Stake lock and wait for finalization
+      - cli: "stake_lock hold -token TCELL -w {{_val2_wallet}} -value 10000.0e+18 -time_staking 501231 -fee 5.0e+18"
+        node: "{{_val2_node}}"
+        save_hash: stake_lock_val2
       
-      - wait_for_datum: "{{stake_lock_2}}"
-        chain: main
-        timeout_total: 90
+      - wait: finalized
+        datum: "{{stake_lock_val2}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
-      # Direct delegation
-      - cli: "srv_stake delegate -w {{_val_wallet}} -value 2.0e+18 -cert {{_val_cert}} -fee 5.0e+18"
-        node: "{{_val_node}}"
-        save_hash: delegate_2
+      # Delegate and wait for finalization
+      - cli: "srv_stake delegate -w {{_val2_wallet}} -value 2.0e+18 -cert {{_val2_cert}} -fee 5.0e+18"
+        node: "{{_val2_node}}"
+        save_hash: delegate_val2
       
-      - wait_for_datum: "{{delegate_2}}"
-        chain: main
-        timeout_total: 90
+      - wait: finalized
+        datum: "{{delegate_val2}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
-      # === DECREE WORKFLOW ===
-      # Step 1: Create decree (first signature)
-      - cli: "srv_stake approve -tx {{delegate_2}} -poa_cert stagenet.root.pvt.0"
-        save_hash: approve_2
+      # Approve delegation decree
+      - cli: "srv_stake approve -tx {{delegate_val2}} -poa_cert stagenet.root.pvt.0"
+        save_hash: approve_val2
       
-      # Step 2: Sign decree with second root
-      - cli: "decree sign -datum {{approve_2}} -chain zerochain -certs stagenet.root.pvt.1"
+      - cli: "decree sign -datum {{approve_val2}} -chain zerochain -certs stagenet.root.pvt.1"
         node: "node-2"
-        save_hash: approve_2_signed
+        save_hash: approve_val2_signed
       
-      # Step 3: Process decree in DAG
-      - cli: "mempool proc -datum {{approve_2_signed}} -chain zerochain"
+      - cli: "mempool proc -datum {{approve_val2_signed}} -chain zerochain"
       
-      - wait_for_datum: "{{approve_2_signed}}"
-        chain: zerochain
-        timeout_total: 60
+      # Wait for decree to be processed in DAG
+      - wait: mempool
+        datum: "{{approve_val2_signed}}"
+        node: "node-1"
+        chain: "zerochain"
+        timeout: 30
       
-      # Step 4: Create anchor in mainchain
-      - cli: "decree anchor -datum {{approve_2_signed}} -chain main -certs stagenet.root.pvt.0"
-        save_hash: approve_2_anchor
+      - cli: "decree anchor -datum {{approve_val2_signed}} -chain main -certs stagenet.root.pvt.0"
+        save_hash: approve_val2_anchor
       
-      - wait_for_datum: "{{approve_2_anchor}}"
-        chain: main
-        timeout_total: 90
+      # Wait for anchor to be finalized
+      - wait: finalized
+        datum: "{{approve_val2_anchor}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
-      # Create stake order
-      - cli: "srv_stake order create -value 0.05e+18 -cert {{_val_cert}}"
-        node: "{{_val_node}}"
-        ignore_error: true
+      - python: |
+          print("✓ Validator master_2 (node-7) delegated")
 
-  # === PART 3: Setup validator 3 (node-8) ===
-  - group: Setup validator 3 (node-8) - direct delegation
+  # === PART 4: Delegate validator on node-8 (master_3) ===
+  - group: Delegate validator on node-8 (master_3)
     defaults:
-      node: "{{first_root}}"
+      node: "node-1"
     steps:
       - python: |
           root_count = ctx.get('root_count')
-          val_idx = 3
-          node_num = root_count + val_idx + 1
-          ctx.set_variable('_val_node', f"node-{node_num}")
-          ctx.set_variable('_val_wallet', f"stagenet_master_{val_idx}")
-          ctx.set_variable('_val_cert', f"stagenet.master.pvt.{val_idx}")
-          print(f"Setting up validator {val_idx}: node-{node_num}")
+          val_idx = 3  # master_3
+          node_num = root_count + val_idx + 1  # node-8
+          ctx.set_variable('_val3_node', f"node-{node_num}")
+          ctx.set_variable('_val3_wallet', f"stagenet_master_{val_idx}")
+          ctx.set_variable('_val3_cert', f"stagenet.master.pvt.{val_idx}")
+          print(f"Delegating validator: master_{val_idx} on node-{node_num}")
       
-      - cli: "wallet info -w {{_val_wallet}}"
-        node: "{{_val_node}}"
+      - cli: "wallet info -w {{_val3_wallet}}"
+        node: "{{_val3_node}}"
         save_wallet: _val3_addr
       
+      # Transfer TCELL and wait for finalization
       - cli: "tx_create -from_wallet stagenet_root_0 -value 1000000.0e+18 -to_addr {{_val3_addr}} -token TCELL -fee 5.0e+18 -chain main"
-        save_hash: transfer_3
+        save_hash: transfer_val3
       
-      - wait_for_datum: "{{transfer_3}}"
-        chain: main
-        timeout_total: 90
+      - wait: finalized
+        datum: "{{transfer_val3}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
-      - cli: "stake_lock hold -token TCELL -w {{_val_wallet}} -value 10000.0e+18 -time_staking 501231 -fee 5.0e+18"
-        node: "{{_val_node}}"
-        save_hash: stake_lock_3
+      # Stake lock and wait for finalization
+      - cli: "stake_lock hold -token TCELL -w {{_val3_wallet}} -value 10000.0e+18 -time_staking 501231 -fee 5.0e+18"
+        node: "{{_val3_node}}"
+        save_hash: stake_lock_val3
       
-      - wait_for_datum: "{{stake_lock_3}}"
-        chain: main
-        timeout_total: 90
+      - wait: finalized
+        datum: "{{stake_lock_val3}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
-      - cli: "srv_stake delegate -w {{_val_wallet}} -value 2.0e+18 -cert {{_val_cert}} -fee 5.0e+18"
-        node: "{{_val_node}}"
-        save_hash: delegate_3
+      # Delegate and wait for finalization
+      - cli: "srv_stake delegate -w {{_val3_wallet}} -value 2.0e+18 -cert {{_val3_cert}} -fee 5.0e+18"
+        node: "{{_val3_node}}"
+        save_hash: delegate_val3
       
-      - wait_for_datum: "{{delegate_3}}"
-        chain: main
-        timeout_total: 90
+      - wait: finalized
+        datum: "{{delegate_val3}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
-      # === DECREE WORKFLOW ===
-      - cli: "srv_stake approve -tx {{delegate_3}} -poa_cert stagenet.root.pvt.0"
-        save_hash: approve_3
+      # Approve delegation decree
+      - cli: "srv_stake approve -tx {{delegate_val3}} -poa_cert stagenet.root.pvt.0"
+        save_hash: approve_val3
       
-      - cli: "decree sign -datum {{approve_3}} -chain zerochain -certs stagenet.root.pvt.1"
+      - cli: "decree sign -datum {{approve_val3}} -chain zerochain -certs stagenet.root.pvt.1"
         node: "node-2"
-        save_hash: approve_3_signed
+        save_hash: approve_val3_signed
       
-      - cli: "mempool proc -datum {{approve_3_signed}} -chain zerochain"
+      - cli: "mempool proc -datum {{approve_val3_signed}} -chain zerochain"
       
-      - wait_for_datum: "{{approve_3_signed}}"
-        chain: zerochain
-        timeout_total: 60
+      # Wait for decree to be processed in DAG
+      - wait: mempool
+        datum: "{{approve_val3_signed}}"
+        node: "node-1"
+        chain: "zerochain"
+        timeout: 30
       
-      - cli: "decree anchor -datum {{approve_3_signed}} -chain main -certs stagenet.root.pvt.0"
-        save_hash: approve_3_anchor
+      - cli: "decree anchor -datum {{approve_val3_signed}} -chain main -certs stagenet.root.pvt.0"
+        save_hash: approve_val3_anchor
       
-      - wait_for_datum: "{{approve_3_anchor}}"
-        chain: main
-        timeout_total: 90
-      
-      - cli: "srv_stake order create -value 0.06e+18 -cert {{_val_cert}}"
-        node: "{{_val_node}}"
-        ignore_error: true
-
-  # === PART 4: Verify results ===
-  - group: Verify delegation results
-    defaults:
-      node: "{{first_root}}"
-    steps:
-      - cli: "srv_stake list keys"
-        save: _stake_keys_list
+      # Wait for anchor to be finalized
+      - wait: finalized
+        datum: "{{approve_val3_anchor}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
       
       - python: |
-          keys_output = ctx.get('_stake_keys_list', '')
+          print("✓ Validator master_3 (node-8) delegated")
+
+  # === PART 5: Verify 4 keys before revoke ===
+  - group: Verify 4 keys (2 PoA + 2 delegated)
+    defaults:
+      node: "node-1"
+    steps:
+      - cli: "srv_stake list keys"
+        save: _keys_before_revoke
+      
+      - python: |
+          keys_output = ctx.get('_keys_before_revoke', '')
           key_count = keys_output.count('pkey_hash:')
-          print(f"Total delegated keys after Phase 1: {key_count}")
+          print(f"Validators before revoke: {key_count} (expected: 4)")
+          if key_count != 4:
+              raise RuntimeError(f"Expected 4 validators before revoke, got {key_count}")
+
+  # === PART 6: Revoke validator on node-8 (master_3) ===
+  - group: Revoke validator on node-8 (master_3)
+    defaults:
+      node: "node-1"
+    steps:
+      - python: |
+          import subprocess
+          import re
+          
+          # Get node address for master_3 (node-8)
+          result_addr = subprocess.run(
+              ["docker", "exec", "cellframe-stage-node-8", "cellframe-node-cli", 
+               "net", "get", "status", "-net", "stagenet"],
+              capture_output=True, text=True
+          )
+          node_addr_match = re.search(r'current_addr:\s*([A-F0-9:]+)', result_addr.stdout)
+          node_addr = node_addr_match.group(1) if node_addr_match else None
+          print(f"Node-8 address: {node_addr}")
+          
+          # Get pkey_hash from srv_stake list keys by matching node_addr
+          result = subprocess.run(
+              ["docker", "exec", "cellframe-stage-node-1", "cellframe-node-cli", 
+               "srv_stake", "list", "keys", "-net", "stagenet"],
+              capture_output=True, text=True
+          )
+          
+          # Parse the output to find pkey_hash for this node_addr
+          lines = result.stdout.split('\n')
+          found_pkey = None
+          current_pkey = None
+          for line in lines:
+              if 'pkey_hash:' in line:
+                  match = re.search(r'pkey_hash:\s*(0x[A-Fa-f0-9]+)', line)
+                  if match:
+                      current_pkey = match.group(1)
+              if node_addr and node_addr in line:
+                  found_pkey = current_pkey
+                  break
+          
+          if found_pkey:
+              ctx.set_variable('_val3_pkey_hash', found_pkey)
+              print(f"✓ Found pkey_hash for revoke: {found_pkey[:20]}...")
+          else:
+              raise RuntimeError(f"Could not find pkey_hash for node_addr {node_addr}")
+      
+      # Revoke the delegation using invalidate command
+      - cli: "srv_stake invalidate -poa_cert stagenet.root.pvt.0 -signing_pkey_hash {{_val3_pkey_hash}} -signing_pkey_type sig_dil"
+        save_hash: revoke_val3
+      
+      - cli: "decree sign -datum {{revoke_val3}} -chain zerochain -certs stagenet.root.pvt.1"
+        node: "node-2"
+        save_hash: revoke_val3_signed
+      
+      - cli: "mempool proc -datum {{revoke_val3_signed}} -chain zerochain"
+      
+      # Wait for decree in zerochain
+      - wait: mempool
+        datum: "{{revoke_val3_signed}}"
+        node: "node-1"
+        chain: "zerochain"
+        timeout: 30
+      
+      - cli: "decree anchor -datum {{revoke_val3_signed}} -chain main -certs stagenet.root.pvt.0"
+        save_hash: revoke_val3_anchor
+      
+      # Wait for anchor to be finalized
+      - wait: finalized
+        datum: "{{revoke_val3_anchor}}"
+        node: "node-1"
+        chain: "main"
+        timeout: 90
+      
+      - python: |
+          print("✓ Validator master_3 (node-8) revoked")
+
+  # === PART 7: Final verification - 3 keys ===
+  - group: Verify final state (3 keys)
+    defaults:
+      node: "node-1"
+    steps:
+      - cli: "srv_stake list keys"
+        save: _final_keys
+      
+      - python: |
+          keys_output = ctx.get('_final_keys', '')
+          key_count = keys_output.count('pkey_hash:')
+          print(f"Final validators: {key_count} (expected: 3 = 2 PoA + 1 delegated)")
+          if key_count != 3:
+              raise RuntimeError(f"Expected 3 final validators, got {key_count}")
+      
+      # Create stake order for remaining delegated validator
+      - cli: "srv_stake order create -value 0.05e+18 -cert stagenet.master.pvt.2"
+        node: "node-7"
 
   # === Create snapshot ===
-  - snapshot: create
-    name: primary_phase1_complete
+  - group: Create phase 1 snapshot
+    steps:
+      - snapshot: create
+        name: primary_phase1_complete
 
 check:
   - cli: "token info -name mTCELL -net stagenet"
@@ -239,5 +400,6 @@ check:
           capture_output=True, text=True
       )
       pkey_count = result.stdout.count('pkey_hash:')
-      print(f"✓ Total validators after Phase 1: {pkey_count}")
-
+      print(f"✓ Final validators: {pkey_count} (expected: 3)")
+      if pkey_count != 3:
+          raise RuntimeError(f"Expected 3 validators in check, got {pkey_count}")

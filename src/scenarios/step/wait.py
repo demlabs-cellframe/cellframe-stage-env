@@ -247,7 +247,7 @@ class WaitStepExecutor(StepExecutor):
                 params["node"] = resolved_nodes[0]
         
         # Network and chain
-        params["network"] = ctx.substitute(step.network) if step.network else ctx.get_variable('network_name', 'stagenet')
+        params["network"] = ctx.substitute(step.network) if step.network else (ctx.get_variable('network_name') or 'stagenet')
         if step.chain:
             params["chain"] = ctx.substitute(step.chain)
         

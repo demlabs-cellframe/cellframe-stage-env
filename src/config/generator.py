@@ -901,6 +901,14 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
         
         if self.cert_generator.certs_exist() and not force:
             logger.info("certificates_already_exist_skipping")
+            # Still need to copy private certs to node data (may have been cleaned)
+            shared_certs_dir = self.configs_cache / "shared" / "ca"
+            self.cert_generator.copy_certs_to_shared_ca(shared_certs_dir, network_name)
+            self.cert_generator.copy_private_certs_to_node_data(
+                self.data_cache,
+                node_count,
+                network_name
+            )
             return
         
         if force:

@@ -668,10 +668,10 @@ class DatumMonitor:
             container_name = self._node_to_container(node)
             container = self.docker_client.containers.get(container_name)
             
-            # Get recent blocks and search for our datum
+            # Get recent blocks list
             cmd = [
                 self.node_cli_path, "block", "list",
-                "-net", network, "-chain", chain, "-last", "10"
+                "-net", network, "-chain", chain
             ]
             
             result = container.exec_run(cmd, demux=True)
@@ -683,21 +683,29 @@ class DatumMonitor:
             
             stdout_str = stdout.decode('utf-8') if stdout else ""
             
-            # Parse block list output for our datum hash
-            # Format: block #N hash:... datums:...
-            lines = stdout_str.split('\n')
-            for line in lines:
-                if datum_hash.lower() in line.lower():
-                    # Extract block number from line
-                    match = re.search(r'block\s+#(\d+)', line, re.IGNORECASE)
-                    if match:
-                        block_num = int(match.group(1))
-                        
-                        # Extract block hash
-                        hash_match = re.search(r'hash:\s*([0-9a-fA-Fx]+)', line, re.IGNORECASE)
-                        block_hash = hash_match.group(1) if hash_match else "unknown"
-                        
-                        return (block_num, block_hash)
+            # Extract block hashes from list output
+            # Format: block_hash: 0x...
+            block_hashes = re.findall(r'block_hash:\s*(0x[A-Fa-f0-9]{64})', stdout_str, re.IGNORECASE)
+            block_nums = re.findall(r'block_num:\s*(\d+)', stdout_str)
+            
+            # Check each block for our datum hash
+            for i, block_hash in enumerate(block_hashes[:10]):  # Limit to 10 recent blocks
+                dump_cmd = [
+                    self.node_cli_path, "block", "dump",
+                    "-net", network, "-chain", chain, "-hash", block_hash
+                ]
+                
+                dump_result = container.exec_run(dump_cmd, demux=True)
+                if dump_result.exit_code != 0:
+                    continue
+                
+                dump_stdout = dump_result.output[0].decode('utf-8') if dump_result.output[0] else ""
+                
+                # Search for datum hash in block dump
+                if datum_hash.lower() in dump_stdout.lower():
+                    block_num = int(block_nums[i]) if i < len(block_nums) else i
+                    self._log(f"  ✅ Datum found in block #{block_num} ({block_hash[:16]}...)")
+                    return (block_num, block_hash)
             
             return None
             

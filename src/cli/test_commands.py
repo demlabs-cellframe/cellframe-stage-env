@@ -280,13 +280,27 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 base_path=base_path
                             )
                             
+                            # Get node configs and global context from network manager
+                            node_configs = None
+                            global_context = None
+                            if network_mgr:
+                                node_configs = network_mgr.generate_node_configs()
+                                # Create global context with node info
+                                from ..scenarios.global_context import ScenarioGlobalContext
+                                global_context = ScenarioGlobalContext(
+                                    network_name=network_mgr.topology.network.name,
+                                    topology_name=network_mgr.topology_name
+                                )
+                                global_context.set_static_node_info(node_configs)
+                            
                             async def _run_standalone():
                                 await executor.execute_scenario(
                                     scenario,
                                     compose_manager=network_mgr.compose if network_mgr else None,
                                     snapshot_manager=network_mgr.snapshot_manager if network_mgr else None,
                                     genesis_config_manager=network_mgr.genesis if network_mgr else None,
-                                    node_configs=None  # Will be initialized from running network
+                                    global_context=global_context,
+                                    node_configs=node_configs
                                 )
                             
                             asyncio.run(_run_standalone())
@@ -432,8 +446,27 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 base_path=base_path
                             )
                             
+                            # Get node configs and global context
+                            suite_node_configs = None
+                            suite_global_context = None
+                            if network_mgr:
+                                suite_node_configs = network_mgr.generate_node_configs()
+                                from ..scenarios.global_context import ScenarioGlobalContext
+                                suite_global_context = ScenarioGlobalContext(
+                                    network_name=network_mgr.topology.network.name,
+                                    topology_name=network_mgr.topology_name
+                                )
+                                suite_global_context.set_static_node_info(suite_node_configs)
+                            
                             async def _run_suite_setup():
-                                await executor.execute_scenario(suite_setup_scenario)
+                                await executor.execute_scenario(
+                                    suite_setup_scenario,
+                                    compose_manager=network_mgr.compose if network_mgr else None,
+                                    snapshot_manager=network_mgr.snapshot_manager if network_mgr else None,
+                                    genesis_config_manager=network_mgr.genesis if network_mgr else None,
+                                    global_context=suite_global_context,
+                                    node_configs=suite_node_configs
+                                )
                             
                             asyncio.run(_run_suite_setup())
                             print_success("✓ Suite setup completed")
@@ -562,8 +595,27 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 base_path=base_path
                             )
                             
+                            # Get node configs and global context
+                            exec_node_configs = None
+                            exec_global_context = None
+                            if network_mgr:
+                                exec_node_configs = network_mgr.generate_node_configs()
+                                from ..scenarios.global_context import ScenarioGlobalContext
+                                exec_global_context = ScenarioGlobalContext(
+                                    network_name=network_mgr.topology.network.name,
+                                    topology_name=network_mgr.topology_name
+                                )
+                                exec_global_context.set_static_node_info(exec_node_configs)
+                            
                             async def _execute():
-                                return await executor.execute_scenario(scenario)
+                                return await executor.execute_scenario(
+                                    scenario,
+                                    compose_manager=network_mgr.compose if network_mgr else None,
+                                    snapshot_manager=network_mgr.snapshot_manager if network_mgr else None,
+                                    genesis_config_manager=network_mgr.genesis if network_mgr else None,
+                                    global_context=exec_global_context,
+                                    node_configs=exec_node_configs
+                                )
                             
                             print_info("  ▶️  Executing...")
                             ctx = asyncio.run(_execute())
