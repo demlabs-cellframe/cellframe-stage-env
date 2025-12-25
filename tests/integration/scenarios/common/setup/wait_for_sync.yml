@@ -5,7 +5,7 @@ setup:
   - wait: 15s
     description: "Wait for network to sync"
   
-  - cli: net -net stagenet get status
+  - cli: net -net {{network_name}} get status
     node: node1
     expect: success
     save: sync_status

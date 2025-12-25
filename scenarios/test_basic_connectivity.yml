@@ -1,5 +1,5 @@
 name: Basic Connectivity Test
-description: Verify that stagenet nodes are connected and network is operational (dynamic topology)
+description: Verify that {{network_name}} nodes are connected and network is operational (dynamic topology)
 author: Stage-Env Team
 tags: [connectivity, basic, sanity]
 version: "1.0"
@@ -8,9 +8,24 @@ includes:
   - ../common/set_net_default.yml
 
 network:
-  name: stagenet
+  name: "{{network_name}}"
 
 test:
+  - group: Check first root node status
+    defaults:
+      node: "{{first_root}}"
+    steps:
+      - cli: "net get status"
+        expect: success
+        contains: "NET_STATE_ONLINE"
+      
+      - cli: "node list"
+        expect: success
+        contains: "Got"
+      
+      - cli: "version"
+        expect: success
+        contains: "cellframe-node version"
   - group: Check first root node status
     defaults:
       node: "{{first_root}}"
@@ -35,7 +50,21 @@ check:
       - cli: "net get status"
         node: "{{node_name}}"
         contains: "NET_STATE_ONLINE"
+  # Check all root nodes
+  - for: node_name
+    in: "{{root_nodes}}"
+    steps:
+      - cli: "net get status"
+        node: "{{node_name}}"
+        contains: "NET_STATE_ONLINE"
   
+  # Check all master nodes
+  - for: node_name
+    in: "{{master_nodes}}"
+    steps:
+      - cli: "net get status"
+        node: "{{node_name}}"
+        contains: "NET_STATE_ONLINE"
   # Check all master nodes
   - for: node_name
     in: "{{master_nodes}}"

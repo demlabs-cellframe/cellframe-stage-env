@@ -2,7 +2,8 @@
   "network": {
     "name": "{{ network_name | default('stagenet') }}",
     "network_id": "{{ network_id | default('0x1234') }}",
-    "consensus": "{{ consensus_type | default('esbocs') }}"
+    "consensus": "{{ consensus_type | default('esbocs') }}",
+    "native_ticker": "{{ native_ticker | default('TCELL') }}"
   },
   "topology": {
     "root_nodes": {
@@ -46,7 +47,7 @@
     "min_validators": {{ min_validators | default(2) }},
     "new_round_delay": {{ new_round_delay | default(30) }},
     "collecting_level": {{ collecting_level | default(10.0) }},
-    "auth_certs_prefix": "{{ auth_certs_prefix | default('stagenet.master') }}",
+    "auth_certs_prefix": "{{ auth_certs_prefix | default(network_name ~ '.master') }}",
     "round_start_sync_timeout": {{ round_start_sync_timeout | default(5) }},
     "round_attempts_max": {{ round_attempts_max | default(2) }},
     "round_attempt_timeout": {{ round_attempt_timeout | default(5) }},

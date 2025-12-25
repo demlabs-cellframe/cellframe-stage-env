@@ -12,7 +12,7 @@ includes:
 
 network:
   topology: default
-  name: stagenet
+  name: "{{network_name}}"
 
 # Setup: verify initial network
 setup:
@@ -22,7 +22,7 @@ setup:
     steps:
       - cli: "net list"
         save: initial_nets
-        contains: "stagenet"
+        contains: "{{network_name}}"
       
       - cli: "node list"
         save: initial_nodes

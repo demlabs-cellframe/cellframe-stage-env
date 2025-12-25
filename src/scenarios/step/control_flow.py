@@ -15,14 +15,61 @@ class SetStepExecutor(StepExecutor):
     
     async def execute(self, step: SetStep, ctx: RuntimeContext) -> None:
         """Execute set step."""
+        import re as regex_module
+        
         var_name = step.set
         
         if step.eval:
             # Evaluate expression using context variables
             expr = str(step.value)
+            
+            # Built-in helper functions available in eval
+            def join_vars(prefix: str, count: int, separator: str = ",") -> str:
+                """Join variables with common prefix: join_vars('addr_', 3) -> 'val0,val1,val2'"""
+                values = [str(ctx.variables.get(f"{prefix}{i}", "")) for i in range(count)]
+                return separator.join(values)
+            
+            def join_vars_bracket(prefix: str, count: int, separator: str = ",") -> str:
+                """Join variables with brackets: join_vars_bracket('addr_', 3) -> '[val0,val1,val2]'"""
+                return "[" + join_vars(prefix, count, separator) + "]"
+            
+            def regex_extract(text: str, pattern: str, group: int = 1) -> str:
+                """Extract value using regex: regex_extract(text, r'hash:\s*(\w+)', 1)"""
+                match = regex_module.search(pattern, str(text))
+                if match:
+                    return match.group(group)
+                return ""
+            
+            def concat(*args) -> str:
+                """Concatenate values: concat('a', '-', 'b') -> 'a-b'"""
+                return "".join(str(a) for a in args)
+            
+            def get_var(name: str, default: str = "") -> str:
+                """Get variable by dynamic name: get_var('addr_' + str(i))"""
+                return str(ctx.variables.get(name, default))
+            
+            def get_var_dict(name: str) -> dict:
+                """Get dict variable: get_var_dict('node_ip')"""
+                return ctx.variables.get(name, {})
+            
             try:
-                # Use context variables as locals for evaluation
-                value = eval(expr, {"__builtins__": __builtins__}, ctx.variables)
+                # Add helper functions to eval namespace
+                eval_globals = {
+                    "__builtins__": __builtins__,
+                    "join_vars": join_vars,
+                    "join_vars_bracket": join_vars_bracket,
+                    "regex_extract": regex_extract,
+                    "concat": concat,
+                    "get_var": get_var,
+                    "get_var_dict": get_var_dict,
+                    "range": range,
+                    "len": len,
+                    "str": str,
+                    "int": int,
+                    "list": list,
+                    "re": regex_module,
+                }
+                value = eval(expr, eval_globals, ctx.variables)
             except Exception as e:
                 raise ScenarioExecutionError(f"Failed to evaluate expression '{expr}': {e}", step=step)
         else:

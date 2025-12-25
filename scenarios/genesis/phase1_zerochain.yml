@@ -6,7 +6,7 @@ includes:
 
 network:
   topology: default
-  name: stagenet
+  name: "{{network_name}}"
 
 setup:
   # Start all nodes dynamically based on topology
@@ -16,80 +16,67 @@ setup:
   
   - wait: "10s"
   
-  # Verify pre-generated certificates exist in containers (dynamic)
+  # Verify ROOT node certificates exist
   - group: Verify ROOT node certificates
     steps:
       - for: node_idx
         in: "{{root_indices}}"
         steps:
-          - python: |
-              import subprocess
-              node_idx = ctx.get('node_idx')
-              cert_idx = node_idx - 1
-              container = f"cellframe-stage-node-{node_idx}"
-              cert_path = f"/opt/cellframe-node/var/lib/ca/stagenet.root.pvt.{cert_idx}.dcert"
-              
-              result = subprocess.run(
-                  ["docker", "exec", container, "test", "-f", cert_path],
-                  capture_output=True
-              )
-              if result.returncode != 0:
-                  raise RuntimeError(f"ROOT certificate not found: {cert_path} on {container}")
-              print(f"✓ ROOT node-{node_idx}: {cert_path} found")
+          - set: _cert_idx
+            value: "node_idx - 1"
+            eval: true
+          - set: _cert_path
+            value: "/opt/cellframe-node/var/lib/ca/{{network_name}}.root.pvt.{{_cert_idx}}.dcert"
+          - set: _check_node
+            value: "node-{{node_idx}}"
+          - bash: "test -f {{_cert_path}} && echo '✓ ROOT cert found: {{_cert_path}}'"
+            node: "{{_check_node}}"
   
+  # Verify MASTER node certificates exist
   - group: Verify MASTER node certificates
     steps:
       - for: node_idx
         in: "{{master_indices}}"
         steps:
-          - python: |
-              import subprocess
-              node_idx = ctx.get('node_idx')
-              root_count = ctx.get('root_count')
-              cert_idx = node_idx - root_count - 1
-              container = f"cellframe-stage-node-{node_idx}"
-              cert_path = f"/opt/cellframe-node/var/lib/ca/stagenet.master.pvt.{cert_idx}.dcert"
-              
-              result = subprocess.run(
-                  ["docker", "exec", container, "test", "-f", cert_path],
-                  capture_output=True
-              )
-              if result.returncode != 0:
-                  raise RuntimeError(f"MASTER certificate not found: {cert_path} on {container}")
-              print(f"✓ MASTER node-{node_idx}: {cert_path} found")
+          - set: _cert_idx
+            value: "node_idx - root_count - 1"
+            eval: true
+          - set: _cert_path
+            value: "/opt/cellframe-node/var/lib/ca/{{network_name}}.master.pvt.{{_cert_idx}}.dcert"
+          - set: _check_node
+            value: "node-{{node_idx}}"
+          - bash: "test -f {{_cert_path}} && echo '✓ MASTER cert found: {{_cert_path}}'"
+            node: "{{_check_node}}"
   
   # Copy all root private certs to first root node for multi-signature
-  - python: |
-      import subprocess
-      import os
-      
-      root_count = ctx.get('root_count')
-      dst_container = "cellframe-stage-node-1"
-      
-      # Copy all root certs except first one to first root node
-      for i in range(1, root_count):
-          cert_name = f"stagenet.root.pvt.{i}.dcert"
-          cert_path = f"/opt/cellframe-node/var/lib/ca/{cert_name}"
-          tmp_path = f"/tmp/{cert_name}"
-          src_container = f"cellframe-stage-node-{i+1}"
-          
-          subprocess.run(["docker", "cp", f"{src_container}:{cert_path}", tmp_path], check=True)
-          subprocess.run(["docker", "cp", tmp_path, f"{dst_container}:{cert_path}"], check=True)
-          os.remove(tmp_path)
-          print(f"✓ Copied {cert_name} from {src_container} to {dst_container}")
-      
-      print(f"✓ All {root_count-1} root certs copied to node-1 for multi-signature")
+  - group: Copy root certs to node-1 for multi-signature
+    steps:
+      - for: cert_idx
+        in: "range(1, root_count)"
+        steps:
+          - set: _src_node_id
+            value: "cert_idx + 1"
+            eval: true
+          - set: _cert_name
+            value: "{{network_name}}.root.pvt.{{cert_idx}}.dcert"
+          - set: _cert_path
+            value: "/opt/cellframe-node/var/lib/ca/{{_cert_name}}"
+          - docker_op: cp
+            src: "node-{{_src_node_id}}:{{_cert_path}}"
+            dst: "node-1:{{_cert_path}}"
   
   # Configure events_sign_cert for each ROOT node
   - for: node_idx
     in: "{{root_indices}}"
     steps:
-      - python: |
-          node_idx = ctx.get('node_idx')
-          cert_idx = node_idx - 1
-          ctx.set_variable('_current_node', f"node-{node_idx}")
-          ctx.set_variable('_current_cert', f"stagenet.root.pvt.{cert_idx}")
-      - config: "stagenet"
+      - set: _cert_idx
+        value: "node_idx - 1"
+        eval: true
+      - set: _current_node
+        value: "node-{{node_idx}}"
+      - set: _current_cert
+        value: "{{network_name}}.root.pvt.{{_cert_idx}}"
+      - config: "{{network_name}}"
         nodes: ["{{_current_node}}"]
         set:
           events_sign_cert: "{{_current_cert}}"
@@ -98,6 +85,8 @@ setup:
     services: "{{all_nodes}}"
   
   - wait_network: online
+    nodes: "{{root_nodes}}"
+    timeout: 120
     nodes: "{{root_nodes}}"
     timeout: 120
   
@@ -110,10 +99,13 @@ test:
       - for: node_idx
         in: "{{root_indices}}"
         steps:
-          - python: |
-              node_idx = ctx.get('node_idx')
-              ctx.set_variable('_node_name', f"node-{node_idx}")
-              ctx.set_variable('_addr_var', f"root_addr_{node_idx - 1}")
+          - set: _addr_idx
+            value: "node_idx - 1"
+            eval: true
+          - set: _node_name
+            value: "node-{{node_idx}}"
+          - set: _addr_var
+            value: "root_addr_{{_addr_idx}}"
           - cli: "node dump"
             node: "{{_node_name}}"
             save_node: "{{_addr_var}}"
@@ -121,11 +113,13 @@ test:
       - for: node_idx
         in: "{{master_indices}}"
         steps:
-          - python: |
-              node_idx = ctx.get('node_idx')
-              root_count = ctx.get('root_count')
-              ctx.set_variable('_node_name', f"node-{node_idx}")
-              ctx.set_variable('_addr_var', f"master_addr_{node_idx - root_count - 1}")
+          - set: _addr_idx
+            value: "node_idx - root_count - 1"
+            eval: true
+          - set: _node_name
+            value: "node-{{node_idx}}"
+          - set: _addr_var
+            value: "master_addr_{{_addr_idx}}"
           - cli: "node dump"
             node: "{{_node_name}}"
             save_node: "{{_addr_var}}"
@@ -133,53 +127,47 @@ test:
       - for: node_idx
         in: "{{full_indices}}"
         steps:
-          - python: |
-              node_idx = ctx.get('node_idx')
-              root_count = ctx.get('root_count')
-              master_count = ctx.get('master_count')
-              ctx.set_variable('_node_name', f"node-{node_idx}")
-              ctx.set_variable('_addr_var', f"full_addr_{node_idx - root_count - master_count - 1}")
+          - set: _addr_idx
+            value: "node_idx - root_count - master_count - 1"
+            eval: true
+          - set: _node_name
+            value: "node-{{node_idx}}"
+          - set: _addr_var
+            value: "full_addr_{{_addr_idx}}"
           - cli: "node dump"
             node: "{{_node_name}}"
             save_node: "{{_addr_var}}"
   
   # Build validators_addrs dynamically - ONLY first 2 master nodes for initial 2/2 consensus
   # Other validators will be added via delegation in Primary scenario
-  - python: |
-      master_count = ctx.get('master_count')
-      # Only use first 2 master nodes as initial validators
-      initial_validator_count = min(2, master_count)
-      addrs = [ctx.get(f'master_addr_{i}') for i in range(initial_validator_count)]
-      validators_str = "[" + ",".join(addrs) + "]"
-      ctx.set_variable('validators_addrs_str', validators_str)
-      ctx.set_variable('initial_validator_count', initial_validator_count)
-      print(f"Initial validators (2/2 consensus): {validators_str}")
+  - compute: initial_validator_count
+    expr: "min(2, master_count)"
+  
+  - set: validators_addrs_str
+    value: "join_vars_bracket('master_addr_', initial_validator_count)"
+    eval: true
   
   # Build authorized_nodes_addrs from root node addresses
-  - python: |
-      root_count = ctx.get('root_count')
-      addrs = [ctx.get(f'root_addr_{i}') for i in range(root_count)]
-      authorized_str = "[" + ",".join(addrs) + "]"
-      ctx.set_variable('authorized_nodes_str', authorized_str)
-      print(f"Authorized nodes: {authorized_str}")
+  - set: authorized_nodes_str
+    value: "join_vars_bracket('root_addr_', root_count)"
+    eval: true
   
   # Set validators_addrs on ALL nodes
-  - config: "stagenet/main"
+  - config: "{{network_name}}/main"
     nodes: "{{all_nodes}}"
     set:
       validators_addrs: "{{validators_addrs_str}}"
   
   # Set authorized_nodes_addrs in ZEROCHAIN config
-  - config: "stagenet/zerochain"
+  - config: "{{network_name}}/zerochain"
     nodes: "{{all_nodes}}"
     set:
       authorized_nodes_addrs: "{{authorized_nodes_str}}"
   
-  # Restart all non-full nodes
-  - python: |
-      root_nodes = ctx.get('root_nodes')
-      master_nodes = ctx.get('master_nodes')
-      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
+  # Build active nodes list (root + master)
+  - set: _active_nodes
+    value: "root_nodes + master_nodes"
+    eval: true
   
   - docker_op: restart
     services: "{{_active_nodes}}"
@@ -198,39 +186,45 @@ test:
       - for: node_idx
         in: "{{root_indices}}"
         steps:
-          - python: |
-              node_idx = ctx.get('node_idx')
-              addr = ctx.get(f'root_addr_{node_idx - 1}')
-              ip = ctx.get('node_ip', {}).get(f'node{node_idx}', '')
-              ctx.set_variable('_add_addr', addr)
-              ctx.set_variable('_add_host', ip)
+          - set: _addr_idx
+            value: "node_idx - 1"
+            eval: true
+          - set: _add_addr
+            value: "get_var('root_addr_' + str(_addr_idx))"
+            eval: true
+          - set: _add_host
+            value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
+            eval: true
           - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
             contains: "Successfully"
       
       - for: node_idx
         in: "{{master_indices}}"
         steps:
-          - python: |
-              node_idx = ctx.get('node_idx')
-              root_count = ctx.get('root_count')
-              addr = ctx.get(f'master_addr_{node_idx - root_count - 1}')
-              ip = ctx.get('node_ip', {}).get(f'node{node_idx}', '')
-              ctx.set_variable('_add_addr', addr)
-              ctx.set_variable('_add_host', ip)
+          - set: _addr_idx
+            value: "node_idx - root_count - 1"
+            eval: true
+          - set: _add_addr
+            value: "get_var('master_addr_' + str(_addr_idx))"
+            eval: true
+          - set: _add_host
+            value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
+            eval: true
           - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
             contains: "Successfully"
       
       - for: node_idx
         in: "{{full_indices}}"
         steps:
-          - python: |
-              node_idx = ctx.get('node_idx')
-              root_count = ctx.get('root_count')
-              master_count = ctx.get('master_count')
-              addr = ctx.get(f'full_addr_{node_idx - root_count - master_count - 1}')
-              ip = ctx.get('node_ip', {}).get(f'node{node_idx}', '')
-              ctx.set_variable('_add_addr', addr)
-              ctx.set_variable('_add_host', ip)
+          - set: _addr_idx
+            value: "node_idx - root_count - master_count - 1"
+            eval: true
+          - set: _add_addr
+            value: "get_var('full_addr_' + str(_addr_idx))"
+            eval: true
+          - set: _add_host
+            value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
+            eval: true
           - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
             contains: "Successfully"
   
@@ -250,43 +244,49 @@ test:
       - for: node_idx
         in: "{{root_indices}}"
         steps:
-          - python: |
-              node_idx = ctx.get('node_idx')
-              ctx.set_variable('_wallet_node', f"node-{node_idx}")
-              ctx.set_variable('_wallet_name', f"stagenet_root_{node_idx - 1}")
+          - set: _wallet_idx
+            value: "node_idx - 1"
+            eval: true
+          - set: _wallet_node
+            value: "node-{{node_idx}}"
+          - set: _wallet_name
+            value: "{{network_name}}_root_{{_wallet_idx}}"
           - cli: "wallet new -w {{_wallet_name}}"
             node: "{{_wallet_node}}"
       
       - for: node_idx
         in: "{{master_indices}}"
         steps:
-          - python: |
-              node_idx = ctx.get('node_idx')
-              root_count = ctx.get('root_count')
-              ctx.set_variable('_wallet_node', f"node-{node_idx}")
-              ctx.set_variable('_wallet_name', f"stagenet_master_{node_idx - root_count - 1}")
+          - set: _wallet_idx
+            value: "node_idx - root_count - 1"
+            eval: true
+          - set: _wallet_node
+            value: "node-{{node_idx}}"
+          - set: _wallet_name
+            value: "{{network_name}}_master_{{_wallet_idx}}"
           - cli: "wallet new -w {{_wallet_name}}"
             node: "{{_wallet_node}}"
       
       - for: node_idx
         in: "{{full_indices}}"
         steps:
-          - python: |
-              node_idx = ctx.get('node_idx')
-              root_count = ctx.get('root_count')
-              master_count = ctx.get('master_count')
-              ctx.set_variable('_wallet_node', f"node-{node_idx}")
-              ctx.set_variable('_wallet_name', f"stagenet_full_{node_idx - root_count - master_count - 1}")
+          - set: _wallet_idx
+            value: "node_idx - root_count - master_count - 1"
+            eval: true
+          - set: _wallet_node
+            value: "node-{{node_idx}}"
+          - set: _wallet_name
+            value: "{{network_name}}_full_{{_wallet_idx}}"
           - cli: "wallet new -w {{_wallet_name}}"
             node: "{{_wallet_node}}"
   
   # Get fee_addr from first root wallet
-  - cli: "wallet info -w stagenet_root_0"
+  - cli: "wallet info -w {{network_name}}_root_0"
     node: "{{first_root}}"
     save_wallet: fee_addr
   
   # Set fee_addr on master nodes
-  - config: "stagenet"
+  - config: "{{network_name}}"
     nodes: "{{master_nodes}}"
     set:
       fee_addr: "{{fee_addr}}"
@@ -298,7 +298,7 @@ test:
       seed_mode: "true"
   
   # Enable is_add_directly for genesis event creation on seed nodes
-  - config: "stagenet/zerochain"
+  - config: "{{network_name}}/zerochain"
     nodes: "{{seed_nodes}}"
     set:
       is_add_directly: "true"
@@ -313,21 +313,18 @@ test:
   - wait: "40s"
 
   # Genesis Event - Token Declaration
-  # Build dynamic certs string for token_decl
-  - python: |
-      root_count = ctx.get('root_count')
-      certs = [f"stagenet.root.pvt.{i}" for i in range(root_count)]
-      certs_str = ",".join(certs)
-      ctx.set_variable('root_certs_str', certs_str)
-      print(f"Root certs for signing: {certs_str}")
-  
+  # Build root_certs_str: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
+  - set: root_certs_str
+    value: "','.join([f'{network_name}.root.pvt.{i}' for i in range(root_count)])"
+    eval: true
+
   - group: Genesis Event - Token Declaration
     defaults:
       node: "{{first_root}}"
       cli:
         chain: "zerochain"
     steps:
-      - cli: "token_decl -token TCELL -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
+      - cli: "token_decl -token {{native_ticker}} -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
         save_hash: token_hash
       
       - wait: "3s"
@@ -347,7 +344,7 @@ test:
         save_hash: genesis_event_hash
   
   # Set static genesis event on all active nodes
-  - config: "stagenet/zerochain"
+  - config: "{{network_name}}/zerochain"
     nodes: "{{_active_nodes}}"
     set:
       static_genesis_event: "{{genesis_event_hash}}"
@@ -357,8 +354,9 @@ test:
   # Disable seed_mode
   - config: "cellframe-node"
     nodes: "{{seed_nodes}}"
+    nodes: "{{seed_nodes}}"
     set:
-      seed_mode: "false"
+      seed_mode: "true"
   
   # Create stake orders ONLY for initial 2 validators (node-5, node-6)
   # Other validators will be added via delegation in Primary scenario
@@ -376,26 +374,29 @@ test:
       - for: node_idx
         in: "{{_initial_master_indices}}"
         steps:
-          - python: |
-              node_idx = ctx.get('node_idx')
-              root_count = ctx.get('root_count')
-              cert_idx = node_idx - root_count - 1
-              ctx.set_variable('_stake_node', f"node-{node_idx}")
-              ctx.set_variable('_stake_cert', f"stagenet.master.pvt.{cert_idx}")
-          - cli: "srv_stake order create -net stagenet -value 0.05e+18 -cert {{_stake_cert}}"
+          - set: _cert_idx
+            value: "node_idx - root_count - 1"
+            eval: true
+          - set: _stake_node
+            value: "node-{{node_idx}}"
+          - set: _stake_cert
+            value: "{{network_name}}.master.pvt.{{_cert_idx}}"
+          - cli: "srv_stake order create -net {{network_name}} -value 0.05e+18 -cert {{_stake_cert}}"
             node: "{{_stake_node}}"
             save: stake_order_result
   
   - docker_op: restart
     services: "{{_active_nodes}}"
+    services: "{{_active_nodes}}"
   
   - wait_network: online
+    nodes: "{{_active_nodes}}"
     nodes: "{{_active_nodes}}"
     timeout: 60
   
   - wait: "40s"
   
-  - config: "stagenet/zerochain"
+  - config: "{{network_name}}/zerochain"
     nodes: "{{root_nodes}}"
     set:
       static_genesis_event: "{{genesis_event_hash}}"
@@ -409,42 +410,32 @@ test:
   - wait: "10s"
   
   # Token Emission - ALL signatures on node-1 (has all root certs)
+  # Build all_root_certs: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
+  - set: all_root_certs
+    value: "','.join([f'{network_name}.root.pvt.{i}' for i in range(root_count)])"
+    eval: true
+  
   - group: Token Emission
     defaults:
       node: "{{first_root}}"
       cli:
         chain: "zerochain"
-        token: "TCELL"
+        token: "{{native_ticker}}"
     steps:
-      # Build comma-separated list of all root certs for single emission command
-      - python: |
-          root_count = ctx.get('root_count')
-          all_certs = ','.join([f"stagenet.root.pvt.{i}" for i in range(root_count)])
-          ctx.set_variable('all_root_certs', all_certs)
-          print(f"Using all root certs for emission: {all_certs}")
-      
       # Create emission with ALL signatures at once (all certs are on node-1)
       - cli: "token_emit -no_base_tx -emission_value 10.0e+54 -addr {{fee_addr}} -certs {{all_root_certs}}"
         save_hash: emission_datum_hash
       
       - wait: "10s"
       
-      # Verify emission is in mempool with correct signature count
+      # Verify emission is in mempool
       - cli: "mempool list"
         save: mempool_after_emission
       
-      - python: |
-          import re
-          mempool = ctx.get('mempool_after_emission', '')
-          match = re.search(r'sig_count:\s*(\d+)', mempool)
-          if match:
-              sig_count = int(match.group(1))
-              root_count = ctx.get('root_count')
-              print(f"Emission has {sig_count} signatures (need {root_count})")
-              if sig_count < root_count:
-                  print(f"WARNING: Not enough signatures!")
-          else:
-              print("Could not find sig_count in mempool")
+      # Extract and verify signature count
+      - set: emission_sig_count
+        value: "int(regex_extract(mempool_after_emission, r'sig_count:\\s*(\\d+)', 1) or 0)"
+        eval: true
       
       - cli: "dag event last"
         save_hash: last_event_before_emission
@@ -461,17 +452,22 @@ test:
       - cli: "dag event dump -event {{emission_event_hash}} -from events"
         save: emission_event_dump
       
-      - python: |
-          import re
-          dump = ctx.get('emission_event_dump', '')
-          match = re.search(r'emission_hash:\s*(0x[a-fA-F0-9]+)', dump)
-          if not match:
-              raise ValueError(f"emission_hash not found in event dump: {dump[:500]}")
-          result = match.group(1)
-        save: emission_hash
+      # Extract emission_hash from dump
+      - set: emission_hash
+        value: "regex_extract(emission_event_dump, r'emission_hash:\\s*(0x[a-fA-F0-9]+)', 1)"
+        eval: true
+      
+      # Verify emission_hash was found
+      - if: "not emission_hash"
+        then:
+          - bash: "echo 'ERROR: emission_hash not found in event dump' && exit 1"
+            node: "{{first_root}}"
   
   - cli: "dag event list -chain zerochain"
     node: "{{first_root}}"
   
   - cli: "dag event last -chain zerochain"
     node: "{{first_root}}"
+
+# NOTE: Snapshot creation is handled by manager.py after this phase completes.
+# teardown with snapshot: create would be used for standalone phase execution.

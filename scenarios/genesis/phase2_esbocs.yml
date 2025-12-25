@@ -6,15 +6,19 @@ includes:
 
 network:
   topology: default
-  name: stagenet
+  name: "{{network_name}}"
 
 setup:
-  # Enable seed_mode on ALL root and master nodes to accept genesis block
-  - python: |
-      root_nodes = ctx.get('root_nodes')
-      master_nodes = ctx.get('master_nodes')
-      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
+  # NOTE: When running as part of genesis flow (via manager.py), 
+  # containers are already running from phase1.
+  # snapshot: restore is only needed when running phase2 standalone.
   
+  # Build active nodes list (root + master)
+  - set: _active_nodes
+    value: "root_nodes + master_nodes"
+    eval: true
+  
+  # Enable seed_mode on ALL root and master nodes to accept genesis block
   - config: "cellframe-node"
     nodes: "{{_active_nodes}}"
     set:
@@ -50,7 +54,7 @@ test:
       node: "{{first_root}}"
       cli:
         chain: "main"
-        token: "TCELL"
+        token: "{{native_ticker}}"
     steps:
       - cli: "block list -chain main"
         node: "{{first_master}}"
@@ -77,9 +81,10 @@ test:
               first_root = ctx.get('first_root')
               emission_hash = ctx.get('emission_hash')
               fee_addr = ctx.get('fee_addr')
+              network_name = ctx.get('network_name')
               
               container = f"cellframe-stage-{first_root}"
-              cmd = f"cellframe-node-cli tx_create -chain_emission zerochain -from_emission {emission_hash} -value 10.0e+54 -to_addr {fee_addr} -fee 5.0e+18 -cert stagenet.root.pvt.0 -net stagenet -chain main -token TCELL"
+              cmd = f"cellframe-node-cli tx_create -chain_emission zerochain -from_emission {emission_hash} -value 10.0e+54 -to_addr {fee_addr} -fee 5.0e+18 -cert {network_name}.root.pvt.0 -net {network_name} -chain main -token TCELL"
               
               result = subprocess.run(
                   ["docker", "exec", container, "sh", "-c", cmd],
@@ -100,11 +105,12 @@ test:
           if not ctx.get('_genesis_block_exists'):
               import subprocess
               import time
+              network_name = ctx.get('network_name')
               # Poll for genesis block (up to 180s)
               for attempt in range(36):  # 36 * 5s = 180s max
                   result = subprocess.run(
                       ["docker", "exec", f"cellframe-stage-{ctx.get('first_master')}", 
-                       "cellframe-node-cli", "block", "list", "-chain", "main", "-net", "stagenet"],
+                       "cellframe-node-cli", "block", "list", "-chain", "main", "-net", network_name],
                       capture_output=True, text=True
                   )
                   import re
@@ -120,19 +126,19 @@ test:
       
       - cli: "block list"
         node: "{{first_master}}"
-        expect_output: "have blocks:"
+        expect_output: "have blocks: [1-9]"
   
   - cli: "block list -chain main"
     node: "{{first_master}}"
     save_hash: genesis_block_hash
   
-  - config: "stagenet/main"
+  - config: "{{network_name}}/main"
     nodes: "{{_active_nodes}}"
     set:
       static_genesis_block: "{{genesis_block_hash}}"
       is_static_genesis_block: "true"
   
-  - config: "stagenet/zerochain"
+  - config: "{{network_name}}/zerochain"
     nodes: "{{root_nodes}}"
     set:
       is_add_directly: "false"
@@ -188,3 +194,6 @@ check:
   - cli: "token list"
     node: "{{first_root}}"
     expect_output: "tokens:"
+
+# NOTE: Snapshot creation is handled by manager.py after genesis flow completes.
+# teardown with snapshot: create would be used for standalone phase execution.
