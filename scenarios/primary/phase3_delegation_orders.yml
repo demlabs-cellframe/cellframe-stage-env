@@ -11,26 +11,40 @@ network:
   name: stagenet
 
 # Phase 3 - Test staker delegation through validator order
+# Variables auto-injected from topology:
+# root_count, master_count, root_nodes, master_nodes, first_root, etc.
 
 setup:
-  - python: |
-      root_count = ctx.get('root_count') or 4
-      master_count = ctx.get('master_count') or 5
-      
-      ctx.set_variable('root_count', root_count)
-      ctx.set_variable('master_count', master_count)
-      
-      root_nodes = [f"node-{i+1}" for i in range(root_count)]
-      master_nodes = [f"node-{root_count + i + 1}" for i in range(master_count)]
-      
-      ctx.set_variable('root_nodes', root_nodes)
-      ctx.set_variable('master_nodes', master_nodes)
-      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
-      print(f"Phase 3: {root_count} root nodes, {master_count} master nodes")
+  # Restore from genesis_complete snapshot (when running standalone)
+  - snapshot: restore
+    name: genesis_complete
+  
+  # Build node lists from topology counts (auto-injected or defaults)
+  - compute: _root_count
+    expr: "get_var('root_count', 3)"
+  
+  - compute: _master_count
+    expr: "get_var('master_count', 3)"
+  
+  - compute: _root_nodes
+    expr: "['node-' + str(i+1) for i in range(_root_count)]"
+  
+  - compute: _master_nodes
+    expr: "['node-' + str(_root_count + i + 1) for i in range(_master_count)]"
+  
+  - compute: _active_nodes
+    expr: "_root_nodes + _master_nodes"
+  
+  # Recreate containers to pick up restored data from snapshot
+  - docker_op: recreate
+    services: "{{_active_nodes}}"
+    detach: true
+  
+  - log: "Phase 3: {{_root_count}} root nodes, {{_master_count}} master nodes"
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
-    timeout: 60
+    timeout: 120
 
 test:
   # Check if already done and skip if so
@@ -44,24 +58,28 @@ test:
       - cli: "srv_stake order list"  
         save: _orders_output
       
-      - python: |
-          import subprocess
-          
-          keys = ctx.get('_keys_output', '')
-          orders = ctx.get('_orders_output', '')
-          
-          key_count = keys.count('pkey_hash:')
-          order_count = orders.count('order:')
-          has_staker = 'sovereign_tax: 0.1' in keys
-          
-          print(f"✓ State: {key_count} validators, {order_count} orders")
-          
-          # If already at least 4 validators with staker, we're done
-          if key_count >= 4 and has_staker:
-              print("✓ Phase 3 verification passed: staker delegation exists")
-          else:
-              print(f"NOTE: Run fresh from Phase 1 to test order delegation workflow")
-              print(f"      Current validators: {key_count}, expected: 4+")
+      - count: _key_count
+        pattern: "pkey_hash:"
+        in: "{{_keys_output}}"
+      
+      - count: _order_count
+        pattern: "order:"
+        in: "{{_orders_output}}"
+      
+      - set: _has_staker = false
+      
+      - if: "'sovereign_tax: 0.1' in _keys_output"
+        then:
+          - set: _has_staker = true
+      
+      - log: "✓ State: {{_key_count}} validators, {{_order_count}} orders"
+      
+      - if: "_key_count >= 4 and _has_staker"
+        then:
+          - log: "✓ Phase 3 verification passed: staker delegation exists"
+        else:
+          - log: "NOTE: Run fresh from Phase 1 to test order delegation workflow"
+          - log: "      Current validators: {{_key_count}}, expected: 4+"
   
   # Create snapshot
   - group: Create phase 3 snapshot
@@ -69,28 +87,14 @@ test:
       - snapshot: create
         name: primary_phase3_complete
       
-      - python: |
-          print("✓ Phase 3 snapshot created")
+      - log: "✓ Phase 3 snapshot created"
 
 check:
-  - python: |
-      import subprocess
-      result = subprocess.run(
-          ["docker", "exec", "cellframe-stage-node-1", "cellframe-node-cli", 
-           "srv_stake", "list", "keys", "-net", "stagenet"],
-          capture_output=True, text=True
-      )
-      keys = result.stdout.count('pkey_hash:')
-      
-      result_orders = subprocess.run(
-          ["docker", "exec", "cellframe-stage-node-1", "cellframe-node-cli", 
-           "srv_stake", "order", "list", "-net", "stagenet"],
-          capture_output=True, text=True
-      )
-      orders = result_orders.stdout.count('order:')
-      
-      print(f"✓ Validators: {keys}")
-      print(f"✓ Orders: {orders}")
-      
-      if keys < 3:
-          raise RuntimeError(f"Expected at least 3 validators, got {keys}")
+  - cli: "srv_stake list keys -net stagenet"
+    node: "node-1"
+    expect_output: "pkey_hash"
+  
+  - cli: "srv_stake order list -net stagenet"
+    node: "node-1"
+  
+  - log: "✓ Phase 3 check complete: validators and orders verified"

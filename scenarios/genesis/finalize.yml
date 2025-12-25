@@ -2,16 +2,16 @@ name: Finalize Genesis - Create Base Topology Snapshot
 description: Create base snapshot of complete genesis topology after all phases
 
 includes:
-  - common/set_net_default.yml
+  - ../common/set_net_default.yml
 
 network:
   topology: default
   name: "{{network_name}}"
 
 setup:
-  # Restore from last phase (phase2)
+  # Restore from genesis_complete snapshot (created by phase2_esbocs.yml)
   - snapshot: restore
-    name: phase2
+    name: genesis_complete
   
   # Start all nodes
   - docker_op: start

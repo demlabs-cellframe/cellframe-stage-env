@@ -142,6 +142,26 @@ class DockerOpStepExecutor(StepExecutor):
                         )
                     
                     logger.info("✅ All containers have IP addresses", count=len(container_names))
+            
+            elif operation == "recreate":
+                # Force recreate containers to pick up new volume data (e.g., after snapshot restore)
+                compose_manager.up(services=services, detach=step.detach, wait=False, force_recreate=True)
+                
+                # Wait for containers to receive IP addresses
+                if step.wait_for_ip:
+                    from ...monitoring.waiter.docker_ip_waiter import DockerIPWaiter
+                    
+                    ip_waiter = DockerIPWaiter(self.container_manager.docker_client)
+                    container_names = [f"cellframe-stage-{svc}" for svc in services]
+                    
+                    logger.info("waiting_for_container_ips", containers=container_names)
+                    
+                    if not ip_waiter.wait_for_container_ips(container_names, timeout=30.0):
+                        raise ScenarioExecutionError(
+                            f"Containers did not receive IP addresses within timeout: {container_names}"
+                        )
+                    
+                    logger.info("✅ All containers have IP addresses", count=len(container_names))
                 
             elif operation == "stop":
                 compose_manager.down(services=services)

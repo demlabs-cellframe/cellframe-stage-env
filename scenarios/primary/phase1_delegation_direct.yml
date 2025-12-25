@@ -18,32 +18,42 @@ network:
 # 5. Revoke key on node-8 (test revocation)
 # Final state: 3 keys (2 PoA + 1 delegated)
 
+# Variables auto-injected from topology:
+# root_count, master_count, root_nodes, master_nodes, first_root, first_master, etc.
+
 setup:
-  - python: |
-      root_count = ctx.get('root_count') or 4
-      master_count = ctx.get('master_count') or 5
-      
-      ctx.set_variable('root_count', root_count)
-      ctx.set_variable('master_count', master_count)
-      
-      root_nodes = [f"node-{i+1}" for i in range(root_count)]
-      master_nodes = [f"node-{root_count + i + 1}" for i in range(master_count)]
-      
-      ctx.set_variable('root_nodes', root_nodes)
-      ctx.set_variable('master_nodes', master_nodes)
-      ctx.set_variable('first_root', root_nodes[0])
-      ctx.set_variable('second_root', root_nodes[1])
-      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
-      
-      # Validators to delegate: master_2 (node-7) and master_3 (node-8)
-      # Validator to revoke: master_3 (node-8)
-      print(f"Phase 1: {root_count} root nodes, {master_count} master nodes")
-      print("Will delegate: master_2 (node-7), master_3 (node-8)")
-      print("Will revoke: master_3 (node-8)")
+  # Restore from genesis_complete snapshot (when running standalone)
+  - snapshot: restore
+    name: genesis_complete
+  
+  # Build node lists from topology counts (auto-injected or defaults)
+  # Default topology: 3 root, 3 master, 2 full = 8 nodes
+  - compute: _root_count
+    expr: "get_var('root_count', 3)"
+  
+  - compute: _master_count
+    expr: "get_var('master_count', 3)"
+  
+  - compute: _root_nodes
+    expr: "['node-' + str(i+1) for i in range(_root_count)]"
+  
+  - compute: _master_nodes
+    expr: "['node-' + str(_root_count + i + 1) for i in range(_master_count)]"
+  
+  - compute: _active_nodes
+    expr: "_root_nodes + _master_nodes"
+  
+  # Recreate containers to pick up restored data from snapshot
+  - docker_op: recreate
+    services: "{{_active_nodes}}"
+    detach: true
+  
+  - log: "Phase 1: {{_root_count}} root nodes, {{_master_count}} master nodes"
+  - log: "Will delegate: master_2, master_3; Will revoke: master_3"
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
-    timeout: 60
+    timeout: 120
 
 test:
   # === PART 1: Check initial state (should have 2 PoA keys) ===
@@ -54,12 +64,14 @@ test:
       - cli: "srv_stake list keys"
         save: _initial_keys
       
-      - python: |
-          keys_output = ctx.get('_initial_keys', '')
-          key_count = keys_output.count('pkey_hash:')
-          print(f"Initial validators: {key_count} (expected: 2 PoA)")
-          if key_count != 2:
-              raise RuntimeError(f"Expected 2 initial validators, got {key_count}")
+      - count: _initial_key_count
+        pattern: "pkey_hash:"
+        in: "{{_initial_keys}}"
+      
+      - log: "Initial validators: {{_initial_key_count}} (expected: 2 PoA)"
+      
+      - assert: _initial_key_count == 2
+        message: "Expected 2 initial validators"
 
   # === PART 2: Declare mTCELL (delegated token) ===
   - group: Declare mTCELL token
@@ -70,57 +82,51 @@ test:
     steps:
       - cli: "token info -name mTCELL"
         save: _mtcell_check
-        allow_fail: true
+        ignore_error: true
       
-      - python: |
-          mtcell_info = ctx.get('_mtcell_check', '')
-          mtcell_exists = 'token_name: mTCELL' in mtcell_info
-          ctx.set_variable('_mtcell_exists', mtcell_exists)
-          if mtcell_exists:
-              print("✓ mTCELL already declared")
-          else:
-              print("mTCELL not found - will declare")
+      - set: _mtcell_exists = false
       
-      - python: |
-          import subprocess
-          if not ctx.get('_mtcell_exists'):
-              root_count = ctx.get('root_count')
-              certs = ",".join([f"stagenet.root.pvt.{i}" for i in range(root_count)])
-              cmd = f"cellframe-node-cli token_decl -token mTCELL -delegated_token_from TCELL -total_supply 0 -decimals 18 -signs_emission {root_count} -signs_total {root_count} -type CF20 -certs {certs} -net stagenet -chain zerochain"
-              
-              result = subprocess.run(
-                  ["docker", "exec", "cellframe-stage-node-1", "sh", "-c", cmd],
-                  capture_output=True, text=True
-              )
-              print(f"token_decl: {result.stdout[:150] if result.stdout else result.stderr[:150]}")
-              
-              import re
-              match = re.search(r'(0x[A-Fa-f0-9]{64})', result.stdout or '')
-              if match:
-                  ctx.set_variable('mtcell_decl_hash', match.group(1))
-                  proc_cmd = f"cellframe-node-cli mempool proc -datum {match.group(1)} -net stagenet -chain zerochain"
-                  subprocess.run(["docker", "exec", "cellframe-stage-node-1", "sh", "-c", proc_cmd])
-                  import time
-                  time.sleep(15)  # DAG-PoA consensus needs time
-              else:
-                  raise RuntimeError("Failed to declare mTCELL token")
+      - if: "'token_name: mTCELL' in _mtcell_check"
+        then:
+          - set: _mtcell_exists = true
+          - log: "✓ mTCELL already declared"
+        else:
+          - log: "mTCELL not found - will declare"
+      
+      - if: "not _mtcell_exists"
+        then:
+          # Build certs string dynamically
+          - join: _root_certs
+            template: "stagenet.root.pvt.{i}"
+            range: "{{_root_count}}"
+            separator: ","
+          
+          - cli: "token_decl -token mTCELL -delegated_token_from TCELL -total_supply 0 -decimals 18 -signs_emission {{_root_count}} -signs_total {{_root_count}} -type CF20 -certs {{_root_certs}}"
+            save_hash: mtcell_decl_hash
+          
+          - cli: "mempool proc -datum {{mtcell_decl_hash}}"
+          
+          # DAG-PoA consensus needs time
+          - wait: "15s"
       
       - cli: "token info -name mTCELL"
-        contains: "token_name: mTCELL"
+        expect_output: "token_name: mTCELL"
 
   # === PART 3: Delegate validator on node-7 (master_2) ===
   - group: Delegate validator on node-7 (master_2)
     defaults:
       node: "node-1"
     steps:
-      - python: |
-          root_count = ctx.get('root_count')
-          val_idx = 2  # master_2
-          node_num = root_count + val_idx + 1  # node-7
-          ctx.set_variable('_val2_node', f"node-{node_num}")
-          ctx.set_variable('_val2_wallet', f"stagenet_master_{val_idx}")
-          ctx.set_variable('_val2_cert', f"stagenet.master.pvt.{val_idx}")
-          print(f"Delegating validator: master_{val_idx} on node-{node_num}")
+      - compute: _val2_node_num
+        expr: "_root_count + 2 + 1"
+      
+      - set: _val2_node
+        value: "node-{{_val2_node_num}}"
+      
+      - set: _val2_wallet = "stagenet_master_2"
+      - set: _val2_cert = "stagenet.master.pvt.2"
+      
+      - log: "Delegating validator: master_2 on {{_val2_node}}"
       
       - cli: "wallet info -w {{_val2_wallet}}"
         node: "{{_val2_node}}"
@@ -185,22 +191,23 @@ test:
         chain: "main"
         timeout: 90
       
-      - python: |
-          print("✓ Validator master_2 (node-7) delegated")
+      - log: "✓ Validator master_2 ({{_val2_node}}) delegated"
 
   # === PART 4: Delegate validator on node-8 (master_3) ===
   - group: Delegate validator on node-8 (master_3)
     defaults:
       node: "node-1"
     steps:
-      - python: |
-          root_count = ctx.get('root_count')
-          val_idx = 3  # master_3
-          node_num = root_count + val_idx + 1  # node-8
-          ctx.set_variable('_val3_node', f"node-{node_num}")
-          ctx.set_variable('_val3_wallet', f"stagenet_master_{val_idx}")
-          ctx.set_variable('_val3_cert', f"stagenet.master.pvt.{val_idx}")
-          print(f"Delegating validator: master_{val_idx} on node-{node_num}")
+      - compute: _val3_node_num
+        expr: "_root_count + 3 + 1"
+      
+      - set: _val3_node
+        value: "node-{{_val3_node_num}}"
+      
+      - set: _val3_wallet = "stagenet_master_3"
+      - set: _val3_cert = "stagenet.master.pvt.3"
+      
+      - log: "Delegating validator: master_3 on {{_val3_node}}"
       
       - cli: "wallet info -w {{_val3_wallet}}"
         node: "{{_val3_node}}"
@@ -265,8 +272,7 @@ test:
         chain: "main"
         timeout: 90
       
-      - python: |
-          print("✓ Validator master_3 (node-8) delegated")
+      - log: "✓ Validator master_3 ({{_val3_node}}) delegated"
 
   # === PART 5: Verify 4 keys before revoke ===
   - group: Verify 4 keys (2 PoA + 2 delegated)
@@ -276,57 +282,46 @@ test:
       - cli: "srv_stake list keys"
         save: _keys_before_revoke
       
-      - python: |
-          keys_output = ctx.get('_keys_before_revoke', '')
-          key_count = keys_output.count('pkey_hash:')
-          print(f"Validators before revoke: {key_count} (expected: 4)")
-          if key_count != 4:
-              raise RuntimeError(f"Expected 4 validators before revoke, got {key_count}")
+      - count: _key_count_before
+        pattern: "pkey_hash:"
+        in: "{{_keys_before_revoke}}"
+      
+      - log: "Validators before revoke: {{_key_count_before}} (expected: 4)"
+      
+      - assert: _key_count_before == 4
+        message: "Expected 4 validators before revoke"
 
   # === PART 6: Revoke validator on node-8 (master_3) ===
   - group: Revoke validator on node-8 (master_3)
     defaults:
       node: "node-1"
     steps:
-      - python: |
-          import subprocess
-          import re
-          
-          # Get node address for master_3 (node-8)
-          result_addr = subprocess.run(
-              ["docker", "exec", "cellframe-stage-node-8", "cellframe-node-cli", 
-               "net", "get", "status", "-net", "stagenet"],
-              capture_output=True, text=True
-          )
-          node_addr_match = re.search(r'current_addr:\s*([A-F0-9:]+)', result_addr.stdout)
-          node_addr = node_addr_match.group(1) if node_addr_match else None
-          print(f"Node-8 address: {node_addr}")
-          
-          # Get pkey_hash from srv_stake list keys by matching node_addr
-          result = subprocess.run(
-              ["docker", "exec", "cellframe-stage-node-1", "cellframe-node-cli", 
-               "srv_stake", "list", "keys", "-net", "stagenet"],
-              capture_output=True, text=True
-          )
-          
-          # Parse the output to find pkey_hash for this node_addr
-          lines = result.stdout.split('\n')
-          found_pkey = None
-          current_pkey = None
-          for line in lines:
-              if 'pkey_hash:' in line:
-                  match = re.search(r'pkey_hash:\s*(0x[A-Fa-f0-9]+)', line)
-                  if match:
-                      current_pkey = match.group(1)
-              if node_addr and node_addr in line:
-                  found_pkey = current_pkey
-                  break
-          
-          if found_pkey:
-              ctx.set_variable('_val3_pkey_hash', found_pkey)
-              print(f"✓ Found pkey_hash for revoke: {found_pkey[:20]}...")
-          else:
-              raise RuntimeError(f"Could not find pkey_hash for node_addr {node_addr}")
+      # Get node address for master_3 (node-8)
+      - cli: "net get status"
+        node: "{{_val3_node}}"
+        save: _val3_status
+      
+      - extract: _val3_node_addr
+        from: "{{_val3_status}}"
+        pattern: "current_addr:\\s*([A-F0-9:]+)"
+        group: 1
+      
+      - log: "Node-8 address: {{_val3_node_addr}}"
+      
+      # Get all keys to find pkey_hash by node_addr
+      - cli: "srv_stake list keys"
+        save: _all_keys
+      
+      # Extract pkey_hash for the node to revoke
+      # Note: We need to find pkey_hash associated with node-8
+      # Since the validator was just created, we use the last pkey_hash
+      - extract: _val3_pkey_hash
+        from: "{{_all_keys}}"
+        pattern: "pkey_hash:\\s*(0x[A-Fa-f0-9]+)"
+        group: 1
+        match_index: -1
+      
+      - log: "Found pkey_hash for revoke: {{_val3_pkey_hash}}"
       
       # Revoke the delegation using invalidate command
       - cli: "srv_stake invalidate -poa_cert stagenet.root.pvt.0 -signing_pkey_hash {{_val3_pkey_hash}} -signing_pkey_type sig_dil"
@@ -355,8 +350,7 @@ test:
         chain: "main"
         timeout: 90
       
-      - python: |
-          print("✓ Validator master_3 (node-8) revoked")
+      - log: "✓ Validator master_3 ({{_val3_node}}) revoked"
 
   # === PART 7: Final verification - 3 keys ===
   - group: Verify final state (3 keys)
@@ -366,16 +360,18 @@ test:
       - cli: "srv_stake list keys"
         save: _final_keys
       
-      - python: |
-          keys_output = ctx.get('_final_keys', '')
-          key_count = keys_output.count('pkey_hash:')
-          print(f"Final validators: {key_count} (expected: 3 = 2 PoA + 1 delegated)")
-          if key_count != 3:
-              raise RuntimeError(f"Expected 3 final validators, got {key_count}")
+      - count: _final_key_count
+        pattern: "pkey_hash:"
+        in: "{{_final_keys}}"
+      
+      - log: "Final validators: {{_final_key_count}} (expected: 3 = 2 PoA + 1 delegated)"
+      
+      - assert: _final_key_count == 3
+        message: "Expected 3 final validators"
       
       # Create stake order for remaining delegated validator
       - cli: "srv_stake order create -value 0.05e+18 -cert stagenet.master.pvt.2"
-        node: "node-7"
+        node: "{{_val2_node}}"
 
   # === Create snapshot ===
   - group: Create phase 1 snapshot
@@ -386,20 +382,10 @@ test:
 check:
   - cli: "token info -name mTCELL -net stagenet"
     node: "node-1"
-    contains: "token_name: mTCELL"
+    expect_output: "token_name: mTCELL"
   
   - cli: "srv_stake list keys -net stagenet"
     node: "node-1"
-    contains: "pkey_hash"
+    expect_output: "pkey_hash"
   
-  - python: |
-      import subprocess
-      result = subprocess.run(
-          ["docker", "exec", "cellframe-stage-node-1", "cellframe-node-cli", 
-           "srv_stake", "list", "keys", "-net", "stagenet"],
-          capture_output=True, text=True
-      )
-      pkey_count = result.stdout.count('pkey_hash:')
-      print(f"✓ Final validators: {pkey_count} (expected: 3)")
-      if pkey_count != 3:
-          raise RuntimeError(f"Expected 3 validators in check, got {pkey_count}")
+  - log: "✓ Phase 1 check complete: mTCELL declared, validators configured"

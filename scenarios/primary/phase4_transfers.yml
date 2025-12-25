@@ -11,31 +11,43 @@ network:
 # This scenario tests:
 # - Regular token transfers between wallets
 # - Batch transactions with time-locked outputs
+# Variables auto-injected from topology:
+# root_count, master_count, root_nodes, master_nodes, first_root, etc.
 
 setup:
-  - python: |
-      root_count = ctx.get('root_count') or 4
-      master_count = ctx.get('master_count') or 5
-      full_count = ctx.get('full_count') or 1
-      
-      ctx.set_variable('root_count', root_count)
-      ctx.set_variable('master_count', master_count)
-      ctx.set_variable('full_count', full_count)
-      
-      root_nodes = [f"node-{i+1}" for i in range(root_count)]
-      master_nodes = [f"node-{root_count + i + 1}" for i in range(master_count)]
-      full_nodes = [f"node-{root_count + master_count + i + 1}" for i in range(full_count)]
-      
-      ctx.set_variable('root_nodes', root_nodes)
-      ctx.set_variable('master_nodes', master_nodes)
-      ctx.set_variable('full_nodes', full_nodes)
-      ctx.set_variable('first_root', root_nodes[0])
-      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
-      print(f"Phase 4: {root_count} root, {master_count} master, {full_count} full nodes")
+  # Restore from genesis_complete snapshot (when running standalone)
+  - snapshot: restore
+    name: genesis_complete
+  
+  # Build node lists from topology counts (auto-injected or defaults)
+  - compute: _root_count
+    expr: "get_var('root_count', 3)"
+  
+  - compute: _master_count
+    expr: "get_var('master_count', 3)"
+  
+  - compute: _full_count
+    expr: "get_var('full_count', 2)"
+  
+  - compute: _root_nodes
+    expr: "['node-' + str(i+1) for i in range(_root_count)]"
+  
+  - compute: _master_nodes
+    expr: "['node-' + str(_root_count + i + 1) for i in range(_master_count)]"
+  
+  - compute: _active_nodes
+    expr: "_root_nodes + _master_nodes"
+  
+  # Recreate containers to pick up restored data from snapshot
+  - docker_op: recreate
+    services: "{{_active_nodes}}"
+    detach: true
+  
+  - log: "Phase 4: {{_root_count}} root, {{_master_count}} master, {{_full_count}} full nodes"
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
-    timeout: 60
+    timeout: 120
 
 test:
   # Get wallet addresses for transfers
@@ -46,27 +58,27 @@ test:
       - cli: "wallet info -w stagenet_root_0"
         save_wallet: root_0_addr
       
-      - python: |
-          root_count = ctx.get('root_count')
-          if root_count >= 2:
-              ctx.set_variable('_second_root_node', f"node-2")
+      - set: _second_root_node = "node-2"
       
       - cli: "wallet info -w stagenet_root_1"
         node: "{{_second_root_node}}"
         save_wallet: root_1_addr
       
-      - python: |
-          root_count = ctx.get('root_count')
-          ctx.set_variable('_master_node', f"node-{root_count + 1}")
+      - compute: _master_node_num
+        expr: "_root_count + 1"
+      
+      - set: _master_node
+        value: "node-{{_master_node_num}}"
       
       - cli: "wallet info -w stagenet_master_0"
         node: "{{_master_node}}"
         save_wallet: master_0_addr
       
-      - python: |
-          root_count = ctx.get('root_count')
-          master_count = ctx.get('master_count')
-          ctx.set_variable('_full_node', f"node-{root_count + master_count + 1}")
+      - compute: _full_node_num
+        expr: "_root_count + _master_count + 1"
+      
+      - set: _full_node
+        value: "node-{{_full_node_num}}"
       
       - cli: "wallet info -w stagenet_full_0"
         node: "{{_full_node}}"
@@ -102,11 +114,11 @@ test:
       
       # Verify transfer in ledger
       - cli: "ledger info -hash {{regular_transfer_hash}}"
-        contains: "datum_tx_hash"
+        expect_output: "datum_tx_hash"
       
       # Check transaction history
       - cli: "tx_history -addr {{root_1_addr}}"
-        contains: "ACCEPTED"
+        expect_output: "ACCEPTED"
       
       # Verify balance changed
       - cli: "wallet info -w stagenet_root_1"
@@ -175,22 +187,18 @@ test:
         token: "TCELL"
     steps:
       # Create batch of addresses for multiple outputs
-      - python: |
-          # Full node address will receive 3 locked outputs
-          full_addr = ctx.get('full_0_addr')
-          # Create comma-separated list of same address (3 outputs to same recipient)
-          addr_list = f"{full_addr},{full_addr},{full_addr}"
-          ctx.set_variable('_batch_addrs', addr_list)
-          
-          # Amount for each output
-          ctx.set_variable('_batch_amounts', "1.0e+18,2.0e+18,3.0e+18")
-          
-          # Lock times (YYMMDD format) - 3 different unlock dates
-          ctx.set_variable('_batch_locks', "300101,310202,320303")
-          
-          print(f"Batch addresses: {addr_list}")
-          print(f"Batch amounts: 1.0e+18, 2.0e+18, 3.0e+18")
-          print(f"Lock times: 2030-01-01, 2031-02-02, 2032-03-03")
+      # Full node address will receive 3 locked outputs
+      - set: _batch_addrs
+        value: "{{full_0_addr}},{{full_0_addr}},{{full_0_addr}}"
+      
+      # Amount for each output
+      - set: _batch_amounts = "1.0e+18,2.0e+18,3.0e+18"
+      
+      # Lock times (YYMMDD format) - 3 different unlock dates
+      - set: _batch_locks = "300101,310202,320303"
+      
+      - log: "Batch amounts: 1.0e+18, 2.0e+18, 3.0e+18"
+      - log: "Lock times: 2030-01-01, 2031-02-02, 2032-03-03"
       
       # Create batch transaction with time-locked outputs
       - cli: "tx_create -from_wallet stagenet_root_0 -value {{_batch_amounts}} -to_addr {{_batch_addrs}} -fee 5.0e+18 -lock_before {{_batch_locks}}"
@@ -205,7 +213,7 @@ test:
       
       # Verify batch transaction in ledger
       - cli: "ledger info -hash {{batch_tx_hash}}"
-        contains: "datum_tx_hash"
+        expect_output: "datum_tx_hash"
       
       # Check transaction details
       - cli: "tx_history -addr {{full_0_addr}}"
@@ -223,15 +231,11 @@ test:
         chain: "main"
         token: "TCELL"
     steps:
-      - python: |
-          root_1 = ctx.get('root_1_addr')
-          master_0 = ctx.get('master_0_addr')
-          full_0 = ctx.get('full_0_addr')
-          
-          # Multiple different recipients
-          addrs = f"{root_1},{master_0},{full_0}"
-          ctx.set_variable('_multi_addrs', addrs)
-          ctx.set_variable('_multi_amounts', "10.0e+18,20.0e+18,30.0e+18")
+      # Multiple different recipients
+      - set: _multi_addrs
+        value: "{{root_1_addr}},{{master_0_addr}},{{full_0_addr}}"
+      
+      - set: _multi_amounts = "10.0e+18,20.0e+18,30.0e+18"
       
       - cli: "tx_create -from_wallet stagenet_root_0 -value {{_multi_amounts}} -to_addr {{_multi_addrs}} -fee 5.0e+18"
         save_hash: multi_recipient_tx_hash
@@ -245,7 +249,7 @@ test:
       
       # Verify transaction
       - cli: "ledger info -hash {{multi_recipient_tx_hash}}"
-        contains: "datum_tx_hash"
+        expect_output: "datum_tx_hash"
 
   # Final balance verification
   - group: Verify final balances
@@ -267,8 +271,7 @@ test:
         node: "{{_full_node}}"
         save: final_full_0_balance
       
-      - python: |
-          print("✓ All transfers completed and verified")
+      - log: "✓ All transfers completed and verified"
   
   # Create final snapshot
   - group: Create final snapshot
@@ -276,8 +279,7 @@ test:
       - snapshot: create
         name: primary_complete
       
-      - python: |
-          print("✓ Primary test snapshot created: primary_complete")
+      - log: "✓ Primary test snapshot created: primary_complete"
 
 check:
   # Verify all transactions were processed

@@ -161,17 +161,32 @@ class ComputeStepExecutor(StepExecutor):
         
         numeric_locals = _make_numeric_locals(ctx)
         
+        # Helper function to get variable with default value
+        def get_var(name: str, default=None):
+            """Get variable by name with optional default."""
+            return numeric_locals.get(name, ctx.variables.get(name, default))
+        
+        # Helper to check if variable exists
+        def has_var(name: str) -> bool:
+            """Check if variable exists."""
+            return name in numeric_locals or name in ctx.variables
+        
         try:
-            builtins_safe = {
+            # Combine builtins with variables in globals for proper scope in comprehensions
+            eval_globals = {
                 "__builtins__": {
                     "str": str, "int": int, "float": float,
                     "len": len, "range": range, "min": min, "max": max,
                     "sum": sum, "abs": abs, "round": round,
                     "list": list, "dict": dict, "set": set,
                     "True": True, "False": False, "None": None,
-                }
+                    "get_var": get_var,
+                    "has_var": has_var,
+                },
+                # Include variables in globals so they're visible in comprehensions
+                **numeric_locals
             }
-            result = eval(expr, builtins_safe, numeric_locals)
+            result = eval(expr, eval_globals, {})
             ctx.set_variable(var_name, result)
             
             logger.info(f"Computed '{var_name}' = {result}")

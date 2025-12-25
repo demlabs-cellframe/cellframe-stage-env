@@ -1,6 +1,0 @@
-# Common snapshot restore operations
-# This file can be included in scenarios that need snapshot restoration
-
-# Note: Snapshot restore is typically done via snapshot step in main scenario
-# This file is a placeholder for common snapshot-related operations
-

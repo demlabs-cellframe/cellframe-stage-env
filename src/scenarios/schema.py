@@ -319,7 +319,7 @@ class NetworkWaitStep(BaseModel):
 
 class DockerOpStep(BaseModel):
     """Execute Docker operations (start, stop, restart, logs, exec, cp)."""
-    docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'logs', 'exec', 'cp'")
+    docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'recreate', 'logs', 'exec', 'cp'")
     services: Optional[Union[str, List[str]]] = Field(None, description="Docker services to operate on (can be template like '{{all_nodes}}')")
     command: Optional[str] = Field(None, description="Command for 'exec' operation")
     detach: bool = Field(True, description="Run in detached mode (for start/restart)")

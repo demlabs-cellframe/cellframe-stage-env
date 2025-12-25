@@ -79,7 +79,7 @@ class SnapshotStepExecutor(StepExecutor):
         # Stop containers if requested (default: true for consistent state)
         if step.stop_containers and self.compose_manager:
             logger.info("stopping_containers_for_snapshot")
-            self.compose_manager.stop()
+            self.compose_manager.kill(timeout=10)  # docker compose stop - graceful stop without removal
         
         result = await manager.create_snapshot(name)
         if not result:

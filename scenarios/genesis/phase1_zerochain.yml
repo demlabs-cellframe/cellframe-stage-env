@@ -87,8 +87,6 @@ setup:
   - wait_network: online
     nodes: "{{root_nodes}}"
     timeout: 120
-    nodes: "{{root_nodes}}"
-    timeout: 120
   
   - wait: "5s"
 
@@ -314,9 +312,10 @@ test:
 
   # Genesis Event - Token Declaration
   # Build root_certs_str: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
-  - set: root_certs_str
-    value: "','.join([f'{network_name}.root.pvt.{i}' for i in range(root_count)])"
-    eval: true
+  - join: root_certs_str
+    template: "{{network_name}}.root.pvt.{i}"
+    range: "{{root_count}}"
+    separator: ","
 
   - group: Genesis Event - Token Declaration
     defaults:
@@ -354,7 +353,6 @@ test:
   # Disable seed_mode
   - config: "cellframe-node"
     nodes: "{{seed_nodes}}"
-    nodes: "{{seed_nodes}}"
     set:
       seed_mode: "true"
   
@@ -363,13 +361,11 @@ test:
   # CRITICAL: Orders must be signed with same cert used for blocks-sign-cert
   - group: Create stake orders for initial validators
     steps:
-      - python: |
-          # Only create orders for first 2 master nodes (initial validators)
-          root_count = ctx.get('root_count')
-          initial_count = ctx.get('initial_validator_count', 2)
-          initial_master_indices = list(range(root_count + 1, root_count + initial_count + 1))
-          ctx.set_variable('_initial_master_indices', initial_master_indices)
-          print(f"Creating stake orders for initial validators: nodes {initial_master_indices}")
+      # Only create orders for first 2 master nodes (initial validators)
+      - compute: _initial_master_indices
+        expr: "list(range(root_count + 1, root_count + initial_validator_count + 1))"
+      
+      - log: "Creating stake orders for initial validators: nodes {{_initial_master_indices}}"
       
       - for: node_idx
         in: "{{_initial_master_indices}}"
@@ -387,10 +383,8 @@ test:
   
   - docker_op: restart
     services: "{{_active_nodes}}"
-    services: "{{_active_nodes}}"
   
   - wait_network: online
-    nodes: "{{_active_nodes}}"
     nodes: "{{_active_nodes}}"
     timeout: 60
   
@@ -411,9 +405,10 @@ test:
   
   # Token Emission - ALL signatures on node-1 (has all root certs)
   # Build all_root_certs: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
-  - set: all_root_certs
-    value: "','.join([f'{network_name}.root.pvt.{i}' for i in range(root_count)])"
-    eval: true
+  - join: all_root_certs
+    template: "{{network_name}}.root.pvt.{i}"
+    range: "{{root_count}}"
+    separator: ","
   
   - group: Token Emission
     defaults:
@@ -433,9 +428,11 @@ test:
         save: mempool_after_emission
       
       # Extract and verify signature count
-      - set: emission_sig_count
-        value: "int(regex_extract(mempool_after_emission, r'sig_count:\\s*(\\d+)', 1) or 0)"
-        eval: true
+      - extract: emission_sig_count
+        from: "{{mempool_after_emission}}"
+        pattern: "sig_count:\\s*(\\d+)"
+        group: 1
+        default: "0"
       
       - cli: "dag event last"
         save_hash: last_event_before_emission
@@ -453,9 +450,10 @@ test:
         save: emission_event_dump
       
       # Extract emission_hash from dump
-      - set: emission_hash
-        value: "regex_extract(emission_event_dump, r'emission_hash:\\s*(0x[a-fA-F0-9]+)', 1)"
-        eval: true
+      - extract: emission_hash
+        from: "{{emission_event_dump}}"
+        pattern: "emission_hash:\\s*(0x[a-fA-F0-9]+)"
+        group: 1
       
       # Verify emission_hash was found
       - if: "not emission_hash"

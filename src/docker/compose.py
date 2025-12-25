@@ -487,6 +487,7 @@ class DockerComposeManager:
         detach: bool = True,
         wait: bool = True,
         no_build: bool = False,
+        force_recreate: bool = False,
     ) -> None:
         """
         Start services.
@@ -498,6 +499,7 @@ class DockerComposeManager:
             detach: Run in background
             wait: Wait for services to be ready
             no_build: Skip building images (use existing)
+            force_recreate: Force recreate containers (useful after snapshot restore)
         """
         logger.info("starting_services", services=services or "all")
         
@@ -585,6 +587,11 @@ class DockerComposeManager:
         
         if detach:
             cmd.append("-d")
+        
+        # Force recreate containers to pick up new volume data (e.g., after snapshot restore)
+        if force_recreate:
+            cmd.append("--force-recreate")
+            logger.info("forcing_container_recreate", reason="force_recreate_requested")
         
         # Add --no-build if image exists or explicitly requested
         # This prevents BuildKit "image already exists" error

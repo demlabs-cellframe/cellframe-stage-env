@@ -10,27 +10,40 @@ network:
   topology: default
   name: stagenet
 
+# Variables auto-injected from topology:
+# root_count, master_count, root_nodes, master_nodes, first_root, etc.
+
 setup:
-  - python: |
-      root_count = ctx.get('root_count') or 4
-      master_count = ctx.get('master_count') or 5
-      
-      ctx.set_variable('root_count', root_count)
-      ctx.set_variable('master_count', master_count)
-      
-      root_nodes = [f"node-{i+1}" for i in range(root_count)]
-      master_nodes = [f"node-{root_count + i + 1}" for i in range(master_count)]
-      
-      ctx.set_variable('root_nodes', root_nodes)
-      ctx.set_variable('master_nodes', master_nodes)
-      ctx.set_variable('first_root', root_nodes[0])
-      ctx.set_variable('second_root', root_nodes[1])
-      ctx.set_variable('_active_nodes', root_nodes + master_nodes)
-      print(f"Phase 2: {root_count} root nodes, {master_count} master nodes")
+  # Restore from genesis_complete snapshot (when running standalone)
+  - snapshot: restore
+    name: genesis_complete
+  
+  # Build node lists from topology counts (auto-injected or defaults)
+  - compute: _root_count
+    expr: "get_var('root_count', 3)"
+  
+  - compute: _master_count
+    expr: "get_var('master_count', 3)"
+  
+  - compute: _root_nodes
+    expr: "['node-' + str(i+1) for i in range(_root_count)]"
+  
+  - compute: _master_nodes
+    expr: "['node-' + str(_root_count + i + 1) for i in range(_master_count)]"
+  
+  - compute: _active_nodes
+    expr: "_root_nodes + _master_nodes"
+  
+  # Recreate containers to pick up restored data from snapshot
+  - docker_op: recreate
+    services: "{{_active_nodes}}"
+    detach: true
+  
+  - log: "Phase 2: {{_root_count}} root nodes, {{_master_count}} master nodes"
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
-    timeout: 60
+    timeout: 120
 
 test:
   # === PART 1: Setup network fee ===
@@ -39,7 +52,7 @@ test:
       node: "{{first_root}}"
     steps:
       - cli: "wallet new -w network_fee_wlt -sign sig_dil"
-        allow_fail: true
+        ignore_error: true
       
       - cli: "wallet info -w network_fee_wlt"
         save_wallet: network_fee_addr
@@ -50,7 +63,7 @@ test:
       
       # Step 2: Sign decree with second root
       - cli: "decree sign -datum {{decree_fee_hash}} -chain zerochain -certs stagenet.root.pvt.1"
-        node: "{{second_root}}"
+        node: "node-2"
         save_hash: decree_fee_signed
       
       # Step 3: Process decree in DAG
@@ -74,8 +87,7 @@ test:
         chain: "main"
         timeout: 90
       
-      - python: |
-          print("✓ Network fee decree created and anchored")
+      - log: "✓ Network fee decree created and anchored"
 
   # === PART 2: Setup block reward ===
   - group: Create block reward decree
@@ -86,7 +98,7 @@ test:
         save_hash: decree_reward_hash
       
       - cli: "decree sign -datum {{decree_reward_hash}} -chain zerochain -certs stagenet.root.pvt.1"
-        node: "{{second_root}}"
+        node: "node-2"
         save_hash: decree_reward_signed
       
       - cli: "mempool proc -datum {{decree_reward_signed}} -chain zerochain"
@@ -108,28 +120,34 @@ test:
         chain: "main"
         timeout: 90
       
-      - python: |
-          print("✓ Block reward decree created and anchored")
+      - log: "✓ Block reward decree created and anchored"
 
-  # === PART 3: Setup min_validators_count ===
-  - group: Set min_validators_count decree
+  # === PART 3: Test min_validators_count decree ===
+  # After Phase 1: we have 3 validators (2 PoA + 1 delegated)
+  # Genesis had min_validators_count = 2
+  # We change it to 3 to verify decree actually works
+  - group: Test min_validators_count decree (2 -> 3)
     defaults:
       node: "{{first_root}}"
     steps:
-      - python: |
-          # Keep min_validators_count at 2 for network stability
-          # (in case one validator crashes, network can still produce blocks)
-          new_min = 2
-          ctx.set_variable('_new_min_validators', new_min)
-          print(f"Setting min_validators_count to {new_min}")
+      # First, verify current value is 2 (from genesis)
+      - cli: "esbocs min_validators_count show"
+        save: _min_val_before
       
-      # Create decree with esbocs command (not decree create common)
+      - log: "Current min_validators_count (before decree): {{_min_val_before}}"
+      
+      # Set new value = 3 (different from genesis value 2)
+      - set: _new_min_validators = 3
+      
+      - log: "Changing min_validators_count from 2 to {{_new_min_validators}}"
+      
+      # Create decree with esbocs command
       - cli: "esbocs min_validators_count set -chain main -val_count {{_new_min_validators}} -cert stagenet.root.pvt.0"
         save_hash: decree_min_val_hash
       
       # Sign decree with second root
       - cli: "decree sign -datum {{decree_min_val_hash}} -chain zerochain -certs stagenet.root.pvt.1"
-        node: "{{second_root}}"
+        node: "node-2"
         save_hash: decree_min_val_signed
       
       - cli: "mempool proc -datum {{decree_min_val_signed}} -chain zerochain"
@@ -151,13 +169,26 @@ test:
         chain: "main"
         timeout: 90
       
-      # Verify the value was set
+      # Verify the value was changed
       - cli: "esbocs min_validators_count show"
-        save: _min_val_result
+        save: _min_val_after
       
-      - python: |
-          result = ctx.get('_min_val_result', '')
-          print(f"✓ min_validators_count decree applied: {result[:100]}")
+      - log: "New min_validators_count (after decree): {{_min_val_after}}"
+      
+      # Extract the actual value from output
+      - extract: _min_val_value
+        from: "{{_min_val_after}}"
+        pattern: "min_validators_count[:\\s]+([0-9]+)"
+        group: 1
+        default: "0"
+      
+      - log: "Extracted min_validators_count value: {{_min_val_value}}"
+      
+      # Assert the value changed to 3
+      - assert: "int(_min_val_value) == 3"
+        message: "min_validators_count decree failed: expected 3, got {{_min_val_value}}"
+      
+      - log: "✓ min_validators_count decree verified: changed from 2 to 3"
   
   # Create snapshot
   - group: Create phase 2 snapshot
@@ -165,9 +196,7 @@ test:
       - snapshot: create
         name: primary_phase2_complete
       
-      - python: |
-          print("✓ Phase 2 snapshot created")
+      - log: "✓ Phase 2 snapshot created"
 
 check:
-  - python: |
-      print("✓ Phase 2 completed: Network fee and block reward decrees applied")
+  - log: "✓ Phase 2 completed: Network fee and block reward decrees applied"

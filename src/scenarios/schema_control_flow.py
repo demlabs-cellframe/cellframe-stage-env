@@ -21,27 +21,71 @@ class SetStep(BaseModel):
 
     @model_validator(mode='after')
     def parse_set_expression(self) -> 'SetStep':
-        """Parse 'var = val' syntax in 'set' field."""
+        """Parse 'var = val' syntax in 'set' field.
+        
+        Type inference:
+          - "text" or 'text' → string
+          - 123 or 45.67 → number
+          - true/false → boolean
+          - null → None
+          - unquoted text → string (fallback)
+        """
         if '=' in self.set and self.value is None:
             # Split by first '=' only
             parts = self.set.split('=', 1)
             self.set = parts[0].strip()
             val_str = parts[1].strip()
             
-            # Remove surrounding quotes if present (common in 'var = "val"')
-            if (val_str.startswith('"') and val_str.endswith('"')) or \
-               (val_str.startswith("'") and val_str.endswith("'")):
-                val_str = val_str[1:-1]
-            
-            self.value = val_str
+            # Parse value with type inference
+            self.value = self._parse_value(val_str)
             
         if not self.set:
             raise ValueError("Variable name cannot be empty")
             
-        if self.value is None:
-             raise ValueError("Value must be provided either in 'value' field or in 'set' expression 'var = val'")
+        if self.value is None and not isinstance(self.value, type(None)):
+            raise ValueError("Value must be provided either in 'value' field or in 'set' expression 'var = val'")
              
         return self
+    
+    @staticmethod
+    def _parse_value(val_str: str) -> Any:
+        """Parse value string with type inference.
+        
+        - Quoted strings ("text" or 'text') → str
+        - Numbers (123, 45.67, -5, 1e10) → int/float
+        - Booleans (true, false, True, False) → bool
+        - Null (null, None) → None
+        - Unquoted text → str (fallback)
+        """
+        # Check for quoted strings first
+        if (val_str.startswith('"') and val_str.endswith('"')) or \
+           (val_str.startswith("'") and val_str.endswith("'")):
+            return val_str[1:-1]  # Return string without quotes
+        
+        # Try boolean
+        if val_str.lower() == 'true':
+            return True
+        if val_str.lower() == 'false':
+            return False
+        
+        # Try null/None
+        if val_str.lower() in ('null', 'none'):
+            return None
+        
+        # Try integer
+        try:
+            return int(val_str)
+        except ValueError:
+            pass
+        
+        # Try float (including scientific notation)
+        try:
+            return float(val_str)
+        except ValueError:
+            pass
+        
+        # Fallback to string
+        return val_str
 
 
 class IfStep(BaseModel):
