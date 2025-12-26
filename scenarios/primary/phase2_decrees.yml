@@ -14,6 +14,10 @@ network:
 # root_count, master_count, root_nodes, master_nodes, first_root, etc.
 
 setup:
+  # CRITICAL: Stop containers BEFORE restore to avoid file conflicts
+  - docker_op: stop
+    services: "{{all_nodes}}"
+  
   # Restore from genesis_complete snapshot (when running standalone)
   - snapshot: restore
     name: genesis_complete
@@ -34,8 +38,8 @@ setup:
   - compute: _active_nodes
     expr: "_root_nodes + _master_nodes"
   
-  # Recreate containers to pick up restored data from snapshot
-  - docker_op: recreate
+  # Start containers with restored data from snapshot
+  - docker_op: start
     services: "{{_active_nodes}}"
     detach: true
   

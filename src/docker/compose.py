@@ -34,12 +34,31 @@ class DockerComposeManager:
         self.project_dir = project_dir
         self.project_name = project_name
         
-        # CRITICAL: Prefer generated file over template if it exists
-        # This allows run-tests to work with already-started network
+        # Prefer generated file over template if it exists AND is up-to-date
+        # Check if config has changed since last generation
         generated_file = project_dir / "docker-compose.generated.yml"
         template_file = project_dir / "docker-compose.yml"
+        config_file = project_dir / "config" / "stage-env.cfg"
         
+        use_generated = False
         if generated_file.exists():
+            # Check if config is newer than generated file
+            if config_file.exists():
+                config_mtime = config_file.stat().st_mtime
+                generated_mtime = generated_file.stat().st_mtime
+                if config_mtime > generated_mtime:
+                    logger.info("config_changed_regenerating_compose",
+                               config=str(config_file),
+                               config_mtime=config_mtime,
+                               generated_mtime=generated_mtime)
+                    # Config changed - will regenerate on start()
+                    use_generated = False
+                else:
+                    use_generated = True
+            else:
+                use_generated = True
+        
+        if use_generated:
             self.compose_file = generated_file
             logger.debug("using_generated_compose_file", file=str(generated_file))
         else:

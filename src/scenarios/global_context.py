@@ -5,6 +5,7 @@ Provides centralized access to environment information that should be available
 in all scenarios: node IPs, topology, network configuration, etc.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 import docker
@@ -24,6 +25,7 @@ class ScenarioGlobalContext:
     - topology_name: Topology template name
     - node_count: Total number of nodes
     - root_count, master_count, full_count: Node counts by role
+    - native_ticker: Native token ticker (auto-resolved from network config if not provided)
     """
     
     def __init__(
@@ -31,7 +33,8 @@ class ScenarioGlobalContext:
         network_name: str,
         topology_name: str,
         docker_client: Optional[docker.DockerClient] = None,
-        native_ticker: Optional[str] = None
+        native_ticker: Optional[str] = None,
+        cache_path: Optional[Path] = None
     ):
         """
         Initialize global context.
@@ -40,11 +43,13 @@ class ScenarioGlobalContext:
             network_name: Network name (e.g., 'stagenet')
             topology_name: Topology template name
             docker_client: Docker client for IP resolution (optional, will create if needed)
-            native_ticker: Native token ticker (from config)
+            native_ticker: Native token ticker (if None, will be auto-resolved from network config)
+            cache_path: Path to cache directory (for reading network configs)
         """
         self.network_name = network_name
         self.topology_name = topology_name
-        self.native_ticker = native_ticker
+        self._native_ticker = native_ticker
+        self._cache_path = cache_path
         self._docker_client = docker_client or docker.from_env()
         
         # Cached node information
@@ -57,6 +62,64 @@ class ScenarioGlobalContext:
         self.root_count = 0
         self.master_count = 0
         self.full_count = 0
+    
+    @property
+    def native_ticker(self) -> Optional[str]:
+        """
+        Get native token ticker.
+        
+        If not explicitly set, attempts to read from network config file.
+        """
+        if self._native_ticker is None:
+            self._native_ticker = self._resolve_native_ticker()
+        return self._native_ticker
+    
+    @native_ticker.setter
+    def native_ticker(self, value: Optional[str]) -> None:
+        """Set native token ticker explicitly."""
+        self._native_ticker = value
+    
+    def _resolve_native_ticker(self) -> Optional[str]:
+        """
+        Resolve native_ticker from network config file.
+        
+        Reads from cache/configs/node1/network/{network_name}.cfg
+        """
+        # Try to find cache path
+        cache_path = self._cache_path
+        if cache_path is None:
+            # Default cache path relative to stage-env base
+            base_path = Path(__file__).parent.parent.parent
+            cache_path = (base_path / "../testing/cache").resolve()
+        
+        # Read network config from first node
+        network_config_path = cache_path / "configs" / "node1" / "network" / f"{self.network_name}.cfg"
+        
+        if not network_config_path.exists():
+            logger.warning("network_config_not_found", 
+                          path=str(network_config_path),
+                          note="native_ticker will be None")
+            return None
+        
+        try:
+            content = network_config_path.read_text()
+            # Parse native_ticker from config (format: native_ticker=TCELL)
+            match = re.search(r'^native_ticker\s*=\s*(\S+)', content, re.MULTILINE)
+            if match:
+                ticker = match.group(1)
+                logger.info("native_ticker_resolved_from_config",
+                           ticker=ticker,
+                           config_path=str(network_config_path))
+                return ticker
+            else:
+                logger.warning("native_ticker_not_found_in_config",
+                              config_path=str(network_config_path))
+                return None
+        except Exception as e:
+            logger.error("failed_to_read_native_ticker",
+                        config_path=str(network_config_path),
+                        error=str(e))
+            return None
     
     def set_static_node_info(self, node_configs: List[Any]) -> None:
         """

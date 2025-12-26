@@ -21,7 +21,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         parallel: bool = typer.Option(False, "--parallel", "-p", help="Run tests in parallel (not yet implemented)"),
         filter: Optional[str] = typer.Option(None, "--filter", "-k", help="Filter tests by pattern"),
         start_network: bool = typer.Option(True, "--start-network/--no-start-network", help="Start network before tests"),
-        stop_after: bool = typer.Option(True, "--stop-after/--keep-running", help="Stop network after tests"),
+        stop_after: bool = typer.Option(False, "--stop-after/--keep-running", help="Stop network after tests (default: keep running)"),
     ):
         """🧪 Run YAML test scenarios from specified directories."""
         

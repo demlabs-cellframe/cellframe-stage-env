@@ -36,7 +36,7 @@ class ExtractStepExecutor(StepExecutor):
         
         var_name = step.var_name
         source = ctx.substitute(step.source)
-        pattern = step.pattern
+        pattern = ctx.substitute(step.pattern)  # Support variables in pattern
         group = step.group
         default = step.default
         

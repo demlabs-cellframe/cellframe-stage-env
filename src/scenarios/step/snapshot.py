@@ -101,6 +101,12 @@ class SnapshotStepExecutor(StepExecutor):
         ctx: RuntimeContext
     ) -> None:
         """Restore snapshot."""
+        # CRITICAL: Stop containers BEFORE restore to prevent data corruption
+        # Containers must not be writing to files while rsync copies data
+        if step.stop_containers and self.compose_manager:
+            logger.info("stopping_containers_before_restore")
+            self.compose_manager.kill(timeout=30)  # Give 30s for graceful shutdown
+        
         # Pre-cleanup to handle root-owned files from containers
         if self.container_manager:
             try:

@@ -11,45 +11,43 @@ network:
   name: stagenet
 
 # Phase 1 workflow:
-# 1. Start with 2 PoA keys (genesis validators on node-5, node-6)
-# 2. Declare mTCELL token
-# 3. Delegate key on node-7 (master_2)
-# 4. Delegate key on node-8 (master_3)
-# 5. Revoke key on node-8 (test revocation)
-# Final state: 3 keys (2 PoA + 1 delegated)
+# Topology: 3 root + 5 master + 2 full = 10 nodes
+# Genesis creates 2 PoA keys on master_0 (node-4) and master_1 (node-5)
+# Each node can have only ONE registered key, so we use free master nodes:
+# - master_2 (node-6), master_3 (node-7), master_4 (node-8) are available
+#
+# Steps:
+# 1. Start with 2 PoA keys (genesis validators on master_0, master_1)
+# 2. Declare mTCELL token (required for staking)
+# 3. Delegate key on master_2 (node-6) - no key yet
+# 4. Delegate key on master_3 (node-7) - no key yet  
+# 5. Revoke key on master_3 (test revocation)
+# Final state: 3 keys (2 PoA + 1 delegated on master_2)
 
-# Variables auto-injected from topology:
-# root_count, master_count, root_nodes, master_nodes, first_root, first_master, etc.
+# Variables auto-injected from topology (ScenarioGlobalContext):
+# root_count, master_count, full_count, root_nodes, master_nodes, full_nodes, all_nodes
+# native_ticker (auto-resolved from network config)
 
 setup:
+  # CRITICAL: Stop containers BEFORE restore to avoid file conflicts
+  - docker_op: stop
+    services: "{{all_nodes}}"
+  
   # Restore from genesis_complete snapshot (when running standalone)
   - snapshot: restore
     name: genesis_complete
   
-  # Build node lists from topology counts (auto-injected or defaults)
-  # Default topology: 3 root, 3 master, 2 full = 8 nodes
-  - compute: _root_count
-    expr: "get_var('root_count', 3)"
-  
-  - compute: _master_count
-    expr: "get_var('master_count', 3)"
-  
-  - compute: _root_nodes
-    expr: "['node-' + str(i+1) for i in range(_root_count)]"
-  
-  - compute: _master_nodes
-    expr: "['node-' + str(_root_count + i + 1) for i in range(_master_count)]"
-  
+  # Build active nodes list (root + master, no full nodes needed for this test)
   - compute: _active_nodes
-    expr: "_root_nodes + _master_nodes"
+    expr: "root_nodes + master_nodes"
   
-  # Recreate containers to pick up restored data from snapshot
-  - docker_op: recreate
+  # Start containers
+  - docker_op: start
     services: "{{_active_nodes}}"
     detach: true
   
-  - log: "Phase 1: {{_root_count}} root nodes, {{_master_count}} master nodes"
-  - log: "Will delegate: master_2, master_3; Will revoke: master_3"
+  - log: "Phase 1: {{root_count}} root, {{master_count}} master nodes"
+  - log: "Will delegate on: master_2 and master_3, then revoke master_3"
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
@@ -59,7 +57,7 @@ test:
   # === PART 1: Check initial state (should have 2 PoA keys) ===
   - group: Check initial validators
     defaults:
-      node: "node-1"
+      node: "{{root_nodes[0]}}"
     steps:
       - cli: "srv_stake list keys"
         save: _initial_keys
@@ -76,7 +74,7 @@ test:
   # === PART 2: Declare mTCELL (delegated token) ===
   - group: Declare mTCELL token
     defaults:
-      node: "node-1"
+      node: "{{root_nodes[0]}}"
       cli:
         chain: "zerochain"
     steps:
@@ -98,10 +96,10 @@ test:
           # Build certs string dynamically
           - join: _root_certs
             template: "stagenet.root.pvt.{i}"
-            range: "{{_root_count}}"
+            range: "{{root_count}}"
             separator: ","
           
-          - cli: "token_decl -token mTCELL -delegated_token_from TCELL -total_supply 0 -decimals 18 -signs_emission {{_root_count}} -signs_total {{_root_count}} -type CF20 -certs {{_root_certs}}"
+          - cli: "token_decl -token mTCELL -delegated_token_from TCELL -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{_root_certs}}"
             save_hash: mtcell_decl_hash
           
           - cli: "mempool proc -datum {{mtcell_decl_hash}}"
@@ -112,21 +110,25 @@ test:
       - cli: "token info -name mTCELL"
         expect_output: "token_name: mTCELL"
 
-  # === PART 3: Delegate validator on node-7 (master_2) ===
-  - group: Delegate validator on node-7 (master_2)
+  # === PART 3: Delegate validator on last master (no key yet) ===
+  # Genesis creates PoA keys on master_0, master_1 (indices 0, 1)
+  # So we use master_2 (index 2) which has no key
+  - group: Delegate validator on master_2
     defaults:
-      node: "node-1"
+      node: "{{root_nodes[0]}}"
     steps:
-      - compute: _val2_node_num
-        expr: "_root_count + 2 + 1"
+      # Use index 2 for third master (last one without PoA key)
+      - set: _val2_idx = 2
       
-      - set: _val2_node
-        value: "node-{{_val2_node_num}}"
+      # Get node from master_nodes list
+      - compute: _val2_node
+        expr: "master_nodes[_val2_idx]"
       
-      - set: _val2_wallet = "stagenet_master_2"
-      - set: _val2_cert = "stagenet.master.pvt.2"
+      # Wallet and cert names match the index
+      - set: _val2_wallet = "stagenet_master_{{_val2_idx}}"
+      - set: _val2_cert = "stagenet.master.pvt.{{_val2_idx}}"
       
-      - log: "Delegating validator: master_2 on {{_val2_node}}"
+      - log: "Delegating validator: master_{{_val2_idx}} on {{_val2_node}}"
       
       - cli: "wallet info -w {{_val2_wallet}}"
         node: "{{_val2_node}}"
@@ -138,7 +140,7 @@ test:
       
       - wait: finalized
         datum: "{{transfer_val2}}"
-        node: "node-1"
+        node: "{{root_nodes[0]}}"
         chain: "main"
         timeout: 90
       
@@ -149,7 +151,7 @@ test:
       
       - wait: finalized
         datum: "{{stake_lock_val2}}"
-        node: "node-1"
+        node: "{{root_nodes[0]}}"
         chain: "main"
         timeout: 90
       
@@ -160,7 +162,7 @@ test:
       
       - wait: finalized
         datum: "{{delegate_val2}}"
-        node: "node-1"
+        node: "{{root_nodes[0]}}"
         chain: "main"
         timeout: 90
       
@@ -169,7 +171,7 @@ test:
         save_hash: approve_val2
       
       - cli: "decree sign -datum {{approve_val2}} -chain zerochain -certs stagenet.root.pvt.1"
-        node: "node-2"
+        node: "{{root_nodes[1]}}"
         save_hash: approve_val2_signed
       
       - cli: "mempool proc -datum {{approve_val2_signed}} -chain zerochain"
@@ -177,7 +179,7 @@ test:
       # Wait for decree to be processed in DAG
       - wait: mempool
         datum: "{{approve_val2_signed}}"
-        node: "node-1"
+        node: "{{root_nodes[0]}}"
         chain: "zerochain"
         timeout: 30
       
@@ -187,27 +189,29 @@ test:
       # Wait for anchor to be finalized
       - wait: finalized
         datum: "{{approve_val2_anchor}}"
-        node: "node-1"
+        node: "{{root_nodes[0]}}"
         chain: "main"
         timeout: 90
       
       - log: "✓ Validator master_2 ({{_val2_node}}) delegated"
 
-  # === PART 4: Delegate validator on node-8 (master_3) ===
-  - group: Delegate validator on node-8 (master_3)
+  # === PART 4: Delegate validator on fourth master node ===
+  - group: Delegate validator on master_3
     defaults:
-      node: "node-1"
+      node: "{{root_nodes[0]}}"
     steps:
-      - compute: _val3_node_num
-        expr: "_root_count + 3 + 1"
+      # Use index 3 for fourth master (0-based: master_0,1 have PoA, master_2 delegated above)
+      - set: _val3_idx = 3
       
-      - set: _val3_node
-        value: "node-{{_val3_node_num}}"
+      # Get node from master_nodes list
+      - compute: _val3_node
+        expr: "master_nodes[_val3_idx]"
       
-      - set: _val3_wallet = "stagenet_master_3"
-      - set: _val3_cert = "stagenet.master.pvt.3"
+      # Wallet and cert names match the index
+      - set: _val3_wallet = "stagenet_master_{{_val3_idx}}"
+      - set: _val3_cert = "stagenet.master.pvt.{{_val3_idx}}"
       
-      - log: "Delegating validator: master_3 on {{_val3_node}}"
+      - log: "Delegating validator: master_{{_val3_idx}} on {{_val3_node}}"
       
       - cli: "wallet info -w {{_val3_wallet}}"
         node: "{{_val3_node}}"
@@ -219,7 +223,7 @@ test:
       
       - wait: finalized
         datum: "{{transfer_val3}}"
-        node: "node-1"
+        node: "{{root_nodes[0]}}"
         chain: "main"
         timeout: 90
       
@@ -230,7 +234,7 @@ test:
       
       - wait: finalized
         datum: "{{stake_lock_val3}}"
-        node: "node-1"
+        node: "{{root_nodes[0]}}"
         chain: "main"
         timeout: 90
       
@@ -241,7 +245,7 @@ test:
       
       - wait: finalized
         datum: "{{delegate_val3}}"
-        node: "node-1"
+        node: "{{root_nodes[0]}}"
         chain: "main"
         timeout: 90
       
@@ -250,7 +254,7 @@ test:
         save_hash: approve_val3
       
       - cli: "decree sign -datum {{approve_val3}} -chain zerochain -certs stagenet.root.pvt.1"
-        node: "node-2"
+        node: "{{root_nodes[1]}}"
         save_hash: approve_val3_signed
       
       - cli: "mempool proc -datum {{approve_val3_signed}} -chain zerochain"
@@ -258,7 +262,7 @@ test:
       # Wait for decree to be processed in DAG
       - wait: mempool
         datum: "{{approve_val3_signed}}"
-        node: "node-1"
+        node: "{{root_nodes[0]}}"
         chain: "zerochain"
         timeout: 30
       
@@ -268,7 +272,7 @@ test:
       # Wait for anchor to be finalized
       - wait: finalized
         datum: "{{approve_val3_anchor}}"
-        node: "node-1"
+        node: "{{root_nodes[0]}}"
         chain: "main"
         timeout: 90
       
@@ -277,7 +281,7 @@ test:
   # === PART 5: Verify 4 keys before revoke ===
   - group: Verify 4 keys (2 PoA + 2 delegated)
     defaults:
-      node: "node-1"
+      node: "{{root_nodes[0]}}"
     steps:
       - cli: "srv_stake list keys"
         save: _keys_before_revoke
@@ -291,12 +295,12 @@ test:
       - assert: _key_count_before == 4
         message: "Expected 4 validators before revoke"
 
-  # === PART 6: Revoke validator on node-8 (master_3) ===
-  - group: Revoke validator on node-8 (master_3)
+  # === PART 6: Revoke validator on master_3 ===
+  - group: Revoke validator on master_3
     defaults:
-      node: "node-1"
+      node: "{{root_nodes[0]}}"
     steps:
-      # Get node address for master_3 (node-8)
+      # Get node address for master_3
       - cli: "net get status"
         node: "{{_val3_node}}"
         save: _val3_status
@@ -306,29 +310,26 @@ test:
         pattern: "current_addr:\\s*([A-F0-9:]+)"
         group: 1
       
-      - log: "Node-8 address: {{_val3_node_addr}}"
+      - log: "master_3 ({{_val3_node}}) address: {{_val3_node_addr}}"
       
-      # Get all keys to find pkey_hash by node_addr
-      - cli: "srv_stake list keys"
-        save: _all_keys
+      # Get keys in table format (-h) where node_addr is first column
+      - cli: "srv_stake list keys -h"
+        save: _all_keys_table
       
-      # Extract pkey_hash for the node to revoke
-      # Note: We need to find pkey_hash associated with node-8
-      # Since the validator was just created, we use the last pkey_hash
+      # Extract pkey_hash for specific node_addr (table format: "node_addr | pkey_hash | ...")
       - extract: _val3_pkey_hash
-        from: "{{_all_keys}}"
-        pattern: "pkey_hash:\\s*(0x[A-Fa-f0-9]+)"
+        from: "{{_all_keys_table}}"
+        pattern: "{{_val3_node_addr}}\\s*\\|\\s*(0x[A-Fa-f0-9]+)"
         group: 1
-        match_index: -1
       
-      - log: "Found pkey_hash for revoke: {{_val3_pkey_hash}}"
+      - log: "Found pkey_hash for {{_val3_node_addr}}: {{_val3_pkey_hash}}"
       
       # Revoke the delegation using invalidate command
       - cli: "srv_stake invalidate -poa_cert stagenet.root.pvt.0 -signing_pkey_hash {{_val3_pkey_hash}} -signing_pkey_type sig_dil"
         save_hash: revoke_val3
       
       - cli: "decree sign -datum {{revoke_val3}} -chain zerochain -certs stagenet.root.pvt.1"
-        node: "node-2"
+        node: "{{root_nodes[1]}}"
         save_hash: revoke_val3_signed
       
       - cli: "mempool proc -datum {{revoke_val3_signed}} -chain zerochain"
@@ -336,7 +337,7 @@ test:
       # Wait for decree in zerochain
       - wait: mempool
         datum: "{{revoke_val3_signed}}"
-        node: "node-1"
+        node: "{{root_nodes[0]}}"
         chain: "zerochain"
         timeout: 30
       
@@ -346,16 +347,16 @@ test:
       # Wait for anchor to be finalized
       - wait: finalized
         datum: "{{revoke_val3_anchor}}"
-        node: "node-1"
+        node: "{{root_nodes[0]}}"
         chain: "main"
-        timeout: 90
+        timeout: 180
       
       - log: "✓ Validator master_3 ({{_val3_node}}) revoked"
 
   # === PART 7: Final verification - 3 keys ===
   - group: Verify final state (3 keys)
     defaults:
-      node: "node-1"
+      node: "{{root_nodes[0]}}"
     steps:
       - cli: "srv_stake list keys"
         save: _final_keys
@@ -381,11 +382,11 @@ test:
 
 check:
   - cli: "token info -name mTCELL -net stagenet"
-    node: "node-1"
+    node: "{{root_nodes[0]}}"
     expect_output: "token_name: mTCELL"
   
   - cli: "srv_stake list keys -net stagenet"
-    node: "node-1"
+    node: "{{root_nodes[0]}}"
     expect_output: "pkey_hash"
   
   - log: "✓ Phase 1 check complete: mTCELL declared, validators configured"

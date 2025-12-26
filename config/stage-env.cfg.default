@@ -14,7 +14,7 @@ native_ticker = TCELL
 [topology]
 # Default node counts
 root_nodes_count = 3
-master_nodes_count = 3
+master_nodes_count = 5
 full_nodes_count = 2
 
 [build]
