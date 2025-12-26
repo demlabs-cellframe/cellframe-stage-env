@@ -8,6 +8,9 @@ network:
   topology: default
   name: "{{network_name}}"
 
+# Restore from phase1 zerochain snapshot when running standalone
+restore_snapshot: phase1_zerochain_genesis
+
 setup:
   # NOTE: When running as part of genesis flow (via manager.py), 
   # containers are already running from phase1.

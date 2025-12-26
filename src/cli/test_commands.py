@@ -22,6 +22,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         filter: Optional[str] = typer.Option(None, "--filter", "-k", help="Filter tests by pattern"),
         start_network: bool = typer.Option(True, "--start-network/--no-start-network", help="Start network before tests"),
         stop_after: bool = typer.Option(False, "--stop-after/--keep-running", help="Stop network after tests (default: keep running)"),
+        restore_snapshot: Optional[str] = typer.Option(None, "--restore-snapshot", "-r", help="Restore from specific snapshot before tests (overrides scenario restore_snapshot)"),
     ):
         """🧪 Run YAML test scenarios from specified directories."""
         
@@ -64,6 +65,47 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         print_info(f"📁 Created run directory: run_{run_id}/")
         
+        # Determine restore_snapshot from first scenario if not specified via CLI
+        effective_restore_snapshot = restore_snapshot
+        # Determine run_genesis_flow from scenario (default: True)
+        effective_run_genesis_flow = True
+        
+        if start_network:
+            # Parse first scenario to get restore_snapshot and run_genesis_flow
+            first_scenario_file = None
+            for test_dir in test_dirs:
+                test_path = Path(test_dir).resolve()
+                if test_path.is_file() and test_path.suffix in ['.yml', '.yaml']:
+                    first_scenario_file = test_path
+                    break
+                elif test_path.is_dir():
+                    yml_files = list(test_path.glob("*.yml")) + list(test_path.glob("*.yaml"))
+                    if yml_files:
+                        # Sort to get consistent order (e.g., phase1, phase2, ...)
+                        yml_files.sort()
+                        first_scenario_file = yml_files[0]
+                        break
+            
+            if first_scenario_file:
+                try:
+                    common_root = base_path / "tests"
+                    parser = ScenarioParser(scenarios_root=first_scenario_file.parent, common_root=common_root)
+                    first_scenario = parser.load_scenario(first_scenario_file.name)
+                    
+                    # Get restore_snapshot if not provided via CLI
+                    if not effective_restore_snapshot:
+                        if hasattr(first_scenario, 'restore_snapshot') and first_scenario.restore_snapshot:
+                            effective_restore_snapshot = first_scenario.restore_snapshot
+                            print_info(f"📋 Using restore_snapshot from scenario: {effective_restore_snapshot}")
+                    
+                    # Get run_genesis_flow from scenario
+                    if hasattr(first_scenario, 'run_genesis_flow'):
+                        effective_run_genesis_flow = first_scenario.run_genesis_flow
+                        if not effective_run_genesis_flow:
+                            print_info(f"📋 Scenario requests run_genesis_flow=False (skip genesis phases)")
+                except Exception as e:
+                    logger.warning("failed_to_parse_first_scenario_for_config", error=str(e))
+        
         # Start network if requested
         network_mgr = None
         if start_network:
@@ -74,11 +116,27 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             network_mgr.keep_running = not stop_after
             
             async def _start_network():
-                await network_mgr.start(rebuild=False, wait_ready=True)
+                # Pass restore_snapshot and run_genesis_flow to start()
+                # Scenario controls whether genesis phases should run
+                await network_mgr.start(
+                    rebuild=False, 
+                    wait_ready=True,
+                    restore_snapshot=effective_restore_snapshot,
+                    run_genesis_flow=effective_run_genesis_flow
+                )
             
             try:
                 asyncio.run(_start_network())
                 print_success("Network started successfully")
+                
+                # Create pristine network marker - first scenario will use it directly
+                paths_config = network_mgr.config_loader.get_paths_config()
+                artifacts_dir = paths_config.get('artifacts_dir', '../testing/artifacts')
+                artifacts_path = (base_path / artifacts_dir).resolve()
+                artifacts_path.mkdir(parents=True, exist_ok=True)
+                pristine_network_marker = artifacts_path / ".pristine_network"
+                pristine_network_marker.touch()
+                logger.info("pristine_network_marker_created", path=str(pristine_network_marker))
                 
                 # Initialize CLI parser with help data from node
                 print_info("📖 Parsing CLI commands...")
@@ -267,6 +325,44 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         try:
                             scenario = parser.load_scenario(scenario_file.name)
                             
+                            # Handle scenario-level restore_snapshot
+                            # Logic: 
+                            # - First scenario: already restored at network start (if restore_snapshot specified)
+                            # - Subsequent scenarios: continue from previous state (sequential run)
+                            if network_mgr and scenario.restore_snapshot and not is_first_suite and passed_scenarios == 0:
+                                # Only restore if this is NOT the first scenario AND no previous scenarios passed
+                                # (means we're starting fresh after a failure or restart)
+                                restore_snapshot_name = scenario.restore_snapshot
+                                # Substitute {{topology_name}} if present
+                                if "{{topology_name}}" in restore_snapshot_name:
+                                    topology_name = scenario.network.topology if scenario.network else 'default'
+                                    restore_snapshot_name = restore_snapshot_name.replace("{{topology_name}}", topology_name)
+                                
+                                print_info(f"🔄 Restoring from snapshot: {restore_snapshot_name}")
+                                
+                                # Get run_genesis_flow from scenario
+                                scenario_run_genesis_flow = getattr(scenario, 'run_genesis_flow', True)
+                                
+                                async def _restore_for_scenario():
+                                    await network_mgr.restore_clean_state(
+                                        name=restore_snapshot_name,
+                                        run_genesis_flow=scenario_run_genesis_flow
+                                    )
+                                
+                                try:
+                                    asyncio.run(_restore_for_scenario())
+                                    print_success(f"✓ Restored from: {restore_snapshot_name}")
+                                except Exception as e:
+                                    print_warning(f"Failed to restore snapshot: {e}")
+                            
+                            # Mark first suite as used
+                            if is_first_suite:
+                                try:
+                                    pristine_marker.unlink()
+                                except FileNotFoundError:
+                                    pass
+                                is_first_suite = False
+                            
                             # Execute scenario
                             with open(scenario_log_file, 'w', encoding='utf-8') as log_f:
                                 log_f.write(f"Scenario: {scenario.name}\n")
@@ -418,8 +514,14 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             else:
                                 print_info("🧹 Restoring clean environment state...")
                             
+                            # Get run_genesis_flow from suite descriptor if available
+                            suite_run_genesis_flow = getattr(suite_spec, 'run_genesis_flow', True) if isinstance(suite_spec, SuiteDescriptor) else True
+                            
                             async def _restore_state():
-                                await network_mgr.restore_clean_state(name=restore_snapshot_name)
+                                await network_mgr.restore_clean_state(
+                                    name=restore_snapshot_name,
+                                    run_genesis_flow=suite_run_genesis_flow
+                                )
                             
                             try:
                                 asyncio.run(_restore_state())

@@ -213,6 +213,8 @@ class NetworkManager:
         self,
         rebuild: bool = False,
         wait_ready: bool = True,
+        restore_snapshot: str = None,
+        run_genesis_flow: bool = True,
     ) -> None:
         """
         Start the test network.
@@ -220,10 +222,15 @@ class NetworkManager:
         Args:
             rebuild: Rebuild Docker images before starting
             wait_ready: Wait for all nodes to be ready
+            restore_snapshot: Specific snapshot to restore (overrides default phase1 snapshot)
+            run_genesis_flow: If True, run full genesis phases. If False, just restore snapshot and start nodes.
+                             Scenario defines this based on whether it needs genesis or starts from post-genesis state.
         """
         logger.info("starting_network",
                    topology=self.topology_name,
-                   rebuild=rebuild)
+                   rebuild=rebuild,
+                   restore_snapshot=restore_snapshot,
+                   run_genesis_flow=run_genesis_flow)
         
         # Stop previous environment FIRST (keep volumes - they contain certs!)
         logger.info("stopping_previous_environment")
@@ -236,9 +243,9 @@ class NetworkManager:
         # Clean up any remaining stale resources
         self.compose.cleanup_stale_resources()
         
-        # CRITICAL: Check for phase1 snapshot BEFORE cleaning data
-        # If phase1 snapshot exists, restore it instead of starting from scratch
-        phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', 'phase1_zerochain_genesis')
+        # CRITICAL: Check for snapshot BEFORE cleaning data
+        # Use restore_snapshot if provided, otherwise fall back to default phase1 snapshot
+        phase1_snapshot_name = restore_snapshot or self.suite_isolation_config.get('phase1_snapshot_name', 'phase1_zerochain_genesis')
         phase1_snapshot_exists = False
         
         if self.suite_isolation_config.get('auto_create_on_startup', True):
@@ -255,17 +262,59 @@ class NetworkManager:
                     phase1_snapshot_exists = marker_path.exists()
                 
                 if phase1_snapshot_exists:
-                    logger.info("phase1_snapshot_found_restoring",
+                    logger.info("snapshot_found_restoring",
                                name=phase1_snapshot_name,
-                               mode=self.snapshot_manager.mode.value)
-                    # Restore phase1 snapshot instead of cleaning
+                               mode=self.snapshot_manager.mode.value,
+                               run_genesis_flow=run_genesis_flow)
+                    # Restore snapshot instead of cleaning
                     restore_result = await self.snapshot_manager.restore_snapshot(phase1_snapshot_name)
                     if restore_result:
-                        logger.info("phase1_snapshot_restored_successfully",
+                        logger.info("snapshot_restored_successfully",
                                    name=phase1_snapshot_name,
-                                   note="Skipping full genesis, starting from phase1 state")
+                                   run_genesis_flow=run_genesis_flow)
                         # DO NOT clean data - snapshot already restored with data
                         phase1_snapshot_exists = True  # Ensure flag is set
+                        
+                        # SKIP GENESIS FLOW: Scenario explicitly requested to skip genesis phases
+                        # (e.g., primary tests that restore from post-genesis snapshot)
+                        if not run_genesis_flow:
+                            logger.info("skip_genesis_flow_starting_nodes_directly",
+                                       snapshot=phase1_snapshot_name,
+                                       note="Scenario requested run_genesis_flow=False - snapshot contains complete state")
+                            
+                            # Generate node configs
+                            if not self.nodes:
+                                node_configs = self.generate_node_configs()
+                            else:
+                                node_configs = list(self.nodes.values())
+                            
+                            # Skip config generation - restored from snapshot
+                            logger.info("skipping_config_generation_after_snapshot_restore",
+                                       note="Configs restored from snapshot - preserving all settings")
+                            
+                            # Generate docker-compose.yml (always needed)
+                            cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
+                            node_source_config = self.config_loader.get_node_source_config()
+                            self.compose.generate_compose_for_nodes(
+                                node_configs, 
+                                cache_dir_relative=cache_dir_relative,
+                                node_source_config=node_source_config
+                            )
+                            
+                            # Start all nodes
+                            all_services = [f"node-{nc.node_id}" for nc in node_configs]
+                            logger.info("starting_all_nodes_from_snapshot", nodes=len(all_services))
+                            self.compose.up(services=all_services, detach=True, wait=False)
+                            
+                            # Wait for nodes to be ready
+                            if wait_ready:
+                                await self.state_manager.wait_for_nodes_online(node_configs, timeout=120.0)
+                                logger.info("all_nodes_online_after_snapshot_restore")
+                            
+                            logger.info("network_started_without_genesis_flow",
+                                       snapshot=phase1_snapshot_name,
+                                       nodes=len(node_configs))
+                            return  # Early return - skip all genesis phases
                     else:
                         logger.warning("phase1_snapshot_restore_failed_fallback_to_clean",
                                      name=phase1_snapshot_name)
@@ -1537,7 +1586,7 @@ class NetworkManager:
         
         return result
     
-    async def restore_clean_state(self, name: Optional[str] = None) -> bool:
+    async def restore_clean_state(self, name: Optional[str] = None, run_genesis_flow: bool = True) -> bool:
         """
         Restore environment to clean snapshot state.
         
@@ -1546,6 +1595,8 @@ class NetworkManager:
         
         Args:
             name: Optional snapshot name (defaults to config snapshot_name)
+            run_genesis_flow: If True, run full genesis phases after restore.
+                             If False, skip genesis phases (for post-genesis snapshots).
             
         Returns:
             True if restore successful
@@ -1574,7 +1625,7 @@ class NetworkManager:
             logger.warning("snapshot_restore_failed_fallback_to_cleanup")
             # Restart containers even if restore failed
             logger.info("starting_containers_after_failed_restore")
-            await self.start(rebuild=False, wait_ready=True)
+            await self.start(rebuild=False, wait_ready=True, run_genesis_flow=run_genesis_flow)
             # Only try cleanup if containers are running
             if self.compose and self.compose.is_running():
                 await self.clean_test_data()
@@ -1584,7 +1635,7 @@ class NetworkManager:
         
         # Restart containers with restored data
         logger.info("starting_containers_after_snapshot_restore")
-        await self.start(rebuild=False, wait_ready=True)
+        await self.start(rebuild=False, wait_ready=True, run_genesis_flow=run_genesis_flow)
         
         return result
     

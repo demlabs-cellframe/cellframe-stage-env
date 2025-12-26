@@ -318,8 +318,8 @@ class NetworkWaitStep(BaseModel):
 
 
 class DockerOpStep(BaseModel):
-    """Execute Docker operations (start, stop, restart, logs, exec, cp)."""
-    docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'recreate', 'logs', 'exec', 'cp'")
+    """Execute Docker operations (start, stop, restart, status, logs, exec, cp)."""
+    docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'recreate', 'status', 'logs', 'exec', 'cp'")
     services: Optional[Union[str, List[str]]] = Field(None, description="Docker services to operate on (can be template like '{{all_nodes}}')")
     command: Optional[str] = Field(None, description="Command for 'exec' operation")
     detach: bool = Field(True, description="Run in detached mode (for start/restart)")
@@ -328,6 +328,9 @@ class DockerOpStep(BaseModel):
     # Fields for 'cp' operation
     src: Optional[str] = Field(None, description="Source path for 'cp' operation (format: 'node-1:/path' or '/host/path')")
     dst: Optional[str] = Field(None, description="Destination path for 'cp' operation (format: 'node-1:/path' or '/host/path')")
+    # Fields for 'status' operation
+    save: Optional[str] = Field(None, description="Variable name to save status result for 'status' operation")
+    ignore_error: bool = Field(False, description="Continue execution if operation fails")
 
 
 class SnapshotStep(BaseModel):
@@ -349,6 +352,7 @@ class SnapshotStep(BaseModel):
     is_base: bool = Field(False, description="Mark as base topology snapshot (used as default for suites)")
     nodes: Optional[Union[str, List[str]]] = Field(None, description="Nodes to include (optional, defaults to all)")
     stop_containers: bool = Field(True, description="Stop containers before create (ensures consistent state)")
+    restart_after: bool = Field(True, description="Restart containers after create (for sequential scenario runs)")
 
 
 # ============================================================================
@@ -560,6 +564,14 @@ class TestScenario(BaseModel):
     
     # Network configuration (optional, defaults to 'default' topology)
     network: Optional[NetworkConfig] = Field(None, description="Network topology (default: topology='default')")
+    
+    # Snapshot to restore before running scenario (for standalone runs)
+    # If containers are already running from previous phase, restore is skipped
+    restore_snapshot: Optional[str] = Field(None, description="Snapshot to restore on startup (e.g., 'primary_phase1_complete')")
+    
+    # Whether to run genesis flow when starting network
+    # Set to False for scenarios that restore from post-genesis snapshots (e.g., primary tests)
+    run_genesis_flow: bool = Field(True, description="Run genesis flow on network start (False for post-genesis scenarios)")
     
     # Package installation
     packages: List[PackageSpec] = Field(default_factory=list, description="Packages to install")

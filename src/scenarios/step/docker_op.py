@@ -169,6 +169,37 @@ class DockerOpStepExecutor(StepExecutor):
                 compose_manager.kill(timeout=10)
             elif operation == "restart":
                 compose_manager.restart(services=services)
+            elif operation == "status":
+                # Check container status - returns "running" for each container
+                import docker
+                client = docker.from_env()
+                statuses = {}
+                all_running = True
+                for svc in services:
+                    container_name = f"cellframe-stage-{svc}"
+                    try:
+                        container = client.containers.get(container_name)
+                        status = container.status
+                        statuses[svc] = status
+                        if status != "running":
+                            all_running = False
+                    except docker.errors.NotFound:
+                        statuses[svc] = "not_found"
+                        all_running = False
+                    except Exception as e:
+                        statuses[svc] = f"error: {e}"
+                        all_running = False
+                
+                status_str = "running" if all_running else "not_running"
+                logger.info(f"Container status check: {status_str}", statuses=statuses)
+                
+                # Save status to variable if specified
+                if step.save:
+                    ctx.set_variable(step.save, status_str)
+                
+                ctx.add_result("docker_op", True, {"operation": operation, "statuses": statuses, "all_running": all_running})
+                return  # Don't continue to wait or success message
+            
             elif operation == "logs":
                 # Logs operation - would need to implement
                 logger.warning("Docker logs operation not yet implemented")
@@ -193,6 +224,9 @@ class DockerOpStepExecutor(StepExecutor):
             error_msg = f"Docker operation failed: {str(e)}"
             logger.error(error_msg)
             ctx.add_result("docker_op", False, {"operation": operation, "error": str(e)})
+            if step.ignore_error:
+                logger.warning(f"Ignoring error due to ignore_error=true: {error_msg}")
+                return
             raise ScenarioExecutionError(error_msg, step=step)
     
     async def _execute_cp(self, step: DockerOpStep, ctx: RuntimeContext) -> None:

@@ -92,6 +92,11 @@ class SnapshotStepExecutor(StepExecutor):
                 marker_path = manager.snapshot.snapshots_path / f"{name}.base"
                 marker_path.write_text(f"topology={ctx.variables.get('topology_name', 'default')}\n")
                 logger.info("base_snapshot_marker_created", name=name)
+        
+        # Restart containers after snapshot if requested (default: true for sequential runs)
+        if step.restart_after and self.compose_manager:
+            logger.info("restarting_containers_after_snapshot")
+            self.compose_manager.up(detach=True)
     
     async def _execute_restore(
         self, 

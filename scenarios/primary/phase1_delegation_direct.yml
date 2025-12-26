@@ -10,6 +10,11 @@ network:
   topology: default
   name: stagenet
 
+# Restore from genesis_complete snapshot when running standalone
+restore_snapshot: genesis_complete
+# Skip genesis flow - snapshot already contains complete genesis state
+run_genesis_flow: false
+
 # Phase 1 workflow:
 # Topology: 3 root + 5 master + 2 full = 10 nodes
 # Genesis creates 2 PoA keys on master_0 (node-4) and master_1 (node-5)

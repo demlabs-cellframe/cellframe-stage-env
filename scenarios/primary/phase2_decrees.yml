@@ -10,19 +10,17 @@ network:
   topology: default
   name: stagenet
 
+# Restore from phase1 snapshot when running standalone
+# When running sequentially after phase1, this is skipped if containers are already running
+restore_snapshot: primary_phase1_complete
+# Skip genesis flow - snapshot already contains complete genesis state
+run_genesis_flow: false
+
 # Variables auto-injected from topology:
 # root_count, master_count, root_nodes, master_nodes, first_root, etc.
 
 setup:
-  # CRITICAL: Stop containers BEFORE restore to avoid file conflicts
-  - docker_op: stop
-    services: "{{all_nodes}}"
-  
-  # Restore from genesis_complete snapshot (when running standalone)
-  - snapshot: restore
-    name: genesis_complete
-  
-  # Build node lists from topology counts (auto-injected or defaults)
+  # Build node lists from topology counts
   - compute: _root_count
     expr: "get_var('root_count', 3)"
   
@@ -37,11 +35,6 @@ setup:
   
   - compute: _active_nodes
     expr: "_root_nodes + _master_nodes"
-  
-  # Start containers with restored data from snapshot
-  - docker_op: start
-    services: "{{_active_nodes}}"
-    detach: true
   
   - log: "Phase 2: {{_root_count}} root nodes, {{_master_count}} master nodes"
   
