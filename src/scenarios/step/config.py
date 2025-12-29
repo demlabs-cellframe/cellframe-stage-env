@@ -67,8 +67,11 @@ class ConfigStepExecutor(StepExecutor):
             
         logger.info(f"Config: regenerating '{step.config}' for nodes {node_ids} with vars {list(variables.keys())}")
         
+        # Get network_name from context for dynamic template resolution
+        network_name = ctx.variables.get('network_name', 'stagenet')
+        
         # 3. Regenerate
-        await self._regenerate_config(node_ids, ctx.substitute(step.config), variables)
+        await self._regenerate_config(node_ids, ctx.substitute(step.config), variables, network_name)
         
         ctx.add_result("config", True, {"name": step.config, "nodes": node_ids})
 
@@ -86,9 +89,15 @@ class ConfigStepExecutor(StepExecutor):
                 result[k] = v
         return result
 
-    async def _regenerate_config(self, node_ids: List[int], config_name: str, variables: Dict[str, Any]):
+    async def _regenerate_config(self, node_ids: List[int], config_name: str, variables: Dict[str, Any], network_name: str = "stagenet"):
         """
         Regenerate config file from template, merging existing config values with new variables.
+        
+        Args:
+            node_ids: List of node IDs to regenerate config for
+            config_name: Config name (e.g. "cellframe-node", "stagenet", "stagenet/zerochain")
+            variables: Variables to set in the config
+            network_name: Network name from context (used for dynamic template resolution)
         """
         from src.config.manager import get_config_loader
         from src.config.generator import ConfigGenerator
@@ -102,7 +111,7 @@ class ConfigStepExecutor(StepExecutor):
         generator = ConfigGenerator(self.base_path, config_loader.config_path)
         
         # Determine template path based on config_name
-        # config_name e.g. "cellframe-node" or "stagenet/zerochain"
+        # config_name e.g. "cellframe-node" or "{network_name}/zerochain"
         
         # Mapping heuristic
         is_chain = False
@@ -110,14 +119,15 @@ class ConfigStepExecutor(StepExecutor):
         parts = []
         
         if '/' in config_name:
-            # "stagenet/zerochain" -> chains template
+            # "{network_name}/zerochain" -> chains template
             parts = config_name.split('/')
             network = parts[0]
-            chain_file = parts[1] # e.g. "zerochain"
+            chain_file = parts[1]  # e.g. "zerochain", "main"
             template_name = f"chains/{chain_file}.cfg.j2"
             is_chain = True
-        elif config_name == "stagenet":
-            # Network config (special case)
+        elif config_name == network_name:
+            # Network config (dynamic - uses network_name from context)
+            # Template is always "stagenet.cfg.j2" but output uses network_name
             template_name = "stagenet.cfg.j2"
             is_network = True
         else:
@@ -193,17 +203,19 @@ class ConfigStepExecutor(StepExecutor):
                     v = int(v)
                 context[k] = v
         
-        # Map config file key names to template variable names
-        # Config files use dashes, templates use underscores
-        key_mappings = {
-            'node-role': 'node_role',
-            'blocks-sign-cert': 'blocks_sign_cert',
-            'events-sign-cert': 'events_sign_cert',
-            'seed_nodes_aliases': 'seed_nodes_aliases',
-            'seed_nodes_hosts': 'seed_nodes_hosts',
+        # Auto-convert all dash-keys to underscore-keys for Jinja2 compatibility
+        # Config files use dashes (e.g. node-role), templates use underscores (node_role)
+        for key in list(context.keys()):
+            if '-' in key:
+                underscore_key = key.replace('-', '_')
+                if underscore_key not in context:
+                    context[underscore_key] = context[key]
+        
+        # Special mappings for specific key renames
+        special_mappings = {
             'ext_address': 'node_ip',  # ext_address in config -> node_ip in template
         }
-        for config_key, template_key in key_mappings.items():
+        for config_key, template_key in special_mappings.items():
             if config_key in context and template_key not in context:
                 context[template_key] = context[config_key]
         

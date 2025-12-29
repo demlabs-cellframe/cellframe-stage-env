@@ -59,7 +59,7 @@ test:
           variable: node_id
           steps:
             # Check links on each node
-            - cli: net -net stagenet link list
+            - cli: net -net {{network_name}} link list
               node: "{{node_id}}"
               save: "{{node_id}}_links"
   
@@ -96,7 +96,7 @@ test:
         node: node1
       
       # Get address
-      - cli: wallet info -w test_compat -net stagenet
+      - cli: wallet info -w test_compat -net {{network_name}}
         node: node1
         save: wallet_info
         extract:
@@ -105,24 +105,24 @@ test:
           variable: wallet_addr
       
       # Create token on node2 (stable)
-      - cli: token_decl -net stagenet -token COMPAT -total 1000000
+      - cli: token_decl -net {{network_name}} -token COMPAT -total 1000000
         node: node2
         save: token_hash
       
       # Emit from node2 to node1 wallet (cross-version)
-      - cli: token_emit -net stagenet -token COMPAT -value 10000 -addr {{wallet_addr}}
+      - cli: token_emit -net {{network_name}} -token COMPAT -value 10000 -addr {{wallet_addr}}
         node: node2
         save: emit_tx
         wait: 5s
 
 check:
   # Transaction visible on dev node
-  - cli: tx_history -net stagenet -tx {{emit_tx}}
+  - cli: tx_history -net {{network_name}} -tx {{emit_tx}}
     node: node1
     contains: "{{emit_tx}}"
   
   # Transaction visible on stable node
-  - cli: tx_history -net stagenet -tx {{emit_tx}}
+  - cli: tx_history -net {{network_name}} -tx {{emit_tx}}
     node: node2
     contains: "{{emit_tx}}"
   

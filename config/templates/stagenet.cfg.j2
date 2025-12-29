@@ -1,10 +1,10 @@
-# Stagenet configuration
+# {{ network_name | default('stagenet') }} configuration
 
 [general]
-id=0x0000000000001234
-name=stagenet
-gdb_groups_prefix=stagenet
-native_ticker=TCELL
+id={{ network_id | default('0x0000000000001234') }}
+name={{ network_name | default('stagenet') }}
+gdb_groups_prefix={{ network_name | default('stagenet') }}
+native_ticker={{ native_ticker | default('TCELL') }}
 node-role={{ node_role | default('full', true) }}
 # Seed nodes for initial discovery (matches tests-in-docker format)
 # Both aliases and hosts are required for node discovery
@@ -29,5 +29,5 @@ blocks-sign-cert={{ blocks_sign_cert }}
 {% if fee_addr %}
 fee_addr={{ fee_addr }}
 {% endif %}
-collecting_level=10.0
+collecting_level={{ collecting_level | default(10.0) }}
 
