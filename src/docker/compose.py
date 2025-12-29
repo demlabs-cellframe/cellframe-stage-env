@@ -6,6 +6,7 @@ Uses docker SDK 7.0+ with native compose v2 support.
 """
 
 import time
+import re
 import yaml
 from pathlib import Path
 from typing import Dict, List, Optional, Any
