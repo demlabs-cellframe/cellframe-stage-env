@@ -228,29 +228,133 @@ JSON-RPC вызов к ноде.
 
 ```yaml
 - python: |
-    addr = ctx.get_variable('wallet_addr')
-    ctx.set_variable('validated_addr', addr)
-    print(f"Обработка: {addr}")
-  save: python_result             # Сохранить return value
+    items = ctx.get_variable('items_list')
+    ctx.set_variable('count', len(items))
 ```
 
 **Context API:**
 - `ctx.get_variable(name)` - получить переменную
 - `ctx.set_variable(name, value)` - установить переменную
 - `ctx.has_variable(name)` - проверить существование
-- `print()` - вывод в лог
 
 ### BashStep
 Выполнение Bash скрипта в контейнере ноды.
 
 ```yaml
 - bash: |
-    echo "Тестовые данные" > /tmp/test.txt
-    cat /tmp/test.txt
+    cat /opt/cellframe-node/var/log/cellframe-node.log | grep ERROR
   node: node1
-  save: bash_output
+  save: errors
   expect: success
   timeout: 30
+```
+
+**Применение:** Когда нужны shell команды недоступные через CLI (файловые операции, парсинг логов и т.д.)
+
+### LoopStep
+Повторение шагов N раз.
+
+```yaml
+- loop: 5
+  steps:
+    - cli: ledger tx -all
+      save: tx_list
+    - wait: 1s
+```
+
+**Применение:** Простая итерация без переменной индекса. Для итерации с индексом используйте `ForStep`.
+
+### ForStep
+Итерация по списку значений.
+
+```yaml
+- for: node_idx
+  in: "{{root_indices}}"        # Список или переменная со списком
+  steps:
+    - cli: node dump
+      node: "node-{{node_idx}}"
+      save_node: "addr_{{node_idx}}"
+```
+
+### IfStep
+Условное выполнение.
+
+```yaml
+- if: ctx.get_variable('balance') > 1000
+  then:
+    - cli: token emit ...
+  else:
+    - cli: token list
+```
+
+### WhileStep
+Цикл пока условие истинно.
+
+```yaml
+- while: ctx.get_variable('retry_count') < 3
+  max_iterations: 100           # Лимит безопасности
+  steps:
+    - cli: net get status
+      save: status
+```
+
+### SwitchStep
+Switch/case для множественного выбора.
+
+```yaml
+- switch: "{{node_role}}"
+  cases:
+    root:
+      - cli: ...
+    master:
+      - cli: ...
+  default:
+    - cli: ...
+```
+
+### SetStep
+Установка значения переменной.
+
+```yaml
+- set: calculated_value
+  value: "{{base_value}}_processed"
+```
+
+### ConfigStep
+Модификация конфигурации ноды.
+
+```yaml
+- config: "stagenet/main"
+  nodes: ["node-1", "node-2"]
+  set:
+    validators_addrs: "{{validators_str}}"
+    fee_addr: "{{fee_wallet}}"
+```
+
+### NetworkWaitStep
+Ожидание состояния сети.
+
+```yaml
+- wait_network: online
+  nodes: ["node-1", "node-2"]
+  timeout: 120
+```
+
+### DockerOpStep
+Docker операции (start/stop/restart).
+
+```yaml
+- docker_op: restart
+  services: ["node-1", "node-2"]
+  detach: true
+```
+
+### SnapshotStep
+Операции со snapshots.
+
+```yaml
+- snapshot: create
+  name: before_emission
 ```
 
 ### StepGroup
@@ -289,9 +393,9 @@ check:
 ```yaml
 check:
   - python: |
-      balance = ctx.get_variable('balance')
-      assert int(balance) > 0, "Balance должен быть положительным"
-      assert int(balance) < 1000000, "Balance слишком большой"
+      emitted = int(ctx.get_variable('emitted_amount'))
+      received = int(ctx.get_variable('received_amount'))
+      assert received == emitted, f"Несовпадение: {received} != {emitted}"
 ```
 
 Падает если AssertionError или любое исключение.
@@ -301,11 +405,9 @@ check:
 ```yaml
 check:
   - bash: |
-      test -f /tmp/output.txt
-      grep -q "SUCCESS" /tmp/output.txt
-      [ $(wc -l < /tmp/output.txt) -gt 10 ]
+      test -f /opt/cellframe-node/var/lib/global_db/gdb.dat
     node: node1
-    timeout: 30
+    timeout: 10
 ```
 
 Падает если exit code != 0.
@@ -616,11 +718,12 @@ defaults:
   save: tx
 - wait_for_datum: "{{tx}}"
 
-# Используйте extract_to для данных с валидацией
+# Используйте save_* хелперы для извлечения с валидацией
 - cli: wallet info -w test
-  extract_to:
-    addr:
-      type: wallet_address
+  save_wallet: addr
+
+- cli: token_decl -token TEST -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs test_cert
+  save_hash: token_hash
 
 # Организуйте в suites
 tests/e2e/token/
@@ -641,7 +744,7 @@ setup:
 
 # Не сохраняйте весь вывод когда нужно конкретное значение
 - cli: wallet info -w test
-  save: full_output              # Используйте extract_to!
+  save: full_output              # Используйте save_wallet!
 
 # Не хардкодьте имя сети
 - cli: token list -net stagenet  # Используйте -net {{network_name}} или auto-defaults
@@ -662,6 +765,16 @@ setup:
 | WaitForDatumStep | Умное ожидание датума | `wait_for_datum: hash` |
 | PythonStep | Python код | `python: \|` |
 | BashStep | Bash скрипт | `bash: \|` |
+| LoopStep | Повторение N раз | `loop: 5` |
+| ForStep | Итерация по списку | `for: var in: list` |
+| IfStep | Условие | `if: condition then:` |
+| WhileStep | Цикл с условием | `while: condition` |
+| SwitchStep | Switch/case | `switch: var cases:` |
+| SetStep | Установка переменной | `set: var value:` |
+| ConfigStep | Изменение конфига | `config: path set:` |
+| NetworkWaitStep | Ожидание сети | `wait_network: online` |
+| DockerOpStep | Docker операции | `docker_op: restart` |
+| SnapshotStep | Работа со snapshot | `snapshot: create` |
 | StepGroup | Группа с defaults | `group: name` |
 
 ### Типы проверок - краткая таблица
@@ -677,13 +790,13 @@ setup:
 
 ## См. также
 
-- **[Tutorial](Tutorial.md)** - Пошаговое руководство
-- **[Cookbook](Cookbook.md)** - Готовые рецепты
-- **[Examples](../../../examples/)** - Продвинутые примеры
-- **[СЛК модули](../../../../.context/modules/testing/)** - Полный технический справочник
+- **[Tutorial](Tutorial.md)** - Пошаговое руководство (7 уроков)
+- **[Cookbook](Cookbook.md)** - Готовые рецепты для типовых задач
+- **Реальные сценарии** - Изучите `tests/stage-env/scenarios/genesis/` для продвинутых паттернов
+- **[СЛК модули](../../../../../.context/modules/testing/)** - Полный технический справочник
 
 ---
 
-**Версия:** 2.0  
-**Обновлено:** 2025-10-25  
+**Версия:** 2.1  
+**Обновлено:** 2025-12-23  
 **Язык:** Русский | [English](../../en/scenarios/Glossary.md)

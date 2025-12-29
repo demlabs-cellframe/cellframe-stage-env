@@ -184,10 +184,8 @@ test:
     save: balance_result
 
 check:
-  - python: |
-      addr = ctx.get_variable('my_address')
-      assert addr, "Address should be extracted"
-      assert addr.startswith('W'), "Cellframe addresses start with 'W'"
+  - cli: wallet info -w test_wallet
+    contains: "{{my_address}}"    # Verify address is in output
 ```
 
 **Save Helpers:**
@@ -204,10 +202,7 @@ check:
   save_wallet: addr
 
 # ❌ Old - verbose (deprecated)
-- cli: wallet info -w test
-  extract_to:
-    addr:
-      type: wallet_address
+# `extract_to` is deprecated. Use `save_wallet`, `save_hash`, `save_node`, etc.
 ```
 
 ---
@@ -283,9 +278,9 @@ test:
 ```
 
 **How wait_for_datum works:**
-1. **0.5s** - checks if datum appears in mempool (if not → REJECTED)
-2. **30s** - waits for datum to be included in block
-3. **60s** - waits for block to propagate across network
+1. **0.5s** - checks if datum appears in mempool (if not → REJECTED, fail fast!)
+2. **Up to 120s** - waits for datum to be included in block
+3. **Up to 180s** - waits for block to propagate across network
 4. Returns immediately when done (no wasted time!)
 
 **Example with multiple datums:**
@@ -548,17 +543,18 @@ You now know:
 
 1. **[Cookbook](Cookbook.md)** - Ready recipes for common patterns
 2. **[Glossary](Glossary.md)** - Complete language reference
-3. **[Examples](../../../examples/)** - Advanced examples
+3. **Real scenarios** - Study examples in `scenarios/` directory
 
 ### Reference Materials
 
-- **Real tests:** `tests/e2e/`, `tests/functional/`
-- **Common includes:** `tests/common/`
-- **Suite examples:** `tests/e2e/*.yml` (suite descriptors)
+- **Real E2E tests:** `../../../e2e/` - production test scenarios
+- **Genesis scenarios:** `tests/stage-env/scenarios/genesis/` - advanced dynamic topology examples
+- **Common includes:** `tests/stage-env/scenarios/common/` - reusable templates
+- **Suite examples:** `tests/stage-env/scenarios/suites/` - suite organization patterns
 
 Good luck testing! 🚀
 
 ---
 
-**Last updated:** 2025-10-25
+**Last updated:** 2025-12-23
 **Language:** English | [Русский](../../ru/scenarios/Tutorial.md)
