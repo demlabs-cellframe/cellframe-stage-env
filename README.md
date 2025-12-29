@@ -9,16 +9,32 @@
 Choose your language / Выберите язык:
 
 ### 🇬🇧 English
+
+**For Users & CI/CD:**
+- **[Run.sh Guide](docs/en/RunShGuide.md)** - Complete guide for running tests with run.sh
+
+**For QA Engineers:**
 - **[README](docs/en/README.md)** - Main documentation
 - **[Tutorial](docs/en/scenarios/Tutorial.md)** - Step-by-step guide for QA engineers
 - **[Cookbook](docs/en/scenarios/Cookbook.md)** - Ready recipes for common tasks
 - **[Glossary](docs/en/scenarios/Glossary.md)** - Complete language reference
 
+**For Developers:**
+- **[Architecture](docs/en/Architecture.md)** - System architecture and internal components
+
 ### 🇷🇺 Русский
+
+**Для пользователей и CI/CD:**
+- **[Руководство по run.sh](docs/ru/RunShGuide.md)** - Полное руководство по запуску тестов через run.sh
+
+**Для QA инженеров:**
 - **[README](docs/ru/README.md)** - Основная документация
 - **[Tutorial](docs/ru/scenarios/Tutorial.md)** - Пошаговое руководство для QA инженеров
 - **[Cookbook](docs/ru/scenarios/Cookbook.md)** - Готовые рецепты для типовых задач
 - **[Glossary](docs/ru/scenarios/Glossary.md)** - Полный справочник языка
+
+**Для разработчиков:**
+- **[Архитектура](docs/ru/Architecture.md)** - Архитектура системы и внутренние компоненты
 
 ---
 

@@ -38,16 +38,19 @@
 ### Рецепт 2: Создать несколько кошельков
 
 ```yaml
-- loop: 5
+- for: i
+  in: [1, 2, 3, 4, 5]
   steps:
-    - cli: wallet new -w wallet{{iteration}}
-      save: addr{{iteration}}
+    - cli: wallet new -w wallet{{i}}
+      save: addr{{i}}
       wait: 500ms
 ```
 
 **Результат:**
 - `wallet1`, `wallet2`, ..., `wallet5`
 - `{{addr1}}`, `{{addr2}}`, ..., `{{addr5}}`
+
+**Примечание:** Legacy синтаксис `loop` всё ещё работает, но `for` рекомендуется для новых тестов.
 
 **Варианты:**
 ```yaml
@@ -841,22 +844,135 @@ check:
 
 ## Advanced Patterns
 
-### Рецепт 41: Conditional Execution (через переменные)
+### Рецепт 51: Динамические операции с For циклом
 
 ```yaml
 variables:
-  run_stress_test: true
-  stress_iterations: 100
+  root_indices: [1, 2, 3]
 
 test:
-  # Simulated conditional via comments
-  # If run_stress_test == true:
-  - loop: {{stress_iterations if run_stress_test else 1}}
+  # Получить адреса от всех root нод
+  - for: node_idx
+    in: "{{root_indices}}"
     steps:
-      - cli: stress_operation
+      - cli: node dump
+        node: "node-{{node_idx}}"
+        save_node: "root_addr_{{node_idx}}"
+  
+  # Формирование строки адресов
+  - python: |
+      addrs = [ctx.get_variable(f'root_addr_{i}') for i in range(1, 4)]
+      ctx.set_variable('validators_addrs_str', "[" + ",".join(addrs) + "]")
 ```
 
-**Примечание:** Настоящие условия не поддерживаются, но можно использовать переменные для управления.
+**Применение:** Динамические topology сценарии (genesis инициализация)
+
+---
+
+### Рецепт 52: Модификация конфигурации
+
+```yaml
+test:
+  # Изменить конфиг ноды
+  - config: "stagenet/main"
+    nodes: ["node-1", "node-2"]
+    set:
+      validators_addrs: "{{validators_str}}"
+      fee_addr: "{{fee_wallet}}"
+  
+  # Перезапустить ноды для применения
+  - docker_op: restart
+    services: ["node-1", "node-2"]
+  
+  # Дождаться ONLINE
+  - wait_network: online
+    nodes: ["node-1", "node-2"]
+    timeout: 60
+```
+
+---
+
+### Рецепт 53: Switch/Case конструкция
+
+```yaml
+test:
+  - switch: "{{node_role}}"
+    cases:
+      root:
+        - config: "stagenet/zerochain"
+          nodes: ["{{node_name}}"]
+          set:
+            is_add_directly: "true"
+      master:
+        - cli: srv_stake order create validator -net stagenet -value 0.05e+18 -cert {{master_cert}}
+      full:
+        - cli: net get status
+          save: network_status
+    default:
+      - cli: version
+```
+
+---
+
+### Рецепт 54: While цикл с условием
+
+```yaml
+variables:
+  max_retries: 5
+  retry_count: 0
+
+test:
+  - while: ctx.get_variable('retry_count') < ctx.get_variable('max_retries')
+    max_iterations: 10
+    steps:
+      - cli: net get status
+        save: status
+      
+      - if: "'ONLINE' in ctx.get_variable('status')"
+        then:
+          - set: retry_count = 999    # Break loop
+        else:
+          - set: retry_count
+            value: "{{retry_count}}"
+            eval: true                # retry_count + 1 в eval
+      
+      - wait: 2s
+```
+
+---
+
+## Advanced Patterns
+
+### Рецепт 41: Conditional Execution (if/then/else)
+
+```yaml
+variables:
+  balance: 5000
+  threshold: 1000
+
+test:
+  # Условное выполнение
+  - if: ctx.get_variable('balance') > ctx.get_variable('threshold')
+    then:
+      - cli: transfer -token TEST -value 500 -to {{receiver}}
+        save: tx_hash
+    else:
+      - cli: balance -addr {{wallet_addr}}
+        save: current_balance
+```
+
+**Варианты:**
+```yaml
+# Проверка существования переменной
+- if: ctx.has_variable('wallet_addr')
+  then:
+    - cli: balance -addr {{wallet_addr}}
+
+# Проверка строки
+- if: ctx.get_variable('node_role') == 'validator'
+  then:
+    - cli: srv_stake order create validator ...
+```
 
 ---
 
@@ -1182,7 +1298,7 @@ check:
 
 - **[Tutorial](Tutorial.md)** - Пошаговое обучение
 - **[Glossary](Glossary.md)** - Полный справочник
-- `scenarios/features/` - Реальные примеры тестов
+- `tests/stage-env/scenarios/features/` - Реальные примеры тестов
 
 Удачного тестирования! 🎉
 
@@ -1190,4 +1306,7 @@ check:
 
 ---
 
+---
+
+**Обновлено:** 2025-12-23  
 **Язык:** Русский | [English](../../en/scenarios/Cookbook.md)

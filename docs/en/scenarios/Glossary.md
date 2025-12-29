@@ -228,29 +228,133 @@ Execute Python code with context access.
 
 ```yaml
 - python: |
-    addr = ctx.get_variable('wallet_addr')
-    ctx.set_variable('validated_addr', addr)
-    print(f"Processing: {addr}")
-  save: python_result             # Save return value
+    items = ctx.get_variable('items_list')
+    ctx.set_variable('count', len(items))
 ```
 
 **Context API:**
 - `ctx.get_variable(name)` - get variable
 - `ctx.set_variable(name, value)` - set variable
 - `ctx.has_variable(name)` - check existence
-- `print()` - output to log
 
 ### BashStep
 Execute Bash script in node container.
 
 ```yaml
 - bash: |
-    echo "Test data" > /tmp/test.txt
-    cat /tmp/test.txt
+    cat /opt/cellframe-node/var/log/cellframe-node.log | grep ERROR
   node: node1
-  save: bash_output
+  save: errors
   expect: success
   timeout: 30
+```
+
+**Use case:** When you need shell commands not available via CLI (file operations, log parsing, etc.)
+
+### LoopStep
+Repeat steps N times.
+
+```yaml
+- loop: 5
+  steps:
+    - cli: ledger tx -all
+      save: tx_list
+    - wait: 1s
+```
+
+**Use case:** Simple iteration without index variable. For iteration with index, use `ForStep`.
+
+### ForStep
+Iterate over list values.
+
+```yaml
+- for: node_idx
+  in: "{{root_indices}}"        # List or variable with list
+  steps:
+    - cli: node dump
+      node: "node-{{node_idx}}"
+      save_node: "addr_{{node_idx}}"
+```
+
+### IfStep
+Conditional execution.
+
+```yaml
+- if: ctx.get_variable('balance') > 1000
+  then:
+    - cli: token emit ...
+  else:
+    - cli: token list
+```
+
+### WhileStep
+Loop while condition is true.
+
+```yaml
+- while: ctx.get_variable('retry_count') < 3
+  max_iterations: 100           # Safety limit
+  steps:
+    - cli: net get status
+      save: status
+```
+
+### SwitchStep
+Switch/case for multiple options.
+
+```yaml
+- switch: "{{node_role}}"
+  cases:
+    root:
+      - cli: ...
+    master:
+      - cli: ...
+  default:
+    - cli: ...
+```
+
+### SetStep
+Set variable value.
+
+```yaml
+- set: calculated_value
+  value: "{{base_value}}_processed"
+```
+
+### ConfigStep
+Modify node configuration.
+
+```yaml
+- config: "stagenet/main"
+  nodes: ["node-1", "node-2"]
+  set:
+    validators_addrs: "{{validators_str}}"
+    fee_addr: "{{fee_wallet}}"
+```
+
+### NetworkWaitStep
+Wait for network state.
+
+```yaml
+- wait_network: online
+  nodes: ["node-1", "node-2"]
+  timeout: 120
+```
+
+### DockerOpStep
+Docker operations (start/stop/restart).
+
+```yaml
+- docker_op: restart
+  services: ["node-1", "node-2"]
+  detach: true
+```
+
+### SnapshotStep
+Snapshot operations.
+
+```yaml
+- snapshot: create
+  name: before_emission
 ```
 
 ### StepGroup
@@ -289,9 +393,9 @@ check:
 ```yaml
 check:
   - python: |
-      balance = ctx.get_variable('balance')
-      assert int(balance) > 0, "Balance must be positive"
-      assert int(balance) < 1000000, "Balance too high"
+      emitted = int(ctx.get_variable('emitted_amount'))
+      received = int(ctx.get_variable('received_amount'))
+      assert received == emitted, f"Mismatch: {received} != {emitted}"
 ```
 
 Fails if AssertionError or any exception raised.
@@ -301,11 +405,9 @@ Fails if AssertionError or any exception raised.
 ```yaml
 check:
   - bash: |
-      test -f /tmp/output.txt
-      grep -q "SUCCESS" /tmp/output.txt
-      [ $(wc -l < /tmp/output.txt) -gt 10 ]
+      test -f /opt/cellframe-node/var/lib/global_db/gdb.dat
     node: node1
-    timeout: 30
+    timeout: 10
 ```
 
 Fails if exit code != 0.
@@ -616,11 +718,12 @@ defaults:
   save: tx
 - wait_for_datum: "{{tx}}"
 
-# Use extract_to for data with validation
+# Use save_* helpers for data extraction with validation
 - cli: wallet info -w test
-  extract_to:
-    addr:
-      type: wallet_address
+  save_wallet: addr
+
+- cli: token_decl -token TEST -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs test_cert
+  save_hash: token_hash
 
 # Organize into suites
 tests/e2e/token/
@@ -641,7 +744,7 @@ setup:
 
 # Don't save entire output when you need specific value
 - cli: wallet info -w test
-  save: full_output              # Use extract_to instead!
+  save: full_output              # Use save_wallet instead!
 
 # Don't hardcode network name
 - cli: token list -net stagenet  # Use -net {{network_name}} or auto-defaults
@@ -662,6 +765,16 @@ setup:
 | WaitForDatumStep | Smart datum wait | `wait_for_datum: hash` |
 | PythonStep | Python code | `python: \|` |
 | BashStep | Bash script | `bash: \|` |
+| LoopStep | Repeat N times | `loop: 5` |
+| ForStep | Iterate list | `for: var in: list` |
+| IfStep | Conditional | `if: condition then:` |
+| WhileStep | While loop | `while: condition` |
+| SwitchStep | Switch/case | `switch: var cases:` |
+| SetStep | Set variable | `set: var value:` |
+| ConfigStep | Config update | `config: path set:` |
+| NetworkWaitStep | Wait for network | `wait_network: online` |
+| DockerOpStep | Docker operations | `docker_op: restart` |
+| SnapshotStep | Snapshot ops | `snapshot: create` |
 | StepGroup | Group with defaults | `group: name` |
 
 ### Check Type Quick Reference
@@ -677,13 +790,13 @@ setup:
 
 ## See Also
 
-- **[Tutorial](Tutorial.md)** - Step-by-step guide
-- **[Cookbook](Cookbook.md)** - Ready recipes
-- **[Examples](../../../examples/)** - Advanced examples
-- **[SLC Modules](../../../../.context/modules/testing/)** - Complete technical reference
+- **[Tutorial](Tutorial.md)** - Step-by-step guide (7 lessons)
+- **[Cookbook](Cookbook.md)** - Ready recipes for common tasks
+- **Real scenarios** - Study `tests/stage-env/scenarios/genesis/` for advanced patterns
+- **[SLC Modules](../../../../../.context/modules/testing/)** - Complete technical reference
 
 ---
 
-**Version:** 2.0  
-**Last Updated:** 2025-10-25  
+**Version:** 2.1  
+**Last Updated:** 2025-12-23  
 **Language:** English | [Русский](../../ru/scenarios/Glossary.md)

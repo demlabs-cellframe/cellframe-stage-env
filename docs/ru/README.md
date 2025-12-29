@@ -15,40 +15,74 @@ Stage Environment - это полнофункциональная инфраст
 
 ## 🚀 Быстрый старт
 
-### Минимальный пример
+### Способ 1: Через run.sh (Рекомендуется)
+
+Самый простой способ запустить тесты - использовать унифицированный раннер `run.sh`:
 
 ```bash
-# 1. Запуск тестовой сети (автоматически установит зависимости)
 cd tests
-./stage-env/stage-env start
 
-# 2. Проверка статуса
-./stage-env/stage-env status
+# Запустить все тесты (E2E + Functional + Regression)
+./run.sh
 
-# 3. Запуск тестов
-./stage-env/stage-env run-tests scenarios/
-
-# 4. Остановка
-./stage-env/stage-env stop
-```
-
-### Запуск через run.sh
-
-```bash
-# Полный цикл: сборка + тесты + отчеты
-cd tests
+# Запустить только E2E тесты
 ./run.sh --e2e
 
-# Результаты в testing/artifacts/e2e_*/reports/
+# Запустить только functional тесты
+./run.sh --functional
+
+# Запустить конкретный test suite
+./run.sh tests/e2e/token/
+
+# Очистить окружение и запустить
+./run.sh --clean --e2e
+```
+
+**Что происходит:**
+- Автоматически стартует stage-env сеть
+- Запускает выбранные test suites
+- Собирает artifacts и генерирует отчёты
+- Останавливает сеть и показывает сводку
+
+**Результаты:** `tests/testing/artifacts/run_*/`
+
+### Способ 2: Через stage-env напрямую
+
+Для продвинутого управления используйте stage-env CLI напрямую:
+
+```bash
+cd tests/stage-env
+
+# 1. Запуск тестовой сети
+./stage-env start --wait
+
+# 2. Проверка статуса
+./stage-env status
+
+# 3. Запуск тестов
+./stage-env run-tests ../e2e/
+
+# 4. Остановка
+./stage-env stop
 ```
 
 ## 📖 Документация
 
+### Для пользователей и CI/CD
+
+- **[Руководство по run.sh](RunShGuide.md)** - Полное руководство по запуску тестов через run.sh
+- **[Быстрый старт](#быстрый-старт)** - Начните за 2 минуты
+
 ### Для QA инженеров
 
 - **[Tutorial](scenarios/Tutorial.md)** - Пошаговое обучение языку сценариев (8 уроков)
-- **[Cookbook](scenarios/Cookbook.md)** - Готовые рецепты для типовых задач (50 рецептов)
+- **[Cookbook](scenarios/Cookbook.md)** - Готовые рецепты для типовых задач 
 - **[Glossary](scenarios/Glossary.md)** - Полный справочник языка (все команды и параметры)
+
+### Для разработчиков
+
+- **[Архитектура](Architecture.md)** - Архитектура системы и внутренние компоненты
+- **Исходники stage-env** - Python код в директории `src/`
 
 ## 📁 Структура проекта
 
@@ -59,15 +93,16 @@ stage-env/
 ├── stage-env.cfg            # Конфигурация (в tests/)
 │
 ├── src/                     # Python модули
-│   ├── config/              # Управление конфигурацией
+│   ├── scenarios/           # Система сценариев (parser, executor, schema)
+│   ├── network/             # Управление сетью и топологией
 │   ├── docker/              # Docker Compose интеграция
-│   ├── network/             # Топологии и сеть
-│   ├── build/               # Сборка артефактов
+│   ├── config/              # Управление конфигурацией
 │   ├── certs/               # Генерация сертификатов
-│   ├── scenarios/           # Парсинг и выполнение сценариев
-│   └── utils/               # Логирование, отчеты, артефакты
+│   ├── snapshots/           # Система snapshots (filesystem, squashfs)
+│   ├── monitoring/          # Health checks, datum monitoring, artifacts
+│   └── utils/               # CLI helpers, логирование, отчёты
 │
-├── config/                  # Конфигурационные файлы
+├── config/                  # Шаблоны конфигурации
 │   ├── topologies/          # Шаблоны сетевых топологий
 │   └── templates/           # Jinja2 шаблоны конфигов
 │       ├── base/            # Базовые конфиги нод
@@ -75,67 +110,93 @@ stage-env/
 │
 ├── scenarios/               # YAML тест-сценарии
 │   ├── common/              # Переиспользуемые шаблоны
-│   ├── features/            # Feature-specific тесты
-│   └── suites/              # Тестовые сьюты
+│   ├── genesis/             # Сценарии инициализации genesis
+│   └── suites/              # Тестовые suites
+│
+├── tests/                   # Собственные тесты stage-env
+│   ├── base/                # Базовые проверки connectivity
+│   ├── unit/                # Unit тесты компонентов
+│   └── integration/         # Integration тесты
 │
 └── docs/                    # Документация
-    ├── en/                  # English documentation
+    ├── en/                  # Английская документация
+    │   ├── README.md
+    │   ├── RunShGuide.md
+    │   ├── Architecture.md
+    │   └── scenarios/       # Документация языка сценариев
     └── ru/                  # Русская документация
+        ├── README.md
+        ├── RunShGuide.md
+        ├── Architecture.md
+        └── scenarios/
 ```
 
 ## 🎨 Основные команды
 
+### Через run.sh (Рекомендуется для большинства пользователей)
+
 ```bash
+cd tests
+
+# Запуск тестов по типу
+./run.sh                     # Все тесты (E2E + Functional + Regression)
+./run.sh --e2e               # Только E2E тесты
+./run.sh --functional        # Только functional тесты
+./run.sh --regression        # Только regression тесты
+
+# Запуск конкретных тестов
+./run.sh tests/e2e/token/    # Запустить конкретный test suite
+./run.sh tests/e2e/token/001_token_decl.yml  # Запустить один сценарий
+
+# С очисткой/пересборкой
+./run.sh --clean --e2e       # Очистить cache перед запуском
+./run.sh --rebuild --e2e     # Пересобрать Docker images перед запуском
+
+# Обслуживание
+./run.sh --stop              # Остановить stage environment
+./run.sh --pkgs-update       # Обновить пакеты в контейнерах
+```
+
+### Через stage-env CLI (Продвинутое)
+
+```bash
+cd tests/stage-env
+
 # === Управление сетью ===
-stage-env start                    # Запустить сеть
-stage-env start --no-wait          # Запуск без ожидания ONLINE
-stage-env start --topology default # Запуск с конкретной топологией
-stage-env start --clean            # Очистить данные перед запуском
-stage-env start --rebuild          # Пересобрать Docker образы перед запуском
-stage-env stop                     # Остановить сеть
-stage-env stop --volumes           # Остановить и удалить volumes
-stage-env restart                  # Перезапустить всю сеть
-stage-env restart node-1           # Перезапустить конкретную ноду
-stage-env status                   # Показать статус всех нод
+./stage-env start --wait             # Запустить сеть и ждать ONLINE
+./stage-env start --rebuild          # Пересобрать images перед запуском
+./stage-env stop                     # Остановить сеть
+./stage-env stop --volumes           # Остановить и удалить volumes
+./stage-env restart                  # Перезапустить все ноды
+./stage-env status                   # Показать статус нод
 
 # === Тестирование ===
-stage-env run-tests scenarios/                    # Запустить тесты из директории
-stage-env run-tests scenarios/test.yml            # Запустить конкретный сценарий
-stage-env run-tests scenarios/ --filter token     # Фильтр по названию
-stage-env run-tests scenarios/ --no-start-network # Не запускать сеть
-stage-env run-tests scenarios/ --keep-running     # Не останавливать после тестов
+./stage-env run-tests ../e2e/            # Запустить тесты из директории
+./stage-env run-tests ../e2e/test.yml    # Запустить конкретный сценарий
+./stage-env run-tests --filter token     # Фильтр по названию
 
 # === Мониторинг ===
-stage-env logs node-1               # Показать логи ноды (последние 100 строк)
-stage-env logs node-1 --tail 500    # Показать последние 500 строк
-stage-env logs node-1 --follow      # Follow логи в реальном времени
-stage-env exec node-1 "ls -la"      # Выполнить команду в контейнере ноды
-
-# === Артефакты и отчеты ===
-stage-env collect-artifacts e2e --exit-code=0         # Собрать артефакты E2E тестов
-stage-env collect-artifacts functional --exit-code=1  # Собрать артефакты функциональных тестов
-
-# === Сборка ===
-stage-env build                 # Собрать Cellframe Node (Debug)
-stage-env build --release       # Собрать Release версию
-stage-env build --clean         # Чистая сборка (удалить build/)
-stage-env build --jobs 8        # Параллельная сборка (8 потоков)
+./stage-env logs node-1              # Показать логи ноды (последние 100 строк)
+./stage-env logs node-1 --follow     # Follow логи в реальном времени
+./stage-env exec node-1 "ls -la"     # Выполнить команду в ноде
 
 # === Сертификаты ===
-stage-env certs                                    # Сгенерировать сертификаты (default: 4 ноды, 3 валидатора)
-stage-env certs --nodes 7 --validators 5           # Для 7 нод с 5 валидаторами
-stage-env certs --network stagenet                 # Для конкретной сети
-stage-env certs --force                            # Пересоздать существующие
+./stage-env certs                    # Сгенерировать сертификаты (default топология)
+./stage-env certs --force            # Пересоздать существующие
+
+# === Snapshots ===
+./stage-env snapshots-list           # Список snapshots
+./stage-env snapshots-delete <hash>  # Удалить конкретный snapshot
+./stage-env snapshots-info <hash>    # Показать детали snapshot
+./stage-env snapshots-clean          # Очистить старые snapshots
+
+# === Сборка и пересборка ===
+./stage-env build                    # Собрать cellframe-node
+./stage-env rebuild                  # Пересобрать images и перезапустить
 
 # === Очистка ===
-stage-env clean --all          # Очистить всё (build + certs + cache)
-stage-env clean --build        # Очистить только build артефакты
-stage-env clean --certs        # Очистить только сертификаты
-
-# === Глобальные опции ===
-stage-env --verbose start      # Детальные логи
-stage-env --json start         # JSON вывод логов
-stage-env --config path.cfg start  # Использовать другой конфиг
+./stage-env clean --all              # Очистить всё
+./stage-env pkgs-update              # Обновить пакеты в контейнерах
 ```
 
 ## 📝 Написание тестов
@@ -162,18 +223,25 @@ check:
     contains: {{wallet_addr}}
 ```
 
-### Запуск теста
+### Запуск сценария
 
 ```bash
-./stage-env/stage-env run-tests scenarios/my_test.yml
+cd tests/stage-env
+./stage-env run-tests ../e2e/my_test.yml
+```
+
+**Или через run.sh:**
+```bash
+cd tests
+./run.sh tests/e2e/my_test.yml
 ```
 
 ### Готовые шаблоны
 
-- `common/network_minimal.yml` - 1 нода (root validator)
-- `common/network_full.yml` - 4 ноды (3 validators + 1 full node)
-- `common/wallet_setup.yml` - Готовый кошелёк с адресом
-- `common/network_dynamic_addition.yml` - Динамическое добавление нод
+- `scenarios/common/network_minimal.yml` - Минимальная сеть (1 нода)
+- `scenarios/common/network_full.yml` - Полная сеть (несколько нод)
+- `scenarios/common/wallet_setup.yml` - Предконфигурированный кошелёк
+- `scenarios/common/set_net_default.yml` - Автодобавление -net параметра
 
 ## 🔧 Конфигурация
 
@@ -261,29 +329,32 @@ local_path = ../test_build/cellframe-node.deb  # Путь к локальном�
 
 ## 🎯 Интеграция в свой проект
 
-### Пример run.sh
+### Использование run.sh (Рекомендуется)
+
+```bash
+#!/bin/bash
+# Простая обёртка для вашего проекта
+
+cd tests
+./run.sh --e2e
+```
+
+### Использование stage-env напрямую
 
 ```bash
 #!/bin/bash
 set -euo pipefail
 
-STAGE_ENV="./stage-env/stage-env"
-STAGE_ENV_CONFIG="./stage-env.cfg"
-
-# Сборка (опционально)
-# cmake -B build && make -C build
+cd tests/stage-env
 
 # Запуск сети
-"$STAGE_ENV" --config="$STAGE_ENV_CONFIG" start
+./stage-env start --wait
 
 # Запуск тестов
-"$STAGE_ENV" --config="$STAGE_ENV_CONFIG" run-tests scenarios/
-
-# Сбор артефактов
-"$STAGE_ENV" --config="$STAGE_ENV_CONFIG" collect-artifacts e2e --exit-code=$?
+./stage-env run-tests ../e2e/
 
 # Остановка
-"$STAGE_ENV" --config="$STAGE_ENV_CONFIG" stop
+./stage-env stop
 ```
 
 ### Настройка топологии
@@ -322,14 +393,14 @@ e2e_20251023_150000/
 └── summary.json             # JSON сводка
 ```
 
-## 🔍 Troubleshooting
+## 🔍 Решение проблем
 
 ### Проблемы с Docker
 
 ```bash
 # Проверка Docker
 docker ps
-docker-compose version
+docker compose version
 
 # Перезапуск Docker
 sudo systemctl restart docker
@@ -341,26 +412,38 @@ sudo systemctl restart docker
 # Проверка занятых портов
 ss -tlnp | grep 8079
 
-# Остановка всех контейнеров
+# Остановка через run.sh
+cd tests
+./run.sh --stop
+
+# Или напрямую
+cd tests/stage-env
 ./stage-env stop --volumes
 ```
 
 ### Проблемы с Python
 
 ```bash
+cd tests/stage-env
+
 # Пересоздать venv
 rm -rf .venv
-./stage-env --help  # Создаст venv заново
+./stage-env --help  # Автоматически создаст venv заново
 ```
 
 ### Логи для отладки
 
 ```bash
+cd tests/stage-env
+
 # Verbose режим
 ./stage-env --verbose start
 
 # Логи конкретной ноды
 ./stage-env logs node-1 --tail 100
+
+# Follow логи в реальном времени
+./stage-env logs node-1 --follow
 
 # Статус всех нод
 ./stage-env status
@@ -371,14 +454,14 @@ rm -rf .venv
 ### Для QA инженеров
 
 - **[Tutorial](scenarios/Tutorial.md)** - 8 уроков с упражнениями для изучения языка сценариев
-- **[Cookbook](scenarios/Cookbook.md)** - 50 готовых рецептов для типовых задач
+- **[Cookbook](scenarios/Cookbook.md)** - Готовые рецепты для типовых задач
 - **[Glossary](scenarios/Glossary.md)** - Полный справочник: все команды, параметры, примеры
 
 ### Готовые примеры
 
-- `scenarios/common/` - Переиспользуемые шаблоны (network_minimal.yml, network_full.yml)
-- `scenarios/features/` - Реальные тесты функциональности
-- `scenarios/suites/` - Наборы тестов для комплексной проверки
+- `tests/stage-env/scenarios/common/` - Переиспользуемые шаблоны (network_minimal.yml, network_full.yml)
+- `tests/stage-env/scenarios/features/` - Реальные тесты функциональности
+- `tests/stage-env/scenarios/suites/` - Наборы тестов для комплексной проверки
 
 ## 🤝 Участие в разработке
 

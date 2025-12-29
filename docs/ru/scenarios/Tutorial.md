@@ -184,10 +184,8 @@ test:
     save: balance_result
 
 check:
-  - python: |
-      addr = ctx.get_variable('my_address')
-      assert addr, "Адрес должен быть извлечён"
-      assert addr.startswith('W'), "Адреса Cellframe начинаются с 'W'"
+  - cli: wallet info -w test_wallet
+    contains: "{{my_address}}"    # Проверить что адрес в выводе
 ```
 
 **Save хелперы:**
@@ -204,10 +202,7 @@ check:
   save_wallet: addr
 
 # ❌ Старый - verbose (устарел)
-- cli: wallet info -w test
-  extract_to:
-    addr:
-      type: wallet_address
+# `extract_to` устарел. Используйте `save_wallet`, `save_hash`, `save_node` и т.д.
 ```
 
 ---
@@ -283,9 +278,9 @@ test:
 ```
 
 **Как работает wait_for_datum:**
-1. **0.5s** - проверяет появление датума в mempool (если нет → REJECTED)
-2. **30s** - ждёт включения датума в блок
-3. **60s** - ждёт распространения блока по сети
+1. **0.5s** - проверяет появление датума в mempool (если нет → REJECTED, fail fast!)
+2. **До 120s** - ждёт включения датума в блок
+3. **До 180s** - ждёт распространения блока по сети
 4. Возвращается немедленно по завершении (без лишнего ожидания!)
 
 **Пример с несколькими датумами:**
@@ -548,17 +543,18 @@ description: "Тест токенов"
 
 1. **[Cookbook](Cookbook.md)** - Готовые рецепты для типовых задач
 2. **[Glossary](Glossary.md)** - Полный справочник языка
-3. **[Examples](../../../examples/)** - Продвинутые примеры
+3. **Реальные сценарии** - Изучите примеры в директории `scenarios/`
 
 ### Справочные материалы
 
-- **Реальные тесты:** `tests/e2e/`, `tests/functional/`
-- **Общие includes:** `tests/common/`
-- **Примеры suites:** `tests/e2e/*.yml` (suite descriptors)
+- **Реальные E2E тесты:** `../../../e2e/` - production тестовые сценарии
+- **Genesis сценарии:** `tests/stage-env/scenarios/genesis/` - продвинутые примеры динамических топологий
+- **Общие includes:** `tests/stage-env/scenarios/common/` - переиспользуемые шаблоны
+- **Примеры suites:** `tests/stage-env/scenarios/suites/` - паттерны организации suites
 
 Удачи в тестировании! 🚀
 
 ---
 
-**Обновлено:** 2025-10-25
+**Обновлено:** 2025-12-23
 **Язык:** Русский | [English](../../en/scenarios/Tutorial.md)

@@ -1,5 +1,6 @@
 name: PHASE 2 - ESBocs Genesis
 description: Create mainchain genesis block from emission (dynamic topology)
+description: Create mainchain genesis block from emission (dynamic topology)
 
 includes:
   - ../common/set_net_default.yml
@@ -24,6 +25,7 @@ setup:
   # Enable seed_mode on ALL root and master nodes to accept genesis block
   - config: "cellframe-node"
     nodes: "{{_active_nodes}}"
+    nodes: "{{_active_nodes}}"
     set:
       seed_mode: "true"
   
@@ -31,8 +33,10 @@ setup:
   # (e.g. after snapshot restore, master containers are not created yet)
   - docker_op: start
     services: "{{_active_nodes}}"
+    services: "{{_active_nodes}}"
   
   - wait_network: online
+    nodes: "{{_active_nodes}}"
     nodes: "{{_active_nodes}}"
     timeout: 60
   
@@ -160,8 +164,10 @@ test:
   
   - docker_op: restart
     services: "{{all_nodes}}"
+    services: "{{all_nodes}}"
   
   - wait_network: online
+    nodes: "{{_active_nodes}}"
     nodes: "{{_active_nodes}}"
     timeout: 60
   
