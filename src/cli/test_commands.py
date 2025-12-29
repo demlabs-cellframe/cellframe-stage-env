@@ -270,6 +270,16 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     
                     # Clean test data before each suite (if network is running)
                     if network_mgr:
+                        # Determine snapshot to restore
+                        restore_snapshot_name = None
+                        if isinstance(suite_spec, SuiteDescriptor) and suite_spec.restore_snapshot:
+                            # Use suite-specific snapshot
+                            restore_snapshot_name = suite_spec.restore_snapshot
+                            # Substitute {{topology_name}} if present
+                            if "{{topology_name}}" in restore_snapshot_name:
+                                topology_name = getattr(suite_spec.network, 'topology', 'default') if suite_spec.network else 'default'
+                                restore_snapshot_name = restore_snapshot_name.replace("{{topology_name}}", topology_name)
+                        
                         # OPTIMIZATION: Skip restore for first suite if we have pristine network
                         if is_first_suite:
                             # CRITICAL: Remove marker IMMEDIATELY before using pristine network
@@ -282,16 +292,19 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             
                             print_success("🚀 Using pristine network (no restore needed)")
                         else:
-                            print_info("🧹 Restoring clean environment state...")
+                            if restore_snapshot_name:
+                                print_info(f"🔄 Restoring from snapshot: {restore_snapshot_name}")
+                            else:
+                                print_info("🧹 Restoring clean environment state...")
                             
                             async def _restore_state():
-                                await network_mgr.restore_clean_state()
+                                await network_mgr.restore_clean_state(name=restore_snapshot_name)
                             
                             try:
                                 asyncio.run(_restore_state())
-                                print_success("✓ Environment restored from snapshot")
+                                print_success(f"✓ Environment restored from snapshot{': ' + restore_snapshot_name if restore_snapshot_name else ''}")
                             except Exception as e:
-                                print_warning(f"Failed to restore clean state: {e}")
+                                print_warning(f"Failed to restore state: {e}")
 
                     # CRITICAL: Execute suite-level setup AFTER restore for EVERY suite
                     # This ensures certificates and other ephemeral resources are created

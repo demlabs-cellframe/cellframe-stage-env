@@ -458,3 +458,6 @@ test:
   
   - cli: "dag event last -chain zerochain"
     node: "{{first_root}}"
+
+# NOTE: Snapshot creation is handled by manager.py after this phase completes.
+# teardown with snapshot: create would be used for standalone phase execution.

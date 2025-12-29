@@ -10,13 +10,16 @@ network:
   name: "{{network_name}}"
 
 setup:
+  # NOTE: When running as part of genesis flow (via manager.py), 
+  # containers are already running from phase1.
+  # snapshot: restore is only needed when running phase2 standalone.
+  
   # Build active nodes list (root + master)
   - set: _active_nodes
     value: "root_nodes + master_nodes"
     eval: true
   
   # Enable seed_mode on ALL root and master nodes to accept genesis block
-  
   - config: "cellframe-node"
     nodes: "{{_active_nodes}}"
     nodes: "{{_active_nodes}}"
@@ -43,15 +46,14 @@ test:
         chain: "main"
         token: "{{native_ticker}}"
     steps:
-      - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert stagenet.root.pvt.0"
-      - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert stagenet.root.pvt.0"
+      - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert {{network_name}}.root.pvt.0"
         save_hash: mainchain_genesis_tx
       
       - wait: "180s"
       
       - cli: "block list"
         node: "{{first_master}}"
-        expect_output: "have blocks:"
+        expect_output: "have blocks: [1-9]"
   
   - cli: "block list -chain main"
     node: "{{first_master}}"
@@ -97,14 +99,6 @@ check:
   - cli: "token list"
     node: "{{first_root}}"
     expect_output: "tokens:"
-  - cli: "net get status"
-    node: "{{first_master}}"
-    expect_output: "NET_STATE_ONLINE"
-  
-  - cli: "block list -chain main"
-    node: "{{first_root}}"
-    expect_output: "have blocks:"
-  
-  - cli: "token list"
-    node: "{{first_root}}"
-    expect_output: "tokens:"
+
+# NOTE: Snapshot creation is handled by manager.py after genesis flow completes.
+# teardown with snapshot: create would be used for standalone phase execution.

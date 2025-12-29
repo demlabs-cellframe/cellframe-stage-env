@@ -188,7 +188,9 @@ class ScenarioExecutor:
             resolve_node_alias_callback=self._resolve_node_alias,
             wait_executor=self.wait_executor
         )
-        self.snapshot_executor = SnapshotStepExecutor(self.container_manager, log_file, debug)
+        self.snapshot_executor = SnapshotStepExecutor(
+            self.container_manager, log_file, debug, compose_manager=None
+        )
         self.set_executor = SetStepExecutor(self.container_manager, log_file, debug)
         self.if_executor = IfStepExecutor(
             self.container_manager, log_file, debug,
@@ -432,6 +434,8 @@ class ScenarioExecutor:
         # Set managers in context for docker_op and snapshot steps
         if compose_manager:
             ctx.compose_manager = compose_manager
+            # Update snapshot executor with compose_manager for container stop/start
+            self.snapshot_executor.compose_manager = compose_manager
         if snapshot_manager:
             ctx.snapshot_manager = snapshot_manager
         if genesis_config_manager:

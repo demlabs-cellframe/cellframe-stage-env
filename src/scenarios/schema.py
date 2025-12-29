@@ -331,11 +331,24 @@ class DockerOpStep(BaseModel):
 
 
 class SnapshotStep(BaseModel):
-    """Snapshot operations (create, restore, verify)."""
-    snapshot: str = Field(..., description="Snapshot operation: 'create', 'restore', 'verify'")
-    name: str = Field(..., description="Snapshot name")
-    phase: str = Field("full", description="Snapshot phase: 'phase1', 'full'")
-    nodes: Optional[Union[str, List[str]]] = Field(None, description="Nodes to include in snapshot (can be template like '{{all_nodes}}')")
+    """Snapshot operations (create, restore, verify, delete).
+    
+    Usage:
+      - snapshot: create
+        name: phase1
+        
+      - snapshot: restore
+        name: phase1
+        
+      - snapshot: create
+        name: "{{topology_name}}"  # Base topology snapshot after all phases
+        is_base: true
+    """
+    snapshot: str = Field(..., description="Snapshot operation: 'create', 'restore', 'verify', 'delete'")
+    name: str = Field(..., description="Snapshot name (supports templates like '{{topology_name}}')")
+    is_base: bool = Field(False, description="Mark as base topology snapshot (used as default for suites)")
+    nodes: Optional[Union[str, List[str]]] = Field(None, description="Nodes to include (optional, defaults to all)")
+    stop_containers: bool = Field(True, description="Stop containers before create (ensures consistent state)")
 
 
 # ============================================================================
@@ -466,6 +479,10 @@ class SuiteDescriptor(BaseModel):
     
     # Optional network configuration for suite-level defaults
     network: Optional[NetworkConfig] = Field(None, description="Default network topology for suite")
+    
+    # Snapshot to restore before running suite (default: topology name)
+    # Set to topology_name to restore from base topology snapshot
+    restore_snapshot: Optional[str] = Field(None, description="Snapshot name to restore (supports '{{topology_name}}')")
     
     # Optional includes for suite-level setup (executed once before all scenarios)
     includes: List[str] = Field(default_factory=list, description="Common includes for all scenarios in suite")
