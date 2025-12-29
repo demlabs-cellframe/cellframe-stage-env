@@ -28,7 +28,35 @@ class DockerOpStepExecutor(StepExecutor):
     
     async def execute(self, step: DockerOpStep, ctx: RuntimeContext) -> None:
         """Execute Docker operation step."""
-        logger.info(f"Docker operation: {step.docker_op} on services {step.services}")
+        operation = ctx.substitute(step.docker_op)
+        
+        # Handle cp operation separately - doesn't need services
+        if operation == "cp":
+            logger.info(f"Docker operation: cp (src={step.src}, dst={step.dst})")
+            await self._execute_cp(step, ctx)
+            return
+        
+        logger.info(f"Docker operation: {operation} on services {step.services}")
+        
+        # Handle services - can be a list or a template string that expands to a list
+        raw_services = step.services
+        if raw_services is None:
+            raise ScenarioExecutionError(f"services required for '{operation}' operation", step=step)
+        if isinstance(raw_services, str):
+            # Template string like "{{all_nodes}}" - substitute and parse
+            expanded = ctx.substitute(raw_services)
+            # After substitution, should be a list representation or comma-separated
+            if expanded.startswith('[') and expanded.endswith(']'):
+                # Parse as Python list literal
+                import ast
+                try:
+                    raw_services = ast.literal_eval(expanded)
+                except (ValueError, SyntaxError):
+                    # Fallback: treat as single service
+                    raw_services = [expanded]
+            else:
+                # Comma-separated or single value
+                raw_services = [s.strip() for s in expanded.split(',') if s.strip()]
         
         # Handle services - can be a list or a template string that expands to a list
         raw_services = step.services
@@ -81,7 +109,6 @@ class DockerOpStepExecutor(StepExecutor):
                     # Fallback: use as-is
                     docker_service = resolved
             services.append(docker_service)
-        operation = ctx.substitute(step.docker_op)
         
         # Get DockerComposeManager - need to get it from context
         if not hasattr(ctx, 'compose_manager'):
@@ -145,4 +172,79 @@ class DockerOpStepExecutor(StepExecutor):
             logger.error(error_msg)
             ctx.add_result("docker_op", False, {"operation": operation, "error": str(e)})
             raise ScenarioExecutionError(error_msg, step=step)
+    
+    async def _execute_cp(self, step: DockerOpStep, ctx: RuntimeContext) -> None:
+        """
+        Execute docker cp operation.
+        
+        Supports copying between containers or between host and container.
+        Format: "node-1:/path/in/container" or "/host/path"
+        """
+        import subprocess
+        import tempfile
+        import os
+        
+        if not step.src or not step.dst:
+            raise ScenarioExecutionError("src and dst required for 'cp' operation", step=step)
+        
+        src = ctx.substitute(step.src)
+        dst = ctx.substitute(step.dst)
+        
+        def parse_path(path: str) -> tuple:
+            """Parse path into (container_name, path). Container is None for host paths."""
+            if ':' in path and not path.startswith('/'):
+                parts = path.split(':', 1)
+                container = parts[0]
+                # Convert node-1 to cellframe-stage-node-1
+                if container.startswith('node-'):
+                    container = f"cellframe-stage-{container}"
+                return container, parts[1]
+            return None, path
+        
+        src_container, src_path = parse_path(src)
+        dst_container, dst_path = parse_path(dst)
+        
+        logger.info(f"Docker cp: {src} -> {dst}")
+        
+        try:
+            if src_container and dst_container:
+                # Container to container: use temp file on host
+                with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                    tmp_path = tmp.name
+                try:
+                    # Copy from source container to host temp
+                    subprocess.run(
+                        ["docker", "cp", f"{src_container}:{src_path}", tmp_path],
+                        check=True, capture_output=True, text=True
+                    )
+                    # Copy from host temp to destination container
+                    subprocess.run(
+                        ["docker", "cp", tmp_path, f"{dst_container}:{dst_path}"],
+                        check=True, capture_output=True, text=True
+                    )
+                finally:
+                    os.unlink(tmp_path)
+            elif src_container:
+                # Container to host
+                subprocess.run(
+                    ["docker", "cp", f"{src_container}:{src_path}", dst_path],
+                    check=True, capture_output=True, text=True
+                )
+            elif dst_container:
+                # Host to container
+                subprocess.run(
+                    ["docker", "cp", src_path, f"{dst_container}:{dst_path}"],
+                    check=True, capture_output=True, text=True
+                )
+            else:
+                # Host to host - just use shutil
+                import shutil
+                shutil.copy2(src_path, dst_path)
+            
+            logger.info(f"✓ Copied {src} to {dst}")
+            
+        except subprocess.CalledProcessError as e:
+            raise ScenarioExecutionError(
+                f"Docker cp failed: {e.stderr or e.stdout or str(e)}", step=step
+            )
 

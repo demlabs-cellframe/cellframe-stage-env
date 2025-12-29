@@ -43,6 +43,18 @@ STAGE_ENV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$STAGE_ENV_DIR/.venv"
 PYTHON_CLI="$STAGE_ENV_DIR/stage_env.py"
 REQUIREMENTS="$STAGE_ENV_DIR/requirements.txt"
+CONFIG_FILE="$STAGE_ENV_DIR/config/stage-env.cfg"
+CONFIG_DEFAULT="$STAGE_ENV_DIR/config/stage-env.cfg.default"
+
+# Auto-create config from default if not exists
+ensure_config() {
+    if [ ! -f "$CONFIG_FILE" ] && [ -f "$CONFIG_DEFAULT" ]; then
+        info "Creating stage-env.cfg from default template..."
+        cp "$CONFIG_DEFAULT" "$CONFIG_FILE"
+        success "Created config/stage-env.cfg"
+        warning "Edit this file to customize your test environment"
+    fi
+}
 
 # Check prerequisites
 check_prerequisites() {
@@ -119,6 +131,9 @@ install_dependencies() {
 main() {
     # Check prerequisites
     check_prerequisites
+    
+    # Ensure config exists
+    ensure_config
     
     # Setup venv (if needed)
     setup_venv

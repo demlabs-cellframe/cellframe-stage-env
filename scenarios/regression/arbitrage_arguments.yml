@@ -6,20 +6,25 @@ includes:
 
 network:
   topology: default
-  name: stagenet
+  name: "{{network_name}}"
 
 setup:
   - docker_op: start
     services: "{{root_nodes}}"
+    services: "{{root_nodes}}"
     detach: true
   
   - wait_network: online
+    nodes: "{{root_nodes}}"
     nodes: "{{root_nodes}}"
     timeout: 60
 
 test:
   - group: Setup Wallet and Token
     defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
       node: "{{first_root}}"
       cli:
         chain: "zerochain"
@@ -32,10 +37,10 @@ test:
       - cli: "wallet info -addr -w fee_wallet_args"
         save_wallet: fee_addr
 
-      - cli: "token_decl -token ARB_ARGS -total_supply 2000000000000000000 -decimals 18 -signs_emission 1 -signs_total 1 -certs stagenet.root.pvt.0"
+      - cli: "token_decl -token ARB_ARGS -total_supply 2000000000000000000 -decimals 18 -signs_emission 1 -signs_total 1 -certs {{network_name}}.root.pvt.0"
         save_hash: token_hash
       
-      - cli: "token_emit -token ARB_ARGS -emission_value 2000000000000000000 -addr {{owner_addr}} -certs stagenet.root.pvt.0"
+      - cli: "token_emit -token ARB_ARGS -emission_value 2000000000000000000 -addr {{owner_addr}} -certs {{network_name}}.root.pvt.0"
         save_hash: emission_hash
       
       - wait_for_datum: "{{emission_hash}}"
@@ -43,14 +48,20 @@ test:
         timeout: 60
 
   - group: Create Normal Transaction (Prerequisite workaround for Bug #1 if needed)
+  - group: Create Normal Transaction (Prerequisite workaround for Bug #1 if needed)
     defaults:
       node: "{{first_root}}"
       cli:
         chain: "zerochain"
         token: "ARB_ARGS"
         fee: "100"
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
+        token: "ARB_ARGS"
+        fee: "100"
     steps:
-      - cli: "tx_create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 1000000000000000000 -certs stagenet.root.pvt.0"
+      - cli: "tx_create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 1000000000000000000 -certs {{network_name}}.root.pvt.0"
         save_hash: normal_tx_hash
       
       - wait_for_datum: "{{normal_tx_hash}}"
@@ -64,14 +75,20 @@ test:
         chain: "zerochain"
         token: "ARB_ARGS"
         fee: "100"
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
+        token: "ARB_ARGS"
+        fee: "100"
     steps:
-      - cli: "tx_create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 500 -arbitrage -certs stagenet.root.pvt.0"
+      - cli: "tx_create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 500 -arbitrage -certs {{network_name}}.root.pvt.0"
         save_hash: arb_tx_hash
       
       - wait_for_datum: "{{arb_tx_hash}}"
         chain: zerochain
         timeout: 60
         
+      - cli: "tx_history -tx {{arb_tx_hash}}"
       - cli: "tx_history -tx {{arb_tx_hash}}"
         save_to: tx_history_output
       

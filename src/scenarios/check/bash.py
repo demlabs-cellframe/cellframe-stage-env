@@ -16,12 +16,13 @@ class BashCheckExecutor(CheckExecutor):
     async def execute(self, check: BashCheck, ctx: RuntimeContext) -> None:
         """Execute Bash check."""
         script = ctx.substitute(check.bash)
-        logger.debug(f"Checking Bash: {script[:50]}...")
+        node = ctx.substitute(check.node) if check.node else "node1"
+        logger.debug(f"Checking Bash on {node}: {script[:50]}...")
         
         try:
             result = await self.container_manager.exec_bash_command(
                 script=script,
-                node=check.node,
+                node=node,
                 timeout=check.timeout
             )
             

@@ -134,7 +134,8 @@ class NetworkManager:
         self.scenario_context = ScenarioGlobalContext(
             network_name=self.topology.network.name,
             topology_name=topology_name,
-            docker_client=self.genesis.docker_client
+            docker_client=self.genesis.docker_client,
+            native_ticker=getattr(self.topology.network, 'native_ticker', 'TCELL')
         )
         
         logger.info("network_manager_initialized",
@@ -398,10 +399,14 @@ class NetworkManager:
                 emission_hash = ctx.get_variable('emission_hash') if 'emission_hash' in ctx.variables else None
                 fee_addr = ctx.get_variable('fee_addr') if 'fee_addr' in ctx.variables else None
                 
-                # Extract root node addresses for Phase 2 (needed for master node registration)
-                root_addr_0 = ctx.get_variable('root_addr_0') if 'root_addr_0' in ctx.variables else None
-                root_addr_1 = ctx.get_variable('root_addr_1') if 'root_addr_1' in ctx.variables else None
-                root_addr_2 = ctx.get_variable('root_addr_2') if 'root_addr_2' in ctx.variables else None
+                # Extract root node addresses dynamically (count from topology)
+                root_count = ctx.variables.get('root_count', 0)
+                root_addrs = {}
+                for i in range(root_count):
+                    var_name = f'root_addr_{i}'
+                    if var_name in ctx.variables:
+                        root_addrs[i] = ctx.get_variable(var_name)
+                
                 genesis_event_hash = ctx.get_variable('genesis_event_hash') if 'genesis_event_hash' in ctx.variables else None
                 
                 # Store Phase 1 context for Phase 2
@@ -410,7 +415,7 @@ class NetworkManager:
                 logger.info("zerochain_genesis_complete",
                            emission_hash=emission_hash[:16] if emission_hash else None,
                            fee_addr=fee_addr,
-                           root_addrs_available=(root_addr_0 is not None, root_addr_1 is not None, root_addr_2 is not None),
+                           root_addrs_count=len(root_addrs),
                            note="Phase1 genesis completed - emission ready for Phase2 transfers")
                 
                 # =================================================================
@@ -1022,8 +1027,21 @@ class NetworkManager:
             if hasattr(self, '_phase1_ctx') and self._phase1_ctx:
                 phase1_ctx = self._phase1_ctx
                 # Copy all Phase 1 variables to Phase 2
-                for var_name in ['emission_hash', 'fee_addr', 'root_addr_0', 'root_addr_1', 'root_addr_2', 
-                                 'genesis_event_hash', 'token_hash']:
+                base_vars = ['emission_hash', 'fee_addr', 'genesis_event_hash', 'token_hash',
+                             'root_count', 'master_count', 'full_count']
+                for var_name in base_vars:
+                    if var_name in phase1_ctx.variables:
+                        phase2_initial_variables[var_name] = phase1_ctx.get_variable(var_name)
+                
+                # Copy dynamic root/master/full addresses
+                root_count = phase1_ctx.variables.get('root_count', 0)
+                master_count = phase1_ctx.variables.get('master_count', 0)
+                for i in range(root_count):
+                    var_name = f'root_addr_{i}'
+                    if var_name in phase1_ctx.variables:
+                        phase2_initial_variables[var_name] = phase1_ctx.get_variable(var_name)
+                for i in range(master_count):
+                    var_name = f'master_addr_{i}'
                     if var_name in phase1_ctx.variables:
                         phase2_initial_variables[var_name] = phase1_ctx.get_variable(var_name)
             else:
@@ -1328,8 +1346,9 @@ class NetworkManager:
                     container_name = f"cellframe-stage-{node_name}"
                 
                 container = self.compose.client.containers.get(container_name)
+                network_name = self.topology.network.name
                 cli_result = container.exec_run(
-                    'cellframe-node-cli net get status -net stagenet',
+                    f'cellframe-node-cli net get status -net {network_name}',
                     demux=False
                 )
                 
@@ -1366,15 +1385,21 @@ class NetworkManager:
         # Build nodes array with combined info
         nodes_data = []
         for node_name, config in self.nodes.items():
-            # Get container status
-            container_status = service_status.get(node_name, {})
+            # Convert node_name to docker service name (node1 -> node-1)
+            if node_name.startswith('node'):
+                docker_service = f"node-{node_name[4:]}"
+            else:
+                docker_service = node_name
+            
+            # Get container status (service_status values are strings, not dicts)
+            container_status = service_status.get(docker_service, "unknown")
             # Get health status
             health = health_status.get(node_name, {})
             
             nodes_data.append({
                 "name": node_name,
                 "role": config.role,
-                "container_status": container_status.get("status", "unknown"),
+                "container_status": container_status,
                 "health_status": health.get("state", "unknown"),
                 "healthy": health.get("healthy", False),
                 "rpc_port": config.rpc_port,

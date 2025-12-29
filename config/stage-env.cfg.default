@@ -4,9 +4,12 @@
 
 [network]
 # Network identity
+# IMPORTANT: If you change 'name', also update 'auth_certs_prefix' in [consensus]
 name = stagenet
 network_id = 0x1234
 consensus_type = esbocs
+# Native token ticker for the network
+native_ticker = TCELL
 
 [topology]
 # Default node counts
@@ -32,9 +35,17 @@ subnet = 172.20.0.0/16
 [consensus]
 # Consensus parameters
 min_validators = 2
-new_round_delay = 15
+new_round_delay = 30
+# Collecting level for fee collection (0.0-100.0)
 collecting_level = 10.0
-auth_certs_prefix = stagenet.master
+# Certificate prefix for validators
+# If omitted, auto-generated as {network_name}.master
+# auth_certs_prefix = stagenet.master
+# ESBocs timing parameters
+round_start_sync_timeout = 5
+round_attempts_max = 2
+round_attempt_timeout = 5
+consensus_debug = true
 
 [balancer]
 # Network balancer settings

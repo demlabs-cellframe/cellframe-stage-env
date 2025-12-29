@@ -17,14 +17,14 @@ test:
     defaults:
       node: node1
     steps:
-      - cli: net -net stagenet link list
+      - cli: net -net {{network_name}} link list
         save: node1_links
       
-      - cli: net -net stagenet link list
+      - cli: net -net {{network_name}} link list
         node: node2
         save: node2_links
       
-      - cli: net -net stagenet link list
+      - cli: net -net {{network_name}} link list
         node: node4
         save: node4_links
 
@@ -34,7 +34,7 @@ check:
       assert 'active' in links.lower() or 'established' in links.lower(), \
         "Node1 should have active connections"
   
-  - cli: net -net stagenet get status
+  - cli: net -net {{network_name}} get status
     node: node1
     contains: "online"
 
