@@ -16,7 +16,7 @@ from src.utils.logger import get_logger
 from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
-    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
+    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, PrintStep, SprintStep, ToolStep, LoopStep, StepGroup,
     NetworkWaitStep, DockerOpStep, SnapshotStep,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
@@ -154,7 +154,7 @@ class ScenarioExecutor:
         # Step executors
         from .step import (
             CLIStepExecutor, RPCStepExecutor, PythonStepExecutor,
-            BashStepExecutor, ToolStepExecutor, WaitStepExecutor,
+            BashStepExecutor, PrintStepExecutor, SprintStepExecutor, ToolStepExecutor, WaitStepExecutor,
             WaitForDatumStepExecutor, LoopStepExecutor,
             NetworkWaitStepExecutor, DockerOpStepExecutor, SnapshotStepExecutor,
             SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor,
@@ -164,6 +164,8 @@ class ScenarioExecutor:
         self.rpc_executor = RPCStepExecutor(self.container_manager, log_file, debug)
         self.python_executor = PythonStepExecutor(self.container_manager, log_file, debug)
         self.bash_executor = BashStepExecutor(self.container_manager, log_file, debug)
+        self.print_executor = PrintStepExecutor()
+        self.sprint_executor = SprintStepExecutor()
         self.tool_executor = ToolStepExecutor(self.container_manager, log_file, debug)
         self.wait_executor = WaitStepExecutor(
             self.container_manager, log_file, debug, node_cli_path,
@@ -638,6 +640,12 @@ class ScenarioExecutor:
                 await self.python_executor.execute(step, ctx)
             elif isinstance(step, BashStep):
                 await self.bash_executor.execute(step, ctx)
+            elif isinstance(step, PrintStep):
+                await self.print_executor.execute(step, ctx)
+
+            elif isinstance(step, SprintStep):
+                await self.sprint_executor.execute(step, ctx)
+
             elif isinstance(step, ToolStep):
                 await self.tool_executor.execute(step, ctx)
             elif isinstance(step, LoopStep):

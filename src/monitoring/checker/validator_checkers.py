@@ -190,7 +190,7 @@ class CertificateOrderMatchChecker(BaseChecker):
             # Calculate validator_idx based on root_nodes_count
             validator_idx = node.node_id - self.root_nodes_count - 1
             # Certificate format: {network}.master.pvt.{idx}
-            expected_cert = f"{self.network_name}.master.pvt.{validator_idx}"
+            expected_cert = f"pvt.{self.network_name}.master.{validator_idx}"
             
             # Read blocks-sign-cert from config file directly
             # Config files are in tests/testing/cache/configs/node{X}/etc/network/{network_name}/{chain_name}
@@ -314,7 +314,7 @@ class CertificateOrderMatchChecker(BaseChecker):
             error_msg += "Expected certificates:\n"
             for node in self.nodes:
                 validator_idx = node.node_id - self.root_nodes_count - 1
-                expected_cert = f"{self.network_name}.master.pvt.{validator_idx}"
+                expected_cert = f"pvt.{self.network_name}.master.{validator_idx}"
                 error_msg += f"  node{node.node_id}: {expected_cert}\n"
             error_msg += "\nMismatches found:\n"
             for mismatch in mismatches:

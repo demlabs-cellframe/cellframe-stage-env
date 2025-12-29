@@ -275,6 +275,28 @@ class BashStep(BaseModel):
         use_enum_values = True
 
 
+class PrintStep(BaseModel):
+    """Print a message during scenario execution."""
+    print: str = Field(..., alias="print", description="Message to print (supports variable substitution)")
+    level: str = Field("info", description="Log level: info, debug, warning, error")
+    
+    class Config:
+        allow_population_by_field_name = True
+
+
+
+class SprintStep(BaseModel):
+    """Format a message and save to variable (String Print)."""
+    sprint: str = Field(..., alias="sprint", description="Message to format (supports variable substitution)")
+    save: str = Field(..., description="Variable name to save formatted message to")
+    print_also: bool = Field(False, description="Also print to console")
+    level: str = Field("info", description="Log level if printing: info, debug, warning, error")
+    
+    class Config:
+        allow_population_by_field_name = True
+
+
+
 class ToolStep(BaseModel):
     """Execute cellframe-node-tool command."""
     tool: str = Field(..., description="Tool command (e.g., 'cert create test_cert sig_dil')")
@@ -426,7 +448,7 @@ class StepGroup(BaseModel):
 # NetworkWaitStep must come before WaitStep.
 TestStep = Union[
     NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep,
-    CLIStep, RPCStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
+    CLIStep, RPCStep, PythonStep, BashStep, PrintStep, SprintStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
     WaitStep 

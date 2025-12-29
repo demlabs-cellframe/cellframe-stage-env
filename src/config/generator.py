@@ -355,17 +355,17 @@ class ConfigGenerator:
             blocks_sign_cert = None
             
             if node.is_seed_node:  # ROOT nodes
-                # Certificate format: stagenet.root.pvt.0 (not pvt.stagenet.root.0!)
+                # Certificate format: stagenet.root.0 (not pvt.stagenet.root.0!)
                 root_idx = node.node_id - 1  # node1→0, node2→1
-                events_sign_cert = f"{network_name}.root.pvt.{root_idx}"
+                events_sign_cert = f"pvt.{network_name}.root.{root_idx}"
                 logger.debug("events_sign_cert_prepared", node_id=node.node_id, cert=events_sign_cert)
             
             if node.consensus_participation and not node.is_seed_node:  # MASTER nodes
                 # master_idx: first_master_node_id→0, second→1, etc.
-                # Certificate format: stagenet.master.pvt.0 (not pvt.stagenet.master.0!)
+                # Certificate format: stagenet.master.0 (not pvt.stagenet.master.0!)
                 # Use root_nodes_count instead of hardcoded value
                 master_idx = node.node_id - root_nodes_count - 1
-                blocks_sign_cert = f"{network_name}.master.pvt.{master_idx}"
+                blocks_sign_cert = f"{network_name}.master.{master_idx}"
                 logger.debug("blocks_sign_cert_prepared", node_id=node.node_id, master_idx=master_idx, root_count=root_nodes_count, cert=blocks_sign_cert)
             
             # Render template with node-specific context
@@ -854,11 +854,11 @@ events_sign_cert=node-{node.node_id}-cert
             root_node_cfg = topology.topology.get('root', None)
             root_nodes_count = root_node_cfg.count if root_node_cfg else 0
             master_idx = node.node_id - root_nodes_count - 1
-            # Format: stagenet.master.pvt.0 (matches certificate file names)
+            # Format: stagenet.master.0 (matches certificate file names)
             config_content += f"""[esbocs]
 # Blocks signing certificate (validator-specific)
-# Certificate format: {network_name}.master.pvt.N
-blocks-sign-cert={network_name}.master.pvt.{master_idx}
+# Certificate format: {network_name}.master.N
+blocks-sign-cert=pvt.{network_name}.master.{master_idx}
 
 """
         

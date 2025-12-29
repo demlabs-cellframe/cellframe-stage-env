@@ -556,6 +556,18 @@ class DockerComposeManager:
                     continue
                 image_name = svc_data.get('image')
                 if image_name:
+                    # Expand environment variables in image name
+                    # Handle ${VAR:-default} and ${VAR} syntax
+                    def expand_var(match):
+                        var_expr = match.group(1)
+                        if ':-' in var_expr:
+                            var_name, default = var_expr.split(':-', 1)
+                            return os.environ.get(var_name, default)
+                        else:
+                            return os.environ.get(var_expr, match.group(0))
+                    
+                    image_name = re.sub(r'\$\{([^}]+)\}', expand_var, image_name)
+                    
                     # Try to find the image
                     try:
                         self.client.images.get(image_name)
@@ -955,7 +967,6 @@ class DockerComposeManager:
             for line in logs.split('\n'):
                 if "Connection refused" in line or "errno 111" in line:
                     # Extract peer address from error message
-                    import re
                     match = re.search(r'(\d+\.\d+\.\d+\.\d+):(\d+)', line)
                     if match:
                         peer = f"{match.group(1)}:{match.group(2)}"
@@ -1184,7 +1195,6 @@ class DockerComposeManager:
         Args:
             containers: List of containers to check and register
         """
-        import re
         
         # Collect info about all root nodes (first 3 nodes)
         root_nodes = []

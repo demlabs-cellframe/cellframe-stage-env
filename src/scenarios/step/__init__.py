@@ -9,6 +9,8 @@ from .cli import CLIStepExecutor
 from .rpc import RPCStepExecutor
 from .python import PythonStepExecutor
 from .bash import BashStepExecutor
+from .print_step import PrintStepExecutor
+from .sprint_step import SprintStepExecutor
 from .tool import ToolStepExecutor
 from .wait import WaitStepExecutor
 from .wait_for_datum import WaitForDatumStepExecutor
@@ -25,6 +27,8 @@ __all__ = [
     'RPCStepExecutor',
     'PythonStepExecutor',
     'BashStepExecutor',
+    'PrintStepExecutor',
+    'SprintStepExecutor',
     'ToolStepExecutor',
     'WaitStepExecutor',
     'WaitForDatumStepExecutor',

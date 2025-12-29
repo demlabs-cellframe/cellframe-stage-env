@@ -51,12 +51,12 @@ class ValidatorManager(BaseGenesisManager):
         if node.is_seed_node:
             # ROOT nodes: cert indices 0,1,2,... 
             validator_idx = node.node_id - 1
-            cert_name = f"{self.network_name}.root.pvt.{validator_idx}"
+            cert_name = f"pvt.{self.network_name}.root.{validator_idx}"
         else:
             # MASTER nodes: cert indices 0,1,2,...
             # master_idx = node_id - root_nodes_count - 1
             validator_idx = node.node_id - root_nodes_count - 1
-            cert_name = f"{self.network_name}.master.pvt.{validator_idx}"
+            cert_name = f"pvt.{self.network_name}.master.{validator_idx}"
         
         # Read node address with retry logic
         node_addr = self._read_node_addr_from_cli(node.node_id)
