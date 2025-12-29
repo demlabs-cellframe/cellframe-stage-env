@@ -16,7 +16,7 @@ from src.utils.logger import get_logger
 from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
-    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, PrintStep, SprintStep, ToolStep, LoopStep, StepGroup,
+    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, PrintStep, SprintStep, ExitStep, ToolStep, LoopStep, StepGroup,
     NetworkWaitStep, DockerOpStep, SnapshotStep,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
@@ -154,7 +154,7 @@ class ScenarioExecutor:
         # Step executors
         from .step import (
             CLIStepExecutor, RPCStepExecutor, PythonStepExecutor,
-            BashStepExecutor, PrintStepExecutor, SprintStepExecutor, ToolStepExecutor, WaitStepExecutor,
+            BashStepExecutor, PrintStepExecutor, SprintStepExecutor, ExitStepExecutor, ToolStepExecutor, WaitStepExecutor,
             WaitForDatumStepExecutor, LoopStepExecutor,
             NetworkWaitStepExecutor, DockerOpStepExecutor, SnapshotStepExecutor,
             SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor,
@@ -166,6 +166,7 @@ class ScenarioExecutor:
         self.bash_executor = BashStepExecutor(self.container_manager, log_file, debug)
         self.print_executor = PrintStepExecutor()
         self.sprint_executor = SprintStepExecutor()
+        self.exit_executor = ExitStepExecutor()
         self.tool_executor = ToolStepExecutor(self.container_manager, log_file, debug)
         self.wait_executor = WaitStepExecutor(
             self.container_manager, log_file, debug, node_cli_path,
@@ -645,6 +646,9 @@ class ScenarioExecutor:
 
             elif isinstance(step, SprintStep):
                 await self.sprint_executor.execute(step, ctx)
+
+            elif isinstance(step, ExitStep):
+                await self.exit_executor.execute(step, ctx)
 
             elif isinstance(step, ToolStep):
                 await self.tool_executor.execute(step, ctx)

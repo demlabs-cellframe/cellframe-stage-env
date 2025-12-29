@@ -451,16 +451,12 @@ test:
         value: "regex_extract(emission_event_dump, r'emission_hash:\\s*(0x[a-fA-F0-9]+)', 1)"
         eval: true
       
-      # Verify emission_hash was found
+      # Verify emission_hash was found - no fallbacks!
       - if: "not emission_hash"
         then:
-          - print: "WARNING: emission_hash not found in event dump. Using emission_datum_hash as fallback..."
-            level: warning
-          # Try alternative: use the emission_datum_hash directly as emission_hash
-          - set: emission_hash
-            value: "{{emission_datum_hash}}"
-          - print: "Using emission_datum_hash as fallback: {{emission_hash}}"
-            level: info
+          - print: "ERROR: emission_hash not found in event dump. This is a critical error!"
+            level: error
+          - exit: 1
   
   - cli: "dag event list -chain zerochain"
     node: "{{first_root}}"

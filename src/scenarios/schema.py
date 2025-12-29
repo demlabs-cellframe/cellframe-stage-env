@@ -297,6 +297,16 @@ class SprintStep(BaseModel):
 
 
 
+class ExitStep(BaseModel):
+    """Terminate scenario execution with exit code."""
+    exit: int = Field(..., alias="exit", description="Exit code (0 = success, non-zero = error)")
+    message: Optional[str] = Field(None, description="Optional message to display on exit")
+    
+    class Config:
+        allow_population_by_field_name = True
+
+
+
 class ToolStep(BaseModel):
     """Execute cellframe-node-tool command."""
     tool: str = Field(..., description="Tool command (e.g., 'cert create test_cert sig_dil')")
@@ -448,7 +458,7 @@ class StepGroup(BaseModel):
 # NetworkWaitStep must come before WaitStep.
 TestStep = Union[
     NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep,
-    CLIStep, RPCStep, PythonStep, BashStep, PrintStep, SprintStep, ToolStep, LoopStep, StepGroup,
+    CLIStep, RPCStep, PythonStep, BashStep, PrintStep, SprintStep, ExitStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
     WaitStep 

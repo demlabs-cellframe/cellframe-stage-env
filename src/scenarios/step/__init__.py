@@ -11,6 +11,7 @@ from .python import PythonStepExecutor
 from .bash import BashStepExecutor
 from .print_step import PrintStepExecutor
 from .sprint_step import SprintStepExecutor
+from .exit_step import ExitStepExecutor
 from .tool import ToolStepExecutor
 from .wait import WaitStepExecutor
 from .wait_for_datum import WaitForDatumStepExecutor
@@ -29,6 +30,7 @@ __all__ = [
     'BashStepExecutor',
     'PrintStepExecutor',
     'SprintStepExecutor',
+    'ExitStepExecutor',
     'ToolStepExecutor',
     'WaitStepExecutor',
     'WaitForDatumStepExecutor',

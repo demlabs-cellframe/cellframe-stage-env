@@ -98,3 +98,147 @@
 2. **Используйте `sprint` для формирования данных**
 3. **Выбирайте правильный уровень логирования**
 4. **Не злоупотребляйте выводом**
+
+## ExitStep - Явное завершение сценария
+
+**Назначение**: Явное завершение выполнения сценария с указанным кодом выхода.
+
+**Синтаксис**:
+```yaml
+- exit: код_выхода  # 0 = успех, ≠0 = ошибка
+  message: "опциональное сообщение"
+```
+
+**Параметры**:
+- `exit` (обязательный): Код выхода (0 для успеха, не-ноль для ошибки)
+- `message` (опциональный): Сообщение для отображения при выходе
+
+**Примеры**:
+
+```yaml
+# Успешное завершение
+- exit: 0
+  message: "All checks passed successfully"
+
+# Завершение с ошибкой
+- exit: 1
+  message: "Critical validation failed"
+
+# Условное завершение
+- if: "not emission_hash"
+  then:
+    - print: "ERROR: emission_hash not found in event dump"
+      level: error
+    - exit: 1
+      message: "Missing emission_hash - cannot continue"
+
+# Завершение без сообщения
+- exit: 2
+```
+
+**Когда использовать**:
+- Критические ошибки, требующие немедленной остановки
+- Проверка предусловий, которые не выполнены
+- Явное указание точки успешного завершения
+- Замена bash `exit` команд
+
+**Важно**:
+- ❌ **БЕЗ FALLBACK'ОВ**: Если данные не найдены - exit с ошибкой
+- ✅ **FAIL FAST**: Останавливаться немедленно при критической проблеме
+- ✅ **ЯСНЫЕ КОДЫ**: 0 = успех, 1 = общая ошибка, 2+ = специфические ошибки
+- ✅ **ИНФОРМАТИВНОСТЬ**: Всегда указывайте `message` для понимания причины
+
+## Сравнение с другими подходами
+
+### До (bash для exit):
+```yaml
+- if: "not emission_hash"
+  then:
+    - bash: "echo 'ERROR: emission_hash not found' && exit 1"
+      node: "{{first_root}}"
+```
+
+### После (exit step):
+```yaml
+- if: "not emission_hash"
+  then:
+    - print: "ERROR: emission_hash not found"
+      level: error
+    - exit: 1
+      message: "Missing emission_hash"
+```
+
+**Преимущества**:
+- ✅ Не требует `node`
+- ✅ Отдельный вывод и выход
+- ✅ Структурированный exit code
+- ✅ Понятная семантика
+
+## Best Practices для Exit
+
+1. **Используйте exit вместо fallback**:
+   ```yaml
+   # ❌ Плохо - fallback маскирует проблему
+   - set: value
+     value: "{{optional_value or 'default'}}"
+   
+   # ✅ Хорошо - fail fast
+   - if: "not optional_value"
+     then:
+       - print: "ERROR: Required value not found"
+         level: error
+       - exit: 1
+   ```
+
+2. **Всегда указывайте message**:
+   ```yaml
+   # ❌ Плохо
+   - exit: 1
+   
+   # ✅ Хорошо
+   - exit: 1
+     message: "Validation failed: missing required field 'token_hash'"
+   ```
+
+3. **Используйте разные коды для разных ошибок**:
+   ```yaml
+   - if: "not token_hash"
+     then:
+       - exit: 1
+         message: "Token creation failed"
+   
+   - if: "not emission_hash"
+     then:
+       - exit: 2
+         message: "Emission not found"
+   
+   - if: "not genesis_block"
+     then:
+       - exit: 3
+         message: "Genesis block missing"
+   ```
+
+4. **Комбинируйте с print для отладки**:
+   ```yaml
+   - if: "error_condition"
+     then:
+       - print: "DEBUG: Current state - {{state_var}}"
+         level: debug
+       - print: "ERROR: Fatal error occurred"
+         level: error
+       - exit: 1
+         message: "Cannot continue due to fatal error"
+   ```
+
+## Технические детали ExitStep
+
+- **Реализация**: Python async executor с `ScenarioExecutionError`
+- **Файлы**:
+  - `src/scenarios/step/exit_step.py` - ExitStepExecutor
+  - `src/scenarios/schema.py` - ExitStep модель
+  - `src/scenarios/executor.py` - интеграция в ScenarioExecutor
+
+- **Поведение**: Всегда вызывает `ScenarioExecutionError` для остановки выполнения
+- **Логирование**: 
+  - `exit: 0` → info level с ✅
+  - `exit: ≠0` → error level с ❌
