@@ -10,7 +10,7 @@ Provides unified access to:
 Usage:
     from monitoring import MonitoringManager
     
-    monitor = await MonitoringManager.get_instance()
+    monitor = MonitoringManager.get_instance()
     await monitor.start()
     
     # Track datum

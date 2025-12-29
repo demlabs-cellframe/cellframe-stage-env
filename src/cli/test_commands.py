@@ -212,10 +212,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         # Start monitoring services ONCE for entire test session
         async def _start_monitoring():
-            monitoring = await MonitoringManager.get_instance(
+            monitoring = MonitoringManager.get_instance(
                 node_cli_path=cli_path,
-                log_file=run_dir_base,
-                datum_check_interval=2.0
+                log_file=run_dir_base
             )
             await monitoring.start()
             print_info("🔍 Monitoring services started")
@@ -296,6 +295,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         standalone_scenarios.append(yml_file)
                 
                 # Process standalone scenarios FIRST (they don't belong to any suite)
+                # Sort for consistent execution order
+                standalone_scenarios.sort(key=lambda f: f.name)
                 if standalone_scenarios:
                     print_info(f"\n📦 Running {len(standalone_scenarios)} standalone scenario(s)")
                     
@@ -442,11 +443,13 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 'log_file': str(scenario_log_file.relative_to(run_dir_base))
                             })
                 
-                # Process each suite
-                for suite_key, suite_info in suites.items():
+                # Process each suite (sorted by suite key for consistent order)
+                for suite_key, suite_info in sorted(suites.items()):
                     suite_path = suite_info['path']
                     suite_descriptor = suite_info['descriptor']
-                    suite_scenarios = suite_info['scenarios']
+                    # Sort scenarios by filename to ensure consistent execution order
+                    # (phase1 before phase2 before phase3, etc.)
+                    suite_scenarios = sorted(suite_info['scenarios'], key=lambda f: f.name)
                     
                     # Parse suite descriptor to get metadata
                     common_root = base_path / "tests"
@@ -958,7 +961,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             print_info("\n🔍 Stopping monitoring services...")
             async def _stop_monitoring():
                 try:
-                    monitoring = await MonitoringManager.get_instance()
+                    monitoring = MonitoringManager.get_instance()
                     await monitoring.stop()
                     print_success("Monitoring services stopped")
                 except Exception as e:

@@ -5,6 +5,8 @@ Modern replacement for deprecated docker-compose library.
 Uses docker SDK 7.0+ with native compose v2 support.
 """
 
+import os
+import re
 import time
 import yaml
 from pathlib import Path
@@ -71,6 +73,31 @@ class DockerComposeManager:
         except DockerException as e:
             logger.error("docker_connection_failed", error=str(e))
             raise
+    
+    def _expand_env_vars(self, value: str) -> str:
+        """
+        Expand environment variables in a string.
+        
+        Handles both ${VAR} and ${VAR:-default} syntax.
+        
+        Args:
+            value: String potentially containing environment variables
+            
+        Returns:
+            String with environment variables expanded
+        """
+        def replace_var(match):
+            var_expr = match.group(1)
+            # Handle ${VAR:-default} syntax
+            if ':-' in var_expr:
+                var_name, default = var_expr.split(':-', 1)
+                return os.environ.get(var_name, default)
+            # Handle ${VAR} syntax
+            return os.environ.get(var_expr, match.group(0))
+        
+        # Match ${VAR} or ${VAR:-default}
+        pattern = r'\$\{([^}]+)\}'
+        return re.sub(pattern, replace_var, value)
     
     def build(
         self,
@@ -588,6 +615,8 @@ class DockerComposeManager:
                     continue
                 image_name = svc_data.get('image')
                 if image_name:
+                    # Expand environment variables in image name (e.g., ${BUILD_TYPE:-debug})
+                    image_name = self._expand_env_vars(image_name)
                     # Try to find the image
                     try:
                         self.client.images.get(image_name)

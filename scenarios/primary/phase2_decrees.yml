@@ -66,12 +66,15 @@ test:
       # Step 3: Process decree in DAG
       - cli: "mempool proc -datum {{decree_fee_signed}} -chain zerochain"
       
-      # Wait for decree to be processed in DAG
-      - wait: mempool
+      # Wait for decree to be finalized in DAG (not just mempool!)
+      # Decree must be in DAG event before anchor can reference it
+      - wait: finalized
         datum: "{{decree_fee_signed}}"
         node: "node-1"
         chain: "zerochain"
-        timeout: 30
+        timeout: 60
+      
+      - log: "✓ Fee decree finalized in zerochain DAG, creating anchor..."
       
       # Step 4: Create anchor in mainchain
       - cli: "decree anchor -datum {{decree_fee_signed}} -chain main -certs stagenet.root.pvt.0"
@@ -100,12 +103,15 @@ test:
       
       - cli: "mempool proc -datum {{decree_reward_signed}} -chain zerochain"
       
-      # Wait for decree to be processed in DAG
-      - wait: mempool
+      # Wait for decree to be finalized in DAG (not just mempool!)
+      # Decree must be in DAG event before anchor can reference it
+      - wait: finalized
         datum: "{{decree_reward_signed}}"
         node: "node-1"
         chain: "zerochain"
-        timeout: 30
+        timeout: 60
+      
+      - log: "✓ Decree finalized in zerochain DAG, creating anchor..."
       
       - cli: "decree anchor -datum {{decree_reward_signed}} -chain main -certs stagenet.root.pvt.0"
         save_hash: decree_reward_anchor
@@ -149,12 +155,15 @@ test:
       
       - cli: "mempool proc -datum {{decree_min_val_signed}} -chain zerochain"
       
-      # Wait for decree to be processed in DAG
-      - wait: mempool
+      # Wait for decree to be finalized in DAG (not just mempool!)
+      # Decree must be in DAG event before anchor can reference it
+      - wait: finalized
         datum: "{{decree_min_val_signed}}"
         node: "node-1"
         chain: "zerochain"
-        timeout: 30
+        timeout: 60
+      
+      - log: "✓ Decree finalized in zerochain DAG, creating anchor..."
       
       - cli: "decree anchor -datum {{decree_min_val_signed}} -chain main -certs stagenet.root.pvt.0"
         save_hash: decree_min_val_anchor

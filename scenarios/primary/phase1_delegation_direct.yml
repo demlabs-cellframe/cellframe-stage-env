@@ -109,8 +109,12 @@ test:
           
           - cli: "mempool proc -datum {{mtcell_decl_hash}}"
           
-          # DAG-PoA consensus needs time
-          - wait: "15s"
+          # Wait for token declaration to be finalized in DAG
+          - wait: finalized
+            datum: "{{mtcell_decl_hash}}"
+            node: "{{root_nodes[0]}}"
+            chain: zerochain
+            timeout: 60
       
       - cli: "token info -name mTCELL"
         expect_output: "token_name: mTCELL"
@@ -181,12 +185,14 @@ test:
       
       - cli: "mempool proc -datum {{approve_val2_signed}} -chain zerochain"
       
-      # Wait for decree to be processed in DAG
-      - wait: mempool
+      # Wait for decree to be finalized in DAG (not just mempool!)
+      - wait: finalized
         datum: "{{approve_val2_signed}}"
         node: "{{root_nodes[0]}}"
         chain: "zerochain"
-        timeout: 30
+        timeout: 60
+      
+      - log: "✓ Validator approve decree finalized in DAG, creating anchor..."
       
       - cli: "decree anchor -datum {{approve_val2_signed}} -chain main -certs stagenet.root.pvt.0"
         save_hash: approve_val2_anchor
@@ -264,12 +270,14 @@ test:
       
       - cli: "mempool proc -datum {{approve_val3_signed}} -chain zerochain"
       
-      # Wait for decree to be processed in DAG
-      - wait: mempool
+      # Wait for decree to be finalized in DAG (not just mempool!)
+      - wait: finalized
         datum: "{{approve_val3_signed}}"
         node: "{{root_nodes[0]}}"
         chain: "zerochain"
-        timeout: 30
+        timeout: 60
+      
+      - log: "✓ Validator approve decree finalized in DAG, creating anchor..."
       
       - cli: "decree anchor -datum {{approve_val3_signed}} -chain main -certs stagenet.root.pvt.0"
         save_hash: approve_val3_anchor
@@ -339,12 +347,14 @@ test:
       
       - cli: "mempool proc -datum {{revoke_val3_signed}} -chain zerochain"
       
-      # Wait for decree in zerochain
-      - wait: mempool
+      # Wait for revoke decree to be finalized in DAG (not just mempool!)
+      - wait: finalized
         datum: "{{revoke_val3_signed}}"
         node: "{{root_nodes[0]}}"
         chain: "zerochain"
-        timeout: 30
+        timeout: 60
+      
+      - log: "✓ Validator revoke decree finalized in DAG, creating anchor..."
       
       - cli: "decree anchor -datum {{revoke_val3_signed}} -chain main -certs stagenet.root.pvt.0"
         save_hash: revoke_val3_anchor

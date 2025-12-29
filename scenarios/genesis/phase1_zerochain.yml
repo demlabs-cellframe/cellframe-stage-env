@@ -14,7 +14,7 @@ setup:
     services: "{{all_nodes}}"
     detach: true
   
-  - wait: "10s"
+  - wait: "5s"
   
   # Verify ROOT node certificates exist
   - group: Verify ROOT node certificates
@@ -308,8 +308,6 @@ test:
     nodes: "{{_active_nodes}}"
     timeout: 60
   
-  - wait: "40s"
-
   # Genesis Event - Token Declaration
   # Build root_certs_str: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
   - join: root_certs_str
@@ -325,19 +323,20 @@ test:
     steps:
       - cli: "token_decl -token {{native_ticker}} -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
         save_hash: token_hash
-      
-      - wait: "3s"
-      
+           
       - cli: "mempool proc -datum {{token_hash}}"
       
-      - wait: "32s"
-      
+      # Wait for token to be finalized in DAG
+      - wait: finalized
+        datum: "{{token_hash}}"
+        node: "{{first_root}}"
+        chain: zerochain
+        timeout: 60
+            
       - cli: "token list"
         expect_output: "tokens: 1"
       
       - cli: "global_db flush"
-      
-      - wait: "5s"
       
       - cli: "dag event last -chain zerochain"
         save_hash: genesis_event_hash
@@ -388,8 +387,6 @@ test:
     nodes: "{{_active_nodes}}"
     timeout: 60
   
-  - wait: "40s"
-  
   - config: "{{network_name}}/zerochain"
     nodes: "{{root_nodes}}"
     set:
@@ -400,8 +397,6 @@ test:
   - wait_network: online
     nodes: "{{root_nodes}}"
     timeout: 60
-  
-  - wait: "10s"
   
   # Token Emission - ALL signatures on node-1 (has all root certs)
   # Build all_root_certs: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
@@ -421,8 +416,6 @@ test:
       - cli: "token_emit -no_base_tx -emission_value 10.0e+54 -addr {{fee_addr}} -certs {{all_root_certs}}"
         save_hash: emission_datum_hash
       
-      - wait: "10s"
-      
       # Verify emission is in mempool
       - cli: "mempool list"
         save: mempool_after_emission
@@ -434,15 +427,18 @@ test:
         group: 1
         default: "0"
       
-      - cli: "dag event last"
-        save_hash: last_event_before_emission
-      
       # Process emission to DAG
       - cli: "mempool proc -datum {{emission_datum_hash}}"
         save: mempool_proc_output
       
-      - wait: "30s"
+      # Wait for datum to be finalized in DAG event
+      - wait: finalized
+        datum: "{{emission_datum_hash}}"
+        node: "{{first_root}}"
+        chain: zerochain
+        timeout: 60
       
+      # Now get the event containing our emission
       - cli: "dag event last"
         save_hash: emission_event_hash
       

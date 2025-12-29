@@ -374,6 +374,29 @@ class DatumMonitor:
             # Stage 1 continued: Check if datum is still in mempool
             in_mempool = await self._check_mempool(node, network, chain, datum_hash)
             
+            # For DAG chains (zerochain), datums are NOT removed from mempool after
+            # being included in an event. So we need to check events even while
+            # datum is still in mempool.
+            is_dag_chain = self._is_dag_chain(chain)
+            
+            if is_dag_chain and in_mempool:
+                # For DAG: check if datum is already in an event
+                block_info = await self._check_in_blocks(node, network, chain, datum_hash)
+                if block_info:
+                    event_num, event_hash = block_info
+                    self._log(f"  ✅ Datum {datum_hash[:16]}... found in DAG event #{event_num}")
+                    return DatumMonitorResult(
+                        status=DatumStatus.SUCCESS,
+                        datum_hash=datum_hash,
+                        elapsed_time=elapsed,
+                        details={
+                            "block_number": event_num,
+                            "block_hash": event_hash,
+                            "total_time": elapsed,
+                            "dag_chain": True
+                        }
+                    )
+            
             if in_mempool:
                 # Check mempool timeout
                 mempool_time = current_time - mempool_start
@@ -404,6 +427,11 @@ class DatumMonitor:
             
             # Stage 2: Datum left mempool - check if verified
             if was_in_mempool and not was_verified:
+                logger.debug("datum_left_mempool_checking_verification",
+                            datum_hash=datum_hash[:20],
+                            chain=chain,
+                            elapsed=f"{elapsed:.1f}s")
+                
                 # Check if it was verified on master nodes
                 verified = await self._check_verified_on_masters(node, network, chain, datum_hash) if check_master_nodes else True
                 
@@ -411,6 +439,9 @@ class DatumMonitor:
                     self._log(f"  ✅ Datum {datum_hash[:16]}... verified by validators")
                     was_verified = True
                     verification_start = current_time
+                    logger.debug("datum_marked_as_verified",
+                                datum_hash=datum_hash[:20],
+                                elapsed=f"{elapsed:.1f}s")
                 else:
                     verification_time = current_time - mempool_start
                     
@@ -623,7 +654,7 @@ class DatumMonitor:
             container_name = self._node_to_container(node)
             container = self.docker_client.containers.get(container_name)
             
-            # Get recent events and search for our datum
+            # Get recent events list
             cmd = [
                 self.node_cli_path, "dag", "event", "list",
                 "-net", network, "-chain", chain, "-from", "events", "-limit", "20"
@@ -638,17 +669,44 @@ class DatumMonitor:
             
             stdout_str = stdout.decode('utf-8') if stdout else ""
             
-            # For DAG, we check if total events > 0 (datum creates event)
-            # Note: CLI doesn't show datum hash inside event, only event hash
-            total_match = re.search(r'total events:\s*(\d+)', stdout_str, re.IGNORECASE)
-            if total_match and int(total_match.group(1)) > 0:
-                # Extract first event hash as reference
-                hash_match = re.search(r'event\s+hash:\s*([0-9a-fA-Fx]+)', stdout_str, re.IGNORECASE)
-                event_hash = hash_match.group(1) if hash_match else "latest"
-                event_count = int(total_match.group(1))
+            # Extract all event hashes from list
+            # Format: event_hash: 0x... (with underscore)
+            event_hashes = re.findall(r'event_hash:\s*(0x[A-Fa-f0-9]+)', stdout_str, re.IGNORECASE)
+            
+            logger.debug("dag_event_list_parsed", event_count=len(event_hashes), 
+                        events=event_hashes[:5] if event_hashes else [])
+            
+            if not event_hashes:
+                return None
+            
+            # Check each event for our datum hash by dumping it
+            for i, event_hash in enumerate(event_hashes[:10]):  # Limit to 10 recent events
+                dump_cmd = [
+                    self.node_cli_path, "dag", "event", "dump",
+                    "-net", network, "-chain", chain, "-event", event_hash
+                ]
                 
-                self._log(f"  ✅ Datum likely in DAG events (total: {event_count})")
-                return (event_count, event_hash)
+                dump_result = container.exec_run(dump_cmd, demux=True)
+                if dump_result.exit_code != 0:
+                    logger.debug("dag_event_dump_failed", event_hash=event_hash, 
+                                exit_code=dump_result.exit_code)
+                    continue
+                
+                dump_stdout = dump_result.output[0].decode('utf-8') if dump_result.output[0] else ""
+                
+                # Search for datum hash in event dump (also check datum_hash: format)
+                datum_hash_lower = datum_hash.lower()
+                dump_lower = dump_stdout.lower()
+                
+                if datum_hash_lower in dump_lower:
+                    self._log(f"  ✅ Datum found in DAG event ({event_hash[:16]}...)")
+                    return (i + 1, event_hash)
+                
+                # Also try to find just the hex part without 0x prefix
+                datum_hex = datum_hash_lower.replace('0x', '')
+                if datum_hex in dump_lower:
+                    self._log(f"  ✅ Datum found in DAG event ({event_hash[:16]}...) [hex match]")
+                    return (i + 1, event_hash)
             
             return None
             
@@ -679,6 +737,7 @@ class DatumMonitor:
             stdout, stderr = result.output
             
             if exit_code != 0:
+                logger.debug("blockchain_block_list_failed", exit_code=exit_code)
                 return None
             
             stdout_str = stdout.decode('utf-8') if stdout else ""
@@ -687,6 +746,11 @@ class DatumMonitor:
             # Format: block_hash: 0x...
             block_hashes = re.findall(r'block_hash:\s*(0x[A-Fa-f0-9]{64})', stdout_str, re.IGNORECASE)
             block_nums = re.findall(r'block_num:\s*(\d+)', stdout_str)
+            
+            logger.debug("blockchain_checking_blocks", 
+                        datum_hash=datum_hash[:20],
+                        block_count=len(block_hashes),
+                        block_nums=block_nums[:5] if block_nums else [])
             
             # Check each block for our datum hash
             for i, block_hash in enumerate(block_hashes[:10]):  # Limit to 10 recent blocks
@@ -697,16 +761,34 @@ class DatumMonitor:
                 
                 dump_result = container.exec_run(dump_cmd, demux=True)
                 if dump_result.exit_code != 0:
+                    logger.debug("blockchain_block_dump_failed", 
+                                block_hash=block_hash[:20],
+                                exit_code=dump_result.exit_code)
                     continue
                 
                 dump_stdout = dump_result.output[0].decode('utf-8') if dump_result.output[0] else ""
                 
                 # Search for datum hash in block dump
-                if datum_hash.lower() in dump_stdout.lower():
+                datum_hash_lower = datum_hash.lower()
+                dump_lower = dump_stdout.lower()
+                
+                if datum_hash_lower in dump_lower:
                     block_num = int(block_nums[i]) if i < len(block_nums) else i
+                    logger.info("blockchain_datum_found_in_block",
+                               datum_hash=datum_hash[:20],
+                               block_num=block_num,
+                               block_hash=block_hash[:20])
                     self._log(f"  ✅ Datum found in block #{block_num} ({block_hash[:16]}...)")
                     return (block_num, block_hash)
+                else:
+                    logger.debug("blockchain_datum_not_in_block",
+                                datum_hash=datum_hash[:20],
+                                block_num=block_nums[i] if i < len(block_nums) else i,
+                                block_hash=block_hash[:20])
             
+            logger.debug("blockchain_datum_not_found_in_any_block",
+                        datum_hash=datum_hash[:20],
+                        blocks_checked=min(len(block_hashes), 10))
             return None
             
         except Exception as e:

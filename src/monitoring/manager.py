@@ -56,6 +56,15 @@ class MonitoringManager:
         )
         
         self.health = HealthChecker(timeout=10.0)
+        self._running = False
+    
+    async def start(self):
+        """Start monitoring services."""
+        self._running = True
+    
+    async def stop(self):
+        """Stop monitoring services."""
+        self._running = False
     
     @classmethod
     def get_instance(
