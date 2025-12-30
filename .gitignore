@@ -9,3 +9,4 @@ docker-compose.generated.yml
 
 # User-specific config (use stage-env.cfg.default as template)
 config/stage-env.cfg
+.mcp

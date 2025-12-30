@@ -180,55 +180,67 @@ test:
   
   - wait: "5s"
   
-  # Add all nodes to nodelist dynamically
-  - group: Add all nodes to nodelist
-    defaults:
-      node: "{{first_root}}"
+  # Add all nodes to nodelist on ALL root nodes (balancers)
+  # Only ROOT nodes have rights to modify nodelist
+  - group: Add all nodes to nodelist on all balancers
     steps:
-      - for: node_idx
+      - for: balancer_idx
         in: "{{root_indices}}"
         steps:
-          - set: _addr_idx
-            value: "node_idx - 1"
-            eval: true
-          - set: _add_addr
-            value: "get_var('root_addr_' + str(_addr_idx))"
-            eval: true
-          - set: _add_host
-            value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
-            eval: true
-          - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
-            contains: "Successfully"
-      
-      - for: node_idx
-        in: "{{master_indices}}"
-        steps:
-          - set: _addr_idx
-            value: "node_idx - root_count - 1"
-            eval: true
-          - set: _add_addr
-            value: "get_var('master_addr_' + str(_addr_idx))"
-            eval: true
-          - set: _add_host
-            value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
-            eval: true
-          - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
-            contains: "Successfully"
-      
-      - for: node_idx
-        in: "{{full_indices}}"
-        steps:
-          - set: _addr_idx
-            value: "node_idx - root_count - master_count - 1"
-            eval: true
-          - set: _add_addr
-            value: "get_var('full_addr_' + str(_addr_idx))"
-            eval: true
-          - set: _add_host
-            value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
-            eval: true
-          - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
-            contains: "Successfully"
+          - set: _balancer_node
+            value: "node-{{balancer_idx}}"
+          - log: "Adding nodes to balancer {{_balancer_node}}..."
+          
+          # Add root nodes
+          - for: node_idx
+            in: "{{root_indices}}"
+            steps:
+              - set: _addr_idx
+                value: "node_idx - 1"
+                eval: true
+              - set: _add_addr
+                value: "get_var('root_addr_' + str(_addr_idx))"
+                eval: true
+              - set: _add_host
+                value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
+                eval: true
+              - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
+                node: "{{_balancer_node}}"
+                contains: ["Successfully", "successfully_added_node"]
+          
+          # Add master nodes
+          - for: node_idx
+            in: "{{master_indices}}"
+            steps:
+              - set: _addr_idx
+                value: "node_idx - root_count - 1"
+                eval: true
+              - set: _add_addr
+                value: "get_var('master_addr_' + str(_addr_idx))"
+                eval: true
+              - set: _add_host
+                value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
+                eval: true
+              - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
+                node: "{{_balancer_node}}"
+                contains: ["Successfully", "successfully_added_node"]
+          
+          # Add full nodes
+          - for: node_idx
+            in: "{{full_indices}}"
+            steps:
+              - set: _addr_idx
+                value: "node_idx - root_count - master_count - 1"
+                eval: true
+              - set: _add_addr
+                value: "get_var('full_addr_' + str(_addr_idx))"
+                eval: true
+              - set: _add_host
+                value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
+                eval: true
+              - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
+                node: "{{_balancer_node}}"
+                contains: ["Successfully", "successfully_added_node"]
   
   - wait: "5s"
   
@@ -304,14 +316,14 @@ test:
     nodes: "{{seed_nodes}}"
     set:
       is_add_directly: "true"
-  
+
   - docker_op: restart
     services: "{{_active_nodes}}"
-  
+
   - wait_network: online
     nodes: "{{_active_nodes}}"
     timeout: 60
-  
+
   # Genesis Event - Token Declaration
   # Build root_certs_str: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
   - join: root_certs_str
@@ -353,44 +365,44 @@ test:
       is_static_genesis_event: "true"
       is_add_directly: "false"
   
-  # Disable seed_mode
+  # Disable seed_mode after genesis event creation
+  # CRITICAL: seed_mode must be off before creating other events
   - config: "cellframe-node"
     nodes: "{{seed_nodes}}"
     set:
-      seed_mode: "true"
-  
-  # Create stake orders ONLY for initial 2 validators (node-5, node-6)
-  # Other validators will be added via delegation in Primary scenario
-  # CRITICAL: Orders must be signed with same cert used for blocks-sign-cert
-  - group: Create stake orders for initial validators
+      seed_mode: "false"
+
+  # Create fee orders for ALL master nodes
+  # Orders must be signed with same cert used for blocks-sign-cert
+  - group: Create fee orders for all master nodes
     steps:
-      # Only create orders for first 2 master nodes (initial validators)
-      - compute: _initial_master_indices
-        expr: "list(range(root_count + 1, root_count + initial_validator_count + 1))"
-      
-      - log: "Creating stake orders for initial validators: nodes {{_initial_master_indices}}"
+      - log: "Creating fee orders for all master nodes..."
       
       - for: node_idx
-        in: "{{_initial_master_indices}}"
+        in: "{{master_indices}}"
         steps:
           - set: _cert_idx
             value: "node_idx - root_count - 1"
             eval: true
-          - set: _stake_node
+          - set: _order_node
             value: "node-{{node_idx}}"
-          - set: _stake_cert
+          - set: _order_cert
             value: "{{network_name}}.master.pvt.{{_cert_idx}}"
-          - cli: "srv_stake order create -net {{network_name}} -value 0.05e+18 -cert {{_stake_cert}}"
-            node: "{{_stake_node}}"
-            save: stake_order_result
+          - cli: "srv_stake order create -net {{network_name}} -value 0.05e+18 -cert {{_order_cert}}"
+            node: "{{_order_node}}"
+            save: fee_order_result
+            ignore_error: true
+
+  # NOTE: Nodelist sync to master nodes happens naturally via GlobalDB
+  # Genesis block creation in phase2 waits for emission sync explicitly
   
   - docker_op: restart
     services: "{{_active_nodes}}"
-  
+
   - wait_network: online
     nodes: "{{_active_nodes}}"
     timeout: 60
-  
+
   - config: "{{network_name}}/zerochain"
     nodes: "{{root_nodes}}"
     set:
@@ -466,6 +478,31 @@ test:
   
   - cli: "dag event last -chain zerochain"
     node: "{{first_root}}"
+  
+  # Wait for DAG sync to master nodes before snapshot
+  # This ensures snapshot contains synced DAG data for all nodes
+  - log: "Waiting for zerochain DAG to sync to master nodes..."
+  - set: _dag_synced
+    value: "False"
+  - while: "_dag_synced != 'True'"
+    max_loops: 60
+    steps:
+      - cli: "dag event count -chain zerochain"
+        node: "{{first_master}}"
+        save: _dag_check
+        ignore_error: true
+      - extract: _event_count
+        from: "{{_dag_check}}"
+        pattern: "atom_in_events:\\s*(\\d+)"
+        group: 1
+        default: "0"
+      - if: "int(_event_count) > 0"
+        then:
+          - set: _dag_synced
+            value: "True"
+          - log: "✓ Zerochain synced to master node ({{_event_count}} events)"
+        else:
+          - wait: "5s"
 
 # NOTE: Snapshot creation is handled by manager.py after this phase completes.
 # teardown with snapshot: create would be used for standalone phase execution.

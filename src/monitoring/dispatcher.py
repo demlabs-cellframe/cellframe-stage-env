@@ -38,6 +38,7 @@ class WaiterConfig:
         "wallet_balance": 2.0,
         "datum_in_chain": 2.0,
         "emission_in_ledger": 2.0,
+        "node_list_propagation": 2.0,
         "default": 2.0,
     }
     
@@ -338,6 +339,18 @@ class WaiterDispatcher:
             return waiter_class(
                 docker_client=self.docker_client,
                 master_nodes=node_configs,
+                poll_interval=poll_interval
+            )
+        
+        # Handle node_list_propagation waiter
+        if waiter_type == "node_list_propagation":
+            node_configs = self._get_node_configs(nodes)
+            return waiter_class(
+                exec_cli=exec_cli,
+                docker_client=self.docker_client,
+                nodes=node_configs,
+                expected_count=params.get("expected_count", len(nodes)),
+                network_name=network,
                 poll_interval=poll_interval
             )
         

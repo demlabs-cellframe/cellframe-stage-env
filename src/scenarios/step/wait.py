@@ -154,6 +154,7 @@ class WaitStepExecutor(StepExecutor):
             "mempool": "datum_in_mempool",
             "finalized": "datum_finalized",
             "network_online": "network_online",
+            "nodelist": "node_list_propagation",
         }
         
         registry_type = WAITER_TYPE_MAPPING.get(wait_type, wait_type)

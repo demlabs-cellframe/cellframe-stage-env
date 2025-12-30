@@ -186,25 +186,31 @@ class CLIStepExecutor(StepExecutor):
             logger.debug("cli_step_saved", variable=variable_name)
         
         # Check contains/not_contains assertions
+        # Supports both single string and list of alternatives (for version compatibility)
         if step.contains:
-            expected_text = ctx.substitute(step.contains)
-            if expected_text not in output:
+            expected_list = step.contains if isinstance(step.contains, list) else [step.contains]
+            expected_list = [ctx.substitute(e) for e in expected_list]
+            # At least one alternative must match
+            if not any(expected in output for expected in expected_list):
                 raise ScenarioExecutionError(
-                    f"Output does not contain expected text: '{expected_text}'",
+                    f"Output does not contain any expected text: {expected_list}",
                     step=cmd[:100],
-                    context={"output": output[:500], "expected": expected_text}
+                    context={"output": output[:500], "expected": expected_list}
                 )
-            logger.debug("cli_step_contains_passed", expected=expected_text)
+            logger.debug("cli_step_contains_passed", expected=expected_list)
         
         if step.not_contains:
-            unexpected_text = ctx.substitute(step.not_contains)
-            if unexpected_text in output:
-                raise ScenarioExecutionError(
-                    f"Output contains unexpected text: '{unexpected_text}'",
-                    step=cmd[:100],
-                    context={"output": output[:500], "unexpected": unexpected_text}
-                )
-            logger.debug("cli_step_not_contains_passed", unexpected=unexpected_text)
+            unexpected_list = step.not_contains if isinstance(step.not_contains, list) else [step.not_contains]
+            unexpected_list = [ctx.substitute(u) for u in unexpected_list]
+            # None of the unexpected texts should be present
+            for unexpected in unexpected_list:
+                if unexpected in output:
+                    raise ScenarioExecutionError(
+                        f"Output contains unexpected text: '{unexpected}'",
+                        step=cmd[:100],
+                        context={"output": output[:500], "unexpected": unexpected}
+                    )
+            logger.debug("cli_step_not_contains_passed", unexpected=unexpected_list)
         
         # Record success result
         ctx.add_result("CLI", True, {

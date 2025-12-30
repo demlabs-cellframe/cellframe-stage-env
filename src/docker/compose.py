@@ -74,6 +74,23 @@ class DockerComposeManager:
             logger.error("docker_connection_failed", error=str(e))
             raise
     
+    def is_running(self) -> bool:
+        """
+        Check if any containers for this project are currently running.
+        
+        Returns:
+            True if any containers are running, False otherwise
+        """
+        try:
+            containers = self.client.containers.list(
+                all=False,  # Only running containers
+                filters={"label": f"com.docker.compose.project={self.project_name}"}
+            )
+            return len(containers) > 0
+        except Exception as e:
+            logger.warning("is_running_check_failed", error=str(e))
+            return False
+    
     def _expand_env_vars(self, value: str) -> str:
         """
         Expand environment variables in a string.

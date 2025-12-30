@@ -186,8 +186,8 @@ class CLIStep(BaseModel):
     save_to: Optional[str] = Field(None, description="Save raw output to variable")
     wait: Optional[str] = Field(None, description="Wait duration after command (e.g., '5s')")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
-    contains: Optional[str] = Field(None, description="Expected substring in output")
-    not_contains: Optional[str] = Field(None, description="Unexpected substring (fails if found)")
+    contains: Optional[Union[str, List[str]]] = Field(None, description="Expected substring(s) in output. If list, at least one must match.")
+    not_contains: Optional[Union[str, List[str]]] = Field(None, description="Unexpected substring(s) (fails if any found)")
     timeout: Optional[int] = Field(30, description="Command timeout in seconds")
     
     def get_extraction_info(self) -> List[str]:

@@ -99,10 +99,11 @@ class NodeListPropagationWaiter(BaseWaiter):
                 
                 # Check if node has full list
                 if exit_code == 0:
-                    # Count "Got N nodes:"
-                    match = re.search(r'Got\s+(\d+)\s+nodes', stdout, re.IGNORECASE)
+                    # Support both master ("Got N nodes:") and release-6.0 ("got_nodes: N") formats
+                    match = re.search(r'(?:Got\s+(\d+)\s+nodes|got_nodes:\s*(\d+))', stdout, re.IGNORECASE)
                     if match:
-                        node_count = int(match.group(1))
+                        # Extract from whichever group matched
+                        node_count = int(match.group(1) or match.group(2))
                         if node_count >= self.expected_count:
                             self._nodes_with_list += 1
                             logger.debug("node_has_full_list",

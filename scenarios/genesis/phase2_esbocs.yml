@@ -1,6 +1,5 @@
 name: PHASE 2 - ESBocs Genesis
 description: Create mainchain genesis block from emission (dynamic topology)
-description: Create mainchain genesis block from emission (dynamic topology)
 
 includes:
   - ../common/set_net_default.yml
@@ -22,38 +21,58 @@ setup:
     value: "root_nodes + master_nodes"
     eval: true
   
-  # Enable seed_mode on ALL root and master nodes to accept genesis block
+  # Enable seed_mode on ALL active nodes (root + master) for genesis block creation
+  # CRITICAL: seed_mode=true is REQUIRED for creating the FIRST block in mainchain!
+  # After genesis block is created, seed_mode will be disabled for all nodes.
   - config: "cellframe-node"
-    nodes: "{{_active_nodes}}"
     nodes: "{{_active_nodes}}"
     set:
       seed_mode: "true"
-  
-  # Use 'start' instead of 'restart' to create containers if they don't exist
-  # (e.g. after snapshot restore, master containers are not created yet)
-  - docker_op: start
-    services: "{{_active_nodes}}"
+
+  # Wait for zerochain DAG to sync to master nodes before any operations
+  # This ensures emission is available in ledger when validating tx_create
+  - log: "Waiting for zerochain DAG sync to master nodes..."
+  - set: _dag_synced
+    value: "False"
+  - while: "_dag_synced != 'True'"
+    max_loops: 60
+    steps:
+      - cli: "dag event count -chain zerochain"
+        node: "{{first_master}}"
+        save: _dag_check
+        ignore_error: true
+      - extract: _event_count
+        from: "{{_dag_check}}"
+        pattern: "atom_in_events:\\s*(\\d+)"
+        group: 1
+        default: "0"
+      - if: "int(_event_count) > 0"
+        then:
+          - set: _dag_synced
+            value: "True"
+          - log: "✓ Zerochain synced to master node ({{_event_count}} events)"
+        else:
+          - wait: "5s"
+
+  - docker_op: restart
     services: "{{_active_nodes}}"
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
-    nodes: "{{_active_nodes}}"
     timeout: 60
-  
+    
   # Get fee_addr from wallet (always fetch - it's cheap and ensures consistency)
   - cli: "wallet info -w stagenet_root_0"
     node: "{{first_root}}"
     save_wallet: fee_addr
-    ignore_error: true
   
   - log: "fee_addr: {{fee_addr}}"
-  
+
   # Get emission_hash from zerochain DAG events (if not already set from Phase 1)
   # This makes Phase 2 self-sufficient and allows it to run after snapshot restore
   - cli: "dag event list -chain zerochain -limit 10"
     node: "{{first_root}}"
     save: _dag_events_list
-    ignore_error: true
   
   - extract: _first_event_hash
     from: "{{_dag_events_list}}"
@@ -65,7 +84,6 @@ setup:
   - cli: "dag event dump -chain zerochain -event {{_first_event_hash}}"
     node: "{{first_root}}"
     save: _event_dump
-    ignore_error: true
   
   - extract: emission_hash
     from: "{{_event_dump}}"
@@ -104,39 +122,33 @@ test:
         then:
           - log: "✓ Genesis block already exists - skipping tx_create"
         else:
-          - log: "Genesis block not found - creating from emission"
-          # Create tx from emission
+          - log: "Creating genesis TX from emission on root node..."
+          # Create tx from emission on ROOT node (has root certificate)
           - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert {{network_name}}.root.pvt.0"
             node: "{{first_root}}"
             save_hash: mainchain_genesis_tx
             ignore_error: true
           
           - log: "✓ Genesis TX created: {{mainchain_genesis_tx}}"
+          
+          # Wait for datum to appear in mempool on master node (conditional waiter)
+          - log: "Waiting for TX to sync to master mempool..."
+          - wait: mempool
+            datum: "{{mainchain_genesis_tx}}"
+            node: "{{first_master}}"
+            chain: main
+            timeout: 60
+          - log: "✓ TX synced to master mempool"
       
-      # Wait for genesis block if it didn't exist
+      # Wait for genesis block creation (conditional waiter)
       - if: "not _genesis_block_exists"
         then:
-          - log: "Waiting for genesis block creation (up to 180s)..."
-          - set: _wait_attempts = 0
-          - set: _block_count_int = 0
-          - while: "_wait_attempts < 36 and _block_count_int == 0"
-            max_loops: 36
-            steps:
-              - wait: "5s"
-              - cli: "block list -chain main"
-                node: "{{first_master}}"
-                save: _block_list_check
-                ignore_error: true
-              - extract: _block_count
-                from: "{{_block_list_check}}"
-                pattern: "have blocks:\\s*(\\d+)"
-                group: 1
-                default: "0"
-              - compute: _block_count_int
-                expr: "int(_block_count)"
-              - compute: _wait_attempts
-                expr: "_wait_attempts + 1"
-          - log: "✓ Genesis block check complete"
+          - log: "Waiting for genesis block creation..."
+          - wait: first_block
+            nodes: "{{master_nodes}}"
+            chain: main
+            timeout: 120
+          - log: "✓ Genesis block created"
       
       - cli: "block list"
         node: "{{first_master}}"
@@ -157,40 +169,28 @@ test:
     set:
       is_add_directly: "false"
   
+  # Disable seed_mode on ALL nodes after genesis block is created
+  # This allows normal consensus operation
   - config: "cellframe-node"
-    nodes: "{{seed_nodes}}"
+    nodes: "{{all_nodes}}"
     set:
       seed_mode: "false"
   
   - docker_op: restart
     services: "{{all_nodes}}"
-    services: "{{all_nodes}}"
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
-    nodes: "{{_active_nodes}}"
     timeout: 60
   
-  # Wait for nodes to sync (check block on master nodes)
+  # Wait for first master node to have genesis block (sync check)
   - log: "Waiting for master nodes to sync genesis block..."
-  - wait: "10s"
+  - wait: first_block
+    nodes: "{{master_nodes}}"
+    chain: main
+    timeout: 60
   
-  # Verify each master node has synced
-  - for: _sync_node
-    in: "{{master_nodes}}"
-    steps:
-      - cli: "block list -chain main"
-        node: "{{_sync_node}}"
-        save: _sync_check
-        ignore_error: true
-      - extract: _sync_block_count
-        from: "{{_sync_check}}"
-        pattern: "have blocks:\\s*(\\d+)"
-        group: 1
-        default: "0"
-      - log: "{{_sync_node}}: {{_sync_block_count}} blocks"
-  
-  - log: "✓ All master nodes checked for genesis block sync"
+  - log: "✓ Genesis block synced to master nodes"
   
   # Create snapshot after Genesis completion
   - snapshot: create
