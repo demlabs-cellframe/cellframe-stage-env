@@ -431,12 +431,17 @@ class CertGenerator:
         from datetime import datetime
         return datetime.utcnow().isoformat() + "Z"
     
-    def certs_exist(self) -> bool:
+    def certs_exist(self, node_count: int = 0, root_count: int = 0, network_name: str = "stagenet") -> bool:
         """
-        Check if certificates exist.
+        Check if all required certificates exist.
         
+        Args:
+            node_count: Expected number of nodes (0 = basic check only)
+            root_count: Expected number of ROOT nodes (0 = basic check only)
+            network_name: Network name for certificate naming
+            
         Returns:
-            True if certificate directory has content
+            True if all required certificates exist
         """
         if not self.certs_dir.exists():
             return False
@@ -446,10 +451,62 @@ class CertGenerator:
         if not pki_config.exists():
             return False
         
-        # Check for at least one cert
+        # Basic check: at least one cert
         certs = list(self.certs_dir.rglob("*.dcert"))
+        if len(certs) == 0:
+            return False
         
-        return len(certs) > 0
+        # If node_count specified, validate all required certs exist
+        if node_count > 0:
+            missing_certs = self._get_missing_certs(node_count, root_count, network_name)
+            if missing_certs:
+                logger.warning("incomplete_certificates_detected",
+                             missing=missing_certs[:5],  # Log first 5
+                             total_missing=len(missing_certs))
+                return False
+        
+        return True
+    
+    def _get_missing_certs(
+        self, 
+        node_count: int, 
+        root_count: int, 
+        network_name: str
+    ) -> list:
+        """
+        Get list of missing required certificates.
+        
+        Args:
+            node_count: Total number of nodes
+            root_count: Number of ROOT nodes
+            network_name: Network name
+            
+        Returns:
+            List of missing certificate paths
+        """
+        missing = []
+        
+        for node_id in range(1, node_count + 1):
+            node_dir = self.certs_dir / f"node{node_id}"
+            
+            # Check node-addr.dcert
+            if not (node_dir / "node-addr.dcert").exists():
+                missing.append(f"node{node_id}/node-addr.dcert")
+            
+            # Check validator cert based on role
+            if node_id <= root_count:
+                # ROOT node
+                cert_idx = node_id - 1
+                cert_name = f"{network_name}.root.pvt.{cert_idx}.dcert"
+            else:
+                # MASTER node
+                cert_idx = node_id - root_count - 1
+                cert_name = f"{network_name}.master.pvt.{cert_idx}.dcert"
+            
+            if not (node_dir / cert_name).exists():
+                missing.append(f"node{node_id}/{cert_name}")
+        
+        return missing
     
     def clean(self) -> None:
         """Remove all generated certificates."""

@@ -16,6 +16,7 @@ from jinja2 import Template
 from ..config.manager import get_config_loader
 from ..config.loader import NetworkTopology
 from ..certs.generator import CertGenerator
+from ..docker.compose import CLEANUP_IMAGE, CLEANUP_MOUNT_PATH, CLEANUP_CMD_TEMPLATE
 from ..network.models import NodeConfig
 from src.utils.logger import get_logger
 
@@ -892,26 +893,39 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
         network_name = topology.network.name
         node_count = len(nodes)
         
+        # ROOT nodes are seed nodes (DAG-PoA on zerochain)
+        root_count = len([n for n in nodes if n.is_seed_node])
+        
         logger.info("generating_certificates_with_docker",
                    network=network_name,
-                   count=node_count)
+                   count=node_count,
+                   root_count=root_count)
         
-        certs_exist = self.cert_generator.certs_exist()
+        # Check if ALL required certificates exist (not just any cert)
+        certs_complete = self.cert_generator.certs_exist(
+            node_count=node_count,
+            root_count=root_count,
+            network_name=network_name
+        )
         
-        if certs_exist and not force:
+        if certs_complete and not force:
             logger.info("certificates_already_exist_skipping_generation")
         else:
-            if force:
+            if force or not certs_complete:
+                # Clean incomplete certs before regeneration
                 self.cert_generator.clean()
-            
-            # ROOT nodes are seed nodes (DAG-PoA on zerochain)
-            root_count = len([n for n in nodes if n.is_seed_node])
             
             self.cert_generator.generate_all(
                 network_name=network_name,
                 node_count=node_count,
                 root_count=root_count
             )
+            
+            # Validate generated certificates
+            missing = self.cert_generator._get_missing_certs(node_count, root_count, network_name)
+            if missing:
+                logger.error("certificate_generation_incomplete", missing=missing)
+                raise RuntimeError(f"Certificate generation incomplete. Missing: {missing[:5]}")
         
         # Always copy certificates to ensure they're in place
         # (data directories may have been cleaned while certs remain)
@@ -924,9 +938,57 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
             network_name
         )
         
+        # Validate certificates were copied to data directories
+        self._validate_certs_in_data_dirs(node_count, root_count, network_name)
+        
         logger.info("certificates_generated_and_distributed",
                    network=network_name,
                    nodes=node_count)
+    
+    def _validate_certs_in_data_dirs(
+        self, 
+        node_count: int, 
+        root_count: int, 
+        network_name: str
+    ) -> None:
+        """
+        Validate that required certificates exist in node data directories.
+        
+        Args:
+            node_count: Total number of nodes
+            root_count: Number of ROOT nodes
+            network_name: Network name
+            
+        Raises:
+            RuntimeError: If required certificates are missing
+        """
+        missing = []
+        
+        for node_id in range(1, node_count + 1):
+            node_ca_dir = self.data_cache / f"node{node_id}" / "lib" / "ca"
+            
+            # Determine expected cert name based on role
+            if node_id <= root_count:
+                cert_idx = node_id - 1
+                cert_name = f"{network_name}.root.pvt.{cert_idx}.dcert"
+            else:
+                cert_idx = node_id - root_count - 1
+                cert_name = f"{network_name}.master.pvt.{cert_idx}.dcert"
+            
+            cert_path = node_ca_dir / cert_name
+            if not cert_path.exists():
+                missing.append(f"node{node_id}/lib/ca/{cert_name}")
+        
+        if missing:
+            logger.error("certificates_missing_in_data_dirs",
+                        missing=missing,
+                        data_cache=str(self.data_cache))
+            raise RuntimeError(
+                f"Certificates missing in data directories: {missing[:5]}. "
+                f"Check certificate generation and copy process."
+            )
+        
+        logger.debug("certificates_validated_in_data_dirs", count=node_count)
     
     def clean(self, clean_certs: bool = False) -> None:
         """
@@ -948,13 +1010,16 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
                 import docker
                 docker_client = docker.from_env()
                 logger.debug("cleaning_data_cache_with_docker", path=str(self.data_cache))
-                # Use Docker container to remove files (handles root-owned files)
+                
+                target_path = f"{CLEANUP_MOUNT_PATH}/data"
+                cleanup_cmd = CLEANUP_CMD_TEMPLATE.format(target=target_path)
+                
                 docker_client.containers.run(
-                    image="alpine:latest",
-                    command=["sh", "-c", "rm -rf /cleanup/data && echo 'Data cache cleaned'"],
+                    image=CLEANUP_IMAGE,
+                    command=["sh", "-c", cleanup_cmd],
                     volumes={
                         str(self.cache_dir.absolute()): {
-                            'bind': '/cleanup',
+                            'bind': CLEANUP_MOUNT_PATH,
                             'mode': 'rw'
                         }
                     },
