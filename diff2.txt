@@ -1,0 +1,146 @@
+diff --git a/src/certs/CMakeLists.txt b/src/certs/CMakeLists.txt
+index dc6e036..24d6ee2 100644
+--- a/src/certs/CMakeLists.txt
++++ b/src/certs/CMakeLists.txt
+@@ -123,6 +123,7 @@ target_link_libraries(cf-cert-generator
+     dap_enc_server
+     dap_client
+     dap_global_db
++    ${CELLFRAME_SDK_BUILD}/dap-sdk/3rdparty/libmdbx/libmdbx.a
+     dap_io
+     # Core crypto
+     dap_crypto
+diff --git a/src/config/generator.py b/src/config/generator.py
+index 0ed3f40..9b46081 100644
+--- a/src/config/generator.py
++++ b/src/config/generator.py
+@@ -9,7 +9,7 @@ Generates:
+ 
+ import shutil
+ from pathlib import Path
+-from typing import Dict, List
++from typing import Dict, List, Optional
+ 
+ from ..config.loader import ConfigLoader, NetworkTopology
+ from ..certs.generator import CertGenerator
+diff --git a/src/config/loader.py b/src/config/loader.py
+index 1ff95d5..7f8d8c3 100644
+--- a/src/config/loader.py
++++ b/src/config/loader.py
+@@ -119,16 +119,16 @@ class ConfigLoader:
+         # Use custom config path if provided, otherwise use default
+         if self.custom_config_path:
+             config_file = self.custom_config_path
+-            default_file = None  # Don't auto-create from default for custom paths
++            default_file = config_file.parent / (config_file.name + ".default")
+         else:
+             config_file = self.config_dir / "stage-env.cfg"
+             default_file = self.config_dir / "stage-env.cfg.default"
+-            
+-            # Create from default if doesn't exist
+-            if not config_file.exists() and default_file and default_file.exists():
+-                logger.info("creating_config_from_default")
+-                import shutil
+-                shutil.copy2(default_file, config_file)
++        
++        # Create from default if doesn't exist
++        if not config_file.exists() and default_file and default_file.exists():
++            logger.info("creating_config_from_default", source=str(default_file), target=str(config_file))
++            import shutil
++            shutil.copy2(default_file, config_file)
+         
+         # Load config
+         if not config_file.exists():
+diff --git a/src/docker/compose.py b/src/docker/compose.py
+index 1959153..a9c209d 100644
+--- a/src/docker/compose.py
++++ b/src/docker/compose.py
+@@ -423,7 +423,7 @@ class DockerComposeManager:
+         """
+         Check network status in Cellframe node logs.
+         
+-        Returns network state: "SYNC", "OFFLINE", "ONLINE", or None if unknown
++        Returns network state: "SYNC", "RESYNC", "OFFLINE", "ONLINE", or None if unknown
+         """
+         try:
+             logs = container.logs(tail=200).decode("utf-8", errors="ignore")
+@@ -431,12 +431,14 @@ class DockerComposeManager:
+             # Find LAST occurrence of state (most recent state wins)
+             last_online_pos = max(logs.rfind("NET_STATE_ONLINE"), logs.rfind("state ONLINE"))
+             last_sync_pos = max(logs.rfind("NET_STATE_SYNC_CHAINS"), logs.rfind("Synchronizing"))
++            last_resync_pos = logs.rfind("NET_STATE_RESYNC_CHAINS")
+             last_offline_pos = max(logs.rfind("NET_STATE_OFFLINE"), logs.rfind("state OFFLINE"))
+             
+             # Determine which state appeared last in logs
+             positions = {
+                 "ONLINE": last_online_pos,
+                 "SYNC": last_sync_pos,
++                "RESYNC": last_resync_pos,
+                 "OFFLINE": last_offline_pos
+             }
+             
+@@ -600,7 +602,8 @@ class DockerComposeManager:
+                 demux=False
+             )
+             
+-            if api_result.exit_code == 0:
++            # Try parsing JSON regardless of exit code (curl may return non-zero with valid output)
++            if api_result.output:
+                 try:
+                     import json
+                     api_response = json.loads(api_result.output.decode("utf-8"))
+@@ -676,7 +679,8 @@ class DockerComposeManager:
+                 demux=False
+             )
+             
+-            if api_result.exit_code == 0:
++            # Try parsing JSON regardless of exit code (curl may return non-zero with valid output)
++            if api_result.output:
+                 try:
+                     import json
+                     output_str = api_result.output.decode("utf-8")
+@@ -685,7 +689,7 @@ class DockerComposeManager:
+                     if api_response.get("type") == 2 and "result" in api_response:
+                         current_state = api_response["result"][0]["status"]["states"]["current"]
+                         logger.info("api_state_check", container=container.name, state=current_state)
+-                        if current_state in ["NET_STATE_ONLINE", "NET_STATE_SYNC_CHAINS"]:
++                        if current_state in ["NET_STATE_ONLINE", "NET_STATE_SYNC_CHAINS", "NET_STATE_RESYNC_CHAINS"]:
+                             logger.info("network_ready_via_api",
+                                        container=container.name,
+                                        state=current_state)
+@@ -700,7 +704,7 @@ class DockerComposeManager:
+             
+             # Fallback: Check network status via logs
+             net_status = self._check_network_status(container)
+-            if net_status in ["ONLINE", "SYNC"]:
++            if net_status in ["ONLINE", "SYNC", "RESYNC"]:
+                 logger.debug("network_ready_via_logs",
+                            container=container.name,
+                            status=net_status)
+diff --git a/src/monitoring/health.py b/src/monitoring/health.py
+index c3bcccc..00e6b5b 100644
+--- a/src/monitoring/health.py
++++ b/src/monitoring/health.py
+@@ -60,7 +60,9 @@ class HealthChecker:
+             response = await self.client.get(url)
+             elapsed_ms = (time.time() - start) * 1000
+             
+-            healthy = response.status_code == 200
++            # Consider healthy if server responds (200 or 404 for root endpoint)
++            # Cellframe nodes return 404 for root URL but are still healthy
++            healthy = response.status_code in [200, 404]
+             
+             logger.debug("http_check",
+                         node_id=node_id,
+diff --git a/stage_env.py b/stage_env.py
+index 9f63bea..0d687a4 100755
+--- a/stage_env.py
++++ b/stage_env.py
+@@ -352,6 +352,7 @@ def run_tests(
+     test_dirs: list[str] = typer.Argument(..., help="Test scenario directories to run"),
+     parallel: bool = typer.Option(False, "--parallel", "-p", help="Run tests in parallel"),
+     filter: Optional[str] = typer.Option(None, "--filter", "-k", help="Filter tests by pattern"),
++    no_start_network: bool = typer.Option(False, "--no-start-network", help="Skip network start (assume already running)"),
+ ):
+     """🧪 Run test scenarios from specified directories."""
+     
