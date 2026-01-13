@@ -14,6 +14,7 @@ This utility generates proper binary DAP certificates using DAP SDK crypto.
 from pathlib import Path
 from typing import List, Optional
 import json
+import re
 import subprocess
 import shutil
 import os
@@ -315,6 +316,38 @@ class CertGenerator:
         
         return result
     
+    def _normalize_cert_name(self, cert_name: str) -> str:
+        """
+        Normalize certificate name to standard format.
+        
+        Converts old format (pvt.{network}.{type}.{idx}.dcert) to
+        new format ({network}.{type}.pvt.{idx}.dcert).
+        
+        Args:
+            cert_name: Original certificate filename
+            
+        Returns:
+            Normalized certificate filename
+        """
+        old_pvt_pattern = re.compile(r'^pvt\.(\w+)\.(\w+)\.(\d+)\.dcert$')
+        match = old_pvt_pattern.match(cert_name)
+        
+        if match:
+            network, cert_type, idx = match.groups()
+            new_name = f"{network}.{cert_type}.pvt.{idx}.dcert"
+            logger.debug("normalized_cert_name", old=cert_name, new=new_name)
+            return new_name
+        
+        return cert_name
+    
+    def _is_private_cert(self, cert_name: str) -> bool:
+        """
+        Check if certificate is private (contains private key).
+        
+        Handles both old (pvt.{network}...) and new ({network}.{type}.pvt.{idx}) formats.
+        """
+        return ".pvt." in cert_name or cert_name.startswith("pvt.")
+    
     def copy_certs_to_shared_ca(self, shared_ca_dir: Path, network_name: str = "stagenet") -> None:
         """
         Copy public certificates to shared CA directory for container mounting.
@@ -341,10 +374,11 @@ class CertGenerator:
             for cert_file in node_dir.glob("*.dcert"):
                 cert_name = cert_file.name
                 
-                if ".pvt." in cert_name:
+                if self._is_private_cert(cert_name):
                     continue
                 
-                dest_file = shared_ca_dir / cert_name
+                normalized_name = self._normalize_cert_name(cert_name)
+                dest_file = shared_ca_dir / normalized_name
                 shutil.copy2(cert_file, dest_file)
                 copied_count += 1
                 logger.debug("copied_cert_to_shared_ca",
@@ -363,8 +397,9 @@ class CertGenerator:
         """
         Copy private certificates to node data directories.
         
-        Private certificates (with pvt. prefix) are copied to each node's
-        var/lib/ca directory for signing operations.
+        Private certificates are copied to each node's var/lib/ca directory
+        for signing operations. Supports both old (pvt.{network}...) and
+        new ({network}.{type}.pvt.{idx}) naming formats.
         
         Args:
             data_dir: Base data directory (cache/data)
@@ -385,11 +420,13 @@ class CertGenerator:
             node_ca_dir.mkdir(parents=True, exist_ok=True)
             
             for cert_file in node_cert_dir.glob("*.dcert"):
-                dest_file = node_ca_dir / cert_file.name
+                normalized_name = self._normalize_cert_name(cert_file.name)
+                dest_file = node_ca_dir / normalized_name
                 shutil.copy2(cert_file, dest_file)
                 logger.debug("copied_cert_to_node_data",
                            node_id=node_id,
-                           cert=cert_file.name)
+                           cert=cert_file.name,
+                           dest_name=normalized_name)
         
         print_success(f"Copied private certificates to {node_count} node data directories")
         logger.info("private_certs_copied_to_nodes", count=node_count)
