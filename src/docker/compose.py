@@ -19,6 +19,24 @@ from ..network.models import NodeConfig
 
 logger = get_logger(__name__)
 
+# Docker cleanup constants
+CLEANUP_IMAGE = "alpine:latest"
+CLEANUP_MOUNT_PATH = "/cleanup"
+
+# Robust cleanup command that handles:
+# - Unix sockets (main culprit for "Directory not empty" on macOS/Linux)
+# - Regular files and named pipes
+# - Empty directories (bottom-up removal)
+# Errors suppressed to ensure cleanup completes even with permission issues
+CLEANUP_CMD_TEMPLATE = (
+    "find {target} -type s -exec rm -f {{}} + 2>/dev/null || true; "
+    "find {target} -type f -exec rm -f {{}} + 2>/dev/null || true; "
+    "find {target} -type p -exec rm -f {{}} + 2>/dev/null || true; "
+    "find {target} -depth -type d -exec rmdir {{}} + 2>/dev/null || true; "
+    "rm -rf {target} 2>/dev/null || true; "
+    "echo 'Cleanup complete'"
+)
+
 
 class DockerComposeManager:
     """Manage Docker Compose services using Docker SDK."""
@@ -1513,19 +1531,20 @@ class DockerComposeManager:
         logger.info("cleaning_cache_data_with_docker", path=str(data_dir))
         
         try:
-            # Run Alpine container with cache mounted to /cleanup/
-            # This gives container access to clean the files
+            target_path = f"{CLEANUP_MOUNT_PATH}/data"
+            cleanup_cmd = CLEANUP_CMD_TEMPLATE.format(target=target_path)
+            
             container = self.client.containers.run(
-                image="alpine:latest",
-                command=["sh", "-c", "rm -rf /cleanup/data && echo 'Cleanup complete'"],
+                image=CLEANUP_IMAGE,
+                command=["sh", "-c", cleanup_cmd],
                 volumes={
                     str(cache_path.absolute()): {
-                        'bind': '/cleanup',
+                        'bind': CLEANUP_MOUNT_PATH,
                         'mode': 'rw'
                     }
                 },
-                remove=True,  # Auto-remove container after completion
-                detach=False,  # Wait for completion
+                remove=True,
+                detach=False,
             )
             
             logger.info("cache_data_cleaned", 

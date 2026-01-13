@@ -14,6 +14,7 @@ This utility generates proper binary DAP certificates using DAP SDK crypto.
 from pathlib import Path
 from typing import List, Optional
 import json
+import re
 import subprocess
 import shutil
 import os
@@ -315,6 +316,38 @@ class CertGenerator:
         
         return result
     
+    def _normalize_cert_name(self, cert_name: str) -> str:
+        """
+        Normalize certificate name to standard format.
+        
+        Converts old format (pvt.{network}.{type}.{idx}.dcert) to
+        new format ({network}.{type}.pvt.{idx}.dcert).
+        
+        Args:
+            cert_name: Original certificate filename
+            
+        Returns:
+            Normalized certificate filename
+        """
+        old_pvt_pattern = re.compile(r'^pvt\.(\w+)\.(\w+)\.(\d+)\.dcert$')
+        match = old_pvt_pattern.match(cert_name)
+        
+        if match:
+            network, cert_type, idx = match.groups()
+            new_name = f"{network}.{cert_type}.pvt.{idx}.dcert"
+            logger.debug("normalized_cert_name", old=cert_name, new=new_name)
+            return new_name
+        
+        return cert_name
+    
+    def _is_private_cert(self, cert_name: str) -> bool:
+        """
+        Check if certificate is private (contains private key).
+        
+        Handles both old (pvt.{network}...) and new ({network}.{type}.pvt.{idx}) formats.
+        """
+        return ".pvt." in cert_name or cert_name.startswith("pvt.")
+    
     def copy_certs_to_shared_ca(self, shared_ca_dir: Path, network_name: str = "stagenet") -> None:
         """
         Copy public certificates to shared CA directory for container mounting.
@@ -341,10 +374,11 @@ class CertGenerator:
             for cert_file in node_dir.glob("*.dcert"):
                 cert_name = cert_file.name
                 
-                if ".pvt." in cert_name:
+                if self._is_private_cert(cert_name):
                     continue
                 
-                dest_file = shared_ca_dir / cert_name
+                normalized_name = self._normalize_cert_name(cert_name)
+                dest_file = shared_ca_dir / normalized_name
                 shutil.copy2(cert_file, dest_file)
                 copied_count += 1
                 logger.debug("copied_cert_to_shared_ca",
@@ -363,8 +397,9 @@ class CertGenerator:
         """
         Copy private certificates to node data directories.
         
-        Private certificates (with pvt. prefix) are copied to each node's
-        var/lib/ca directory for signing operations.
+        Private certificates are copied to each node's var/lib/ca directory
+        for signing operations. Supports both old (pvt.{network}...) and
+        new ({network}.{type}.pvt.{idx}) naming formats.
         
         Args:
             data_dir: Base data directory (cache/data)
@@ -385,11 +420,13 @@ class CertGenerator:
             node_ca_dir.mkdir(parents=True, exist_ok=True)
             
             for cert_file in node_cert_dir.glob("*.dcert"):
-                dest_file = node_ca_dir / cert_file.name
+                normalized_name = self._normalize_cert_name(cert_file.name)
+                dest_file = node_ca_dir / normalized_name
                 shutil.copy2(cert_file, dest_file)
                 logger.debug("copied_cert_to_node_data",
                            node_id=node_id,
-                           cert=cert_file.name)
+                           cert=cert_file.name,
+                           dest_name=normalized_name)
         
         print_success(f"Copied private certificates to {node_count} node data directories")
         logger.info("private_certs_copied_to_nodes", count=node_count)
@@ -431,12 +468,17 @@ class CertGenerator:
         from datetime import datetime
         return datetime.utcnow().isoformat() + "Z"
     
-    def certs_exist(self) -> bool:
+    def certs_exist(self, node_count: int = 0, root_count: int = 0, network_name: str = "stagenet") -> bool:
         """
-        Check if certificates exist.
+        Check if all required certificates exist.
         
+        Args:
+            node_count: Expected number of nodes (0 = basic check only)
+            root_count: Expected number of ROOT nodes (0 = basic check only)
+            network_name: Network name for certificate naming
+            
         Returns:
-            True if certificate directory has content
+            True if all required certificates exist
         """
         if not self.certs_dir.exists():
             return False
@@ -446,10 +488,62 @@ class CertGenerator:
         if not pki_config.exists():
             return False
         
-        # Check for at least one cert
+        # Basic check: at least one cert
         certs = list(self.certs_dir.rglob("*.dcert"))
+        if len(certs) == 0:
+            return False
         
-        return len(certs) > 0
+        # If node_count specified, validate all required certs exist
+        if node_count > 0:
+            missing_certs = self._get_missing_certs(node_count, root_count, network_name)
+            if missing_certs:
+                logger.warning("incomplete_certificates_detected",
+                             missing=missing_certs[:5],  # Log first 5
+                             total_missing=len(missing_certs))
+                return False
+        
+        return True
+    
+    def _get_missing_certs(
+        self, 
+        node_count: int, 
+        root_count: int, 
+        network_name: str
+    ) -> list:
+        """
+        Get list of missing required certificates.
+        
+        Args:
+            node_count: Total number of nodes
+            root_count: Number of ROOT nodes
+            network_name: Network name
+            
+        Returns:
+            List of missing certificate paths
+        """
+        missing = []
+        
+        for node_id in range(1, node_count + 1):
+            node_dir = self.certs_dir / f"node{node_id}"
+            
+            # Check node-addr.dcert
+            if not (node_dir / "node-addr.dcert").exists():
+                missing.append(f"node{node_id}/node-addr.dcert")
+            
+            # Check validator cert based on role
+            if node_id <= root_count:
+                # ROOT node
+                cert_idx = node_id - 1
+                cert_name = f"{network_name}.root.pvt.{cert_idx}.dcert"
+            else:
+                # MASTER node
+                cert_idx = node_id - root_count - 1
+                cert_name = f"{network_name}.master.pvt.{cert_idx}.dcert"
+            
+            if not (node_dir / cert_name).exists():
+                missing.append(f"node{node_id}/{cert_name}")
+        
+        return missing
     
     def clean(self) -> None:
         """Remove all generated certificates."""
