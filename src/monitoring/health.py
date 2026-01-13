@@ -17,6 +17,11 @@ from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Health check defaults
+DEFAULT_HTTP_TIMEOUT = 10.0
+# SSL verification disabled for local Docker network testing (HTTP only)
+VERIFY_SSL = False
+
 
 class HealthStatus(BaseModel):
     """Health check result."""
@@ -31,7 +36,7 @@ class HealthStatus(BaseModel):
 class HealthChecker:
     """Check health of cellframe nodes."""
     
-    def __init__(self, timeout: float = 10.0):
+    def __init__(self, timeout: float = DEFAULT_HTTP_TIMEOUT):
         """
         Initialize health checker.
         
@@ -39,7 +44,19 @@ class HealthChecker:
             timeout: HTTP request timeout in seconds
         """
         self.timeout = timeout
-        self.client = httpx.AsyncClient(timeout=timeout)
+        self._client: Optional[httpx.AsyncClient] = None
+    
+    @property
+    def client(self) -> httpx.AsyncClient:
+        """
+        Lazy initialization of HTTP client.
+        
+        Client created on first access to avoid SSL cert loading at init time,
+        which can fail on macOS due to permission restrictions.
+        """
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self.timeout, verify=VERIFY_SSL)
+        return self._client
     
     async def check_http(self, url: str, node_id: str) -> HealthStatus:
         """
