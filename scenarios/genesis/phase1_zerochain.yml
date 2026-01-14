@@ -196,7 +196,7 @@ test:
             value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
             eval: true
           - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
-            contains: "Successfully"
+            contains: "successfully"
       
       - for: node_idx
         in: "{{master_indices}}"
@@ -211,7 +211,7 @@ test:
             value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
             eval: true
           - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
-            contains: "Successfully"
+            contains: "successfully"
       
       - for: node_idx
         in: "{{full_indices}}"
@@ -226,7 +226,7 @@ test:
             value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
             eval: true
           - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
-            contains: "Successfully"
+            contains: "successfully"
   
   - wait: "5s"
   
