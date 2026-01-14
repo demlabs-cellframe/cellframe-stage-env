@@ -1,2 +1,4 @@
 defaults:
     node: full-1
+    cli:
+        net: "{{network_name}}"

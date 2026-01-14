@@ -118,10 +118,12 @@ class BaseScenarioParser:
             # 1. Relative to current file directory
             # 2. Relative to scenarios_root
             # 3. Relative to common_root (for common includes)
+            # 4. Integration scenarios common directory (standard location)
             search_paths = [
                 (base_dir / include_path).resolve(),
                 (self.scenarios_root / include_path).resolve(),
                 (self.common_root / include_path).resolve(),
+                (self.common_root / "integration" / "scenarios" / include_path).resolve(),
             ]
             
             include_full = None

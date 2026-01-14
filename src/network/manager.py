@@ -267,12 +267,14 @@ class NetworkManager:
                         # DO NOT clean data - snapshot already restored with data
                         phase1_snapshot_exists = True  # Ensure flag is set
                     else:
-                        logger.warning("phase1_snapshot_restore_failed_fallback_to_clean",
-                                     name=phase1_snapshot_name)
-                        # Fallback to clean if restore failed
-                        phase1_snapshot_exists = False
-                        logger.info("cleaning_node_data_after_snapshot_restore_failed")
-                        self._clean_node_data()
+                        logger.error("phase1_snapshot_restore_failed",
+                                     name=phase1_snapshot_name,
+                                     hint="Run './clean.sh' to fix permission issues, then retry")
+                        raise RuntimeError(
+                            f"Snapshot restore failed for '{phase1_snapshot_name}'. "
+                            "This is usually caused by permission issues with Docker files. "
+                            "Run './clean.sh' to remove root-owned files and try again."
+                        )
                 else:
                     logger.info("no_phase1_snapshot_cleaning_data_for_fresh_start",
                                name=phase1_snapshot_name)
@@ -1565,16 +1567,14 @@ class NetworkManager:
         result = await self.snapshot_manager.restore_snapshot(snapshot_name)
         
         if not result:
-            logger.warning("snapshot_restore_failed_fallback_to_cleanup")
-            # Restart containers even if restore failed
-            logger.info("starting_containers_after_failed_restore")
-            await self.start(rebuild=False, wait_ready=True)
-            # Only try cleanup if containers are running
-            if self.compose and self.compose.is_running():
-                await self.clean_test_data()
-            else:
-                logger.warning("containers_not_running_skipping_cleanup")
-            return False
+            logger.error("snapshot_restore_failed",
+                        name=snapshot_name,
+                        hint="Run './clean.sh' to fix permission issues, then retry")
+            raise RuntimeError(
+                f"Snapshot restore failed for '{snapshot_name}'. "
+                "This is usually caused by permission issues with Docker files. "
+                "Run './clean.sh' to remove root-owned files and try again."
+            )
         
         # Restart containers with restored data
         logger.info("starting_containers_after_snapshot_restore")
