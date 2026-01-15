@@ -22,16 +22,13 @@ setup:
   # Enable seed_mode on ALL root and master nodes to accept genesis block
   - config: "cellframe-node"
     nodes: "{{_active_nodes}}"
-    nodes: "{{_active_nodes}}"
     set:
       seed_mode: "true"
   
   - docker_op: restart
     services: "{{_active_nodes}}"
-    services: "{{_active_nodes}}"
   
   - wait_network: online
-    nodes: "{{_active_nodes}}"
     nodes: "{{_active_nodes}}"
     timeout: 60
 

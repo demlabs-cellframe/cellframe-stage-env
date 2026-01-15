@@ -1,6 +1,5 @@
 name: PHASE 1 - Zerochain Genesis
 description: Initialize ROOT nodes, create token and emission (dynamic topology)
-description: Initialize ROOT nodes, create token and emission (dynamic topology)
 
 includes:
   - common/set_net_default.yml
@@ -11,9 +10,7 @@ network:
 
 setup:
   # Start all nodes dynamically based on topology
-  # Start all nodes dynamically based on topology
   - docker_op: start
-    services: "{{all_nodes}}"
     services: "{{all_nodes}}"
     detach: true
   
@@ -90,13 +87,10 @@ setup:
   - wait_network: online
     nodes: "{{root_nodes}}"
     timeout: 120
-    nodes: "{{root_nodes}}"
-    timeout: 120
   
   - wait: "5s"
 
 test:
-  # Get ALL node addresses dynamically
   # Get ALL node addresses dynamically
   - group: Get node addresses
     steps:
@@ -354,9 +348,8 @@ test:
   # Disable seed_mode
   - config: "cellframe-node"
     nodes: "{{seed_nodes}}"
-    nodes: "{{seed_nodes}}"
     set:
-      seed_mode: "true"
+      seed_mode: "false"
   
   # Create stake orders for all master/validator nodes
   - group: Create stake orders for validators
@@ -377,10 +370,8 @@ test:
   
   - docker_op: restart
     services: "{{_active_nodes}}"
-    services: "{{_active_nodes}}"
   
   - wait_network: online
-    nodes: "{{_active_nodes}}"
     nodes: "{{_active_nodes}}"
     timeout: 60
   
