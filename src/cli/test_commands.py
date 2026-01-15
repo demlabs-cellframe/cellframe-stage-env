@@ -152,20 +152,15 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         first_suite_executed = False
         snapshot_created = False
         
-        # Start monitoring services ONCE for entire test session
-        async def _start_monitoring():
-            monitoring = await MonitoringManager.get_instance(
-                node_cli_path=cli_path,
-                log_file=run_dir_base,
-                datum_check_interval=2.0
-            )
-            await monitoring.start()
-            print_info("🔍 Monitoring services started")
-        
+        # Initialize monitoring services ONCE for entire test session
         try:
-            asyncio.run(_start_monitoring())
+            MonitoringManager.get_instance(
+                node_cli_path=cli_path,
+                log_file=run_dir_base
+            )
+            print_info("🔍 Monitoring services initialized")
         except Exception as e:
-            print_warning(f"Failed to start monitoring: {e}")
+            print_warning(f"Failed to initialize monitoring: {e}")
         
         # Main test execution loop
         try:
@@ -695,18 +690,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             
             # Stop monitoring services
             print_info("\n🔍 Stopping monitoring services...")
-            async def _stop_monitoring():
-                try:
-                    monitoring = await MonitoringManager.get_instance()
-                    await monitoring.stop()
-                    print_success("Monitoring services stopped")
-                except Exception as e:
-                    print_warning(f"Failed to stop monitoring: {e}")
-            
             try:
-                asyncio.run(_stop_monitoring())
+                # MonitoringManager is a singleton, reset it for cleanup
+                MonitoringManager.reset_instance()
+                print_success("Monitoring services stopped")
             except Exception as e:
-                print_warning(f"Monitoring cleanup failed: {e}")
+                print_warning(f"Failed to stop monitoring: {e}")
             
             # Stop network if requested
             if stop_after and network_mgr:

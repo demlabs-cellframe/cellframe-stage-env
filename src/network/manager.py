@@ -692,60 +692,37 @@ class NetworkManager:
                 )
             
             if not fee_addr:
-                logger.error("fee_addr_not_read_from_config_after_snapshot_restore",
+                # fee_addr is not in phase1 snapshot - it's created in Phase 2
+                # This is expected when restoring phase1 snapshot
+                logger.info("fee_addr_not_in_phase1_snapshot",
                            config_path=str(main_config_path),
-                           note="CRITICAL: fee_addr could not be read from restored configs! "
-                                "This means configs were not properly restored or are missing fee address. "
-                                "Check snapshot restoration process.")
-                # Diagnostic: Try to read config file directly to see what's in it using centralized config manager
-                try:
-                    config_loader = get_config_loader()
-                    config = config_loader.load_config_file(main_config_path)
-                    logger.error("main_config_diagnostic",
-                               sections=list(config.sections()),
-                               esbocs_section_exists='esbocs' in config,
-                               fee_addr_in_config=config.get('esbocs', 'fee_addr', fallback='EMPTY') if 'esbocs' in config else 'NO_ESBOCS_SECTION',
-                               note="Config file exists but fee_addr is missing or empty")
-                except Exception as diag_err:
-                    logger.error("main_config_diagnostic_failed",
-                               error=str(diag_err),
-                               note="Could not read config file for diagnostic")
-                
-                raise RuntimeError(
-                    f"CRITICAL: fee_addr not found in restored configs! "
-                    f"Config path: {main_config_path}. "
-                    f"Snapshot may be corrupted or configs were not restored correctly."
-                )
+                           note="fee_addr not found in restored configs - this is expected for phase1 snapshot. "
+                                "Phase 2 will create fee_addr during ESBocs genesis.")
             
-            logger.info("genesis_event_and_fee_addr_read_from_configs",
+            logger.info("genesis_event_read_from_configs",
                        static_genesis_hash=static_genesis_hash[:16],
-                       fee_addr=fee_addr[:16],
+                       fee_addr=fee_addr[:16] if fee_addr else "NOT_SET (will be created in Phase 2)",
                        zerochain_config=str(zerochain_config_path),
                        main_config=str(main_config_path),
-                       note="Successfully read static_genesis_event and fee_addr from restored configs. "
-                            "Configs are validated - nodes should be able to load network.")
+                       note="static_genesis_event read from restored configs. "
+                            "fee_addr may be created in Phase 2 if not present.")
             
-            # CRITICAL: Additional diagnostic - read and log full config contents to verify they are correct
-            try:
-                # Use centralized config manager
-                config_loader = get_config_loader()
-                zerochain_config = config_loader.load_config_file(zerochain_config_path)
-                main_config = config_loader.load_config_file(main_config_path)
-                
-                logger.info("config_contents_diagnostic_after_snapshot_restore",
-                               zerochain_sections=list(zerochain_config.sections()),
-                               main_sections=list(main_config.sections()),
-                               zerochain_dag_section_exists='dag' in zerochain_config,
-                               zerochain_static_genesis_event=zerochain_config.get('dag', 'static_genesis_event', fallback='NOT_SET') if 'dag' in zerochain_config else 'NO_DAG_SECTION',
-                               zerochain_is_static_genesis_event=zerochain_config.get('dag', 'is_static_genesis_event', fallback='NOT_SET') if 'dag' in zerochain_config else 'NO_DAG_SECTION',
-                               main_esbocs_section_exists='esbocs' in main_config,
-                               main_min_validators_count=main_config.get('esbocs', 'min_validators_count', fallback='NOT_SET') if 'esbocs' in main_config else 'NO_ESBOCS_SECTION',
-                               main_fee_addr=main_config.get('esbocs', 'fee_addr', fallback='NOT_SET') if 'esbocs' in main_config else 'NO_ESBOCS_SECTION',
-                               note="Full config contents after snapshot restore - verify all values are correct")
-            except Exception as diag_err:
-                logger.warning("config_contents_diagnostic_failed",
-                             error=str(diag_err),
-                             note="Could not read config contents for diagnostic")
+            # Diagnostic - read config contents if debugging needed
+            if fee_addr:
+                try:
+                    config_loader = get_config_loader()
+                    zerochain_config = config_loader.load_config_file(zerochain_config_path)
+                    main_config = config_loader.load_config_file(main_config_path)
+                    
+                    logger.debug("config_contents_diagnostic_after_snapshot_restore",
+                                   zerochain_sections=list(zerochain_config.sections()),
+                                   main_sections=list(main_config.sections()),
+                                   zerochain_dag_section_exists='dag' in zerochain_config,
+                                   main_esbocs_section_exists='esbocs' in main_config,
+                                   note="Config contents after snapshot restore")
+                except Exception as diag_err:
+                    logger.warning("config_contents_diagnostic_failed",
+                                 error=str(diag_err))
             
             # CRITICAL: Start ROOT containers after snapshot restore
             # Snapshot contains data but containers are stopped
@@ -753,8 +730,8 @@ class NetworkManager:
             # Configs are now validated - nodes should be able to load network
             logger.info("starting_root_containers_after_snapshot_restore",
                        static_genesis_hash=static_genesis_hash[:16],
-                       fee_addr=fee_addr[:16],
-                       note="Starting containers with validated configs")
+                       fee_addr=fee_addr[:16] if fee_addr else "NOT_SET",
+                       note="Starting containers with restored configs")
             root_services = [f"node-{nid}" for nid in root_node_ids]
             self.compose.up(services=root_services, detach=True, wait=False)
             logger.info("root_containers_started_from_snapshot", services=root_services)

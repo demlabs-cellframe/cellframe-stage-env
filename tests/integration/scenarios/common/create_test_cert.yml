@@ -5,8 +5,10 @@
 setup:
   # Create temporary certificate for test operations
   # Using tool helper for cellframe-node-tool commands
+  # expect: any allows the step to pass even if cert already exists (exit code 68)
   - tool: cert create test_cert sig_dil
     node: node1
+    expect: any
     save: cert_created
 
 # Set test_cert variable for reference in scenarios

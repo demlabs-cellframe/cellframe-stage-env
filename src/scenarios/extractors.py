@@ -313,9 +313,11 @@ class DataExtractor:
             # - "New: 0x..." (from token_decl_sign)
             # - "hash: 0x..." (from JSON)
             # - "datum_hash: 0x..." (from JSON)
+            # - "emission_hash: 0x..." (from token_emit)
+            # - "Datum 0x..." (from token_decl result)
             # - standalone "0x..." (64 hex chars)
             # NOTE: Uses negative lookbehind (?<!Old: ) to ignore "Old: 0x..." hashes in replacement outputs
-            ExtractType.HASH: r'(?:New:\s+|hash["\']?\s*:\s*["\']?|datum_hash["\']?\s*:\s*["\']?)?(?<!Old: )(0x[A-Fa-f0-9]{64})',
+            ExtractType.HASH: r'(?:New:\s+|hash["\']?\s*:\s*["\']?|datum_hash["\']?\s*:\s*["\']?|emission_hash["\']?\s*:\s*["\']?|Datum\s+)?(?<!Old: )(0x[A-Fa-f0-9]{64})',
             ExtractType.TOKEN_NAME: r'token:\s*([A-Z0-9_]+)',
             ExtractType.NUMBER: r'(\d+(?:\.\d+)?)',
             ExtractType.BOOL: r'(true|false|yes|no|1|0|on|off|enabled|disabled)',
