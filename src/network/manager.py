@@ -1529,6 +1529,11 @@ class NetworkManager:
                    name=snapshot_name,
                    mode=self.snapshot_manager.mode.value)
         
+        # DISABLED mode - do nothing, keep current state
+        if self.snapshot_manager.mode == SnapshotMode.DISABLED:
+            logger.info("snapshot_mode_disabled_skipping_restore")
+            return True
+        
         # Special case for 'recreate' mode - use traditional cleanup
         if self.snapshot_manager.mode == SnapshotMode.RECREATE:
             logger.info("recreate_mode_using_clean_test_data")
