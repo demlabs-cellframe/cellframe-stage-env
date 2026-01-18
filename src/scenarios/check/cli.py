@@ -48,25 +48,31 @@ class CLICheckExecutor(CheckExecutor):
             )
             output = result["stdout"]
             
-            # Check conditions
-            if check.contains and check.contains not in output:
-                raise ScenarioExecutionError(
-                    f"CLI check failed: expected '{check.contains}' in output\n"
-                    f"Got: {output}"
-                )
+            # Check conditions - substitute variables in expected values
+            if check.contains:
+                expected = ctx.substitute(check.contains)
+                if expected not in output:
+                    raise ScenarioExecutionError(
+                        f"CLI check failed: expected '{expected}' in output\n"
+                        f"Got: {output}"
+                    )
             
-            if check.not_contains and check.not_contains in output:
-                raise ScenarioExecutionError(
-                    f"CLI check failed: '{check.not_contains}' should not be in output\n"
-                    f"Got: {output}"
-                )
+            if check.not_contains:
+                not_expected = ctx.substitute(check.not_contains)
+                if not_expected in output:
+                    raise ScenarioExecutionError(
+                        f"CLI check failed: '{not_expected}' should not be in output\n"
+                        f"Got: {output}"
+                    )
             
-            if check.equals and output.strip() != check.equals:
-                raise ScenarioExecutionError(
-                    f"CLI check failed: expected exact match\n"
-                    f"Expected: {check.equals}\n"
-                    f"Got: {output}"
-                )
+            if check.equals:
+                expected_equals = ctx.substitute(check.equals)
+                if output.strip() != expected_equals:
+                    raise ScenarioExecutionError(
+                        f"CLI check failed: expected exact match\n"
+                        f"Expected: {expected_equals}\n"
+                        f"Got: {output}"
+                    )
             
             ctx.add_result("check_cli", True, {"command": cmd})
             
