@@ -49,9 +49,12 @@ class CLICheckExecutor(CheckExecutor):
             output = result["stdout"]
             
             # Check conditions - substitute variables in expected values
+            # All string comparisons are case-insensitive
+            output_lower = output.lower()
+            
             if check.contains:
                 expected = ctx.substitute(check.contains)
-                if expected not in output:
+                if expected.lower() not in output_lower:
                     raise ScenarioExecutionError(
                         f"CLI check failed: expected '{expected}' in output\n"
                         f"Got: {output}"
@@ -59,7 +62,7 @@ class CLICheckExecutor(CheckExecutor):
             
             if check.not_contains:
                 not_expected = ctx.substitute(check.not_contains)
-                if not_expected in output:
+                if not_expected.lower() in output_lower:
                     raise ScenarioExecutionError(
                         f"CLI check failed: '{not_expected}' should not be in output\n"
                         f"Got: {output}"

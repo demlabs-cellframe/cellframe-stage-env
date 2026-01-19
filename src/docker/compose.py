@@ -583,7 +583,7 @@ class DockerComposeManager:
                     except NotFound:
                         pass
         except Exception as e:
-            logger.warning("failed_to_check_image_existence", error=str(e))
+            logger.info("failed_to_check_image_existence", error=str(e))
             
         # Always use 'up' to ensure containers are created/recreated correctly
         # 'start' is insufficient if containers don't exist (Phase 2 case)
