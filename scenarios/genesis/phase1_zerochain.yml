@@ -433,7 +433,7 @@ test:
       - cli: "dag event dump -event {{emission_event_hash}} -from events"
         save: emission_event_dump
       
-      # Extract emission_hash from dump
+      # Extract emission_hash from dump (plain text format: emission_hash: 0x...)
       - set: emission_hash
         value: "regex_extract(emission_event_dump, r'emission_hash:\\s*(0x[a-fA-F0-9]+)', 1)"
         eval: true
@@ -441,7 +441,7 @@ test:
       # Verify emission_hash was found
       - if: "not emission_hash"
         then:
-          - bash: "echo 'ERROR: emission_hash not found in event dump' && exit 1"
+          - bash: "echo 'ERROR: emission_hash not found in event dump. Dump content:' && echo '{{emission_event_dump}}' | head -50 && exit 1"
             node: "{{first_root}}"
   
   - cli: "dag event list -chain zerochain"
