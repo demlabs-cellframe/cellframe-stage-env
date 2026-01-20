@@ -65,7 +65,7 @@ class ValidatorMonitor(BaseMonitor):
         # Use container manager for fail-fast execution
         # Note: BaseMonitor should have container_manager, but for now create one
         from pathlib import Path
-        from ..docker.container import DockerContainerManager
+        from ..docker_ctl.container import DockerContainerManager
         
         # Get base_path from config or use default
         base_path = Path.cwd()  # Fallback, should be passed from config

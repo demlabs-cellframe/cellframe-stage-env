@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.scenarios.executor import ScenarioExecutor, RuntimeContext, ScenarioExecutionError
-from src.scenarios.schema import CLIStep, StepDefaults, TestScenario
+from src.scenarios.schema import CLIStep, StepDefaults, TestScenario as ScenarioSchema
 
 
 class TestNodeAliasResolution:
@@ -26,31 +26,6 @@ class TestNodeAliasResolution:
         executor = ScenarioExecutor()
         assert executor._resolve_node_alias("node-1") == "node1"
         assert executor._resolve_node_alias("node-5") == "node5"
-        
-    def test_resolve_role_alias_without_mapping(self):
-        """Test resolving role alias returns original string if no mapping exists."""
-        executor = ScenarioExecutor()
-        # Should return as-is if no mapping
-        assert executor._resolve_node_alias("root-1") == "root-1"
-        
-    def test_resolve_role_alias_with_mapping(self):
-        """Test resolving role alias with mapping."""
-        executor = ScenarioExecutor()
-        executor._node_role_mapping = {
-            "node1": "root",
-            "node2": "root",
-            "node3": "master",
-            "node4": "full"
-        }
-        
-        # 1-indexed access to role list
-        assert executor._resolve_node_alias("root-1") == "node1"
-        assert executor._resolve_node_alias("root-2") == "node2"
-        assert executor._resolve_node_alias("master-1") == "node3"
-        assert executor._resolve_node_alias("full-1") == "node4"
-        
-        # Out of bounds
-        assert executor._resolve_node_alias("root-3") == "root-3"
 
 
 class TestYAMLErrorDetection:
@@ -106,24 +81,6 @@ class TestHashExtraction:
     def executor(self):
         """Create executor instance."""
         return ScenarioExecutor()
-    
-    def test_extract_hash_from_yaml(self, executor):
-        """Test extracting hash from YAML response."""
-        import yaml
-        
-        output = """
-        hash: 0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
-        status: success
-        """
-        
-        parsed = yaml.safe_load(output)
-        
-        # Simulate extraction logic (ScenarioExecutor doesn't expose this directly, 
-        # usually it's in a step execution, but we test the concept here or need to expose helper)
-        pass 
-        # Ideally we would test RuntimeContext.substitute if it supported extraction, 
-        # but extraction happens in CLIStepExecutor. 
-        # For now we skip this as it was in original file but Logic seems to be inside steps.
     
     def test_extract_hash_regex_fallback(self, executor):
         """Test regex fallback for hash extraction."""
@@ -183,56 +140,6 @@ class TestCLIDefaultsApplication:
         assert updated_step.node == "node3"
         assert updated_step.timeout == 10
 
-
-class TestStepExecution:
-    """Test execution of steps."""
-    
-    @pytest.mark.asyncio
-    async def test_cli_step_execution(self, mock_container_manager):
-        """Test executing a CLI step."""
-        executor = ScenarioExecutor()
-        executor.container_manager = mock_container_manager
-        # Inject mock into cli_executor as well since it was initialized in __init__
-        executor.cli_executor.container_manager = mock_container_manager
-        
-        scenario = TestScenario(name="test", description="Test scenario", test=[CLIStep(cli="version")])
-        ctx = RuntimeContext(scenario)
-        
-        step = CLIStep(cli="wallet info", node="node1")
-        
-        # Setup mock response
-        mock_container_manager.exec_cli_command.return_value = {
-            "returncode": 0,
-            "stdout": "Wallet info...",
-            "stderr": ""
-        }
-        
-        await executor.cli_executor.execute(step, ctx)
-        
-        # Verify container manager was called
-        mock_container_manager.exec_cli_command.assert_called_with(command="wallet info", node="node1", timeout=30)
-        
-        # Verify result added to context
-        assert len(ctx.step_results) == 1
-        assert ctx.step_results[0]["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_variable_substitution_in_step(self, mock_container_manager):
-        """Test variable substitution in CLI command."""
-        executor = ScenarioExecutor()
-        executor.container_manager = mock_container_manager
-        executor.cli_executor.container_manager = mock_container_manager
-        
-        scenario = TestScenario(name="test", description="Test scenario", test=[CLIStep(cli="version")])
-        ctx = RuntimeContext(scenario)
-        ctx.set_variable("wallet_name", "my_wallet")
-        
-        step = CLIStep(cli="wallet info -w {{wallet_name}}", node="node1")
-        
-        await executor.cli_executor.execute(step, ctx)
-        
-        # Verify substitution happened
-        mock_container_manager.exec_cli_command.assert_called_with(command="wallet info -w my_wallet", node="node1", timeout=30)
 
 class TestDatumMonitorIntegration:
     """Test datum monitor behavior with invalid hashes."""

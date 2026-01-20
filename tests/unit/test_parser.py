@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.scenarios.parser import ScenarioParser, ScenarioParseError
-from src.scenarios.schema import TestScenario, CLIStep
+from src.scenarios.schema import TestScenario as ScenarioSchema, CLIStep
 
 class TestScenarioParser:
     """Test scenario parser logic."""
@@ -33,7 +33,7 @@ class TestScenarioParser:
         
         scenario = parser.load_scenario("valid.yml")
         
-        assert isinstance(scenario, TestScenario)
+        assert isinstance(scenario, ScenarioSchema)
         assert scenario.name == "Valid Scenario"
         assert len(scenario.test.steps) == 1
         assert isinstance(scenario.test.steps[0], CLIStep)

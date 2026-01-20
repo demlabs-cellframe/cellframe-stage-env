@@ -1,0 +1,47 @@
+# Integration test: Snapshot creation and restore
+---
+name: "Snapshot and restore operations"
+description: "Test snapshot creation and node restore from snapshot"
+
+nodes:
+  - node1
+  - node2
+
+setup:
+  - wait_for_sync:
+      timeout: 30
+
+steps:
+  - name: "Create initial state"
+    node: node1
+    command: "wallet create -w test_wallet"
+    expect: success
+  
+  - name: "Create snapshot"
+    node: node1
+    action: create_snapshot
+    snapshot_name: "test_snapshot_1"
+    wait: 5
+  
+  - name: "Modify state"
+    node: node1
+    command: "wallet create -w another_wallet"
+    expect: success
+  
+  - name: "Restore from snapshot"
+    node: node1
+    action: restore_snapshot
+    snapshot_name: "test_snapshot_1"
+    wait: 10
+  
+  - name: "Verify restored state"
+    node: node1
+    command: "wallet list"
+    expect: success
+    assertions:
+      - contains: "test_wallet"
+      - not_contains: "another_wallet"
+
+cleanup:
+  - remove_snapshot: "test_snapshot_1"
+  - remove_wallets: [test_wallet]

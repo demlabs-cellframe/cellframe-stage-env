@@ -17,5 +17,5 @@ def stage_env_root():
 @pytest.fixture(scope="session")
 def fixtures_dir(stage_env_root):
     """Return the path to shared fixtures."""
-    return stage_env_root / "tests" / "fixtures"
+    return stage_env_root / "tests" / "unit" / "fixtures"
 

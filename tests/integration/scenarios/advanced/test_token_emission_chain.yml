@@ -1,0 +1,60 @@
+# Integration test: Token emission and transaction chain
+---
+name: "Token emission and transaction chain"
+description: "Test complete token lifecycle: create, emit, transfer, verify balance"
+
+nodes:
+  - node1
+  - node2
+
+setup:
+  - wait_for_sync:
+      timeout: 30
+  - create_wallets:
+      - wallet1
+      - wallet2
+
+steps:
+  - name: "Create custom token"
+    node: node1
+    command: "token_decl -net stagenet -token TEST -total_supply 1000000 -decimals 18 -sign wallet1"
+    expect: success
+    extract:
+      token_ticker: "Ticker: (\\w+)"
+  
+  - name: "Create token emission"
+    node: node1
+    command: "token_emit -net stagenet -token TEST -emission_value 100000 -emission_addr {wallet1_addr}"
+    expect: success
+    wait: 3
+  
+  - name: "Verify wallet1 balance"
+    node: node1
+    command: "wallet info -w wallet1 -net stagenet"
+    expect: success
+    assertions:
+      - contains: "100000"
+  
+  - name: "Transfer tokens to wallet2"
+    node: node1
+    command: "tx_create -net stagenet -token TEST -to {wallet2_addr} -value 50000 -from wallet1"
+    expect: success
+    wait: 5
+  
+  - name: "Verify wallet2 balance on node2"
+    node: node2
+    command: "wallet info -w wallet2 -net stagenet"
+    expect: success
+    assertions:
+      - contains: "50000"
+  
+  - name: "Verify wallet1 remaining balance"
+    node: node1
+    command: "wallet info -w wallet1 -net stagenet"
+    expect: success
+    assertions:
+      - contains: "50000"
+
+cleanup:
+  - remove_token: TEST
+  - remove_wallets: [wallet1, wallet2]

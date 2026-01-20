@@ -46,7 +46,7 @@ class BaseGenesisManager:
         self.config_path = config_path
         self.docker_client = docker.from_env()
         # Use DockerContainerManager for CLI execution
-        from ..docker.container import DockerContainerManager
+        from ..docker_ctl.container import DockerContainerManager
         self.container_manager = DockerContainerManager(base_path, "cellframe-node-cli")
     
     def _exec_cli(self, node_id: int, command: str, check_output: bool = True) -> tuple:

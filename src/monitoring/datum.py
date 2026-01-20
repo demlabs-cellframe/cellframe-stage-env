@@ -318,7 +318,7 @@ class DatumMonitor:
                     
                     # Collect crash artifacts
                     container_name = self._node_to_container(node)
-                    from ..docker.container import DockerContainerManager
+                    from ..docker_ctl.container import DockerContainerManager
                     from pathlib import Path
                     container_manager = DockerContainerManager(Path.cwd(), self.node_cli_path)
                     try:
@@ -496,7 +496,7 @@ class DatumMonitor:
                 )
                 self._log(f"  ❌ {error_msg}")
                 # Collect crash artifacts if container crashed
-                from ..docker.container import DockerContainerManager
+                from ..docker_ctl.container import DockerContainerManager
                 from pathlib import Path
                 container_manager = DockerContainerManager(Path.cwd(), self.node_cli_path)
                 try:
@@ -557,7 +557,7 @@ class DatumMonitor:
                 )
                 self._log(f"  ❌ {error_msg}")
                 # Collect crash artifacts
-                from ..docker.container import DockerContainerManager
+                from ..docker_ctl.container import DockerContainerManager
                 from pathlib import Path
                 container_manager = DockerContainerManager(Path.cwd(), self.node_cli_path)
                 try:

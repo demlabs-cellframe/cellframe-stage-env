@@ -1,0 +1,42 @@
+# Integration test: Multi-node datum operations
+---
+name: "Multi-node datum operations"
+description: "Test datum creation and retrieval across multiple nodes"
+
+nodes:
+  - node1
+  - node2
+  - node3
+
+setup:
+  - wait_for_sync:
+      timeout: 30
+
+steps:
+  - name: "Create datum on node1"
+    node: node1
+    command: "net -net stagenet datum create -data 'test_datum_data' -sign node1-wallet"
+    expect: success
+    extract:
+      datum_hash: "Hash: (\\w+)"
+  
+  - name: "Wait for datum propagation"
+    wait: 5
+  
+  - name: "Verify datum on node2"
+    node: node2
+    command: "net -net stagenet datum get -hash {datum_hash}"
+    expect: success
+    assertions:
+      - contains: "test_datum_data"
+  
+  - name: "Verify datum on node3"
+    node: node3
+    command: "net -net stagenet datum get -hash {datum_hash}"
+    expect: success
+    assertions:
+      - contains: "test_datum_data"
+
+cleanup:
+  - remove_datum:
+      hash: "{datum_hash}"

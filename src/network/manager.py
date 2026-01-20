@@ -17,7 +17,7 @@ import traceback
 
 from ..config.loader import NetworkTopology
 from ..config.generator import ConfigGenerator
-from ..docker.compose import DockerComposeManager
+from ..docker_ctl.compose import DockerComposeManager
 from ..monitoring.health import HealthChecker, HealthStatus
 from ..monitoring.network_consensus import NetworkConsensusMonitor
 from src.utils.logger import get_logger

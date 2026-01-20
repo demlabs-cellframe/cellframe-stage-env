@@ -1,0 +1,55 @@
+# Integration test: Network consensus and validator sync
+---
+name: "Network consensus validation"
+description: "Test consensus mechanism across validators"
+
+nodes:
+  - node1  # ROOT validator
+  - node2  # MASTER validator
+  - node3  # FULL node
+
+setup:
+  - wait_for_genesis:
+      timeout: 60
+  - wait_for_validators:
+      count: 2
+
+steps:
+  - name: "Verify ROOT validator status"
+    node: node1
+    command: "net -net stagenet get status"
+    expect: success
+    assertions:
+      - contains: "ROOT"
+      - contains: "active"
+  
+  - name: "Verify MASTER validator status"
+    node: node2
+    command: "net -net stagenet get status"
+    expect: success
+    assertions:
+      - contains: "MASTER"
+      - contains: "active"
+  
+  - name: "Create datum for consensus test"
+    node: node3
+    command: "net -net stagenet datum create -data 'consensus_test'"
+    expect: success
+    extract:
+      datum_hash: "Hash: (\\w+)"
+    wait: 10
+  
+  - name: "Verify datum on all nodes"
+    parallel:
+      - node: node1
+        command: "net -net stagenet datum get -hash {datum_hash}"
+      - node: node2
+        command: "net -net stagenet datum get -hash {datum_hash}"
+      - node: node3
+        command: "net -net stagenet datum get -hash {datum_hash}"
+    expect: success
+    assertions:
+      - contains: "consensus_test"
+
+cleanup:
+  - remove_datum: "{datum_hash}"

@@ -1,0 +1,152 @@
+# ============================================================================
+# Coverage Configuration for Stage-Env Testing
+# ============================================================================
+# Документация: https://coverage.readthedocs.io/
+
+[run]
+# Измерять покрытие для src/ директории
+source = src
+
+# Branch coverage (if/else покрытие, не только line coverage)
+branch = True
+
+# Parallel mode для pytest-xdist
+parallel = True
+
+# Omit files that don't need coverage
+omit =
+    # Test files
+    tests/*
+    */tests/*
+    
+    # Virtual environments
+    */.venv/*
+    */venv/*
+    */env/*
+    
+    # Python standard library
+    */lib/python*/*
+    */site-packages/*
+    
+    # Generated files
+    */__pycache__/*
+    */.pytest_cache/*
+    
+    # Build artifacts
+    build/*
+    dist/*
+    *.egg-info/*
+    
+    # C extensions (can't measure Python coverage)
+    src/certs/*.c
+    src/certs/*.so
+    
+    # Init files (usually just imports)
+    */__init__.py
+
+# Data file location
+data_file = .coverage
+
+[report]
+# Output precision (decimal places)
+precision = 2
+
+# Show missing lines in report
+show_missing = True
+
+# Skip empty files
+skip_empty = True
+
+# Skip covered files in terminal report (show only incomplete)
+skip_covered = False
+
+# Sort report by coverage percentage
+sort = Cover
+
+# Fail if coverage is below threshold
+# Minimum coverage threshold (will increase as tests are added)
+fail_under = 0
+
+# Exclude lines from coverage
+exclude_lines =
+    # Standard pragmas
+    pragma: no cover
+    
+    # Debug code
+    def __repr__
+    def __str__
+    
+    # Abstract methods
+    @abstract
+    @abstractmethod
+    
+    # Defensive programming
+    raise AssertionError
+    raise NotImplementedError
+    raise TypeError
+    
+    # Type checking blocks
+    if TYPE_CHECKING:
+    if typing.TYPE_CHECKING:
+    
+    # Debugging
+    if __name__ == .__main__.:
+    if DEBUG:
+    if debug:
+    
+    # Platform-specific
+    if sys.platform
+    if platform.system
+    
+    # Python version checks
+    if sys.version_info
+    
+    # Pass statements (often placeholders)
+    pass
+    
+    # Ellipsis (often in stubs/protocols)
+    \.\.\.
+
+[html]
+# HTML report directory
+directory = htmlcov
+
+# Title for HTML report
+title = Stage-Env Test Coverage Report
+
+[xml]
+# XML report file (for CI/CD, SonarQube, etc.)
+output = coverage.xml
+
+[json]
+# JSON report file (for programmatic access)
+output = coverage.json
+pretty_print = True
+show_contexts = True
+
+# ============================================================================
+# Usage Examples:
+# ============================================================================
+#
+# 1. Run tests with coverage:
+#    pytest --cov=src --cov-report=html --cov-report=term
+#
+# 2. Generate HTML report:
+#    pytest --cov=src --cov-report=html
+#    open htmlcov/index.html
+#
+# 3. Generate XML report (for CI/CD):
+#    pytest --cov=src --cov-report=xml
+#
+# 4. Show missing lines:
+#    pytest --cov=src --cov-report=term-missing
+#
+# 5. Combine parallel coverage data:
+#    coverage combine
+#    coverage report
+#    coverage html
+#
+# 6. Check coverage threshold:
+#    coverage report --fail-under=90
+#
+# ============================================================================

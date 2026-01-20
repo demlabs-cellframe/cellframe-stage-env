@@ -149,7 +149,7 @@ class ScenarioExecutor:
             self.base_path = Path.cwd()
         self.current_scenario_name: Optional[str] = None
         # Docker container manager for fail-fast container operations
-        from ..docker.container import DockerContainerManager
+        from ..docker_ctl.container import DockerContainerManager
         self.container_manager = DockerContainerManager(self.base_path, node_cli_path)
         # Step executors
         from .step import (

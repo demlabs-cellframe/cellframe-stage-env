@@ -16,7 +16,7 @@ from jinja2 import Template
 from ..config.manager import get_config_loader
 from ..config.loader import NetworkTopology
 from ..certs.generator import CertGenerator
-from ..docker.compose import CLEANUP_IMAGE, CLEANUP_MOUNT_PATH, CLEANUP_CMD_TEMPLATE
+from ..docker_ctl.compose import CLEANUP_IMAGE, CLEANUP_MOUNT_PATH, CLEANUP_CMD_TEMPLATE
 from ..network.models import NodeConfig
 from src.utils.logger import get_logger
 

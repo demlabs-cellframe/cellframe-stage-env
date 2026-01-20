@@ -60,7 +60,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         from ..config.generator import ConfigGenerator
         from ..config.manager import get_config_loader
         from ..snapshots.manager import SnapshotManager, SnapshotMode
-        from ..docker.compose import DockerComposeManager
+        from ..docker_ctl.compose import DockerComposeManager
         
         # Skip confirmation if --yes or --all is used
         if not yes and not all:

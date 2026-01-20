@@ -1,0 +1,65 @@
+# ============================================================================
+# Stage Environment - Development & Testing Dependencies
+# ============================================================================
+# Этот файл содержит зависимости для разработки и тестирования stage-env
+# Установка: pip install -r requirements.txt -r requirements-dev.txt
+
+# Core Testing Framework
+pytest>=7.4.0                    # Testing framework
+pytest-asyncio>=0.21.0           # Async test support
+pytest-cov>=4.1.0                # Code coverage reporting
+pytest-xdist>=3.5.0              # Parallel test execution (multi-CPU)
+pytest-mock>=3.12.0              # Enhanced mocking with pytest fixtures
+pytest-timeout>=2.2.0            # Test timeout enforcement
+pytest-env>=1.1.0                # Environment variable handling in tests
+
+# Mocking & Test Utilities
+responses>=0.24.0                # HTTP request mocking for httpx/requests
+faker>=20.0.0                    # Generate fake test data
+freezegun>=1.4.0                 # Freeze time for time-dependent tests
+
+# Code Quality & Linting
+black>=23.0.0                    # Code formatting
+mypy>=1.7.0                      # Type checking
+ruff>=0.0.260                    # Fast linter (replaces pylint, flake8)
+isort>=5.13.0                    # Import sorting
+
+# Coverage & Reporting
+coverage[toml]>=7.3.0            # Coverage core library with TOML support
+coverage-badge>=1.1.0            # Generate coverage badges
+
+# Documentation
+pytest-html>=4.1.0               # HTML test reports
+pytest-json-report>=1.5.0        # JSON test reports for CI/CD
+
+# Performance & Profiling
+pytest-benchmark>=4.0.0          # Performance benchmarking for tests
+memory-profiler>=0.61.0          # Memory profiling
+
+# Debugging
+pytest-sugar>=0.9.7              # Better pytest output with progress bar
+pytest-instafail>=0.5.0          # Show failures instantly
+ipdb>=0.13.13                    # IPython debugger
+
+# Type Stubs for External Libraries
+types-PyYAML>=6.0.0              # Type stubs for PyYAML
+types-requests>=2.31.0           # Type stubs for requests
+
+# ============================================================================
+# Installation Notes:
+# ============================================================================
+# 1. Install all dependencies:
+#    pip install -r requirements.txt -r requirements-dev.txt
+#
+# 2. Run tests with coverage:
+#    pytest --cov=src --cov-report=html --cov-report=term
+#
+# 3. Run tests in parallel:
+#    pytest -n auto  # Uses all available CPUs
+#
+# 4. Run with timeout enforcement:
+#    pytest --timeout=300  # Kill tests after 5 minutes
+#
+# 5. Generate HTML report:
+#    pytest --html=report.html --self-contained-html
+# ============================================================================
