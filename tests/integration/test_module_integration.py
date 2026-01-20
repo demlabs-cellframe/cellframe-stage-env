@@ -40,7 +40,7 @@ network:
 """)
         
         loader = ConfigLoader(tmp_path)
-        config = loader.load_config_file(config_file)
+        config = loader.load_yaml(config_file)
         
         # Config should be usable by other modules
         assert config is not None
@@ -51,20 +51,25 @@ network:
         from src.scenarios.parser import ScenarioParser
         import yaml
         
-        scenario_file = tmp_path / "test.yml"
+        # Create scenarios directory
+        scenarios_dir = tmp_path / "scenarios"
+        scenarios_dir.mkdir()
+        
+        scenario_file = scenarios_dir / "test.yml"
+        # Correct structure according to TestScenario schema
         scenario_file.write_text(yaml.dump({
-            "scenario": {
-                "name": "test",
-                "description": "test scenario",
-                "network": {"preset": "minimal"},
+            "name": "test",
+            "description": "test scenario",
+            "network": {"preset": "minimal"},
+            "test": {
                 "steps": [
-                    {"name": "step1", "node": "node1", "command": "version"}
+                    {"cli": "version", "node": "node1", "name": "step1"}
                 ]
             }
         }))
         
-        parser = ScenarioParser()
-        result = parser.parse(scenario_file)
+        parser = ScenarioParser(scenarios_root=scenarios_dir)
+        result = parser.load_scenario("test.yml")
         
         assert result is not None
         assert result.name == "test"

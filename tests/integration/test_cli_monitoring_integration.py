@@ -16,7 +16,7 @@ class TestCLIIntegration:
         config_file.write_text("network:\n  name: stagenet\n")
         
         loader = ConfigLoader(tmp_path)
-        config = loader.load_config_file(config_file)
+        config = loader.load_yaml(config_file)
         
         # CLI should be able to access this config
         assert config["network"]["name"] == "stagenet"
@@ -86,7 +86,7 @@ nodes:
 """)
         
         loader = ConfigLoader(tmp_path)
-        config = loader.load_config_file(config_file)
+        config = loader.load_yaml(config_file)
         
         # Verify config is ready for network setup
         assert config["network"]["name"] == "stagenet"
