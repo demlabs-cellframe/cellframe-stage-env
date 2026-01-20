@@ -64,7 +64,8 @@ class NetworkManager:
         # Docker compose manager
         self.compose = DockerComposeManager(
             base_path,
-            project_name="cellframe-stage"
+            project_name="cellframe-stage",
+            network_name=self.topology.network.name
         )
         
         # Health checker
@@ -267,12 +268,14 @@ class NetworkManager:
                         # DO NOT clean data - snapshot already restored with data
                         phase1_snapshot_exists = True  # Ensure flag is set
                     else:
-                        logger.warning("phase1_snapshot_restore_failed_fallback_to_clean",
-                                     name=phase1_snapshot_name)
-                        # Fallback to clean if restore failed
-                        phase1_snapshot_exists = False
-                        logger.info("cleaning_node_data_after_snapshot_restore_failed")
-                        self._clean_node_data()
+                        logger.error("phase1_snapshot_restore_failed",
+                                     name=phase1_snapshot_name,
+                                     hint="Run './clean.sh' to fix permission issues, then retry")
+                        raise RuntimeError(
+                            f"Snapshot restore failed for '{phase1_snapshot_name}'. "
+                            "This is usually caused by permission issues with Docker files. "
+                            "Run './clean.sh' to remove root-owned files and try again."
+                        )
                 else:
                     logger.info("no_phase1_snapshot_cleaning_data_for_fresh_start",
                                name=phase1_snapshot_name)
@@ -690,60 +693,37 @@ class NetworkManager:
                 )
             
             if not fee_addr:
-                logger.error("fee_addr_not_read_from_config_after_snapshot_restore",
+                # fee_addr is not in phase1 snapshot - it's created in Phase 2
+                # This is expected when restoring phase1 snapshot
+                logger.info("fee_addr_not_in_phase1_snapshot",
                            config_path=str(main_config_path),
-                           note="CRITICAL: fee_addr could not be read from restored configs! "
-                                "This means configs were not properly restored or are missing fee address. "
-                                "Check snapshot restoration process.")
-                # Diagnostic: Try to read config file directly to see what's in it using centralized config manager
-                try:
-                    config_loader = get_config_loader()
-                    config = config_loader.load_config_file(main_config_path)
-                    logger.error("main_config_diagnostic",
-                               sections=list(config.sections()),
-                               esbocs_section_exists='esbocs' in config,
-                               fee_addr_in_config=config.get('esbocs', 'fee_addr', fallback='EMPTY') if 'esbocs' in config else 'NO_ESBOCS_SECTION',
-                               note="Config file exists but fee_addr is missing or empty")
-                except Exception as diag_err:
-                    logger.error("main_config_diagnostic_failed",
-                               error=str(diag_err),
-                               note="Could not read config file for diagnostic")
-                
-                raise RuntimeError(
-                    f"CRITICAL: fee_addr not found in restored configs! "
-                    f"Config path: {main_config_path}. "
-                    f"Snapshot may be corrupted or configs were not restored correctly."
-                )
+                           note="fee_addr not found in restored configs - this is expected for phase1 snapshot. "
+                                "Phase 2 will create fee_addr during ESBocs genesis.")
             
-            logger.info("genesis_event_and_fee_addr_read_from_configs",
+            logger.info("genesis_event_read_from_configs",
                        static_genesis_hash=static_genesis_hash[:16],
-                       fee_addr=fee_addr[:16],
+                       fee_addr=fee_addr[:16] if fee_addr else "NOT_SET (will be created in Phase 2)",
                        zerochain_config=str(zerochain_config_path),
                        main_config=str(main_config_path),
-                       note="Successfully read static_genesis_event and fee_addr from restored configs. "
-                            "Configs are validated - nodes should be able to load network.")
+                       note="static_genesis_event read from restored configs. "
+                            "fee_addr may be created in Phase 2 if not present.")
             
-            # CRITICAL: Additional diagnostic - read and log full config contents to verify they are correct
-            try:
-                # Use centralized config manager
-                config_loader = get_config_loader()
-                zerochain_config = config_loader.load_config_file(zerochain_config_path)
-                main_config = config_loader.load_config_file(main_config_path)
-                
-                logger.info("config_contents_diagnostic_after_snapshot_restore",
-                               zerochain_sections=list(zerochain_config.sections()),
-                               main_sections=list(main_config.sections()),
-                               zerochain_dag_section_exists='dag' in zerochain_config,
-                               zerochain_static_genesis_event=zerochain_config.get('dag', 'static_genesis_event', fallback='NOT_SET') if 'dag' in zerochain_config else 'NO_DAG_SECTION',
-                               zerochain_is_static_genesis_event=zerochain_config.get('dag', 'is_static_genesis_event', fallback='NOT_SET') if 'dag' in zerochain_config else 'NO_DAG_SECTION',
-                               main_esbocs_section_exists='esbocs' in main_config,
-                               main_min_validators_count=main_config.get('esbocs', 'min_validators_count', fallback='NOT_SET') if 'esbocs' in main_config else 'NO_ESBOCS_SECTION',
-                               main_fee_addr=main_config.get('esbocs', 'fee_addr', fallback='NOT_SET') if 'esbocs' in main_config else 'NO_ESBOCS_SECTION',
-                               note="Full config contents after snapshot restore - verify all values are correct")
-            except Exception as diag_err:
-                logger.warning("config_contents_diagnostic_failed",
-                             error=str(diag_err),
-                             note="Could not read config contents for diagnostic")
+            # Diagnostic - read config contents if debugging needed
+            if fee_addr:
+                try:
+                    config_loader = get_config_loader()
+                    zerochain_config = config_loader.load_config_file(zerochain_config_path)
+                    main_config = config_loader.load_config_file(main_config_path)
+                    
+                    logger.debug("config_contents_diagnostic_after_snapshot_restore",
+                                   zerochain_sections=list(zerochain_config.sections()),
+                                   main_sections=list(main_config.sections()),
+                                   zerochain_dag_section_exists='dag' in zerochain_config,
+                                   main_esbocs_section_exists='esbocs' in main_config,
+                                   note="Config contents after snapshot restore")
+                except Exception as diag_err:
+                    logger.warning("config_contents_diagnostic_failed",
+                                 error=str(diag_err))
             
             # CRITICAL: Start ROOT containers after snapshot restore
             # Snapshot contains data but containers are stopped
@@ -751,8 +731,8 @@ class NetworkManager:
             # Configs are now validated - nodes should be able to load network
             logger.info("starting_root_containers_after_snapshot_restore",
                        static_genesis_hash=static_genesis_hash[:16],
-                       fee_addr=fee_addr[:16],
-                       note="Starting containers with validated configs")
+                       fee_addr=fee_addr[:16] if fee_addr else "NOT_SET",
+                       note="Starting containers with restored configs")
             root_services = [f"node-{nid}" for nid in root_node_ids]
             self.compose.up(services=root_services, detach=True, wait=False)
             logger.info("root_containers_started_from_snapshot", services=root_services)
@@ -780,127 +760,139 @@ class NetworkManager:
             await consensus_monitor.wait_for_links_connecting_state(timeout=60.0)
             logger.info("root_nodes_links_established_after_snapshot_restore")
             
-            # CRITICAL: Get emission_hash from zerochain DAG events after snapshot restore
+            # CRITICAL: Get emission_hash (DATUM hash) from zerochain DAG events after snapshot restore
             # emission_hash is needed for creating first transaction in PHASE 2
-            # Emission is stored as a DAG event in zerochain, not in ledger
-            # We need to find the emission event in DAG events list
+            # IMPORTANT: Event hash != Emission datum hash!
+            # - Event hash: identifies the DAG event container
+            # - Emission hash: identifies the emission datum INSIDE the event
+            # tx_create -from_emission needs the EMISSION DATUM hash, not the event hash!
+            # We must: 1) get last event hash, 2) dump event, 3) extract emission_hash from dump
             logger.info("getting_emission_hash_from_zerochain_dag_after_snapshot_restore")
             import re
             emission_hash = None
             
-            # Method 1: Try to get emission hash from DAG events (most reliable)
+            # Method 1: Get emission_hash from dag event dump (CORRECT approach)
+            # This mirrors what phase1_zerochain.yml does
             for root_node in root_nodes[:1]:  # Check first ROOT node
+                # Step 1: Get last event hash from zerochain
                 exit_code, stdout, _ = self.genesis._exec_cli(
                     root_node.node_id,
-                    f"dag event list -net {self.topology.network.name} -chain zerochain -from events -limit 20",
+                    f"dag event last -net {self.topology.network.name} -chain zerochain",
                     check_output=False
                 )
-                # CRITICAL: Log full output for debugging
-                logger.info("dag_events_list_check",
+                logger.info("dag_event_last_check",
                            node_id=root_node.node_id,
                            exit_code=exit_code,
-                           stdout_length=len(stdout) if stdout else 0,
-                           stdout_full=stdout[:2000] if stdout else "EMPTY")
+                           stdout_preview=stdout[:500] if stdout else "EMPTY")
                 
-                if exit_code == 0 and stdout:
-                    # Look for emission event hash in DAG events
-                    # Format: "event hash: 0x..." or "datum: 0x..." with emission type
-                    # Try multiple patterns to catch different formats
-                    hash_matches = re.findall(r'(?:event\s+hash|datum|hash):\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                    # Also try finding all hashes in text
-                    all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                if exit_code != 0 or not stdout:
+                    logger.warning("dag_event_last_failed", exit_code=exit_code)
+                    continue
+                
+                # Extract event hash from "dag event last" output
+                # Format: "last_event_hash: 0x..." or just "0x..."
+                event_hash_match = re.search(r'(?:last_event_hash:\s*)?(0x[A-Fa-f0-9]{64})', stdout)
+                if not event_hash_match:
+                    logger.warning("event_hash_not_found_in_dag_event_last", output=stdout[:200])
+                    continue
                     
-                    logger.info("dag_events_hash_search",
-                               node_id=root_node.node_id,
-                               hash_matches_count=len(hash_matches),
-                               all_hashes_count=len(all_hashes),
-                               hashes_preview=all_hashes[:5] if all_hashes else [])
+                last_event_hash = event_hash_match.group(1)
+                logger.info("last_event_hash_found", hash=last_event_hash[:20])
+                
+                # Step 2: Dump the event to get emission_hash
+                exit_code, dump_stdout, _ = self.genesis._exec_cli(
+                    root_node.node_id,
+                    f"dag event dump -net {self.topology.network.name} -chain zerochain -event {last_event_hash} -from events",
+                    check_output=False
+                )
+                logger.info("dag_event_dump_check",
+                           node_id=root_node.node_id,
+                           exit_code=exit_code,
+                           event_hash=last_event_hash[:20],
+                           stdout_preview=dump_stdout[:1000] if dump_stdout else "EMPTY")
+                
+                if exit_code != 0 or not dump_stdout:
+                    logger.warning("dag_event_dump_failed", event_hash=last_event_hash[:20])
+                    continue
+                
+                # Step 3: Extract emission_hash from dump output
+                # Format: "emission_hash: 0x..." (plain text format)
+                emission_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump_stdout, re.IGNORECASE)
+                if emission_match:
+                    emission_hash = emission_match.group(1)
+                    logger.info("emission_hash_extracted_from_event_dump",
+                               emission_hash=emission_hash[:20],
+                               event_hash=last_event_hash[:20])
+                    break
+                else:
+                    # If emission_hash not found, event might not be an emission event
+                    # Try previous event (emission is usually second-to-last after token_decl)
+                    logger.info("emission_hash_not_in_last_event_trying_previous",
+                               note="Last event might be token_decl, not emission")
                     
-                    if hash_matches:
-                        # Emission is typically the second or last event (after token_decl)
-                        # Check all events and find the one with emission type
-                        lines = stdout.split('\n')
-                        for i, line in enumerate(lines):
-                            if 'emission' in line.lower() or ('datum' in line.lower() and 'tx' in line.lower()):
-                                # Look for hash in current or nearby lines
-                                for j in range(max(0, i-2), min(len(lines), i+5)):
-                                    hash_match = re.search(r'(0x[A-Fa-f0-9]{64})', lines[j])
-                                    if hash_match:
-                                        emission_hash = hash_match.group(1)
-                                        logger.info("emission_hash_found_in_dag_events",
-                                                   hash=emission_hash[:16],
-                                                   line_preview=lines[j].strip()[:100])
-                                        break
-                                if emission_hash:
-                                    break
-                        
-                        # Fallback: if no emission-specific event found, use second/last hash
-                        # (emission usually comes after token_decl)
-                        if not emission_hash and len(hash_matches) >= 2:
-                            emission_hash = hash_matches[-1]  # Last hash is usually emission
-                            logger.info("emission_hash_found_using_last_hash",
-                                       hash=emission_hash[:16],
-                                       total_hashes=len(hash_matches))
-                        elif not emission_hash and len(hash_matches) == 1:
-                            # If only one hash found, it might be emission
-                            emission_hash = hash_matches[0]
-                            logger.info("emission_hash_found_using_single_hash",
-                                       hash=emission_hash[:16],
-                                       note="Only one hash found, assuming it's emission")
-                        
-                        if emission_hash:
-                            break
-                    elif all_hashes:
-                        # If no structured hash matches but we found hashes in text, use last one
-                        emission_hash = all_hashes[-1]
-                        logger.info("emission_hash_found_from_all_hashes",
-                                   hash=emission_hash[:16],
-                                   total_hashes=len(all_hashes),
-                                   note="Using last hash from unstructured search")
-                        break
-            
-            # Method 2: Fallback - try ledger list (less reliable but sometimes works)
-            if not emission_hash:
-                logger.info("emission_hash_not_found_in_dag_trying_ledger")
-                for root_node in root_nodes[:1]:
-                    exit_code, stdout, _ = self.genesis._exec_cli(
+                    # Get event list to find emission event
+                    exit_code, list_stdout, _ = self.genesis._exec_cli(
                         root_node.node_id,
-                        f"ledger list -net {self.topology.network.name} -chain zerochain",
+                        f"dag event list -net {self.topology.network.name} -chain zerochain -from events -limit 10",
                         check_output=False
                     )
-                    # CRITICAL: Log full output for debugging
-                    logger.info("ledger_list_check",
+                    if exit_code == 0 and list_stdout:
+                        # Find all event hashes
+                        all_event_hashes = re.findall(r'event_hash:\s*(0x[A-Fa-f0-9]{64})', list_stdout)
+                        logger.info("dag_events_list_for_emission",
+                                   event_count=len(all_event_hashes),
+                                   hashes=all_event_hashes[:5])
+                        
+                        # Try each event to find one with emission_hash
+                        for evt_hash in all_event_hashes:
+                            exit_code2, dump2, _ = self.genesis._exec_cli(
+                                root_node.node_id,
+                                f"dag event dump -net {self.topology.network.name} -chain zerochain -event {evt_hash} -from events",
+                                check_output=False
+                            )
+                            if exit_code2 == 0 and dump2:
+                                em_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump2, re.IGNORECASE)
+                                if em_match:
+                                    emission_hash = em_match.group(1)
+                                    logger.info("emission_hash_found_in_event",
+                                               emission_hash=emission_hash[:20],
+                                               event_hash=evt_hash[:20])
+                                    break
+                        if emission_hash:
+                            break
+            
+            # Method 2: Fallback - try ledger list emis (list emissions with hashes)
+            if not emission_hash:
+                logger.info("emission_hash_not_found_in_dag_trying_ledger_emis")
+                for root_node in root_nodes[:1]:
+                    # List emissions specifically
+                    exit_code, stdout, _ = self.genesis._exec_cli(
+                        root_node.node_id,
+                        f"ledger list emis -net {self.topology.network.name}",
+                        check_output=False
+                    )
+                    logger.info("ledger_list_emis_check",
                                node_id=root_node.node_id,
                                exit_code=exit_code,
-                               stdout_length=len(stdout) if stdout else 0,
-                               stdout_full=stdout[:2000] if stdout else "EMPTY")
+                               stdout_preview=stdout[:1000] if stdout else "EMPTY")
                     
                     if exit_code == 0 and stdout:
-                        # Look for emission hash in ledger (format: hash: 0x...)
-                        hash_matches = re.findall(r'hash:\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                        # Also try finding all hashes
-                        all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                        
-                        logger.info("ledger_hash_search",
-                                   node_id=root_node.node_id,
-                                   hash_matches_count=len(hash_matches),
-                                   all_hashes_count=len(all_hashes),
-                                   hashes_preview=all_hashes[:5] if all_hashes else [])
-                        
+                        # Look for emission hash in output
+                        # Format: "hash: 0x..." or "emission_hash: 0x..."
+                        hash_matches = re.findall(r'(?:emission_)?hash:\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
                         if hash_matches:
-                            # Emission is typically the last hash (after token_decl)
-                            emission_hash = hash_matches[-1] if len(hash_matches) > 1 else hash_matches[0]
-                            logger.info("emission_hash_found_in_ledger",
-                                       hash=emission_hash[:16],
-                                       total_hashes=len(hash_matches))
+                            emission_hash = hash_matches[-1]  # Use last emission hash
+                            logger.info("emission_hash_found_in_ledger_emis",
+                                       hash=emission_hash[:20],
+                                       total_emissions=len(hash_matches))
                             break
-                        elif all_hashes:
-                            # If no structured hash matches but we found hashes, use last one
+                        # Try any 64-char hex hashes
+                        all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout)
+                        if all_hashes:
                             emission_hash = all_hashes[-1]
-                            logger.info("emission_hash_found_from_ledger_all_hashes",
-                                       hash=emission_hash[:16],
-                                       total_hashes=len(all_hashes),
-                                       note="Using last hash from unstructured search")
+                            logger.info("emission_hash_found_from_ledger_hashes",
+                                       hash=emission_hash[:20],
+                                       total_hashes=len(all_hashes))
                             break
             
             # Method 3: Fallback - try token show/info to get emission datum hash
@@ -1550,6 +1542,11 @@ class NetworkManager:
                    name=snapshot_name,
                    mode=self.snapshot_manager.mode.value)
         
+        # DISABLED mode - do nothing, keep current state
+        if self.snapshot_manager.mode == SnapshotMode.DISABLED:
+            logger.info("snapshot_mode_disabled_skipping_restore")
+            return True
+        
         # Special case for 'recreate' mode - use traditional cleanup
         if self.snapshot_manager.mode == SnapshotMode.RECREATE:
             logger.info("recreate_mode_using_clean_test_data")
@@ -1565,16 +1562,14 @@ class NetworkManager:
         result = await self.snapshot_manager.restore_snapshot(snapshot_name)
         
         if not result:
-            logger.warning("snapshot_restore_failed_fallback_to_cleanup")
-            # Restart containers even if restore failed
-            logger.info("starting_containers_after_failed_restore")
-            await self.start(rebuild=False, wait_ready=True)
-            # Only try cleanup if containers are running
-            if self.compose and self.compose.is_running():
-                await self.clean_test_data()
-            else:
-                logger.warning("containers_not_running_skipping_cleanup")
-            return False
+            logger.error("snapshot_restore_failed",
+                        name=snapshot_name,
+                        hint="Run './clean.sh' to fix permission issues, then retry")
+            raise RuntimeError(
+                f"Snapshot restore failed for '{snapshot_name}'. "
+                "This is usually caused by permission issues with Docker files. "
+                "Run './clean.sh' to remove root-owned files and try again."
+            )
         
         # Restart containers with restored data
         logger.info("starting_containers_after_snapshot_restore")

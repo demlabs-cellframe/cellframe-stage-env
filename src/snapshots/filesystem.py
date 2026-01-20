@@ -174,10 +174,10 @@ class FilesystemSnapshot(BaseSnapshot):
             # Restore data directories
             data_snapshot_dir = snapshot_dir / "data"
             if data_snapshot_dir.exists():
-                # Clean existing data first
+                # Clean existing data first using Docker (handles root-owned files)
                 if data_path.exists():
-                    logger.debug("filesystem_cleaning_existing_data")
-                    await asyncio.to_thread(shutil.rmtree, data_path, ignore_errors=True)
+                    logger.debug("filesystem_cleaning_existing_data_with_docker")
+                    await self._docker_cleanup(data_path)
                 
                 data_path.mkdir(parents=True, exist_ok=True)
                 
@@ -193,7 +193,7 @@ class FilesystemSnapshot(BaseSnapshot):
                 # Legacy snapshot format - data directly in snapshot_dir
                 logger.debug("filesystem_legacy_snapshot_format")
                 if data_path.exists():
-                    await asyncio.to_thread(shutil.rmtree, data_path, ignore_errors=True)
+                    await self._docker_cleanup(data_path)
                 
                 data_path.mkdir(parents=True, exist_ok=True)
                 
@@ -287,6 +287,35 @@ class FilesystemSnapshot(BaseSnapshot):
         
         return sorted(snapshots)
     
+    async def _docker_cleanup(self, path: Path):
+        """
+        Clean directory using Docker to handle root-owned files.
+        
+        Docker containers create files as root, which cannot be removed
+        by regular user. This uses alpine container to remove them.
+        
+        Args:
+            path: Directory to clean
+        """
+        try:
+            # Use Docker to remove root-owned files
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "run", "--rm",
+                "-v", f"{path.parent}:/cleanup_target",
+                "alpine", "sh", "-c",
+                f"rm -rf /cleanup_target/{path.name}/* 2>/dev/null; "
+                f"rm -rf /cleanup_target/{path.name} 2>/dev/null || true",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await proc.communicate()
+            logger.debug("docker_cleanup_complete", path=str(path))
+        except Exception as e:
+            logger.warning("docker_cleanup_failed_trying_rmtree", 
+                          path=str(path), error=str(e))
+            # Fallback to shutil.rmtree
+            await asyncio.to_thread(shutil.rmtree, path, ignore_errors=True)
+
     async def _rsync_copy(self, source: Path, target: Path):
         """
         Copy directory using rsync.
@@ -299,9 +328,20 @@ class FilesystemSnapshot(BaseSnapshot):
         target.parent.mkdir(parents=True, exist_ok=True)
         
         # Run rsync
+        # NOTE: Using -rlptD instead of -a to avoid owner/group preservation issues
+        # Docker creates files as root, and rsync -a tries to preserve owner/group
+        # which fails with "Operation not permitted" when running as regular user.
+        # -r: recursive
+        # -l: copy symlinks as symlinks
+        # -p: preserve permissions
+        # -t: preserve modification times
+        # -D: preserve device files and special files
+        # --no-owner --no-group: explicitly skip owner/group (redundant but clear)
         proc = await asyncio.create_subprocess_exec(
             "rsync",
-            "-a",  # archive mode
+            "-rlptD",  # archive mode WITHOUT owner/group
+            "--no-owner",
+            "--no-group",
             "--delete",  # delete files in target not in source
             str(source) + "/",  # trailing slash important!
             str(target) + "/",

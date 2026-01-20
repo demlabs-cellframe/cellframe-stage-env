@@ -10,8 +10,8 @@ network:
   topology: default
 
 includes:
-  - ../common/create_test_cert.yml
   - ../common/set_net_default.yml
+  - ../common/set_root_cert.yml
 
 defaults:
   node: node1
@@ -20,27 +20,31 @@ defaults:
 setup:
   - cli: wallet new -w test_wallet
   
-  - cli: wallet info -w test_wallet
+  - cli: wallet info -w test_wallet -net {{network_name}}
     save_wallet: wallet_addr
 
 test:
-  # Create and emit token
-  - cli: token_decl -token WAITDEMO -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs test_cert
-    save: token_hash
+  # Create and emit token (needs ROOT certs for zerochain)
+  - cli: token_decl -token WAITDEMO -total_supply 1000000 -decimals 18 -signs_total 2 -signs_emission 2 -certs {{root_certs}} -chain zerochain
+    save_hash: token_hash
   
-  - cli: token_emit -token WAITDEMO -value 10000 -addr {{wallet_addr}} -certs test_cert
-    save: emission_hash
+  - wait_for_datum: "{{token_hash}}"
+    chain: zerochain
+  
+  - cli: token_emit -token WAITDEMO -emission_value 10000 -addr {{wallet_addr}} -certs {{root_certs}} -chain zerochain
+    save_hash: emission_hash
   
   # MODERN: Intelligent waiting - monitors actual datum lifecycle
   # Replaces: wait: 30s (guessing how long to wait)
   - wait_for_datum: "{{emission_hash}}"
+    chain: zerochain
     # All defaults are optimal - no need to override!
     # Timeouts: 0.5s mempool → 30s block → 60s propagation
     save_status: emission_status
 
 check:
   # Verify emission succeeded
-  - cli: token info -name WAITDEMO
+  - cli: token info -name WAITDEMO -net {{network_name}}
     contains: "WAITDEMO"
   
   # Status should be 'propagated' or 'in_blocks'
@@ -59,34 +63,36 @@ network:
   topology: default
 
 includes:
-  - ../common/create_test_cert.yml
   - ../common/set_net_default.yml
+  - ../common/set_root_cert.yml
 
 setup:
   - cli: wallet new -w sender
   - cli: wallet new -w receiver
   
-  - cli: wallet info -w sender
+  - cli: wallet info -w sender -net {{network_name}}
     save_wallet: sender_addr
   
-  - cli: wallet info -w receiver
+  - cli: wallet info -w receiver -net {{network_name}}
     save_wallet: receiver_addr
   
-  # Prepare tokens
-  - cli: token_decl -token TXDEMO -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs test_cert
-    save: declaration_hash
+  # Prepare tokens (needs ROOT certs for zerochain)
+  - cli: token_decl -token TXDEMO -total_supply 1000000 -decimals 18 -signs_total 2 -signs_emission 2 -certs {{root_certs}} -chain zerochain
+    save_hash: declaration_hash
 
   - wait_for_datum: "{{declaration_hash}}"
+    chain: zerochain
 
-  - cli: token_emit -token TXDEMO -value 10000 -addr {{sender_addr}} -certs test_cert
-    save: emission_hash
+  - cli: token_emit -token TXDEMO -emission_value 10000 -addr {{sender_addr}} -certs {{root_certs}} -chain zerochain
+    save_hash: emission_hash
 
   - wait_for_datum: "{{emission_hash}}"
+    chain: zerochain
 
 test:
-  # Create transaction
-  - cli: tx_create -token TXDEMO -from {{emission_hash}}:0 -to_addr {{receiver_addr}} -value 5000 -fee 0.1
-    save: tx_hash
+  # Create transaction (goes to main chain)
+  - cli: tx_create -token TXDEMO -from_emission {{emission_hash}} -to_addr {{receiver_addr}} -value 5000 -fee 0.1 -cert {{root_cert_single}}
+    save_hash: tx_hash
   
   # Monitor transaction with custom timeouts (usually NOT needed!)
   - wait_for_datum: "{{tx_hash}}"
@@ -95,7 +101,7 @@ test:
     check_interval: 1       # Check every second instead of 2s
 
 check:
-  - cli: tx_history -tx {{tx_hash}}
+  - cli: tx_history -tx {{tx_hash}} -net {{network_name}}
     contains: "{{tx_hash}}"
 
 ---
@@ -109,39 +115,41 @@ network:
   topology: default
 
 includes:
-  - ../common/create_test_cert.yml
   - ../common/set_net_default.yml
+  - ../common/set_root_cert.yml
   - ../common/wallets/create_wallet.yml  # Provides wallet_addr
 
 test:
-  # Create multiple tokens
-  - cli: token_decl -token BATCH1 -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs test_cert
-    save: token1
+  # Create multiple tokens (needs ROOT certs for zerochain)
+  - cli: token_decl -token BATCH1 -total_supply 1000000 -decimals 18 -signs_total 2 -signs_emission 2 -certs {{root_certs}} -chain zerochain
+    save_hash: token1
   
-  - cli: token_decl -token BATCH2 -total_supply 2000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs test_cert
-    save: token2
+  - cli: token_decl -token BATCH2 -total_supply 2000000 -decimals 18 -signs_total 2 -signs_emission 2 -certs {{root_certs}} -chain zerochain
+    save_hash: token2
   
-  # Wait for BOTH tokens to be processed
+  # Wait for BOTH tokens to be processed on zerochain
   - wait_for_datum:
       - "{{token1}}"
       - "{{token2}}"
+    chain: zerochain
     # Monitors both concurrently - returns when BOTH are done!
 
   # Now emit from both tokens
-  - cli: token_emit -token BATCH1 -value 1000 -addr {{wallet_addr}} -certs test_cert
-    save: emit1
+  - cli: token_emit -token BATCH1 -emission_value 1000 -addr {{wallet_addr}} -certs {{root_certs}} -chain zerochain
+    save_hash: emit1
   
-  - cli: token_emit -token BATCH2 -value 2000 -addr {{wallet_addr}} -certs test_cert
-    save: emit2
+  - cli: token_emit -token BATCH2 -emission_value 2000 -addr {{wallet_addr}} -certs {{root_certs}} -chain zerochain
+    save_hash: emit2
   
-  # Wait for both emissions
+  # Wait for both emissions on zerochain
   - wait_for_datum: ["{{emit1}}", "{{emit2}}"]
+    chain: zerochain
 
 check:
-  - cli: token list
+  - cli: token list -net {{network_name}}
     contains: "BATCH1"
   
-  - cli: token list
+  - cli: token list -net {{network_name}}
     contains: "BATCH2"
 
 ---
@@ -155,16 +163,18 @@ network:
   topology: default
 
 includes:
-  - ../common/create_test_cert.yml
   - ../common/set_net_default.yml
+  - ../common/set_root_cert.yml
   - ../common/wallets/create_wallet.yml
 
 test:
-  - cli: token_decl -token MINIMAL -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs test_cert
-    save: hash
+  # Note: zerochain requires ROOT certs for authorization
+  - cli: token_decl -token MINIMAL -total_supply 1000000 -decimals 18 -signs_total 2 -signs_emission 2 -certs {{root_certs}} -chain zerochain
+    save_hash: hash
   
   # ✅ BEST PRACTICE: Minimal syntax - all defaults are optimal!
   - wait_for_datum: "{{hash}}"
+    chain: zerochain
   
   # That's it! No timeout overrides, no extra params.
   # Fails fast (0.5s) if datum not created
@@ -172,6 +182,6 @@ test:
   # Default timeouts are tuned for real network behavior
 
 check:
-  - cli: token info -name MINIMAL
+  - cli: token info -name MINIMAL -net {{network_name}}
     contains: "MINIMAL"
 

@@ -750,7 +750,7 @@ class ScenarioExecutor:
                         check.timeout = defaults.timeout
             
             if isinstance(check, CLICheck):
-                await self.cli_check_executor.execute(check, ctx)
+                await self.cli_check_executor.execute(check, ctx, defaults)
             elif isinstance(check, RPCCheck):
                 await self.rpc_check_executor.execute(check, ctx)
             elif isinstance(check, PythonCheck):
