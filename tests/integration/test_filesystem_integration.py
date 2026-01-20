@@ -63,7 +63,7 @@ paths:
 """)
         
         loader = ConfigLoader(tmp_path)
-        config = loader.load_config_file(config_file)
+        config = loader.load_yaml(config_file)
         
         paths = config["paths"]
         assert paths["cache_dir"] == "custom_cache"

@@ -86,7 +86,7 @@ networks:
         
         # Test resolution
         container_name = container_manager.resolve_node_to_container("node1")
-        assert container_name == "cellframe-node-node1"
+        assert container_name == "cellframe-stage-node1"
     
     @pytest.mark.asyncio
     async def test_container_exec_with_network_context(self, container_manager, mock_docker_client):

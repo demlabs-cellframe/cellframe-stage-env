@@ -64,7 +64,7 @@ class TestScenarioExecutionPipeline:
     def test_parser_to_executor_flow(self, simple_scenario_file, temp_base_path, mock_container_manager):
         """Test that parsed scenario can be executed."""
         # Parse scenario
-        parser = ScenarioParser()
+        parser = ScenarioParser(tmp_path)
         scenario = parser.parse(simple_scenario_file)
         
         assert scenario is not None
@@ -80,7 +80,7 @@ class TestScenarioExecutionPipeline:
     async def test_full_scenario_execution_pipeline(self, simple_scenario_file, temp_base_path, mock_container_manager):
         """Test full pipeline: Parse -> Execute -> Verify."""
         # Parse
-        parser = ScenarioParser()
+        parser = ScenarioParser(tmp_path)
         scenario = parser.parse(simple_scenario_file)
         
         # Execute
@@ -116,7 +116,7 @@ class TestScenarioExecutionPipeline:
         }
         scenario_file.write_text(yaml.dump(scenario_content))
         
-        parser = ScenarioParser()
+        parser = ScenarioParser(tmp_path)
         scenario = parser.parse(scenario_file)
         
         # Variables should be available for executor
@@ -139,7 +139,7 @@ class TestScenarioExecutionPipeline:
         }
         scenario_file.write_text(yaml.dump(scenario_content))
         
-        parser = ScenarioParser()
+        parser = ScenarioParser(tmp_path)
         scenario = parser.parse(scenario_file)
         
         assert len(scenario.steps) == 3
@@ -158,7 +158,7 @@ class TestScenarioErrorPropagation:
         invalid_scenario = tmp_path / "invalid.yml"
         invalid_scenario.write_text("invalid: yaml: content:")
         
-        parser = ScenarioParser()
+        parser = ScenarioParser(tmp_path)
         
         with pytest.raises((yaml.YAMLError, ValueError, KeyError)):
             parser.parse(invalid_scenario)

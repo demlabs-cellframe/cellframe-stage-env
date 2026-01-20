@@ -21,13 +21,12 @@ class TestBuildConfigIntegration:
         (temp_dir / "config").mkdir()
         (temp_dir / "artifacts").mkdir()
         
-        # Create minimal config
-        config_file = temp_dir / "config" / "config.yml"
-        config_file.write_text("""
-build:
+        # Create minimal config in YAML format
+        config_file = temp_dir / "config" / "stage-env.cfg"
+        config_file.write_text("""build:
   node_repo: /fake/cellframe-node
   build_type: Debug
-  
+
 paths:
   artifacts_dir: artifacts
   build_dir: build
@@ -40,8 +39,8 @@ paths:
         """Test that BuildManager respects paths from ConfigLoader."""
         # Load config
         loader = ConfigLoader(temp_workspace)
-        config_file = temp_workspace / "config" / "config.yml"
-        config_data = loader.load_config_file(config_file)
+        config_file = temp_workspace / "config" / "stage-env.cfg"
+        config_data = loader.load_yaml(config_file)
         
         # BuildManager should use config paths
         build_config = config_data.get("build", {})
@@ -57,8 +56,8 @@ paths:
     def test_build_artifacts_placed_in_config_location(self, temp_workspace):
         """Test that build artifacts are placed where config specifies."""
         loader = ConfigLoader(temp_workspace)
-        config_file = temp_workspace / "config" / "config.yml"
-        config_data = loader.load_config_file(config_file)
+        config_file = temp_workspace / "config" / "stage-env.cfg"
+        config_data = loader.load_yaml(config_file)
         
         artifacts_dir = temp_workspace / config_data["paths"]["artifacts_dir"]
         
@@ -70,16 +69,15 @@ paths:
     
     def test_build_config_validation_integration(self, temp_workspace):
         """Test build config validation through ConfigLoader."""
-        # Create invalid build config
-        invalid_config = temp_workspace / "config" / "invalid.yml"
-        invalid_config.write_text("""
-build:
+        # Create invalid build config in INI format
+        invalid_config = temp_workspace / "config" / "invalid.cfg"
+        invalid_config.write_text("""build:
   # Missing required field: node_repo
   build_type: Release
 """)
         
         loader = ConfigLoader(temp_workspace)
-        config_data = loader.load_config_file(invalid_config)
+        config_data = loader.load_yaml(invalid_config)
         
         # BuildManager should handle missing fields
         build_config = config_data.get("build", {})

@@ -18,7 +18,7 @@ class TestErrorPropagation:
         loader = ConfigLoader(tmp_path)
         
         with pytest.raises(Exception):
-            loader.load_config_file(invalid_config)
+            loader.load_yaml(invalid_config)
     
     def test_missing_file_error_handling(self, tmp_path):
         """Test missing file errors handled gracefully."""
@@ -28,7 +28,7 @@ class TestErrorPropagation:
         nonexistent = tmp_path / "nonexistent.yml"
         
         with pytest.raises(FileNotFoundError):
-            loader.load_config_file(nonexistent)
+            loader.load_yaml(nonexistent)
     
     def test_docker_connection_error_handling(self):
         """Test Docker connection errors are caught."""
@@ -57,7 +57,7 @@ class TestValidationIntegration:
             }
         }))
         
-        parser = ScenarioParser()
+        parser = ScenarioParser(tmp_path)
         
         # Should catch validation error
         with pytest.raises(Exception):

@@ -48,20 +48,18 @@ class TestMonitoringIntegration:
     
     def test_datum_monitor_with_container_integration(self, temp_base_path, mock_container_manager):
         """Test DatumMonitor integrates with DockerContainerManager."""
-        network_config = {"name": "stagenet"}
         
         with patch('docker.from_env'):
-            monitor = DatumMonitor(temp_base_path, network_config, mock_container_manager)
+            monitor = DatumMonitor(node_cli_path="test-cli", log_file=temp_base_path / "monitor.log")
             
             assert monitor is not None
     
     @pytest.mark.asyncio
     async def test_monitor_collects_data_from_containers(self, temp_base_path, mock_container_manager):
         """Test monitoring collects data via container exec."""
-        network_config = {"name": "stagenet"}
         
         with patch('docker.from_env'):
-            monitor = DatumMonitor(temp_base_path, network_config, mock_container_manager)
+            monitor = DatumMonitor(node_cli_path="test-cli", log_file=temp_base_path / "monitor.log")
             
             # Mock check method
             monitor.check_datum_status = AsyncMock(return_value={
@@ -77,23 +75,29 @@ class TestMonitoringIntegration:
     
     def test_validator_monitor_integration(self, temp_base_path, mock_container_manager):
         """Test ValidatorMonitor integrates with network."""
-        network_config = {
-            "name": "stagenet",
-            "validators": ["node1", "node2"]
-        }
+        from src.monitoring.validator import MonitorConfig
+        
+        nodes = []  # Empty for test
+        network_name = "stagenet"
+        expected_order_count = 3
+        config = MonitorConfig()
         
         with patch('docker.from_env'):
-            monitor = ValidatorMonitor(temp_base_path, network_config, mock_container_manager)
+            monitor = ValidatorMonitor(
+                nodes=nodes,
+                network_name=network_name,
+                expected_order_count=expected_order_count,
+                config=config
+            )
             
             assert monitor is not None
     
     @pytest.mark.asyncio
     async def test_monitoring_logs_to_filesystem(self, temp_base_path, mock_container_manager):
         """Test that monitoring results are logged to filesystem."""
-        network_config = {"name": "stagenet"}
         
         with patch('docker.from_env'):
-            monitor = DatumMonitor(temp_base_path, network_config, mock_container_manager)
+            monitor = DatumMonitor(node_cli_path="test-cli", log_file=temp_base_path / "monitor.log")
             
             # Create log file
             log_file = temp_base_path / "logs" / "monitoring.log"
