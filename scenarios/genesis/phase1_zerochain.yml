@@ -279,12 +279,6 @@ test:
     node: "{{first_root}}"
     save_wallet: fee_addr
   
-  # Set fee_addr on master nodes
-  - config: "{{network_name}}"
-    nodes: "{{master_nodes}}"
-    set:
-      fee_addr: "{{fee_addr}}"
-  
   # Enable seed_mode on seed nodes (root nodes)
   - config: "cellframe-node"
     nodes: "{{seed_nodes}}"

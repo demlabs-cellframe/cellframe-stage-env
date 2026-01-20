@@ -607,7 +607,7 @@ class DockerComposeManager:
         except subprocess.CalledProcessError as e:
             # Check if error is "image already exists" - retry with --no-build
             if "already exists" in str(e.stderr if hasattr(e, 'stderr') else e):
-                logger.warning("retrying_with_no_build", reason="image_already_exists")
+                logger.info("retrying_with_no_build", reason="image_already_exists")
                 cmd_retry = cmd.copy()
                 if "--no-build" not in cmd_retry:
                     # Insert --no-build before services
