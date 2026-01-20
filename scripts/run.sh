@@ -28,18 +28,20 @@ success() { echo -e "${GREEN}[ OK ]${NC} $1"; }
 error() { echo -e "${RED}[ERR ]${NC} $1" >&2; }
 warning() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
-# Directories
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-STAGE_ENV_WRAPPER="$SCRIPT_DIR/stage-env/stage-env"
-STAGE_ENV_CONFIG="$SCRIPT_DIR/stage-env/config/stage-env.cfg"
+# Resolve actual script location (following symlinks)
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Navigate from scripts/ up to tests/
+TESTS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="$(dirname "$TESTS_DIR")"
+STAGE_ENV_WRAPPER="$TESTS_DIR/stage-env/stage-env"
+STAGE_ENV_CONFIG="$TESTS_DIR/stage-env/config/stage-env.cfg"
 
 # Test directories
-E2E_TESTS="$SCRIPT_DIR/e2e"
-SCENARIOS_TESTS="$SCRIPT_DIR/e2e"
-FUNCTIONAL_TESTS="$SCRIPT_DIR/functional"
-REGRESSION_TESTS="$SCRIPT_DIR/regression"
-STAGE_ENV_INTEGRATION_BASE_TESTS="$SCRIPT_DIR/stage-env/tests/integration/scenarios/base"
+E2E_TESTS="$TESTS_DIR/e2e"
+SCENARIOS_TESTS="$TESTS_DIR/e2e"
+FUNCTIONAL_TESTS="$TESTS_DIR/functional"
+REGRESSION_TESTS="$TESTS_DIR/regression"
+STAGE_ENV_INTEGRATION_BASE_TESTS="$TESTS_DIR/stage-env/tests/integration/scenarios/base"
 
 # Build directories
 TEST_BUILD_DIR="$PROJECT_ROOT/build"
@@ -104,13 +106,18 @@ while [[ $# -gt 0 ]]; do
             echo "  --clean         Clean cache before running"
             echo "  --keep-running  Don't stop the network after tests"
             echo "  --rebuild       Rebuild Docker images"
-            echo "  --skip-build    Skip building cellframe-node (use existing)"
+            echo "  --skip-build    Skip building cellframe-node (use existing .deb or config)"
             echo "  --pkgs-update   Update packages in running containers"
             echo "  --stop          Stop stage environment"
             echo "  -h, --help      Show this help message"
             echo ""
+            echo "Node source (stage-env.cfg [node_source]):"
+            echo "  type=local      Build from source (default in cellframe-node repo)"
+            echo "  type=url        Download from URL (no build, uses 'url' parameter)"
+            echo ""
             echo "Examples:"
-            echo "  $0                                    # Run all tests"
+            echo "  $0                                    # Build and run all tests"
+            echo "  $0 --skip-build                       # Use existing package or URL from config"
             echo "  $0 --e2e                              # Run all E2E tests"
             echo "  $0 --clean --e2e                      # Clean cache and run E2E tests"
             echo "  $0 --rebuild --e2e                    # Rebuild images and run E2E tests"
@@ -135,7 +142,7 @@ done
 if [ "$STOP_ENV" = true ]; then
     info "Stopping stage environment..."
     if [ -x "$STAGE_ENV_WRAPPER" ]; then
-        pushd "$SCRIPT_DIR/stage-env" > /dev/null
+        pushd "$TESTS_DIR/stage-env" > /dev/null
         STAGE_ENV_CONFIG_ABS="$(cd "$(dirname "$STAGE_ENV_CONFIG")" && pwd)/$(basename "$STAGE_ENV_CONFIG")"
         ./stage-env --config="$STAGE_ENV_CONFIG_ABS" stop || true
         popd > /dev/null
@@ -151,7 +158,7 @@ fi
 if [ "$PKGS_UPDATE" = true ]; then
     info "Updating packages in running containers..."
     if [ -x "$STAGE_ENV_WRAPPER" ]; then
-        pushd "$SCRIPT_DIR/stage-env" > /dev/null
+        pushd "$TESTS_DIR/stage-env" > /dev/null
         STAGE_ENV_CONFIG_ABS="$(cd "$(dirname "$STAGE_ENV_CONFIG")" && pwd)/$(basename "$STAGE_ENV_CONFIG")"
         ./stage-env --config="$STAGE_ENV_CONFIG_ABS" pkgs-update || exit $?
         popd > /dev/null
@@ -191,55 +198,97 @@ fi
 
 success "Prerequisites OK"
 
-# Detect if running in cellframe-node repository and build local package
-DEB_PACKAGE=""
+# Check node_source.type from config
+NODE_SOURCE_TYPE=""
+if [ -f "$STAGE_ENV_CONFIG" ]; then
+    NODE_SOURCE_TYPE=$(python3 -c "
+import configparser
+config = configparser.ConfigParser()
+config.read('$STAGE_ENV_CONFIG')
+print(config.get('node_source', 'type', fallback='').strip())
+" 2>/dev/null || echo "")
+fi
+
+# Detect if running in cellframe-node repository
+IN_CELLFRAME_REPO=false
 if [ -f "$PROJECT_ROOT/CMakeLists.txt" ] && grep -q "cellframe-node" "$PROJECT_ROOT/CMakeLists.txt"; then
-    if $SKIP_BUILD; then
-        info "Skipping build (--skip-build specified)"
+    IN_CELLFRAME_REPO=true
+fi
+
+# Decide whether to build based on config and flags
+SHOULD_BUILD=false
+DEB_PACKAGE=""
+
+if [ "$NODE_SOURCE_TYPE" = "url" ]; then
+    # Config says use URL - don't build, use config as-is
+    info "Using URL from config (type=url)"
+    NODE_URL=$(python3 -c "
+import configparser
+config = configparser.ConfigParser()
+config.read('$STAGE_ENV_CONFIG')
+print(config.get('node_source', 'url', fallback=''))
+" 2>/dev/null || echo "")
+    if [ -n "$NODE_URL" ]; then
+        success "Node source: $NODE_URL"
+    else
+        error "type=url but no url specified in config"
+        exit 1
+    fi
+elif $SKIP_BUILD; then
+    # --skip-build flag: use existing local package or config
+    info "Skipping build (--skip-build specified)"
+    if $IN_CELLFRAME_REPO; then
         DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f 2>/dev/null | head -n 1)
         if [ -n "$DEB_PACKAGE" ]; then
             success "Using existing package: $(basename "$DEB_PACKAGE")"
         else
-            warning "No existing package found in $TEST_BUILD_DIR"
+            warning "No existing package found in $TEST_BUILD_DIR - using config"
         fi
-    else
-        info "Detected cellframe-node repository - building local package..."
-        mkdir -p "$TEST_BUILD_DIR"
-        cd "$TEST_BUILD_DIR"
-        
-        info "Configuring with CMake (Debug mode)..."
-        cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=On .. || {
-            error "CMake configuration failed"
-            exit 1
-        }
-        
-        info "Building cellframe-node..."
-        make -j$(nproc) cellframe-node || {
-            error "Build failed"
-            exit 1
-        }
-        
-        info "Creating .deb package..."
-        cpack -G DEB || {
-            error "Packaging failed"
-            exit 1
-        }
-        
-        DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f | head -n 1)
-        
-        if [ -z "$DEB_PACKAGE" ]; then
-            error "No .deb package found after build"
-            exit 1
-        fi
-        
-        success "Package created: $(basename "$DEB_PACKAGE")"
-        cd "$PROJECT_ROOT"
+    fi
+elif $IN_CELLFRAME_REPO; then
+    # In cellframe-node repo with type=local or no type - build
+    SHOULD_BUILD=true
+fi
+
+# Build if needed
+if $SHOULD_BUILD; then
+    info "Detected cellframe-node repository - building local package..."
+    mkdir -p "$TEST_BUILD_DIR"
+    cd "$TEST_BUILD_DIR"
+    
+    info "Configuring with CMake (Debug mode)..."
+    cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=On .. || {
+        error "CMake configuration failed"
+        exit 1
+    }
+    
+    info "Building cellframe-node..."
+    make -j$(nproc) cellframe-node || {
+        error "Build failed"
+        exit 1
+    }
+    
+    info "Creating .deb package..."
+    cpack -G DEB || {
+        error "Packaging failed"
+        exit 1
+    }
+    
+    DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f | head -n 1)
+    
+    if [ -z "$DEB_PACKAGE" ]; then
+        error "No .deb package found after build"
+        exit 1
     fi
     
-    # Update stage-env.cfg to use local package
-    if [ -n "$DEB_PACKAGE" ] && [ -f "$STAGE_ENV_CONFIG" ]; then
-        info "Updating stage-env.cfg with local package path..."
-        python3 -c "
+    success "Package created: $(basename "$DEB_PACKAGE")"
+    cd "$PROJECT_ROOT"
+fi
+
+# Update stage-env.cfg to use local package (only if we have a package)
+if [ -n "$DEB_PACKAGE" ] && [ -f "$STAGE_ENV_CONFIG" ]; then
+    info "Updating stage-env.cfg with local package path..."
+    python3 -c "
 import configparser
 config = configparser.ConfigParser()
 config.read('$STAGE_ENV_CONFIG')
@@ -253,11 +302,10 @@ config.set('node_source', 'local_path', '$DEB_PACKAGE')
 with open('$STAGE_ENV_CONFIG', 'w') as f:
     config.write(f)
 " || {
-            warning "Failed to update stage-env.cfg automatically"
-        }
-        success "stage-env.cfg updated to use local package"
-    fi
-else
+        warning "Failed to update stage-env.cfg automatically"
+    }
+    success "stage-env.cfg updated to use local package"
+elif [ "$NODE_SOURCE_TYPE" != "url" ] && ! $IN_CELLFRAME_REPO; then
     info "Not in cellframe-node repository - using configured node source"
 fi
 
@@ -266,15 +314,15 @@ if $CLEAN_BEFORE; then
     warning "Cleaning test environment..."
     
     if [ -x "$STAGE_ENV_WRAPPER" ]; then
-        pushd "$SCRIPT_DIR/stage-env" > /dev/null
+        pushd "$TESTS_DIR/stage-env" > /dev/null
         STAGE_ENV_CONFIG_ABS="$(cd "$(dirname "$STAGE_ENV_CONFIG")" && pwd)/$(basename "$STAGE_ENV_CONFIG")"
         ./stage-env --config="$STAGE_ENV_CONFIG_ABS" clean --all || true
         popd > /dev/null
     fi
     
     # Additional cleanup
-    STAGE_ENV_DIR="$SCRIPT_DIR/stage-env"
-    TESTING_DIR="$SCRIPT_DIR/testing"
+    STAGE_ENV_DIR="$TESTS_DIR/stage-env"
+    TESTING_DIR="$TESTS_DIR/testing"
     
     if [ -d "$TESTING_DIR/snapshots" ] && [ "$(ls -A "$TESTING_DIR/snapshots" 2>/dev/null)" ]; then
         info "Removing remaining snapshots..."
@@ -303,7 +351,7 @@ info "════════════════════════�
 echo ""
 
 # Start stage environment
-pushd "$SCRIPT_DIR/stage-env" > /dev/null
+pushd "$TESTS_DIR/stage-env" > /dev/null
 STAGE_ENV_CONFIG_ABS="$(cd "$(dirname "$STAGE_ENV_CONFIG")" && pwd)/$(basename "$STAGE_ENV_CONFIG")"
 
 # Build start arguments
@@ -332,7 +380,7 @@ if [ $E2E_EXIT -eq 0 ]; then
             else
                 abs_path="$PROJECT_ROOT/$test_path"
             fi
-            stage_env_dir="$SCRIPT_DIR/stage-env"
+            stage_env_dir="$TESTS_DIR/stage-env"
             rel_from_stage_env=$(realpath --relative-to="$stage_env_dir" "$abs_path" 2>/dev/null || echo "$abs_path")
             if [ -e "$abs_path" ]; then
                 TEST_DIRS+=("$rel_from_stage_env")
@@ -342,19 +390,19 @@ if [ $E2E_EXIT -eq 0 ]; then
         done
     else
         if $RUN_E2E && [ -d "$E2E_TESTS" ]; then
-            stage_env_dir="$SCRIPT_DIR/stage-env"
+            stage_env_dir="$TESTS_DIR/stage-env"
             rel_path=$(realpath --relative-to="$stage_env_dir" "$E2E_TESTS")
             TEST_DIRS+=("$rel_path")
         fi
         
         if $RUN_FUNCTIONAL && [ -d "$FUNCTIONAL_TESTS" ]; then
-            stage_env_dir="$SCRIPT_DIR/stage-env"
+            stage_env_dir="$TESTS_DIR/stage-env"
             rel_path=$(realpath --relative-to="$stage_env_dir" "$FUNCTIONAL_TESTS")
             TEST_DIRS+=("$rel_path")
         fi
         
         if $RUN_REGRESSION && [ -d "$REGRESSION_TESTS" ]; then
-            stage_env_dir="$SCRIPT_DIR/stage-env"
+            stage_env_dir="$TESTS_DIR/stage-env"
             rel_path=$(realpath --relative-to="$stage_env_dir" "$REGRESSION_TESTS")
             TEST_DIRS+=("$rel_path")
         fi
@@ -364,7 +412,7 @@ if [ $E2E_EXIT -eq 0 ]; then
     if [ ${#TEST_DIRS[@]} -gt 0 ]; then
         info "Running ${#TEST_DIRS[@]} test suite(s)..."
         
-        pushd "$SCRIPT_DIR/stage-env" > /dev/null
+        pushd "$TESTS_DIR/stage-env" > /dev/null
         ./stage-env --config="$STAGE_ENV_CONFIG_ABS" run-tests --no-start-network "${TEST_DIRS[@]}" || TEST_EXIT=$?
         popd > /dev/null
         
@@ -382,7 +430,7 @@ if [ $E2E_EXIT -eq 0 ]; then
         warning "Keeping stage environment running (--keep-running)"
     else
         info "Stopping stage environment..."
-        pushd "$SCRIPT_DIR/stage-env" > /dev/null
+        pushd "$TESTS_DIR/stage-env" > /dev/null
         ./stage-env --config="$STAGE_ENV_CONFIG_ABS" stop || true
         popd > /dev/null
         success "Stage environment stopped"
@@ -426,7 +474,7 @@ fi
 echo "════════════════════════════════════"
 
 # Find and display detailed test results from summary.json
-LATEST_RUN_DIR=$(find "$SCRIPT_DIR/testing/artifacts" -maxdepth 1 -type d -name "run_*" 2>/dev/null | sort -r | head -n 1)
+LATEST_RUN_DIR=$(find "$TESTS_DIR/testing/artifacts" -maxdepth 1 -type d -name "run_*" 2>/dev/null | sort -r | head -n 1)
 if [ -n "$LATEST_RUN_DIR" ] && [ -f "$LATEST_RUN_DIR/summary.json" ]; then
     echo ""
     echo "════════════════════════════════════"
