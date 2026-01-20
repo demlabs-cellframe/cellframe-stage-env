@@ -7,7 +7,7 @@ import shutil
 from unittest.mock import MagicMock, patch
 import json
 
-from src.snapshots.manager import SnapshotManager
+from src.snapshots.manager import SnapshotManager, SnapshotMode
 
 
 class TestSnapshotFilesystemIntegration:
@@ -41,7 +41,7 @@ class TestSnapshotFilesystemIntegration:
     
     def test_snapshot_manager_with_real_filesystem(self, temp_base_path, snapshot_config):
         """Test SnapshotManager creates and manages snapshots on real filesystem."""
-        manager = SnapshotManager(temp_base_path, snapshot_config)
+        manager = SnapshotManager(temp_base_path, mode=SnapshotMode.FILESYSTEM, config=snapshot_config)
         
         # Verify manager initialized correctly
         assert manager.base_path == temp_base_path
@@ -49,7 +49,7 @@ class TestSnapshotFilesystemIntegration:
     
     def test_snapshot_creation_writes_metadata(self, temp_base_path, snapshot_config):
         """Test that snapshot creation writes metadata file."""
-        manager = SnapshotManager(temp_base_path, snapshot_config)
+        manager = SnapshotManager(temp_base_path, mode=SnapshotMode.FILESYSTEM, config=snapshot_config)
         
         # Mock create_snapshot to write metadata
         snapshot_name = "test_snapshot"
@@ -74,7 +74,7 @@ class TestSnapshotFilesystemIntegration:
     
     def test_snapshot_list_integration(self, temp_base_path, snapshot_config):
         """Test listing snapshots integrates with filesystem."""
-        manager = SnapshotManager(temp_base_path, snapshot_config)
+        manager = SnapshotManager(temp_base_path, mode=SnapshotMode.FILESYSTEM, config=snapshot_config)
         
         # Create multiple snapshot directories
         snapshots_root = temp_base_path / "snapshots"
@@ -94,7 +94,7 @@ class TestSnapshotFilesystemIntegration:
     
     def test_snapshot_restore_integrates_with_filesystem(self, temp_base_path, snapshot_config):
         """Test snapshot restore reads from filesystem."""
-        manager = SnapshotManager(temp_base_path, snapshot_config)
+        manager = SnapshotManager(temp_base_path, mode=SnapshotMode.FILESYSTEM, config=snapshot_config)
         
         # Create snapshot structure
         snapshot_dir = temp_base_path / "snapshots" / "restore_test"
@@ -119,7 +119,7 @@ class TestSnapshotFilesystemIntegration:
     
     def test_snapshot_cleanup_removes_old_snapshots(self, temp_base_path, snapshot_config):
         """Test snapshot cleanup integrates with filesystem operations."""
-        manager = SnapshotManager(temp_base_path, snapshot_config)
+        manager = SnapshotManager(temp_base_path, mode=SnapshotMode.FILESYSTEM, config=snapshot_config)
         
         snapshots_root = temp_base_path / "snapshots"
         
@@ -146,7 +146,7 @@ class TestSnapshotConfigIntegration:
             "compression": "squashfs"
         }
         
-        manager = SnapshotManager(tmp_path, config)
+        manager = SnapshotManager(tmp_path, mode=SnapshotMode.FILESYSTEM, config=config)
         
         expected_snapshot_path = tmp_path / custom_snapshot_dir
         assert manager.config["snapshot_dir"] == custom_snapshot_dir
@@ -159,7 +159,7 @@ class TestSnapshotConfigIntegration:
             "compression_level": 9
         }
         
-        manager = SnapshotManager(tmp_path, config)
+        manager = SnapshotManager(tmp_path, mode=SnapshotMode.FILESYSTEM, config=config)
         
         assert manager.config["compression"] == "gzip"
         assert manager.config["compression_level"] == 9
@@ -171,7 +171,7 @@ class TestSnapshotDockerIntegration:
     def test_snapshot_with_running_containers(self, tmp_path):
         """Test snapshot creation while containers are running (mocked)."""
         config = {"snapshot_dir": "snapshots"}
-        manager = SnapshotManager(tmp_path, config)
+        manager = SnapshotManager(tmp_path, mode=SnapshotMode.FILESYSTEM, config=config)
         
         # Mock Docker client
         with patch('docker.from_env') as mock_docker:
