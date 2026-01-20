@@ -700,6 +700,9 @@ class DockerComposeManager:
         """
         Restart services (stop + start).
         
+        If containers don't exist, they will be created first via 'up'.
+        This handles the case when containers were removed but need to be restarted.
+        
         Args:
             services: List of service names (None = all)
         """
@@ -707,13 +710,25 @@ class DockerComposeManager:
         
         from src.utils.cli import run_command
         
-        cmd = ["docker", "compose", "-f", str(self.compose_file),
-               "-p", self.project_name, "restart"]
+        # First, ensure all requested services exist by running 'up -d'
+        # This creates containers that don't exist yet, and does nothing for running ones
+        up_cmd = ["docker", "compose", "-f", str(self.compose_file),
+                  "-p", self.project_name, "up", "-d", "--no-recreate"]
         
         if services:
-            cmd.extend(services)
+            up_cmd.extend(services)
         
-        run_command(cmd, cwd=self.project_dir)
+        run_command(up_cmd, cwd=self.project_dir)
+        logger.info("services_ensured_exist")
+        
+        # Now restart all the services (they all exist now)
+        restart_cmd = ["docker", "compose", "-f", str(self.compose_file),
+                       "-p", self.project_name, "restart"]
+        
+        if services:
+            restart_cmd.extend(services)
+        
+        run_command(restart_cmd, cwd=self.project_dir)
         logger.info("services_restarted")
     
     def pause(self, services: Optional[List[str]] = None) -> None:
