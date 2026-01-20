@@ -759,127 +759,139 @@ class NetworkManager:
             await consensus_monitor.wait_for_links_connecting_state(timeout=60.0)
             logger.info("root_nodes_links_established_after_snapshot_restore")
             
-            # CRITICAL: Get emission_hash from zerochain DAG events after snapshot restore
+            # CRITICAL: Get emission_hash (DATUM hash) from zerochain DAG events after snapshot restore
             # emission_hash is needed for creating first transaction in PHASE 2
-            # Emission is stored as a DAG event in zerochain, not in ledger
-            # We need to find the emission event in DAG events list
+            # IMPORTANT: Event hash != Emission datum hash!
+            # - Event hash: identifies the DAG event container
+            # - Emission hash: identifies the emission datum INSIDE the event
+            # tx_create -from_emission needs the EMISSION DATUM hash, not the event hash!
+            # We must: 1) get last event hash, 2) dump event, 3) extract emission_hash from dump
             logger.info("getting_emission_hash_from_zerochain_dag_after_snapshot_restore")
             import re
             emission_hash = None
             
-            # Method 1: Try to get emission hash from DAG events (most reliable)
+            # Method 1: Get emission_hash from dag event dump (CORRECT approach)
+            # This mirrors what phase1_zerochain.yml does
             for root_node in root_nodes[:1]:  # Check first ROOT node
+                # Step 1: Get last event hash from zerochain
                 exit_code, stdout, _ = self.genesis._exec_cli(
                     root_node.node_id,
-                    f"dag event list -net {self.topology.network.name} -chain zerochain -from events -limit 20",
+                    f"dag event last -net {self.topology.network.name} -chain zerochain",
                     check_output=False
                 )
-                # CRITICAL: Log full output for debugging
-                logger.info("dag_events_list_check",
+                logger.info("dag_event_last_check",
                            node_id=root_node.node_id,
                            exit_code=exit_code,
-                           stdout_length=len(stdout) if stdout else 0,
-                           stdout_full=stdout[:2000] if stdout else "EMPTY")
+                           stdout_preview=stdout[:500] if stdout else "EMPTY")
                 
-                if exit_code == 0 and stdout:
-                    # Look for emission event hash in DAG events
-                    # Format: "event hash: 0x..." or "datum: 0x..." with emission type
-                    # Try multiple patterns to catch different formats
-                    hash_matches = re.findall(r'(?:event\s+hash|datum|hash):\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                    # Also try finding all hashes in text
-                    all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                if exit_code != 0 or not stdout:
+                    logger.warning("dag_event_last_failed", exit_code=exit_code)
+                    continue
+                
+                # Extract event hash from "dag event last" output
+                # Format: "last_event_hash: 0x..." or just "0x..."
+                event_hash_match = re.search(r'(?:last_event_hash:\s*)?(0x[A-Fa-f0-9]{64})', stdout)
+                if not event_hash_match:
+                    logger.warning("event_hash_not_found_in_dag_event_last", output=stdout[:200])
+                    continue
                     
-                    logger.info("dag_events_hash_search",
-                               node_id=root_node.node_id,
-                               hash_matches_count=len(hash_matches),
-                               all_hashes_count=len(all_hashes),
-                               hashes_preview=all_hashes[:5] if all_hashes else [])
+                last_event_hash = event_hash_match.group(1)
+                logger.info("last_event_hash_found", hash=last_event_hash[:20])
+                
+                # Step 2: Dump the event to get emission_hash
+                exit_code, dump_stdout, _ = self.genesis._exec_cli(
+                    root_node.node_id,
+                    f"dag event dump -net {self.topology.network.name} -chain zerochain -event {last_event_hash} -from events",
+                    check_output=False
+                )
+                logger.info("dag_event_dump_check",
+                           node_id=root_node.node_id,
+                           exit_code=exit_code,
+                           event_hash=last_event_hash[:20],
+                           stdout_preview=dump_stdout[:1000] if dump_stdout else "EMPTY")
+                
+                if exit_code != 0 or not dump_stdout:
+                    logger.warning("dag_event_dump_failed", event_hash=last_event_hash[:20])
+                    continue
+                
+                # Step 3: Extract emission_hash from dump output
+                # Format: "emission_hash: 0x..." (plain text format)
+                emission_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump_stdout, re.IGNORECASE)
+                if emission_match:
+                    emission_hash = emission_match.group(1)
+                    logger.info("emission_hash_extracted_from_event_dump",
+                               emission_hash=emission_hash[:20],
+                               event_hash=last_event_hash[:20])
+                    break
+                else:
+                    # If emission_hash not found, event might not be an emission event
+                    # Try previous event (emission is usually second-to-last after token_decl)
+                    logger.info("emission_hash_not_in_last_event_trying_previous",
+                               note="Last event might be token_decl, not emission")
                     
-                    if hash_matches:
-                        # Emission is typically the second or last event (after token_decl)
-                        # Check all events and find the one with emission type
-                        lines = stdout.split('\n')
-                        for i, line in enumerate(lines):
-                            if 'emission' in line.lower() or ('datum' in line.lower() and 'tx' in line.lower()):
-                                # Look for hash in current or nearby lines
-                                for j in range(max(0, i-2), min(len(lines), i+5)):
-                                    hash_match = re.search(r'(0x[A-Fa-f0-9]{64})', lines[j])
-                                    if hash_match:
-                                        emission_hash = hash_match.group(1)
-                                        logger.info("emission_hash_found_in_dag_events",
-                                                   hash=emission_hash[:16],
-                                                   line_preview=lines[j].strip()[:100])
-                                        break
-                                if emission_hash:
-                                    break
-                        
-                        # Fallback: if no emission-specific event found, use second/last hash
-                        # (emission usually comes after token_decl)
-                        if not emission_hash and len(hash_matches) >= 2:
-                            emission_hash = hash_matches[-1]  # Last hash is usually emission
-                            logger.info("emission_hash_found_using_last_hash",
-                                       hash=emission_hash[:16],
-                                       total_hashes=len(hash_matches))
-                        elif not emission_hash and len(hash_matches) == 1:
-                            # If only one hash found, it might be emission
-                            emission_hash = hash_matches[0]
-                            logger.info("emission_hash_found_using_single_hash",
-                                       hash=emission_hash[:16],
-                                       note="Only one hash found, assuming it's emission")
-                        
-                        if emission_hash:
-                            break
-                    elif all_hashes:
-                        # If no structured hash matches but we found hashes in text, use last one
-                        emission_hash = all_hashes[-1]
-                        logger.info("emission_hash_found_from_all_hashes",
-                                   hash=emission_hash[:16],
-                                   total_hashes=len(all_hashes),
-                                   note="Using last hash from unstructured search")
-                        break
-            
-            # Method 2: Fallback - try ledger list (less reliable but sometimes works)
-            if not emission_hash:
-                logger.info("emission_hash_not_found_in_dag_trying_ledger")
-                for root_node in root_nodes[:1]:
-                    exit_code, stdout, _ = self.genesis._exec_cli(
+                    # Get event list to find emission event
+                    exit_code, list_stdout, _ = self.genesis._exec_cli(
                         root_node.node_id,
-                        f"ledger list -net {self.topology.network.name} -chain zerochain",
+                        f"dag event list -net {self.topology.network.name} -chain zerochain -from events -limit 10",
                         check_output=False
                     )
-                    # CRITICAL: Log full output for debugging
-                    logger.info("ledger_list_check",
+                    if exit_code == 0 and list_stdout:
+                        # Find all event hashes
+                        all_event_hashes = re.findall(r'event_hash:\s*(0x[A-Fa-f0-9]{64})', list_stdout)
+                        logger.info("dag_events_list_for_emission",
+                                   event_count=len(all_event_hashes),
+                                   hashes=all_event_hashes[:5])
+                        
+                        # Try each event to find one with emission_hash
+                        for evt_hash in all_event_hashes:
+                            exit_code2, dump2, _ = self.genesis._exec_cli(
+                                root_node.node_id,
+                                f"dag event dump -net {self.topology.network.name} -chain zerochain -event {evt_hash} -from events",
+                                check_output=False
+                            )
+                            if exit_code2 == 0 and dump2:
+                                em_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump2, re.IGNORECASE)
+                                if em_match:
+                                    emission_hash = em_match.group(1)
+                                    logger.info("emission_hash_found_in_event",
+                                               emission_hash=emission_hash[:20],
+                                               event_hash=evt_hash[:20])
+                                    break
+                        if emission_hash:
+                            break
+            
+            # Method 2: Fallback - try ledger list emis (list emissions with hashes)
+            if not emission_hash:
+                logger.info("emission_hash_not_found_in_dag_trying_ledger_emis")
+                for root_node in root_nodes[:1]:
+                    # List emissions specifically
+                    exit_code, stdout, _ = self.genesis._exec_cli(
+                        root_node.node_id,
+                        f"ledger list emis -net {self.topology.network.name}",
+                        check_output=False
+                    )
+                    logger.info("ledger_list_emis_check",
                                node_id=root_node.node_id,
                                exit_code=exit_code,
-                               stdout_length=len(stdout) if stdout else 0,
-                               stdout_full=stdout[:2000] if stdout else "EMPTY")
+                               stdout_preview=stdout[:1000] if stdout else "EMPTY")
                     
                     if exit_code == 0 and stdout:
-                        # Look for emission hash in ledger (format: hash: 0x...)
-                        hash_matches = re.findall(r'hash:\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                        # Also try finding all hashes
-                        all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                        
-                        logger.info("ledger_hash_search",
-                                   node_id=root_node.node_id,
-                                   hash_matches_count=len(hash_matches),
-                                   all_hashes_count=len(all_hashes),
-                                   hashes_preview=all_hashes[:5] if all_hashes else [])
-                        
+                        # Look for emission hash in output
+                        # Format: "hash: 0x..." or "emission_hash: 0x..."
+                        hash_matches = re.findall(r'(?:emission_)?hash:\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
                         if hash_matches:
-                            # Emission is typically the last hash (after token_decl)
-                            emission_hash = hash_matches[-1] if len(hash_matches) > 1 else hash_matches[0]
-                            logger.info("emission_hash_found_in_ledger",
-                                       hash=emission_hash[:16],
-                                       total_hashes=len(hash_matches))
+                            emission_hash = hash_matches[-1]  # Use last emission hash
+                            logger.info("emission_hash_found_in_ledger_emis",
+                                       hash=emission_hash[:20],
+                                       total_emissions=len(hash_matches))
                             break
-                        elif all_hashes:
-                            # If no structured hash matches but we found hashes, use last one
+                        # Try any 64-char hex hashes
+                        all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout)
+                        if all_hashes:
                             emission_hash = all_hashes[-1]
-                            logger.info("emission_hash_found_from_ledger_all_hashes",
-                                       hash=emission_hash[:16],
-                                       total_hashes=len(all_hashes),
-                                       note="Using last hash from unstructured search")
+                            logger.info("emission_hash_found_from_ledger_hashes",
+                                       hash=emission_hash[:20],
+                                       total_hashes=len(all_hashes))
                             break
             
             # Method 3: Fallback - try token show/info to get emission datum hash
