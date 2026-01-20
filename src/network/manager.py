@@ -237,61 +237,73 @@ class NetworkManager:
         # Clean up any remaining stale resources
         self.compose.cleanup_stale_resources()
         
-        # CRITICAL: Check for phase1 snapshot BEFORE cleaning data
-        # If phase1 snapshot exists, restore it instead of starting from scratch
+        # =================================================================
+        # SNAPSHOT RESTORE LOGIC (Priority: clean_state > phase1 > fresh)
+        # =================================================================
+        # 1. Check for clean_state snapshot (full genesis completed)
+        # 2. If not found, check for phase1 snapshot (only zerochain genesis)
+        # 3. If neither found, start fresh
+        
+        clean_state_name = self.suite_isolation_config.get('snapshot_name', 'clean_state')
         phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', 'phase1_zerochain_genesis')
+        
+        clean_state_restored = False
         phase1_snapshot_exists = False
         
-        if self.suite_isolation_config.get('auto_create_on_startup', True):
-            if self.snapshot_manager.mode != SnapshotMode.DISABLED:
-                # Check if phase1 snapshot exists
+        if self.snapshot_manager.mode != SnapshotMode.DISABLED:
+            # Helper to check if snapshot exists
+            def _snapshot_exists(name: str) -> bool:
                 if self.snapshot_manager.mode == SnapshotMode.SQUASHFS:
-                    snapshot_file = self.snapshot_manager.snapshot.snapshots_path / f"{phase1_snapshot_name}.sqfs"
-                    phase1_snapshot_exists = snapshot_file.exists()
+                    return (self.snapshot_manager.snapshot.snapshots_path / f"{name}.sqfs").exists()
                 elif self.snapshot_manager.mode == SnapshotMode.FILESYSTEM:
-                    snapshot_dir = self.snapshot_manager.snapshot.snapshots_path / phase1_snapshot_name
-                    phase1_snapshot_exists = snapshot_dir.exists()
+                    return (self.snapshot_manager.snapshot.snapshots_path / name).exists()
                 elif self.snapshot_manager.mode == SnapshotMode.RECREATE:
-                    marker_path = self.snapshot_manager.snapshot.snapshots_path / f"{phase1_snapshot_name}.marker"
-                    phase1_snapshot_exists = marker_path.exists()
-                
-                if phase1_snapshot_exists:
-                    logger.info("phase1_snapshot_found_restoring",
-                               name=phase1_snapshot_name,
-                               mode=self.snapshot_manager.mode.value)
-                    # Restore phase1 snapshot instead of cleaning
-                    restore_result = await self.snapshot_manager.restore_snapshot(phase1_snapshot_name)
-                    if restore_result:
-                        logger.info("phase1_snapshot_restored_successfully",
-                                   name=phase1_snapshot_name,
-                                   note="Skipping full genesis, starting from phase1 state")
-                        # DO NOT clean data - snapshot already restored with data
-                        phase1_snapshot_exists = True  # Ensure flag is set
-                    else:
-                        logger.error("phase1_snapshot_restore_failed",
-                                     name=phase1_snapshot_name,
-                                     hint="Run './clean.sh' to fix permission issues, then retry")
-                        raise RuntimeError(
-                            f"Snapshot restore failed for '{phase1_snapshot_name}'. "
-                            "This is usually caused by permission issues with Docker files. "
-                            "Run './clean.sh' to remove root-owned files and try again."
-                        )
+                    return (self.snapshot_manager.snapshot.snapshots_path / f"{name}.marker").exists()
+                return False
+            
+            # PRIORITY 1: Check for clean_state snapshot (full genesis)
+            if _snapshot_exists(clean_state_name):
+                logger.info("clean_state_snapshot_found",
+                           name=clean_state_name,
+                           note="Full genesis snapshot exists - restoring")
+                restore_result = await self.snapshot_manager.restore_snapshot(clean_state_name)
+                if restore_result:
+                    logger.info("clean_state_restored_successfully",
+                               name=clean_state_name,
+                               note="Skipping ALL genesis phases")
+                    clean_state_restored = True
                 else:
-                    logger.info("no_phase1_snapshot_cleaning_data_for_fresh_start",
-                               name=phase1_snapshot_name)
-                    # No snapshot exists - clean data for fresh start
-                    phase1_snapshot_exists = False
-                    logger.info("cleaning_node_data_after_stop")
-                    self._clean_node_data()
-            else:
-                # Snapshot manager disabled or auto_create disabled - treat as no snapshot
-                phase1_snapshot_exists = False
-                logger.info("snapshot_system_disabled_or_auto_create_disabled_cleaning_data")
+                    logger.warning("clean_state_restore_failed_trying_phase1",
+                                  name=clean_state_name)
+            
+            # PRIORITY 2: Check for phase1 snapshot (only if clean_state not restored)
+            if not clean_state_restored and _snapshot_exists(phase1_snapshot_name):
+                logger.info("phase1_snapshot_found_restoring",
+                           name=phase1_snapshot_name,
+                           mode=self.snapshot_manager.mode.value)
+                restore_result = await self.snapshot_manager.restore_snapshot(phase1_snapshot_name)
+                if restore_result:
+                    logger.info("phase1_snapshot_restored_successfully",
+                               name=phase1_snapshot_name,
+                               note="Will run Phase 2 to complete genesis")
+                    phase1_snapshot_exists = True
+                else:
+                    logger.error("phase1_snapshot_restore_failed",
+                                 name=phase1_snapshot_name,
+                                 hint="Run './clean.sh' to fix permission issues, then retry")
+                    raise RuntimeError(
+                        f"Snapshot restore failed for '{phase1_snapshot_name}'. "
+                        "This is usually caused by permission issues with Docker files. "
+                        "Run './clean.sh' to remove root-owned files and try again."
+                    )
+            
+            # PRIORITY 3: No snapshots - clean data for fresh start
+            if not clean_state_restored and not phase1_snapshot_exists:
+                logger.info("no_snapshots_found_cleaning_data_for_fresh_start")
                 self._clean_node_data()
         else:
-            # No snapshot isolation config - treat as no snapshot
-            phase1_snapshot_exists = False
-            logger.info("no_snapshot_isolation_config_cleaning_data")
+            # Snapshot manager disabled - clean data
+            logger.info("snapshot_system_disabled_cleaning_data")
             self._clean_node_data()
         
         # Generate node configurations
@@ -300,10 +312,11 @@ class NetworkManager:
         else:
             node_configs = list(self.nodes.values())
         
-        # CRITICAL: Skip config generation if phase1 snapshot was restored
+        # CRITICAL: Skip config generation if ANY snapshot was restored
         # Configs are restored from snapshot and should NOT be regenerated
         # Regeneration would overwrite static_genesis_event and fee_addr from snapshot
-        if not phase1_snapshot_exists:
+        snapshot_restored = clean_state_restored or phase1_snapshot_exists
+        if not snapshot_restored:
             # Generate configuration files and certificates
             logger.info("generating_configs_and_certs")
             self.config_generator.generate_all(
@@ -350,9 +363,29 @@ class NetworkManager:
         
         # =================================================================
         # PHASE 1: START ROOT NODES WITH SEED_MODE FOR DAG GENESIS
-        # (SKIP if phase1 snapshot was restored)
+        # (SKIP if any snapshot was restored - clean_state or phase1)
         # =================================================================
-        if not phase1_snapshot_exists:
+        if clean_state_restored:
+            logger.info("=== ALL PHASES SKIPPED: Full genesis snapshot restored ===",
+                       snapshot=clean_state_name,
+                       note="Starting containers from clean_state snapshot")
+            
+            # Start ALL containers from restored clean_state
+            all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
+            logger.info("starting_all_containers_from_clean_state", services=all_services)
+            self.compose.up(services=all_services, detach=True, wait=False, no_build=True)
+            
+            # Wait for all nodes to come online
+            await self._wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
+            
+            # Network is ready - no phases needed
+            logger.info("network_started",
+                       nodes=len(node_configs),
+                       topology=self.topology.network.name,
+                       source="clean_state_snapshot")
+            return  # Skip all phases - already completed in snapshot
+            
+        elif not phase1_snapshot_exists:
             logger.info("=== PHASE 1: ROOT Nodes Startup (DAG-PoA Genesis) ===")
             
             try:
@@ -968,118 +1001,158 @@ class NetworkManager:
         # =================================================================
         # PHASE 2: START MASTER NODES FOR ESBOCS GENESIS
         # =================================================================
-        logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
+        
+        # CRITICAL: Check if mainchain genesis block already exists
+        # If yes, Phase 2 was already completed - skip it entirely
+        mainchain_genesis_exists = False
+        for root_node in root_nodes[:1]:
+            exit_code, stdout, _ = self.genesis._exec_cli(
+                root_node.node_id,
+                f"block list -net {self.topology.network.name} -chain main",
+                check_output=False
+            )
+            if exit_code == 0 and stdout:
+                # Check for "have blocks:" with count > 0
+                import re
+                blocks_match = re.search(r'have blocks:\s*(\d+)', stdout, re.IGNORECASE)
+                if blocks_match and int(blocks_match.group(1)) > 0:
+                    mainchain_genesis_exists = True
+                    logger.info("mainchain_genesis_already_exists",
+                               blocks=blocks_match.group(1),
+                               note="Phase 2 already completed - skipping")
+                    break
+        
+        # Check if we should skip Phase 2 (genesis already exists)
+        skip_phase2 = mainchain_genesis_exists
+        
+        if skip_phase2:
+            logger.info("=== PHASE 2 SKIPPED: Mainchain genesis block already exists ===")
+            # Start remaining nodes if not running
+            master_full_services = [f"node-{n.node_id}" for n in master_nodes + full_nodes]
+            if not self.compose.are_services_running(master_full_services):
+                logger.info("starting_remaining_nodes_after_phase2_skip", services=master_full_services)
+                all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
+                self.compose.up(services=all_services, detach=True, wait=False, no_build=True)
+                await self._wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
+        else:
+            logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
         
         try:
-            # Define all validator nodes (ROOT + MASTER)
-            all_validator_nodes = root_nodes + master_nodes
-            
-            # Create consensus monitor for all validator nodes
-            from ..monitoring.network_consensus import NetworkConsensusMonitor
-            all_validator_nodes_dict = {f"node{n.node_id}": n for n in all_validator_nodes}
-            consensus_monitor_all = NetworkConsensusMonitor(
-                nodes=all_validator_nodes_dict,
-                node_cli_path=self.node_cli_path,
-                network_name=self.topology.network.name
-            )
-            
-            # CRITICAL: Verify emission_hash is set before proceeding to PHASE 2
-            if emission_hash is None:
-                raise RuntimeError(
-                    f"CRITICAL: emission_hash is None before PHASE 2! "
-                    f"This should not happen - emission_hash must be set either: "
-                    f"1. After phase1 YAML scenario execution, or "
-                    f"2. After snapshot restore (via restore_emission_hash_from_snapshot). "
-                    f"Cannot proceed to ESBocs genesis without emission_hash."
-                )
-            
-            # Use YAML scenario for phase2 genesis
-            # CLI parser should already be initialized after phase1, but executor will reinitialize if needed
-            from ..scenarios.executor import ScenarioExecutor
-            from ..scenarios.parser import ScenarioParser
-            
-            scenario_parser = ScenarioParser(self.base_path / "scenarios")
-            phase2_scenario = scenario_parser.load_scenario("genesis/phase2_esbocs.yml")
-            
-            # Get scenario debug setting from config
-            scenarios_config = self.config_loader.get_scenarios_config()
-            
-            executor = ScenarioExecutor(
-                node_cli_path=self.node_cli_path,
-                log_file=None,
-                debug=scenarios_config.get('debug', False),
-                base_path=self.base_path
-            )
-            
-            # Execute phase2 scenario with all variables from phase1
-            # CRITICAL: Pass node_ip map (via global_context) and all context variables
-            phase2_initial_variables = {}
-            
-            # Get variables from stored Phase 1 context or restored snapshot
-            if hasattr(self, '_phase1_ctx') and self._phase1_ctx:
-                phase1_ctx = self._phase1_ctx
-                # Copy all Phase 1 variables to Phase 2
-                base_vars = ['emission_hash', 'fee_addr', 'genesis_event_hash', 'token_hash',
-                             'root_count', 'master_count', 'full_count']
-                for var_name in base_vars:
-                    if var_name in phase1_ctx.variables:
-                        phase2_initial_variables[var_name] = phase1_ctx.get_variable(var_name)
-                
-                # Copy dynamic root/master/full addresses
-                root_count = phase1_ctx.variables.get('root_count', 0)
-                master_count = phase1_ctx.variables.get('master_count', 0)
-                for i in range(root_count):
-                    var_name = f'root_addr_{i}'
-                    if var_name in phase1_ctx.variables:
-                        phase2_initial_variables[var_name] = phase1_ctx.get_variable(var_name)
-                for i in range(master_count):
-                    var_name = f'master_addr_{i}'
-                    if var_name in phase1_ctx.variables:
-                        phase2_initial_variables[var_name] = phase1_ctx.get_variable(var_name)
+            if skip_phase2:
+                # Skip Phase 2 execution - genesis already exists
+                pass
             else:
-                # Fallback: use local variables if Phase 1 context not stored
-                if emission_hash:
-                    phase2_initial_variables['emission_hash'] = emission_hash
+                # Define all validator nodes (ROOT + MASTER)
+                all_validator_nodes = root_nodes + master_nodes
             
-            logger.info("phase2_initial_variables", 
-                       variables=list(phase2_initial_variables.keys()),
-                       emission_hash=phase2_initial_variables.get('emission_hash', '?')[:16] if phase2_initial_variables.get('emission_hash') else None)
-            
-            ctx = await executor.execute_scenario(
-                phase2_scenario,
-                compose_manager=self.compose,
-                snapshot_manager=self.snapshot_manager,
-                genesis_config_manager=self.genesis.config_mgr,
-                initial_variables=phase2_initial_variables,
-                global_context=self.scenario_context,
-                node_configs=node_configs
-            )
-            
-            logger.info("esbocs_genesis_complete_with_pos_master_nodes",
-                       note="Phase2 genesis completed via YAML scenario")
+                # Create consensus monitor for all validator nodes
+                from ..monitoring.network_consensus import NetworkConsensusMonitor
+                all_validator_nodes_dict = {f"node{n.node_id}": n for n in all_validator_nodes}
+                consensus_monitor_all = NetworkConsensusMonitor(
+                    nodes=all_validator_nodes_dict,
+                    node_cli_path=self.node_cli_path,
+                    network_name=self.topology.network.name
+                )
+                
+                # CRITICAL: Verify emission_hash is set before proceeding to PHASE 2
+                if emission_hash is None:
+                    raise RuntimeError(
+                        f"CRITICAL: emission_hash is None before PHASE 2! "
+                        f"This should not happen - emission_hash must be set either: "
+                        f"1. After phase1 YAML scenario execution, or "
+                        f"2. After snapshot restore (via restore_emission_hash_from_snapshot). "
+                        f"Cannot proceed to ESBocs genesis without emission_hash."
+                    )
+                
+                # Use YAML scenario for phase2 genesis
+                # CLI parser should already be initialized after phase1, but executor will reinitialize if needed
+                from ..scenarios.executor import ScenarioExecutor
+                from ..scenarios.parser import ScenarioParser
+                
+                scenario_parser = ScenarioParser(self.base_path / "scenarios")
+                phase2_scenario = scenario_parser.load_scenario("genesis/phase2_esbocs.yml")
+                
+                # Get scenario debug setting from config
+                scenarios_config = self.config_loader.get_scenarios_config()
+                
+                executor = ScenarioExecutor(
+                    node_cli_path=self.node_cli_path,
+                    log_file=None,
+                    debug=scenarios_config.get('debug', False),
+                    base_path=self.base_path
+                )
+                
+                # Execute phase2 scenario with all variables from phase1
+                # CRITICAL: Pass node_ip map (via global_context) and all context variables
+                phase2_initial_variables = {}
+                
+                # Get variables from stored Phase 1 context or restored snapshot
+                if hasattr(self, '_phase1_ctx') and self._phase1_ctx:
+                    phase1_ctx = self._phase1_ctx
+                    # Copy all Phase 1 variables to Phase 2
+                    base_vars = ['emission_hash', 'fee_addr', 'genesis_event_hash', 'token_hash',
+                                 'root_count', 'master_count', 'full_count']
+                    for var_name in base_vars:
+                        if var_name in phase1_ctx.variables:
+                            phase2_initial_variables[var_name] = phase1_ctx.get_variable(var_name)
+                    
+                    # Copy dynamic root/master/full addresses
+                    root_count = phase1_ctx.variables.get('root_count', 0)
+                    master_count = phase1_ctx.variables.get('master_count', 0)
+                    for i in range(root_count):
+                        var_name = f'root_addr_{i}'
+                        if var_name in phase1_ctx.variables:
+                            phase2_initial_variables[var_name] = phase1_ctx.get_variable(var_name)
+                    for i in range(master_count):
+                        var_name = f'master_addr_{i}'
+                        if var_name in phase1_ctx.variables:
+                            phase2_initial_variables[var_name] = phase1_ctx.get_variable(var_name)
+                else:
+                    # Fallback: use local variables if Phase 1 context not stored
+                    if emission_hash:
+                        phase2_initial_variables['emission_hash'] = emission_hash
+                
+                logger.info("phase2_initial_variables", 
+                           variables=list(phase2_initial_variables.keys()),
+                           emission_hash=phase2_initial_variables.get('emission_hash', '?')[:16] if phase2_initial_variables.get('emission_hash') else None)
+                
+                ctx = await executor.execute_scenario(
+                    phase2_scenario,
+                    compose_manager=self.compose,
+                    snapshot_manager=self.snapshot_manager,
+                    genesis_config_manager=self.genesis.config_mgr,
+                    initial_variables=phase2_initial_variables,
+                    global_context=self.scenario_context,
+                    node_configs=node_configs
+                )
+                
+                logger.info("esbocs_genesis_complete_with_pos_master_nodes",
+                           note="Phase2 genesis completed via YAML scenario")
             
         except Exception as e:
-            # Dump logs before tearing down
-            try:
-                logger.error("master_nodes_genesis_failed", error=str(e), traceback=traceback.format_exc())
-                # Dump logs for all running containers
-                import docker
-                docker_client = docker.from_env()
-                for container in docker_client.containers.list(all=True):
-                    if "cellframe-stage-node" in container.name:
-                        log_path = f"/tmp/{container.name}.log"
-                        try:
-                            with open(log_path, "wb") as f:
-                                f.write(container.logs())
-                            logger.info(f"Dumped log for {container.name} to {log_path}")
-                        except Exception as log_err:
-                            logger.error(f"Failed to dump log for {container.name}: {log_err}")
-            except Exception as dump_err:
-                logger.error(f"Failed to dump container logs: {dump_err}")
+            # Only handle errors if we actually ran Phase 2
+            if not skip_phase2:
+                # Dump logs before tearing down
+                try:
+                    logger.error("master_nodes_genesis_failed", error=str(e), traceback=traceback.format_exc())
+                    # Dump logs for all running containers
+                    import docker
+                    docker_client = docker.from_env()
+                    for container in docker_client.containers.list(all=True):
+                        if "cellframe-stage-node" in container.name:
+                            log_path = f"/tmp/{container.name}.log"
+                            try:
+                                with open(log_path, "wb") as f:
+                                    f.write(container.logs())
+                                logger.info(f"Dumped log for {container.name} to {log_path}")
+                            except Exception as log_err:
+                                logger.error(f"Failed to dump log for {container.name}: {log_err}")
+                except Exception as dump_err:
+                    logger.error(f"Failed to dump container logs: {dump_err}")
 
-            if not self.keep_running:
-                self.compose.down(volumes=False, remove_images=False)
-            raise RuntimeError(f"MASTER nodes genesis failed: {e}") from e
+                if not self.keep_running:
+                    self.compose.down(volumes=False, remove_images=False)
+                raise RuntimeError(f"MASTER nodes genesis failed: {e}") from e
         
         # =================================================================
         # PHASE 3: START FULL NODES
