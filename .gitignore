@@ -9,3 +9,6 @@ docker-compose.generated.yml
 packages/
 # User-specific config (use stage-env.cfg.default as template)
 config/stage-env.cfg
+.context
+.cursorrules
+slc
