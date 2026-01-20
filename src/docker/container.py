@@ -55,13 +55,21 @@ class DockerContainerManager:
         if node.startswith("cellframe-stage-"):
             return node
         
-        # Handle role-based aliases directly (root-1 -> node-1, master-1 -> node-4, etc.)
+        # Handle role-based aliases directly
+        # Topology: root_nodes=3, master_nodes=3, full_nodes=2
+        # root-1 -> node-1, root-2 -> node-2, root-3 -> node-3
+        # master-1 -> node-4, master-2 -> node-5, master-3 -> node-6
+        # full-1 -> node-7, full-2 -> node-8
         if node.startswith("root-"):
             node_num = node.split("-")[1]
             return f"cellframe-stage-node-{node_num}"
         elif node.startswith("master-"):
             master_idx = int(node.split("-")[1])
             node_num = str(master_idx + 3)  # master-1 -> 4, master-2 -> 5, etc.
+            return f"cellframe-stage-node-{node_num}"
+        elif node.startswith("full-"):
+            full_idx = int(node.split("-")[1])
+            node_num = str(full_idx + 6)  # full-1 -> 7, full-2 -> 8, etc. (3 root + 3 master)
             return f"cellframe-stage-node-{node_num}"
         
         # Try to extract number from node ID (node1 -> 1, node-1 -> 1)

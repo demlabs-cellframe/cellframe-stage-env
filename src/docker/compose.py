@@ -41,16 +41,18 @@ CLEANUP_CMD_TEMPLATE = (
 class DockerComposeManager:
     """Manage Docker Compose services using Docker SDK."""
     
-    def __init__(self, project_dir: Path, project_name: str = "cellframe"):
+    def __init__(self, project_dir: Path, project_name: str = "cellframe", network_name: str = "stagenet"):
         """
         Initialize Docker Compose manager.
         
         Args:
             project_dir: Project directory containing docker-compose.yml
             project_name: Docker Compose project name
+            network_name: Cellframe network name (e.g., stagenet, mainnet)
         """
         self.project_dir = project_dir
         self.project_name = project_name
+        self.network_name = network_name
         self.compose_file = project_dir / "docker-compose.yml"
         
         try:
@@ -323,7 +325,7 @@ class DockerComposeManager:
             
             # Set network IP
             node_service['networks'] = {
-                'stagenet': {
+                self.network_name: {
                     'ipv4_address': node.ip_address
                 }
             }
@@ -424,7 +426,7 @@ class DockerComposeManager:
                 'NODE_ROLE': node.role,
                 'NODE_TYPE': node.node_type,
                 'NODE_IP': node.ip_address,
-                'NETWORK_NAME': 'stagenet',
+                'NETWORK_NAME': self.network_name,
                 'DAP_DEBUG': '1',
                 'CELLFRAME_DEBUG': '1'
             }
@@ -560,44 +562,54 @@ class DockerComposeManager:
             # Brief wait to ensure Docker daemon processes removal
             time.sleep(1)
         
-        # Check if image already exists to avoid BuildKit "image already exists" error
-        # This happens when BuildKit tries to build an image that already exists
-        image_exists = False
-        try:
-            # Parse compose file to get image name
-            with open(self.compose_file, 'r') as f:
-                compose_data = yaml.safe_load(f)
+        # Build image ONCE before starting services to avoid race conditions
+        # When multiple services use the same image, parallel builds cause "already exists" errors
+        if not no_build:
+            # Check if image needs to be built by trying to find first service's image
+            need_build = True
+            first_service = services[0] if services else "node-1"
             
-            # Check if any service has the target image
-            for svc_name, svc_data in compose_data.get('services', {}).items():
-                if services and svc_name not in services:
-                    continue
-                image_name = svc_data.get('image')
+            try:
+                with open(self.compose_file, 'r') as f:
+                    compose_data = yaml.safe_load(f)
+                
+                # Get image name from first service and resolve variables
+                svc_data = compose_data.get('services', {}).get(first_service, {})
+                image_template = svc_data.get('image', '')
+                
+                # Resolve common shell variables in image name
+                import os
+                image_name = image_template
+                image_name = image_name.replace('${BUILD_TYPE:-debug}', os.environ.get('BUILD_TYPE', 'debug'))
+                image_name = image_name.replace('${CELLFRAME_VERSION:-latest}', os.environ.get('CELLFRAME_VERSION', 'latest'))
+                
                 if image_name:
-                    # Try to find the image
                     try:
                         self.client.images.get(image_name)
-                        image_exists = True
+                        need_build = False
                         logger.info("image_already_exists", image=image_name)
-                        break
                     except NotFound:
-                        pass
-        except Exception as e:
-            logger.warning("failed_to_check_image_existence", error=str(e))
+                        logger.info("image_not_found_will_build", image=image_name)
+            except Exception as e:
+                logger.info("failed_to_check_image_existence", error=str(e))
             
-        # Always use 'up' to ensure containers are created/recreated correctly
-        # 'start' is insufficient if containers don't exist (Phase 2 case)
+            if need_build:
+                # Build image ONCE using first service only
+                logger.info("building_image_once", service=first_service)
+                build_cmd = ["docker", "compose", "-f", str(self.compose_file),
+                           "-p", self.project_name, "build", first_service]
+                try:
+                    run_command(build_cmd, cwd=self.project_dir)
+                    logger.info("image_built_successfully")
+                except Exception as e:
+                    logger.warning("image_build_failed_will_retry_on_up", error=str(e))
+        
+        # Now start all services WITHOUT building (image already exists)
         cmd = ["docker", "compose", "-f", str(self.compose_file),
-               "-p", self.project_name, "up"]
+               "-p", self.project_name, "up", "--no-build"]
         
         if detach:
             cmd.append("-d")
-        
-        # Add --no-build if image exists or explicitly requested
-        # This prevents BuildKit "image already exists" error
-        if no_build or image_exists:
-            cmd.append("--no-build")
-            logger.info("skipping_build", reason="image_exists" if image_exists else "explicit")
         
         if services:
             cmd.extend(services)
@@ -605,23 +617,9 @@ class DockerComposeManager:
         try:
             run_command(cmd, cwd=self.project_dir)
         except subprocess.CalledProcessError as e:
-            # Check if error is "image already exists" - retry with --no-build
-            if "already exists" in str(e.stderr if hasattr(e, 'stderr') else e):
-                logger.warning("retrying_with_no_build", reason="image_already_exists")
-                cmd_retry = cmd.copy()
-                if "--no-build" not in cmd_retry:
-                    # Insert --no-build before services
-                    idx = cmd_retry.index("up") + 1
-                    if "-d" in cmd_retry:
-                        idx = cmd_retry.index("-d") + 1
-                    cmd_retry.insert(idx, "--no-build")
-                run_command(cmd_retry, cwd=self.project_dir)
-            else:
-                # If still fails, log error and re-raise
-                logger.error("docker_up_failed", error=str(e))
-                raise
+            logger.error("docker_up_failed", error=str(e))
+            raise
         except Exception as e:
-            # If still fails, log error and re-raise
             logger.error("docker_up_failed", error=str(e))
             raise
         
@@ -700,6 +698,9 @@ class DockerComposeManager:
         """
         Restart services (stop + start).
         
+        If containers don't exist, they will be created first via 'up'.
+        This handles the case when containers were removed but need to be restarted.
+        
         Args:
             services: List of service names (None = all)
         """
@@ -707,13 +708,25 @@ class DockerComposeManager:
         
         from src.utils.cli import run_command
         
-        cmd = ["docker", "compose", "-f", str(self.compose_file),
-               "-p", self.project_name, "restart"]
+        # First, ensure all requested services exist by running 'up -d'
+        # This creates containers that don't exist yet, and does nothing for running ones
+        up_cmd = ["docker", "compose", "-f", str(self.compose_file),
+                  "-p", self.project_name, "up", "-d", "--no-recreate"]
         
         if services:
-            cmd.extend(services)
+            up_cmd.extend(services)
         
-        run_command(cmd, cwd=self.project_dir)
+        run_command(up_cmd, cwd=self.project_dir)
+        logger.info("services_ensured_exist")
+        
+        # Now restart all the services (they all exist now)
+        restart_cmd = ["docker", "compose", "-f", str(self.compose_file),
+                       "-p", self.project_name, "restart"]
+        
+        if services:
+            restart_cmd.extend(services)
+        
+        run_command(restart_cmd, cwd=self.project_dir)
         logger.info("services_restarted")
     
     def pause(self, services: Optional[List[str]] = None) -> None:
@@ -1056,7 +1069,7 @@ class DockerComposeManager:
         try:
             # Use cellframe-node-cli to get current state (most reliable)
             cli_result = container.exec_run(
-                'cellframe-node-cli net get status -net stagenet',
+                f'cellframe-node-cli net get status -net {self.network_name}',
                 demux=False
             )
             
@@ -1144,7 +1157,7 @@ class DockerComposeManager:
             
             # Use cellframe-node-cli to check ONLINE status
             cli_result = container.exec_run(
-                'cellframe-node-cli net get status -net stagenet',
+                f'cellframe-node-cli net get status -net {self.network_name}',
                 demux=False
             )
             
@@ -1223,7 +1236,7 @@ class DockerComposeManager:
             try:
                 # Get node address
                 dump_result = container.exec_run(
-                    "/opt/cellframe-node/bin/cellframe-node-cli node dump -net stagenet",
+                    f"/opt/cellframe-node/bin/cellframe-node-cli node dump -net {self.network_name}",
                     demux=True
                 )
                 
@@ -1282,7 +1295,7 @@ class DockerComposeManager:
         for attempt in range(max_wait // wait_interval):
             # Try to execute node list to check if we have ROOT rights
             test_result = node1['container'].exec_run(
-                "/opt/cellframe-node/bin/cellframe-node-cli node list -net stagenet",
+                f"/opt/cellframe-node/bin/cellframe-node-cli node list -net {self.network_name}",
                 demux=True
             )
             
@@ -1302,7 +1315,7 @@ class DockerComposeManager:
         for node_info in root_nodes:
             try:
                 exec_result = node1['container'].exec_run(
-                    f"/opt/cellframe-node/bin/cellframe-node-cli node add -net stagenet -addr {node_info['addr']} -host {node_info['ip']} -port 8079",
+                    f"/opt/cellframe-node/bin/cellframe-node-cli node add -net {self.network_name} -addr {node_info['addr']} -host {node_info['ip']} -port 8079",
                     demux=True
                 )
                 

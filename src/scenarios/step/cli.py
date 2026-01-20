@@ -185,10 +185,12 @@ class CLIStepExecutor(StepExecutor):
             ctx.set_variable(variable_name, output.strip())
             logger.debug("cli_step_saved", variable=variable_name)
         
-        # Check contains/not_contains assertions
+        # Check contains/not_contains assertions (case-insensitive)
+        output_lower = output.lower()
+        
         if step.contains:
             expected_text = ctx.substitute(step.contains)
-            if expected_text not in output:
+            if expected_text.lower() not in output_lower:
                 raise ScenarioExecutionError(
                     f"Output does not contain expected text: '{expected_text}'",
                     step=cmd[:100],
@@ -198,7 +200,7 @@ class CLIStepExecutor(StepExecutor):
         
         if step.not_contains:
             unexpected_text = ctx.substitute(step.not_contains)
-            if unexpected_text in output:
+            if unexpected_text.lower() in output_lower:
                 raise ScenarioExecutionError(
                     f"Output contains unexpected text: '{unexpected_text}'",
                     step=cmd[:100],
