@@ -106,13 +106,18 @@ while [[ $# -gt 0 ]]; do
             echo "  --clean         Clean cache before running"
             echo "  --keep-running  Don't stop the network after tests"
             echo "  --rebuild       Rebuild Docker images"
-            echo "  --skip-build    Skip building cellframe-node (use existing)"
+            echo "  --skip-build    Skip building cellframe-node (use existing .deb or config)"
             echo "  --pkgs-update   Update packages in running containers"
             echo "  --stop          Stop stage environment"
             echo "  -h, --help      Show this help message"
             echo ""
+            echo "Node source (stage-env.cfg [node_source]):"
+            echo "  type=local      Build from source (default in cellframe-node repo)"
+            echo "  type=url        Download from URL (no build, uses 'url' parameter)"
+            echo ""
             echo "Examples:"
-            echo "  $0                                    # Run all tests"
+            echo "  $0                                    # Build and run all tests"
+            echo "  $0 --skip-build                       # Use existing package or URL from config"
             echo "  $0 --e2e                              # Run all E2E tests"
             echo "  $0 --clean --e2e                      # Clean cache and run E2E tests"
             echo "  $0 --rebuild --e2e                    # Rebuild images and run E2E tests"
@@ -193,55 +198,97 @@ fi
 
 success "Prerequisites OK"
 
-# Detect if running in cellframe-node repository and build local package
-DEB_PACKAGE=""
+# Check node_source.type from config
+NODE_SOURCE_TYPE=""
+if [ -f "$STAGE_ENV_CONFIG" ]; then
+    NODE_SOURCE_TYPE=$(python3 -c "
+import configparser
+config = configparser.ConfigParser()
+config.read('$STAGE_ENV_CONFIG')
+print(config.get('node_source', 'type', fallback='').strip())
+" 2>/dev/null || echo "")
+fi
+
+# Detect if running in cellframe-node repository
+IN_CELLFRAME_REPO=false
 if [ -f "$PROJECT_ROOT/CMakeLists.txt" ] && grep -q "cellframe-node" "$PROJECT_ROOT/CMakeLists.txt"; then
-    if $SKIP_BUILD; then
-        info "Skipping build (--skip-build specified)"
+    IN_CELLFRAME_REPO=true
+fi
+
+# Decide whether to build based on config and flags
+SHOULD_BUILD=false
+DEB_PACKAGE=""
+
+if [ "$NODE_SOURCE_TYPE" = "url" ]; then
+    # Config says use URL - don't build, use config as-is
+    info "Using URL from config (type=url)"
+    NODE_URL=$(python3 -c "
+import configparser
+config = configparser.ConfigParser()
+config.read('$STAGE_ENV_CONFIG')
+print(config.get('node_source', 'url', fallback=''))
+" 2>/dev/null || echo "")
+    if [ -n "$NODE_URL" ]; then
+        success "Node source: $NODE_URL"
+    else
+        error "type=url but no url specified in config"
+        exit 1
+    fi
+elif $SKIP_BUILD; then
+    # --skip-build flag: use existing local package or config
+    info "Skipping build (--skip-build specified)"
+    if $IN_CELLFRAME_REPO; then
         DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f 2>/dev/null | head -n 1)
         if [ -n "$DEB_PACKAGE" ]; then
             success "Using existing package: $(basename "$DEB_PACKAGE")"
         else
-            warning "No existing package found in $TEST_BUILD_DIR"
+            warning "No existing package found in $TEST_BUILD_DIR - using config"
         fi
-    else
-        info "Detected cellframe-node repository - building local package..."
-        mkdir -p "$TEST_BUILD_DIR"
-        cd "$TEST_BUILD_DIR"
-        
-        info "Configuring with CMake (Debug mode)..."
-        cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=On .. || {
-            error "CMake configuration failed"
-            exit 1
-        }
-        
-        info "Building cellframe-node..."
-        make -j$(nproc) cellframe-node || {
-            error "Build failed"
-            exit 1
-        }
-        
-        info "Creating .deb package..."
-        cpack -G DEB || {
-            error "Packaging failed"
-            exit 1
-        }
-        
-        DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f | head -n 1)
-        
-        if [ -z "$DEB_PACKAGE" ]; then
-            error "No .deb package found after build"
-            exit 1
-        fi
-        
-        success "Package created: $(basename "$DEB_PACKAGE")"
-        cd "$PROJECT_ROOT"
+    fi
+elif $IN_CELLFRAME_REPO; then
+    # In cellframe-node repo with type=local or no type - build
+    SHOULD_BUILD=true
+fi
+
+# Build if needed
+if $SHOULD_BUILD; then
+    info "Detected cellframe-node repository - building local package..."
+    mkdir -p "$TEST_BUILD_DIR"
+    cd "$TEST_BUILD_DIR"
+    
+    info "Configuring with CMake (Debug mode)..."
+    cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=On .. || {
+        error "CMake configuration failed"
+        exit 1
+    }
+    
+    info "Building cellframe-node..."
+    make -j$(nproc) cellframe-node || {
+        error "Build failed"
+        exit 1
+    }
+    
+    info "Creating .deb package..."
+    cpack -G DEB || {
+        error "Packaging failed"
+        exit 1
+    }
+    
+    DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f | head -n 1)
+    
+    if [ -z "$DEB_PACKAGE" ]; then
+        error "No .deb package found after build"
+        exit 1
     fi
     
-    # Update stage-env.cfg to use local package
-    if [ -n "$DEB_PACKAGE" ] && [ -f "$STAGE_ENV_CONFIG" ]; then
-        info "Updating stage-env.cfg with local package path..."
-        python3 -c "
+    success "Package created: $(basename "$DEB_PACKAGE")"
+    cd "$PROJECT_ROOT"
+fi
+
+# Update stage-env.cfg to use local package (only if we have a package)
+if [ -n "$DEB_PACKAGE" ] && [ -f "$STAGE_ENV_CONFIG" ]; then
+    info "Updating stage-env.cfg with local package path..."
+    python3 -c "
 import configparser
 config = configparser.ConfigParser()
 config.read('$STAGE_ENV_CONFIG')
@@ -255,11 +302,10 @@ config.set('node_source', 'local_path', '$DEB_PACKAGE')
 with open('$STAGE_ENV_CONFIG', 'w') as f:
     config.write(f)
 " || {
-            warning "Failed to update stage-env.cfg automatically"
-        }
-        success "stage-env.cfg updated to use local package"
-    fi
-else
+        warning "Failed to update stage-env.cfg automatically"
+    }
+    success "stage-env.cfg updated to use local package"
+elif [ "$NODE_SOURCE_TYPE" != "url" ] && ! $IN_CELLFRAME_REPO; then
     info "Not in cellframe-node repository - using configured node source"
 fi
 

@@ -64,7 +64,8 @@ class NetworkManager:
         # Docker compose manager
         self.compose = DockerComposeManager(
             base_path,
-            project_name="cellframe-stage"
+            project_name="cellframe-stage",
+            network_name=self.topology.network.name
         )
         
         # Health checker
