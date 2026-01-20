@@ -28,18 +28,20 @@ success() { echo -e "${GREEN}[ OK ]${NC} $1"; }
 error() { echo -e "${RED}[ERR ]${NC} $1" >&2; }
 warning() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
-# Directories
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-STAGE_ENV_WRAPPER="$SCRIPT_DIR/stage-env/stage-env"
-STAGE_ENV_CONFIG="$SCRIPT_DIR/stage-env/config/stage-env.cfg"
+# Resolve actual script location (following symlinks)
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Navigate from scripts/ up to tests/
+TESTS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="$(dirname "$TESTS_DIR")"
+STAGE_ENV_WRAPPER="$TESTS_DIR/stage-env/stage-env"
+STAGE_ENV_CONFIG="$TESTS_DIR/stage-env/config/stage-env.cfg"
 
 # Test directories
-E2E_TESTS="$SCRIPT_DIR/e2e"
-SCENARIOS_TESTS="$SCRIPT_DIR/e2e"
-FUNCTIONAL_TESTS="$SCRIPT_DIR/functional"
-REGRESSION_TESTS="$SCRIPT_DIR/regression"
-STAGE_ENV_INTEGRATION_BASE_TESTS="$SCRIPT_DIR/stage-env/tests/integration/scenarios/base"
+E2E_TESTS="$TESTS_DIR/e2e"
+SCENARIOS_TESTS="$TESTS_DIR/e2e"
+FUNCTIONAL_TESTS="$TESTS_DIR/functional"
+REGRESSION_TESTS="$TESTS_DIR/regression"
+STAGE_ENV_INTEGRATION_BASE_TESTS="$TESTS_DIR/stage-env/tests/integration/scenarios/base"
 
 # Build directories
 TEST_BUILD_DIR="$PROJECT_ROOT/build"
@@ -135,7 +137,7 @@ done
 if [ "$STOP_ENV" = true ]; then
     info "Stopping stage environment..."
     if [ -x "$STAGE_ENV_WRAPPER" ]; then
-        pushd "$SCRIPT_DIR/stage-env" > /dev/null
+        pushd "$TESTS_DIR/stage-env" > /dev/null
         STAGE_ENV_CONFIG_ABS="$(cd "$(dirname "$STAGE_ENV_CONFIG")" && pwd)/$(basename "$STAGE_ENV_CONFIG")"
         ./stage-env --config="$STAGE_ENV_CONFIG_ABS" stop || true
         popd > /dev/null
@@ -151,7 +153,7 @@ fi
 if [ "$PKGS_UPDATE" = true ]; then
     info "Updating packages in running containers..."
     if [ -x "$STAGE_ENV_WRAPPER" ]; then
-        pushd "$SCRIPT_DIR/stage-env" > /dev/null
+        pushd "$TESTS_DIR/stage-env" > /dev/null
         STAGE_ENV_CONFIG_ABS="$(cd "$(dirname "$STAGE_ENV_CONFIG")" && pwd)/$(basename "$STAGE_ENV_CONFIG")"
         ./stage-env --config="$STAGE_ENV_CONFIG_ABS" pkgs-update || exit $?
         popd > /dev/null
@@ -266,15 +268,15 @@ if $CLEAN_BEFORE; then
     warning "Cleaning test environment..."
     
     if [ -x "$STAGE_ENV_WRAPPER" ]; then
-        pushd "$SCRIPT_DIR/stage-env" > /dev/null
+        pushd "$TESTS_DIR/stage-env" > /dev/null
         STAGE_ENV_CONFIG_ABS="$(cd "$(dirname "$STAGE_ENV_CONFIG")" && pwd)/$(basename "$STAGE_ENV_CONFIG")"
         ./stage-env --config="$STAGE_ENV_CONFIG_ABS" clean --all || true
         popd > /dev/null
     fi
     
     # Additional cleanup
-    STAGE_ENV_DIR="$SCRIPT_DIR/stage-env"
-    TESTING_DIR="$SCRIPT_DIR/testing"
+    STAGE_ENV_DIR="$TESTS_DIR/stage-env"
+    TESTING_DIR="$TESTS_DIR/testing"
     
     if [ -d "$TESTING_DIR/snapshots" ] && [ "$(ls -A "$TESTING_DIR/snapshots" 2>/dev/null)" ]; then
         info "Removing remaining snapshots..."
@@ -303,7 +305,7 @@ info "════════════════════════�
 echo ""
 
 # Start stage environment
-pushd "$SCRIPT_DIR/stage-env" > /dev/null
+pushd "$TESTS_DIR/stage-env" > /dev/null
 STAGE_ENV_CONFIG_ABS="$(cd "$(dirname "$STAGE_ENV_CONFIG")" && pwd)/$(basename "$STAGE_ENV_CONFIG")"
 
 # Build start arguments
@@ -332,7 +334,7 @@ if [ $E2E_EXIT -eq 0 ]; then
             else
                 abs_path="$PROJECT_ROOT/$test_path"
             fi
-            stage_env_dir="$SCRIPT_DIR/stage-env"
+            stage_env_dir="$TESTS_DIR/stage-env"
             rel_from_stage_env=$(realpath --relative-to="$stage_env_dir" "$abs_path" 2>/dev/null || echo "$abs_path")
             if [ -e "$abs_path" ]; then
                 TEST_DIRS+=("$rel_from_stage_env")
@@ -342,19 +344,19 @@ if [ $E2E_EXIT -eq 0 ]; then
         done
     else
         if $RUN_E2E && [ -d "$E2E_TESTS" ]; then
-            stage_env_dir="$SCRIPT_DIR/stage-env"
+            stage_env_dir="$TESTS_DIR/stage-env"
             rel_path=$(realpath --relative-to="$stage_env_dir" "$E2E_TESTS")
             TEST_DIRS+=("$rel_path")
         fi
         
         if $RUN_FUNCTIONAL && [ -d "$FUNCTIONAL_TESTS" ]; then
-            stage_env_dir="$SCRIPT_DIR/stage-env"
+            stage_env_dir="$TESTS_DIR/stage-env"
             rel_path=$(realpath --relative-to="$stage_env_dir" "$FUNCTIONAL_TESTS")
             TEST_DIRS+=("$rel_path")
         fi
         
         if $RUN_REGRESSION && [ -d "$REGRESSION_TESTS" ]; then
-            stage_env_dir="$SCRIPT_DIR/stage-env"
+            stage_env_dir="$TESTS_DIR/stage-env"
             rel_path=$(realpath --relative-to="$stage_env_dir" "$REGRESSION_TESTS")
             TEST_DIRS+=("$rel_path")
         fi
@@ -364,7 +366,7 @@ if [ $E2E_EXIT -eq 0 ]; then
     if [ ${#TEST_DIRS[@]} -gt 0 ]; then
         info "Running ${#TEST_DIRS[@]} test suite(s)..."
         
-        pushd "$SCRIPT_DIR/stage-env" > /dev/null
+        pushd "$TESTS_DIR/stage-env" > /dev/null
         ./stage-env --config="$STAGE_ENV_CONFIG_ABS" run-tests --no-start-network "${TEST_DIRS[@]}" || TEST_EXIT=$?
         popd > /dev/null
         
@@ -382,7 +384,7 @@ if [ $E2E_EXIT -eq 0 ]; then
         warning "Keeping stage environment running (--keep-running)"
     else
         info "Stopping stage environment..."
-        pushd "$SCRIPT_DIR/stage-env" > /dev/null
+        pushd "$TESTS_DIR/stage-env" > /dev/null
         ./stage-env --config="$STAGE_ENV_CONFIG_ABS" stop || true
         popd > /dev/null
         success "Stage environment stopped"
@@ -426,7 +428,7 @@ fi
 echo "════════════════════════════════════"
 
 # Find and display detailed test results from summary.json
-LATEST_RUN_DIR=$(find "$SCRIPT_DIR/testing/artifacts" -maxdepth 1 -type d -name "run_*" 2>/dev/null | sort -r | head -n 1)
+LATEST_RUN_DIR=$(find "$TESTS_DIR/testing/artifacts" -maxdepth 1 -type d -name "run_*" 2>/dev/null | sort -r | head -n 1)
 if [ -n "$LATEST_RUN_DIR" ] && [ -f "$LATEST_RUN_DIR/summary.json" ]; then
     echo ""
     echo "════════════════════════════════════"

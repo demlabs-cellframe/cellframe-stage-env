@@ -82,6 +82,10 @@ test:
     timeout: 60
   
   - wait: "40s"
+  
+  # Configure fee_addr on network level (required for arbitrage transactions)
+  - cli: "net -net {{network_name}} fee_addr {{fee_addr}}"
+    node: "{{first_root}}"
 
 check:
   - cli: "net get status"
