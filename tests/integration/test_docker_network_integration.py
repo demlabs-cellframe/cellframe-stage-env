@@ -5,10 +5,12 @@ from pathlib import Path
 import tempfile
 import shutil
 from unittest.mock import MagicMock, patch, AsyncMock
+import yaml
 
 from src.docker_ctl.container import DockerContainerManager
 from src.docker_ctl.compose import DockerComposeManager
 from src.network.manager import NetworkManager
+from src.config.manager import initialize_config, reset_config
 
 
 class TestDockerNetworkIntegration:
@@ -16,11 +18,26 @@ class TestDockerNetworkIntegration:
     
     @pytest.fixture
     def temp_base_path(self):
-        """Create temporary base path."""
+        """Create temporary base path with config."""
         temp_dir = Path(tempfile.mkdtemp())
         (temp_dir / "cache").mkdir()
         (temp_dir / "compose").mkdir()
+        (temp_dir / "config").mkdir()
+        
+        # Create minimal config for ConfigManager
+        config_file = temp_dir / "config" / "config.yml"
+        config_file.write_text(yaml.dump({
+            "network": {"name": "stagenet"},
+            "nodes": [{"name": "node1", "role": "root"}]
+        }))
+        
+        # Initialize config manager for this test scope
+        initialize_config(temp_dir)
+        
         yield temp_dir
+        
+        # Cleanup
+        reset_config()
         shutil.rmtree(temp_dir)
     
     @pytest.fixture
@@ -61,14 +78,10 @@ networks:
     driver: bridge
 """)
         
-        # NetworkManager should be able to use this
-        with patch('src.network.manager.DockerComposeManager', return_value=compose_manager):
-            network_config = {
-                "name": "stagenet",
-                "nodes": [{"name": "node1", "role": "root"}]
-            }
-            manager = NetworkManager(temp_base_path, network_config)
-            assert manager is not None
+        # NetworkManager should be able to use this compose file
+        network_manager = NetworkManager(base_path=temp_base_path)
+        assert network_manager is not None
+        assert network_manager.base_path == temp_base_path
     
     def test_container_manager_with_network_lifecycle(self, container_manager, mock_docker_client):
         """Test container operations work with network lifecycle."""
@@ -84,9 +97,9 @@ networks:
         mock_container.status = "running"
         mock_docker_client.containers.get.return_value = mock_container
         
-        # Test resolution
-        container_name = container_manager.resolve_node_to_container("node1")
-        assert container_name == "cellframe-stage-node1"
+        # Test resolution - resolve_node_to_container returns Container object
+        container = container_manager.resolve_node_to_container("node1")
+        assert container.name == "cellframe-stage-node1"
     
     @pytest.mark.asyncio
     async def test_container_exec_with_network_context(self, container_manager, mock_docker_client):
@@ -114,20 +127,12 @@ networks:
     
     def test_network_manager_uses_container_manager(self, temp_base_path, container_manager):
         """Test NetworkManager can use DockerContainerManager for operations."""
-        network_config = {
-            "name": "stagenet",
-            "nodes": [
-                {"name": "node1", "role": "root"},
-                {"name": "node2", "role": "master"}
-            ]
-        }
+        # NetworkManager now initialized via ConfigManager fixture
+        network_manager = NetworkManager(base_path=temp_base_path)
         
-        with patch('src.network.manager.DockerComposeManager'):
-            manager = NetworkManager(temp_base_path, network_config)
-            
-            # NetworkManager should be able to resolve nodes
-            assert manager.config["name"] == "stagenet"
-            assert len(manager.config["nodes"]) == 2
+        # Verify NetworkManager can access config
+        assert network_manager.config_data["network"]["name"] == "stagenet"
+        assert len(network_manager.config_data["nodes"]) == 1
     
     def test_compose_cleanup_integration(self, compose_manager, mock_docker_client):
         """Test compose cleanup integrates with container operations."""
