@@ -20,6 +20,7 @@ from jinja2 import Environment, FileSystemLoader, Template
 from pydantic import BaseModel, Field, field_validator
 
 from src.utils.logger import get_logger
+from src.packages import AdditionalPackagesConfig
 
 logger = get_logger(__name__)
 
@@ -88,6 +89,7 @@ class NetworkTopology(BaseModel):
     build: Build
     features: Dict[str, bool] = {}
     timeouts: Timeouts = Timeouts()
+    additional_packages: Optional[AdditionalPackagesConfig] = None
     
     @field_validator("topology")
     @classmethod
