@@ -12,7 +12,7 @@ Manages the lifecycle of test network:
 import asyncio
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 import traceback
 
 from ..config.loader import NetworkTopology
@@ -365,8 +365,42 @@ class NetworkManager:
         # Generate dynamic docker-compose.yml for all nodes
         logger.info("generating_docker_compose")
         cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
-        # Get node_source configuration from config loader
+        
+        # Get node_source and build configuration
         node_source_config = self.config_loader.get_node_source_config()
+        build_config = self.config_loader.get_build_config()
+        
+        # Auto-build check: if enabled, check if package is available
+        if build_config.get('auto_build', False):
+            logger.info("auto_build_enabled_checking_package_availability")
+            
+            # Check if package is available
+            package_available = self._check_package_available(node_source_config)
+            
+            if not package_available:
+                logger.info("no_package_available_triggering_auto_build",
+                           build_type=build_config.get('build_type', 'debug'))
+                
+                # Trigger build
+                from ..build.builder import BuildManager
+                builder = BuildManager(self.base_path, node_source_config)
+                
+                build_result = builder.build(
+                    build_type=build_config.get('build_type', 'debug'),
+                    clean=False,
+                    parallel=0  # Auto-detect
+                )
+                
+                if not build_result.success:
+                    logger.error("auto_build_failed", error=build_result.error)
+                    raise RuntimeError(f"Auto-build failed: {build_result.error}")
+                
+                logger.info("auto_build_completed",
+                           duration_s=build_result.duration_s,
+                           artifacts=build_result.artifacts)
+            else:
+                logger.info("package_available_skipping_auto_build")
+        
         self.compose.generate_compose_for_nodes(
             node_configs, 
             cache_dir_relative=cache_dir_relative,
@@ -1336,6 +1370,52 @@ class NetworkManager:
         logger.info("network_started",
                    nodes=len(self.nodes),
                    topology=self.topology.network.name)
+    
+    def _check_package_available(self, node_source_config: Dict[str, Any]) -> bool:
+        """
+        Check if cellframe-node package is available based on node_source config.
+        
+        Args:
+            node_source_config: Node source configuration from config loader
+            
+        Returns:
+            True if package is available, False otherwise
+        """
+        source_type = node_source_config.get('type', 'local_path')
+        
+        if source_type == 'local_path':
+            # Check if local .deb file exists
+            local_path_str = node_source_config.get('local_path')
+            if not local_path_str:
+                logger.debug("no_local_path_specified")
+                return False
+            
+            local_path = Path(local_path_str)
+            if not local_path.is_absolute():
+                # Resolve relative to base_path
+                local_path = (self.base_path / local_path).resolve()
+            
+            exists = local_path.exists() and local_path.suffix == '.deb'
+            logger.debug("local_package_check",
+                        path=str(local_path),
+                        exists=exists)
+            return exists
+        
+        elif source_type == 'url':
+            # URL source - package will be downloaded by Docker, assume available
+            url = node_source_config.get('url')
+            logger.debug("url_source_assume_available", url=url)
+            return True
+        
+        elif source_type == 'repository':
+            # Repository source - will be built by Docker, assume available
+            repo_url = node_source_config.get('repository_url')
+            logger.debug("repository_source_assume_available", repo_url=repo_url)
+            return True
+        
+        else:
+            logger.warning("unknown_source_type", source_type=source_type)
+            return False
     
     def _clean_node_data(self):
         """
