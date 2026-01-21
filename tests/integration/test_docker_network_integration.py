@@ -24,6 +24,19 @@ class TestDockerNetworkIntegration:
         (temp_dir / "compose").mkdir()
         (temp_dir / "config").mkdir()
         
+        # Create stage-env.cfg (required by NetworkManager)
+        stage_env_cfg = temp_dir / "config" / "stage-env.cfg"
+        stage_env_cfg.write_text("""[network]
+network_name = stagenet
+
+[docker]
+compose_project_name = cellframe-stage
+
+[paths]
+cache_dir = cache
+compose_dir = compose
+""")
+        
         # Create minimal config for ConfigManager
         config_file = temp_dir / "config" / "config.yml"
         config_file.write_text(yaml.dump({
@@ -81,14 +94,62 @@ networks:
         # Create minimal topology file for NetworkManager
         (temp_base_path / "config" / "topologies").mkdir(parents=True, exist_ok=True)
         topology_file = temp_base_path / "config" / "topologies" / "default.json.tpl"
-        # Topology templates are Jinja2 templates, so write as JSON string
         import json
         topology_file.write_text(json.dumps({
-            "network": {"name": "stagenet", "ledger": "DAG-PoA"},
-            "topology": {"type": "single"},
-            "consensus": {"type": "dag-poa"},
-            "network_settings": {},
-            "build": {}
+            "network": {
+                "name": "stagenet",
+                "network_id": "0x1234",
+                "consensus": "esbocs",
+                "native_ticker": "CELL"
+            },
+            "topology": {
+                "root_nodes": {
+                    "count": 1,
+                    "role": "root",
+                    "consensus_participation": False,
+                    "is_seed_node": True,
+                    "description": "Root nodes"
+                },
+                "master_nodes": {
+                    "count": 0,
+                    "role": "master",
+                    "consensus_participation": True,
+                    "is_seed_node": False,
+                    "description": "Master nodes"
+                },
+                "full_nodes": {
+                    "count": 0,
+                    "role": "full",
+                    "consensus_participation": False,
+                    "is_seed_node": False,
+                    "description": "Full nodes"
+                }
+            },
+            "build": {
+                "type": "debug",
+                "cellframe_version": "latest"
+            },
+            "network_settings": {
+                "base_rpc_port": 8545,
+                "base_p2p_port": 31337,
+                "base_cf_port": 7007,
+                "base_http_port": 8079,
+                "node_port": 8079,
+                "base_ip": "172.20.0.10",
+                "subnet": "172.20.0.0/16"
+            },
+            "consensus": {
+                "type": "esbocs",
+                "min_validators": 1,
+                "new_round_delay": 30,
+                "collecting_level": 10.0,
+                "auth_certs_prefix": "stagenet.master",
+                "round_start_sync_timeout": 5,
+                "round_attempts_max": 2,
+                "round_attempt_timeout": 5,
+                "consensus_debug": True,
+                "min_fee": "0.01"
+            }
         }, indent=2))
         
         # NetworkManager should be able to use this compose file
@@ -129,19 +190,23 @@ networks:
             }
         }
         
-        # exec_run returns tuple (exit_code, output)
-        mock_container.exec_run.return_value = (0, b"Success\n")
         mock_docker_client.containers.get.return_value = mock_container
         
-        # Execute command
-        result = await container_manager.exec_cli_command(
-            "version",
-            node="node1",
-            timeout=30
-        )
+        # Mock asyncio.create_subprocess_exec to return our controlled output
+        mock_process = AsyncMock()
+        mock_process.communicate = AsyncMock(return_value=(b"Success\n", b""))
+        mock_process.returncode = 0
         
-        assert result["returncode"] == 0
-        assert "Success" in result["stdout"]
+        with patch('asyncio.create_subprocess_exec', return_value=mock_process):
+            # Execute command
+            result = await container_manager.exec_cli_command(
+                "version",
+                node="node1",
+                timeout=30
+            )
+            
+            assert result["returncode"] == 0
+            assert "Success" in result["stdout"]
     
     def test_network_manager_uses_container_manager(self, temp_base_path, container_manager):
         """Test NetworkManager can use DockerContainerManager for operations."""
@@ -150,19 +215,67 @@ networks:
         topology_file = temp_base_path / "config" / "topologies" / "default.json.tpl"
         import json
         topology_file.write_text(json.dumps({
-            "network": {"name": "stagenet", "ledger": "DAG-PoA"},
-            "topology": {"type": "single"},
-            "consensus": {"type": "dag-poa"},
-            "network_settings": {},
-            "build": {}
+            "network": {
+                "name": "stagenet",
+                "network_id": "0x1234",
+                "consensus": "esbocs",
+                "native_ticker": "CELL"
+            },
+            "topology": {
+                "root_nodes": {
+                    "count": 1,
+                    "role": "root",
+                    "consensus_participation": False,
+                    "is_seed_node": True,
+                    "description": "Root nodes"
+                },
+                "master_nodes": {
+                    "count": 0,
+                    "role": "master",
+                    "consensus_participation": True,
+                    "is_seed_node": False,
+                    "description": "Master nodes"
+                },
+                "full_nodes": {
+                    "count": 0,
+                    "role": "full",
+                    "consensus_participation": False,
+                    "is_seed_node": False,
+                    "description": "Full nodes"
+                }
+            },
+            "build": {
+                "type": "debug",
+                "cellframe_version": "latest"
+            },
+            "network_settings": {
+                "base_rpc_port": 8545,
+                "base_p2p_port": 31337,
+                "base_cf_port": 7007,
+                "base_http_port": 8079,
+                "node_port": 8079,
+                "base_ip": "172.20.0.10",
+                "subnet": "172.20.0.0/16"
+            },
+            "consensus": {
+                "type": "esbocs",
+                "min_validators": 1,
+                "new_round_delay": 30,
+                "collecting_level": 10.0,
+                "auth_certs_prefix": "stagenet.master",
+                "round_start_sync_timeout": 5,
+                "round_attempts_max": 2,
+                "round_attempt_timeout": 5,
+                "consensus_debug": True,
+                "min_fee": "0.01"
+            }
         }, indent=2))
         
         # NetworkManager now initialized via ConfigManager fixture
         network_manager = NetworkManager(base_path=temp_base_path)
         
-        # Verify NetworkManager can access config
-        assert network_manager.config_data["network"]["name"] == "stagenet"
-        assert len(network_manager.config_data["nodes"]) == 1
+        # Verify NetworkManager can access topology
+        assert network_manager.topology.network.name == "stagenet"
     
     def test_compose_cleanup_integration(self, compose_manager, mock_docker_client):
         """Test compose cleanup integrates with container operations."""

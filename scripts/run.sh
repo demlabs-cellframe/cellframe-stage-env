@@ -441,6 +441,9 @@ else
     REGRESSION_EXIT=$E2E_EXIT
 fi
 
+# Capture start time for smart report check
+START_TIME=$(date +%s)
+
 # Summary
 echo ""
 echo "════════════════════════════════════"

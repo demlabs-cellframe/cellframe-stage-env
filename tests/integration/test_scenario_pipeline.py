@@ -71,7 +71,8 @@ class TestScenarioExecutionPipeline:
         assert len(scenario.test.steps) == 1
         
         # Executor should accept parsed scenario
-        executor = ScenarioExecutor(temp_base_path, mock_container_manager)
+        # ScenarioExecutor(node_cli_path, log_file, debug, base_path)
+        executor = ScenarioExecutor(node_cli_path="cellframe-node-cli", base_path=temp_base_path)
         assert executor is not None
     
     @pytest.mark.asyncio
@@ -82,7 +83,7 @@ class TestScenarioExecutionPipeline:
         scenario = parser.load_scenario("test.yml")
         
         # Execute
-        executor = ScenarioExecutor(temp_base_path, mock_container_manager)
+        executor = ScenarioExecutor(node_cli_path="cellframe-node-cli", base_path=temp_base_path)
         
         # Mock execute_scenario method
         executor.execute_scenario = AsyncMock(return_value={"success": True, "steps": 1})
@@ -143,7 +144,7 @@ class TestScenarioExecutionPipeline:
         assert len(scenario.test.steps) == 3
         
         # All steps should be executable
-        executor = ScenarioExecutor(temp_base_path, mock_container_manager)
+        executor = ScenarioExecutor(node_cli_path="cellframe-node-cli", base_path=temp_base_path)
         assert executor is not None
 
 
