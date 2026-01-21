@@ -474,12 +474,16 @@ fi
 echo "════════════════════════════════════"
 
 # Find and display detailed test results from summary.json
+# Only show if summary.json was created in last 60 seconds (fresh from this run)
 LATEST_RUN_DIR=$(find "$TESTS_DIR/testing/artifacts" -maxdepth 1 -type d -name "run_*" 2>/dev/null | sort -r | head -n 1)
 if [ -n "$LATEST_RUN_DIR" ] && [ -f "$LATEST_RUN_DIR/summary.json" ]; then
     echo ""
     echo "════════════════════════════════════"
     echo " Detailed Test Results"
     echo "════════════════════════════════════"
+    
+    # Check if summary.json is fresh (created in last 60 seconds)
+    if [ $(find "$LATEST_RUN_DIR/summary.json" -mmin -1 2>/dev/null | wc -l) -gt 0 ]; then
     
     # Parse summary.json and display results
     python3 << EOF
@@ -531,6 +535,7 @@ EOF
     echo "════════════════════════════════════"
     echo " Full report: $LATEST_RUN_DIR/reports/report.md"
     echo "════════════════════════════════════"
+    fi  # Close freshness check
 fi
 
 # Exit with error if any tests failed

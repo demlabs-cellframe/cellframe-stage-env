@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 import yaml
 
 from src.scenarios.executor import ScenarioExecutor
-from src.scenarios.parser import ScenarioParser
+from src.scenarios.parser import ScenarioParser, ScenarioParseError
 from src.docker_ctl.container import DockerContainerManager
 
 
@@ -28,16 +28,15 @@ class TestScenarioExecutionPipeline:
         """Create a simple test scenario YAML."""
         scenario_file = temp_base_path / "scenarios" / "test.yml"
         scenario_content = {
-            "scenario": {
-                "name": "Test scenario",
-                "description": "Simple test",
-                "network": {"preset": "minimal"},
+            "name": "Test scenario",
+            "description": "Simple test",
+            "network": {"preset": "minimal"},
+            "test": {
                 "steps": [
                     {
-                        "name": "Test step",
+                        "cli": "version",
                         "node": "node1",
-                        "command": "version",
-                        "assert": ["success"]
+                        "expect": "success"
                     }
                 ]
             }
@@ -64,60 +63,58 @@ class TestScenarioExecutionPipeline:
     def test_parser_to_executor_flow(self, simple_scenario_file, temp_base_path, mock_container_manager):
         """Test that parsed scenario can be executed."""
         # Parse scenario
-        parser = ScenarioParser(tmp_path)
-        scenario = parser.parse(simple_scenario_file)
+        parser = ScenarioParser(temp_base_path / "scenarios")
+        scenario = parser.load_scenario("test.yml")
         
         assert scenario is not None
         assert scenario.name == "Test scenario"
-        assert len(scenario.steps) == 1
+        assert len(scenario.test.steps) == 1
         
         # Executor should accept parsed scenario
-        with patch('src.scenarios.executor.DockerContainerManager', return_value=mock_container_manager):
-            executor = ScenarioExecutor(temp_base_path, mock_container_manager)
-            assert executor is not None
+        executor = ScenarioExecutor(temp_base_path, mock_container_manager)
+        assert executor is not None
     
     @pytest.mark.asyncio
     async def test_full_scenario_execution_pipeline(self, simple_scenario_file, temp_base_path, mock_container_manager):
         """Test full pipeline: Parse -> Execute -> Verify."""
         # Parse
-        parser = ScenarioParser(tmp_path)
-        scenario = parser.parse(simple_scenario_file)
+        parser = ScenarioParser(temp_base_path / "scenarios")
+        scenario = parser.load_scenario("test.yml")
         
         # Execute
-        with patch('src.scenarios.executor.DockerContainerManager', return_value=mock_container_manager):
-            executor = ScenarioExecutor(temp_base_path, mock_container_manager)
-            
-            # Mock execute_scenario method
-            executor.execute_scenario = AsyncMock(return_value={"success": True, "steps": 1})
-            
-            result = await executor.execute_scenario(scenario)
-            
-            assert result["success"] is True
-            assert result["steps"] == 1
+        executor = ScenarioExecutor(temp_base_path, mock_container_manager)
+        
+        # Mock execute_scenario method
+        executor.execute_scenario = AsyncMock(return_value={"success": True, "steps": 1})
+        
+        result = await executor.execute_scenario(scenario)
+        
+        assert result["success"] is True
+        assert result["steps"] == 1
     
     def test_scenario_with_variables_integration(self, temp_base_path, mock_container_manager):
         """Test scenario variable substitution through pipeline."""
         scenario_file = temp_base_path / "scenarios" / "vars_test.yml"
         scenario_content = {
-            "scenario": {
-                "name": "Variable test",
-                "variables": {
-                    "test_node": "node1",
-                    "test_cmd": "version"
-                },
+            "name": "Variable test",
+            "description": "Test variable substitution",
+            "variables": {
+                "test_node": "node1",
+                "test_cmd": "version"
+            },
+            "test": {
                 "steps": [
                     {
-                        "name": "Test with vars",
-                        "node": "{{test_node}}",
-                        "command": "{{test_cmd}}"
+                        "cli": "{{test_cmd}}",
+                        "node": "{{test_node}}"
                     }
                 ]
             }
         }
         scenario_file.write_text(yaml.dump(scenario_content))
         
-        parser = ScenarioParser(tmp_path)
-        scenario = parser.parse(scenario_file)
+        parser = ScenarioParser(temp_base_path / "scenarios")
+        scenario = parser.load_scenario("vars_test.yml")
         
         # Variables should be available for executor
         assert scenario.variables is not None
@@ -128,26 +125,26 @@ class TestScenarioExecutionPipeline:
         # Create multi-step scenario
         scenario_file = temp_base_path / "scenarios" / "multi_step.yml"
         scenario_content = {
-            "scenario": {
-                "name": "Multi-step test",
+            "name": "Multi-step test",
+            "description": "Test multi-step execution",
+            "test": {
                 "steps": [
-                    {"name": "Step 1", "node": "node1", "command": "cmd1"},
-                    {"name": "Step 2", "node": "node1", "command": "cmd2"},
-                    {"name": "Step 3", "node": "node1", "command": "cmd3"}
+                    {"cli": "cmd1", "node": "node1"},
+                    {"cli": "cmd2", "node": "node1"},
+                    {"cli": "cmd3", "node": "node1"}
                 ]
             }
         }
         scenario_file.write_text(yaml.dump(scenario_content))
         
-        parser = ScenarioParser(tmp_path)
-        scenario = parser.parse(scenario_file)
+        parser = ScenarioParser(temp_base_path / "scenarios")
+        scenario = parser.load_scenario("multi_step.yml")
         
-        assert len(scenario.steps) == 3
+        assert len(scenario.test.steps) == 3
         
         # All steps should be executable
-        with patch('src.scenarios.executor.DockerContainerManager', return_value=mock_container_manager):
-            executor = ScenarioExecutor(temp_base_path, mock_container_manager)
-            assert executor is not None
+        executor = ScenarioExecutor(temp_base_path, mock_container_manager)
+        assert executor is not None
 
 
 class TestScenarioErrorPropagation:
@@ -155,13 +152,14 @@ class TestScenarioErrorPropagation:
     
     def test_invalid_scenario_rejected_by_parser(self, tmp_path):
         """Test that invalid scenario is caught at parse stage."""
-        invalid_scenario = tmp_path / "invalid.yml"
+        invalid_scenario = tmp_path / "scenarios" / "invalid.yml"
+        (tmp_path / "scenarios").mkdir(exist_ok=True)
         invalid_scenario.write_text("invalid: yaml: content:")
         
-        parser = ScenarioParser(tmp_path)
+        parser = ScenarioParser(tmp_path / "scenarios")
         
-        with pytest.raises((yaml.YAMLError, ValueError, KeyError)):
-            parser.parse(invalid_scenario)
+        with pytest.raises((yaml.YAMLError, ValueError, KeyError, ScenarioParseError)):
+            parser.load_scenario("invalid.yml")
     
     @pytest.mark.asyncio
     async def test_step_failure_propagates_to_executor(self, tmp_path):
@@ -178,11 +176,10 @@ class TestScenarioErrorPropagation:
         mock_manager.exec_cli_command = AsyncMock(side_effect=failing_exec)
         
         # Executor should handle failure
-        with patch('src.scenarios.executor.DockerContainerManager', return_value=mock_manager):
-            executor = ScenarioExecutor(tmp_path, mock_manager)
-            
-            # Mock scenario with failing step
-            executor.execute_scenario = AsyncMock(return_value={"success": False, "error": "Step failed"})
-            
-            result = await executor.execute_scenario(MagicMock())
-            assert result["success"] is False
+        executor = ScenarioExecutor(tmp_path, mock_manager)
+        
+        # Mock scenario with failing step
+        executor.execute_scenario = AsyncMock(return_value={"success": False, "error": "Step failed"})
+        
+        result = await executor.execute_scenario(MagicMock())
+        assert result["success"] is False

@@ -78,6 +78,19 @@ networks:
     driver: bridge
 """)
         
+        # Create minimal topology file for NetworkManager
+        (temp_base_path / "config" / "topologies").mkdir(parents=True, exist_ok=True)
+        topology_file = temp_base_path / "config" / "topologies" / "default.json.tpl"
+        # Topology templates are Jinja2 templates, so write as JSON string
+        import json
+        topology_file.write_text(json.dumps({
+            "network": {"name": "stagenet", "ledger": "DAG-PoA"},
+            "topology": {"type": "single"},
+            "consensus": {"type": "dag-poa"},
+            "network_settings": {},
+            "build": {}
+        }, indent=2))
+        
         # NetworkManager should be able to use this compose file
         network_manager = NetworkManager(base_path=temp_base_path)
         assert network_manager is not None
@@ -97,9 +110,9 @@ networks:
         mock_container.status = "running"
         mock_docker_client.containers.get.return_value = mock_container
         
-        # Test resolution - resolve_node_to_container returns Container object
-        container = container_manager.resolve_node_to_container("node1")
-        assert container.name == "cellframe-stage-node1"
+        # Test resolution - resolve_node_to_container returns container name as string
+        container_name = container_manager.resolve_node_to_container("node1")
+        assert container_name == "cellframe-stage-node-1"
     
     @pytest.mark.asyncio
     async def test_container_exec_with_network_context(self, container_manager, mock_docker_client):
@@ -107,12 +120,17 @@ networks:
         # Mock container with exec
         mock_container = MagicMock()
         mock_container.name = "cellframe-stage-node1"
+        mock_container.status = "running"
+        mock_container.attrs = {
+            "State": {
+                "Status": "running",
+                "Running": True,
+                "ExitCode": 0
+            }
+        }
         
-        mock_exec_result = MagicMock()
-        mock_exec_result.output = (b"Success\n", b"")
-        mock_exec_result.exit_code = 0
-        
-        mock_container.exec_run.return_value = mock_exec_result
+        # exec_run returns tuple (exit_code, output)
+        mock_container.exec_run.return_value = (0, b"Success\n")
         mock_docker_client.containers.get.return_value = mock_container
         
         # Execute command
@@ -127,6 +145,18 @@ networks:
     
     def test_network_manager_uses_container_manager(self, temp_base_path, container_manager):
         """Test NetworkManager can use DockerContainerManager for operations."""
+        # Create minimal topology file for NetworkManager
+        (temp_base_path / "config" / "topologies").mkdir(parents=True, exist_ok=True)
+        topology_file = temp_base_path / "config" / "topologies" / "default.json.tpl"
+        import json
+        topology_file.write_text(json.dumps({
+            "network": {"name": "stagenet", "ledger": "DAG-PoA"},
+            "topology": {"type": "single"},
+            "consensus": {"type": "dag-poa"},
+            "network_settings": {},
+            "build": {}
+        }, indent=2))
+        
         # NetworkManager now initialized via ConfigManager fixture
         network_manager = NetworkManager(base_path=temp_base_path)
         
