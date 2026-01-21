@@ -146,6 +146,40 @@ class NetworkManager:
                    cache_dir=self.paths_config.get('cache_dir'),
                    snapshot_mode=snapshot_mode.value)
     
+    # ========================================================================
+    # Delegation methods to NodeStateManager
+    # ========================================================================
+    
+    async def _wait_for_nodes_online(self, node_configs: List[NodeConfig], timeout: int = 600) -> None:
+        """
+        Wait for nodes to come online (delegated to NodeStateManager).
+        
+        Args:
+            node_configs: List of node configurations to wait for
+            timeout: Maximum time to wait in seconds
+            
+        Raises:
+            TimeoutError: If nodes don't come online within timeout
+        """
+        await self.state_manager.wait_for_nodes_online(node_configs, timeout=timeout)
+    
+    async def _wait_for_nodes_offline(self, node_configs: List[NodeConfig], timeout: int = 600) -> None:
+        """
+        Wait for nodes to go offline (delegated to NodeStateManager).
+        
+        Args:
+            node_configs: List of node configurations to wait for
+            timeout: Maximum time to wait in seconds
+            
+        Raises:
+            TimeoutError: If nodes don't go offline within timeout
+        """
+        await self.state_manager.wait_for_nodes_offline(node_configs, timeout=timeout)
+    
+    # ========================================================================
+    # Node Configuration Generation
+    # ========================================================================
+    
     def generate_node_configs(self) -> List[NodeConfig]:
         """
         Generate node configurations from topology.
