@@ -1521,6 +1521,22 @@ class DockerComposeManager:
         
         return status
     
+    def are_services_running(self, services: List[str]) -> bool:
+        """
+        Check if all specified services are running.
+        
+        Args:
+            services: List of service names to check (e.g., ['node-4', 'node-5'])
+            
+        Returns:
+            True if ALL specified services are running, False otherwise
+        """
+        status = self.get_service_status()
+        for service in services:
+            if service not in status or status[service] != "running":
+                return False
+        return True
+    
     def clean_cache_data(self, cache_path: Path) -> None:
         """
         Clean cache/data directory using temporary Docker container.
