@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 
 # Add stage-env root to path
-STAGE_ENV_ROOT = Path(__file__).parent.parent.parent.parent
+STAGE_ENV_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(STAGE_ENV_ROOT))
 
 from tests.e2e.helpers import StageEnvLifecycle
