@@ -16,6 +16,7 @@ from docker.models.containers import Container
 
 from src.utils.logger import get_logger
 from ..network.models import NodeConfig
+from ..config.loader import NetworkTopology
 
 logger = get_logger(__name__)
 
@@ -233,7 +234,8 @@ class DockerComposeManager:
         build_type: str = "debug",
         cellframe_version: str = "latest",
         cache_dir_relative: str = "cache",
-        node_source_config: Optional[Dict[str, Any]] = None
+        node_source_config: Optional[Dict[str, Any]] = None,
+        topology: Optional[NetworkTopology] = None
     ) -> None:
         """
         Generate docker-compose.yml dynamically for given nodes.
@@ -244,6 +246,7 @@ class DockerComposeManager:
             cellframe_version: Cellframe version tag
             cache_dir_relative: Relative path to cache directory
             node_source_config: Node source configuration (type, url, local_path, etc.)
+            topology: Network topology (for additional_packages support)
         """
         logger.info("generating_compose_file",
                    node_count=len(nodes),
@@ -357,6 +360,50 @@ class DockerComposeManager:
                 logger.debug("added_local_package_volume",
                            node_id=node.node_id,
                            package_dir=str(package_dir))
+            
+            
+            # Generate custom Dockerfile if node has additional packages
+            if topology and topology.additional_packages:
+                from ..packages import AdditionalPackagesConfig
+                from ..packages.dockerfile import DockerfileBuilder
+                
+                # Check if this node needs custom packages
+                if topology.additional_packages.has_packages_for_node(f"node-{node.node_id}", node.role):
+                    logger.info("generating_custom_dockerfile_for_node",
+                               node_id=node.node_id,
+                               role=node.role)
+                    
+                    # Create DockerfileBuilder
+                    dockerfile_builder = DockerfileBuilder()
+                    
+                    # Determine cellframe .deb path (depends on node_source_type)
+                    if node_source_type == 'local' and local_package_path:
+                        cellframe_deb_path = f"/packages/{local_package_path.name}"
+                    else:
+                        # For URL/repository sources, package is downloaded in Dockerfile
+                        cellframe_deb_path = "/opt/cellframe-node.deb"
+                    
+                    # Generate custom Dockerfile
+                    custom_dockerfile = dockerfile_builder.generate_dockerfile(
+                        node_id=f"node-{node.node_id}",
+                        node_role=node.role,
+                        cellframe_deb_path=cellframe_deb_path,
+                        additional_packages=topology.additional_packages,
+                        base_dockerfile=""  # Will use default base
+                    )
+                    
+                    # Save Dockerfile to compose directory
+                    dockerfile_path = self.project_dir / f"Dockerfile.node-{node.node_id}"
+                    dockerfile_builder.save_dockerfile(custom_dockerfile, dockerfile_path)
+                    
+                    # Update build config to use custom Dockerfile
+                    if 'build' not in node_service:
+                        node_service['build'] = {}
+                    node_service['build']['dockerfile'] = f"Dockerfile.node-{node.node_id}"
+                    
+                    logger.info("custom_dockerfile_configured",
+                               node_id=node.node_id,
+                               dockerfile=f"Dockerfile.node-{node.node_id}")
             
             # Update build args based on node_source configuration
             if 'build' not in node_service:

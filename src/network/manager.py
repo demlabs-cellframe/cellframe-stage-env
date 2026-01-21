@@ -404,7 +404,8 @@ class NetworkManager:
         self.compose.generate_compose_for_nodes(
             node_configs, 
             cache_dir_relative=cache_dir_relative,
-            node_source_config=node_source_config
+            node_source_config=node_source_config,
+            topology=self.topology
         )
         
         # Build images if requested
