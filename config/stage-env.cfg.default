@@ -21,6 +21,9 @@ full_nodes_count = 2
 # Build configuration
 build_type = debug
 cellframe_version = latest
+# Auto-build cellframe-node on network start if no package is available
+# Set to 'true' to enable automatic building (default: false)
+auto_build = false
 
 [network_settings]
 # Network ports and addressing

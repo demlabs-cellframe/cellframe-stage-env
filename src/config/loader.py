@@ -384,6 +384,55 @@ class ConfigLoader:
         logger.debug("timeouts_loaded", **timeouts)
         return timeouts
     
+    def get_build_config(self) -> Dict[str, Any]:
+        """
+        Load build configuration from stage-env.cfg.
+        
+        Returns:
+            Dictionary with build configuration:
+            - build_type: Build type (debug/release, default: debug)
+            - cellframe_version: Version to build (default: latest)
+            - auto_build: Enable automatic building if no package available (default: False)
+        """
+        # Use custom config path if provided, otherwise use default
+        if self.custom_config_path:
+            config_file = self.custom_config_path
+        else:
+            config_file = self.config_dir / "stage-env.cfg"
+        
+        # Default build config
+        build_config = {
+            'build_type': 'debug',
+            'cellframe_version': 'latest',
+            'auto_build': False,
+        }
+        
+        if not config_file.exists():
+            logger.warning("config_not_found_using_defaults", path=str(config_file))
+            return build_config
+        
+        # Load config
+        config = configparser.ConfigParser()
+        config.read(config_file)
+        
+        # Read build section if exists
+        if config.has_section('build'):
+            if config.has_option('build', 'build_type'):
+                build_config['build_type'] = config.get('build', 'build_type')
+            
+            if config.has_option('build', 'cellframe_version'):
+                build_config['cellframe_version'] = config.get('build', 'cellframe_version')
+            
+            if config.has_option('build', 'auto_build'):
+                try:
+                    build_config['auto_build'] = config.getboolean('build', 'auto_build')
+                except ValueError as e:
+                    logger.warning("invalid_auto_build_value", error=str(e),
+                                  using_default=False)
+        
+        logger.debug("build_config_loaded", **build_config)
+        return build_config
+    
     def get_paths_config(self) -> Dict[str, str]:
         """
         Load paths configuration from stage-env.cfg.
