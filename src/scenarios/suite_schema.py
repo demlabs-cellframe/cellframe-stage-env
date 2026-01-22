@@ -13,7 +13,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from .schema import TestScenario
+from .schema import ScenarioDefinition
 
 
 class ScenarioSuite(BaseModel):

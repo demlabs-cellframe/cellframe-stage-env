@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class NodeRole(str, Enum):
@@ -87,8 +87,7 @@ class NodeConfig(BaseModel):
     docker_devices: Optional[List[str]] = Field(None, description="Device mappings")
     docker_extra: Optional[Dict[str, Any]] = Field(None, description="Raw docker-compose config sections")
     
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class NetworkConfig(BaseModel):
@@ -208,8 +207,7 @@ class CLIStep(BaseModel):
             info.append(f"output→{self.save_to}")
         return info
     
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class RPCStep(BaseModel):
@@ -222,8 +220,7 @@ class RPCStep(BaseModel):
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     timeout: Optional[int] = Field(30, description="RPC call timeout")
     
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class WaitStep(BaseModel):
@@ -271,8 +268,7 @@ class BashStep(BaseModel):
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     timeout: Optional[int] = Field(300, description="Script timeout in seconds")
     
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class ToolStep(BaseModel):
@@ -283,8 +279,7 @@ class ToolStep(BaseModel):
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     timeout: Optional[int] = Field(30, description="Command timeout in seconds")
     
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class LoopStep(BaseModel):
@@ -410,8 +405,7 @@ class StepDefaults(BaseModel):
     timeout: Optional[int] = Field(None, description="Default timeout in seconds")
     cli: Optional[Dict[str, str]] = Field(None, description="Default CLI option prefixes (e.g., {'net': 'stagenet'})")
     
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class StepGroup(BaseModel):
@@ -538,8 +532,13 @@ class SuiteSetupScenario(BaseModel):
         return self
 
 
-class TestScenario(BaseModel):
-    """Complete test scenario definition."""
+class ScenarioDefinition(BaseModel):
+    """
+    Complete test scenario definition.
+    
+    This is the top-level model that represents a complete test scenario YAML file.
+    Note: Renamed from TestScenario to avoid pytest collection warnings.
+    """
     
     # Metadata
     name: str = Field(..., description="Scenario name")

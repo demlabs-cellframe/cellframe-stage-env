@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, AsyncMock
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.scenarios.executor import ScenarioExecutor, RuntimeContext
-from src.scenarios.schema import CLIStep, TestScenario
+from src.scenarios.schema import CLIStep, ScenarioDefinition
 
 class TestIssueTemplate:
     """
@@ -39,7 +39,7 @@ class TestIssueTemplate:
         }
         
         step = CLIStep(cli="some command", node="node1", expect="success")
-        scenario = TestScenario(name="Regression", description="Test", test=[step])
+        scenario = ScenarioDefinition(name="Regression", description="Test", test=[step])
         ctx = RuntimeContext(scenario)
         
         # In this template, we assume the bug is that it IS detected (fixed behavior)

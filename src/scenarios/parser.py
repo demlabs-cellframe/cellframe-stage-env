@@ -13,7 +13,7 @@ import yaml
 from pydantic import ValidationError, BaseModel
 
 from src.utils.logger import get_logger
-from .schema import TestScenario, SuiteSetupScenario
+from .schema import ScenarioDefinition, SuiteSetupScenario
 
 logger = get_logger(__name__)
 
@@ -194,7 +194,7 @@ class BaseScenarioParser:
 class ScenarioParser(BaseScenarioParser):
     """Parse and validate YAML test scenarios."""
     
-    def load_scenario(self, scenario_path: str) -> TestScenario:
+    def load_scenario(self, scenario_path: str) -> ScenarioDefinition:
         """
         Load and parse scenario from YAML file.
         
@@ -232,7 +232,7 @@ class ScenarioParser(BaseScenarioParser):
                 raw_data = self._process_includes(raw_data, full_path.parent)
             
             # Validate with Pydantic
-            scenario = TestScenario(**raw_data)
+            scenario = ScenarioDefinition(**raw_data)
             
             logger.info(f"Loaded scenario: {scenario.name} from {scenario_path}")
             return scenario

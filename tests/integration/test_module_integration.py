@@ -56,7 +56,7 @@ network:
         scenarios_dir.mkdir()
         
         scenario_file = scenarios_dir / "test.yml"
-        # Correct structure according to TestScenario schema
+        # Correct structure according to ScenarioDefinition schema
         scenario_file.write_text(yaml.dump({
             "name": "test",
             "description": "test scenario",

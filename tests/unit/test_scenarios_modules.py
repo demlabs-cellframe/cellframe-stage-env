@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.scenarios.executor import ScenarioExecutor, ScenarioExecutionError, RuntimeContext
 from src.scenarios.parser import ScenarioParser, ScenarioParseError
-from src.scenarios.schema import TestScenario
+from src.scenarios.schema import ScenarioDefinition
 
 
 # ============================================================================
@@ -27,7 +27,7 @@ class TestRuntimeContext:
             "network": {"preset": "minimal"},
             "test": {"steps": [{"wait": "1s"}]}  # Simple wait step
         }
-        scenario = TestScenario(**scenario_dict)
+        scenario = ScenarioDefinition(**scenario_dict)
         context = RuntimeContext(scenario)
         
         context.set_variable("test_var", "test_value")
@@ -41,7 +41,7 @@ class TestRuntimeContext:
             "network": {"preset": "minimal"},
             "test": {"steps": [{"wait": "1s"}]}
         }
-        scenario = TestScenario(**scenario_dict)
+        scenario = ScenarioDefinition(**scenario_dict)
         context = RuntimeContext(scenario)
         
         with pytest.raises(ScenarioExecutionError, match="Undefined variable"):
@@ -55,7 +55,7 @@ class TestRuntimeContext:
             "network": {"preset": "minimal"},
             "test": {"steps": [{"wait": "1s"}]}
         }
-        scenario = TestScenario(**scenario_dict)
+        scenario = ScenarioDefinition(**scenario_dict)
         context = RuntimeContext(scenario)
         
         context.add_result("cli", True, {"command": "test"})
@@ -72,7 +72,7 @@ class TestRuntimeContext:
             "network": {"preset": "minimal"},
             "test": {"steps": [{"wait": "1s"}]}
         }
-        scenario = TestScenario(**scenario_dict)
+        scenario = ScenarioDefinition(**scenario_dict)
         context = RuntimeContext(scenario)
         
         context.add_result("cli", True, {})
@@ -125,7 +125,7 @@ class TestScenarioExecutor:
             "network": {"preset": "minimal"},
             "test": {"steps": [{"wait": "1s"}]}
         }
-        scenario = TestScenario(**scenario_dict)
+        scenario = ScenarioDefinition(**scenario_dict)
         
         executor = ScenarioExecutor(base_path=tmp_path)
         
@@ -329,8 +329,8 @@ class TestScenariosModulesImports:
     
     def test_import_schema(self):
         """Test importing scenario schemas."""
-        from src.scenarios.schema import TestScenario, CLIStep
-        assert TestScenario is not None
+        from src.scenarios.schema import ScenarioDefinition, CLIStep
+        assert ScenarioDefinition is not None
         assert CLIStep is not None
     
     def test_import_step_base(self):

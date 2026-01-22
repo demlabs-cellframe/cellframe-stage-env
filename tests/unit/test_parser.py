@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.scenarios.parser import ScenarioParser, ScenarioParseError
-from src.scenarios.schema import TestScenario as ScenarioSchema, CLIStep
+from src.scenarios.schema import ScenarioDefinition as ScenarioSchema, CLIStep
 
 class TestScenarioParser:
     """Test scenario parser logic."""

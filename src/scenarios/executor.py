@@ -21,7 +21,7 @@ from .schema import (
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
     CLICheck, RPCCheck, PythonCheck, BashCheck,
-    TestScenario, SuiteSetupScenario, TestStep, CheckSpec, StepDefaults, SectionConfig, DatumStatus
+    ScenarioDefinition, SuiteSetupScenario, TestStep, CheckSpec, StepDefaults, SectionConfig, DatumStatus
 )
 
 logger = get_logger(__name__)
@@ -48,7 +48,7 @@ class ScenarioExecutionError(Exception):
 class RuntimeContext:
     """Runtime context for scenario execution."""
     
-    def __init__(self, scenario: Union[TestScenario, SuiteSetupScenario]):
+    def __init__(self, scenario: Union[ScenarioDefinition, SuiteSetupScenario]):
         """Initialize runtime context."""
         self.scenario = scenario
         self.variables: Dict[str, Any] = scenario.variables.copy() if hasattr(scenario, 'variables') else {}
@@ -399,7 +399,7 @@ class ScenarioExecutor:
     
     async def execute_scenario(
         self, 
-        scenario: Union[TestScenario, SuiteSetupScenario],
+        scenario: Union[ScenarioDefinition, SuiteSetupScenario],
         compose_manager=None,
         snapshot_manager=None,
         genesis_config_manager=None,
@@ -543,13 +543,13 @@ class ScenarioExecutor:
                         logger.warning("failed_to_initialize_cli_parser", error=str(e),
                                      note="CLI defaults may not be applied")
             
-            # Test phase (only for TestScenario, not for SuiteSetupScenario)
+            # Test phase (only for ScenarioDefinition, not for SuiteSetupScenario)
             if hasattr(scenario, 'test') and scenario.test:
                 logger.info("Executing test phase...")
                 section_defaults = self._merge_defaults(global_defaults, scenario.test.defaults)
                 await self._execute_steps(scenario.test.steps, ctx, section_defaults)
             
-            # Check phase (only for TestScenario)
+            # Check phase (only for ScenarioDefinition)
             if hasattr(scenario, 'check') and scenario.check:
                 logger.info("Executing check phase...")
                 section_defaults = self._merge_defaults(global_defaults, scenario.check.defaults)

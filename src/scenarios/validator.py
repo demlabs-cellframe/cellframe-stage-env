@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from src.utils.logger import get_logger
 from .parser import ScenarioParser, ScenarioParseError
-from .schema import TestScenario
+from .schema import ScenarioDefinition
 
 logger = get_logger(__name__)
 
@@ -161,7 +161,7 @@ class ScenarioValidator:
         
         return report
     
-    def _validate_network_config(self, scenario: TestScenario, report: ValidationReport):
+    def _validate_network_config(self, scenario: ScenarioDefinition, report: ValidationReport):
         """Validate network configuration."""
         if not scenario.network.nodes:
             report.add_issue(
@@ -184,7 +184,7 @@ class ScenarioValidator:
                 suggestion="Ensure all node names are unique"
             )
     
-    def _validate_variables(self, scenario: TestScenario, report: ValidationReport):
+    def _validate_variables(self, scenario: ScenarioDefinition, report: ValidationReport):
         """Validate variable usage."""
         import re
         
@@ -229,7 +229,7 @@ class ScenarioValidator:
                 doc_link="tests/scenarios/README.md#variables"
             )
     
-    def _validate_node_references(self, scenario: TestScenario, report: ValidationReport):
+    def _validate_node_references(self, scenario: ScenarioDefinition, report: ValidationReport):
         """Validate node references in steps."""
         node_names = set([node.name for node in scenario.network.nodes])
         
@@ -246,7 +246,7 @@ class ScenarioValidator:
                         doc_link="tests/scenarios/README.md#network-templates"
                     )
     
-    def _validate_timeouts(self, scenario: TestScenario, report: ValidationReport):
+    def _validate_timeouts(self, scenario: ScenarioDefinition, report: ValidationReport):
         """Validate timeout values."""
         for step in scenario.setup + scenario.test:
             if hasattr(step, 'timeout') and step.timeout:
@@ -263,7 +263,7 @@ class ScenarioValidator:
                         suggestion="Consider if 5-minute timeout is really needed"
                     )
     
-    def _validate_best_practices(self, scenario: TestScenario, report: ValidationReport):
+    def _validate_best_practices(self, scenario: ScenarioDefinition, report: ValidationReport):
         """Check best practices."""
         # Check for missing description
         if not scenario.description or len(scenario.description) < 10:

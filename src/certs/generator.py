@@ -465,8 +465,8 @@ class CertGenerator:
     
     def _get_timestamp(self) -> str:
         """Get current ISO timestamp."""
-        from datetime import datetime
-        return datetime.utcnow().isoformat() + "Z"
+        from datetime import datetime, UTC
+        return datetime.now(UTC).isoformat().replace('+00:00', 'Z')
     
     def certs_exist(self, node_count: int = 0, root_count: int = 0, network_name: str = "stagenet") -> bool:
         """

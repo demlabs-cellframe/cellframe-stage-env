@@ -200,9 +200,9 @@ def sample_cli_step():
 @pytest.fixture
 def sample_scenario():
     """Provide a sample test scenario."""
-    from src.scenarios.schema import TestScenario, CLIStep
-    
-    return TestScenario(
+    from src.scenarios.schema import ScenarioDefinition, CLIStep
+
+    return ScenarioDefinition(
         name="Sample Test",
         description="A sample test scenario",
         test=[
