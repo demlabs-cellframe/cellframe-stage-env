@@ -1400,9 +1400,39 @@ class NetworkManager:
         # Get container status
         service_status = self.compose.get_service_status()
         
-        # Get health status via JSON-RPC (CLI)
+        # Detect running containers if self.nodes is empty
+        # This happens when status is called without start()
+        detected_nodes = {}
+        if not self.nodes and service_status:
+            # Detect nodes from running containers
+            for service_name, status in service_status.items():
+                if service_name.startswith('node-'):
+                    node_id = service_name.replace('node-', '')
+                    node_name = f"node{node_id}"
+                    # Determine role from node ID (1-3 root, 4-6 master, 7+ full)
+                    try:
+                        node_num = int(node_id)
+                        if node_num <= 3:
+                            role = "root"
+                        elif node_num <= 6:
+                            role = "master"
+                        else:
+                            role = "full"
+                    except ValueError:
+                        role = "unknown"
+                    
+                    detected_nodes[node_name] = {
+                        "role": role,
+                        "rpc_port": 8544 + int(node_id) if node_id.isdigit() else 0,
+                        "p2p_port": 31336 + int(node_id) if node_id.isdigit() else 0,
+                    }
+        
+        # Use detected nodes if self.nodes is empty
+        nodes_to_check = self.nodes if self.nodes else detected_nodes
+        
+        # Get health status via CLI
         health_status = {}
-        for node_name, config in self.nodes.items():
+        for node_name in nodes_to_check.keys():
             try:
                 # Convert node_name to container name (node1 -> node-1)
                 if node_name.startswith('node'):
@@ -1431,7 +1461,7 @@ class NetworkManager:
                     health_status[node_name] = {
                         "healthy": current_state == "NET_STATE_ONLINE",
                         "state": current_state,
-                        "response_time_ms": 0,  # Not applicable for CLI
+                        "response_time_ms": 0,
                     }
                 else:
                     health_status[node_name] = {
@@ -1449,36 +1479,64 @@ class NetworkManager:
         
         # Build nodes array with combined info
         nodes_data = []
-        for node_name, config in self.nodes.items():
+        for node_name, config in nodes_to_check.items():
             # Convert node_name to docker service name (node1 -> node-1)
             if node_name.startswith('node'):
                 docker_service = f"node-{node_name[4:]}"
             else:
                 docker_service = node_name
             
-            # Get container status (service_status values are strings, not dicts)
+            # Get container status
             container_status = service_status.get(docker_service, "unknown")
             # Get health status
             health = health_status.get(node_name, {})
             
+            # Handle both NodeConfig objects and dicts (detected nodes)
+            if hasattr(config, 'role'):
+                role = config.role
+                rpc_port = config.rpc_port
+                p2p_port = config.p2p_port
+            else:
+                role = config.get('role', 'unknown')
+                rpc_port = config.get('rpc_port', 0)
+                p2p_port = config.get('p2p_port', 0)
+            
             nodes_data.append({
                 "name": node_name,
-                "role": config.role,
+                "role": role,
                 "container_status": container_status,
                 "health_status": health.get("state", "unknown"),
                 "healthy": health.get("healthy", False),
-                "rpc_port": config.rpc_port,
-                "p2p_port": config.p2p_port,
+                "rpc_port": rpc_port,
+                "p2p_port": p2p_port,
             })
         
         return {
             "topology": self.topology_name,
             "network_name": self.topology.network.name,
-            "total_nodes": len(self.nodes),
+            "total_nodes": len(nodes_to_check),
             "nodes": nodes_data,
             "containers": service_status,
             "health": health_status,
         }
+    
+    async def _wait_for_nodes_online(
+        self,
+        nodes: List,
+        timeout: float = 600.0
+    ) -> None:
+        """
+        Wait for all specified nodes to reach ONLINE state.
+        
+        Wrapper around state_manager.wait_for_nodes_online().
+        
+        Args:
+            nodes: List of NodeConfig objects
+            timeout: Maximum wait time in seconds
+        """
+        logger.info("waiting_for_nodes_online", node_count=len(nodes), timeout=timeout)
+        await self.state_manager.wait_for_nodes_online(nodes, timeout=timeout)
+        logger.info("nodes_online", node_count=len(nodes))
     
     async def _wait_for_network_ready(self) -> None:
         """

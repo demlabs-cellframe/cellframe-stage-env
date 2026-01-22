@@ -12,6 +12,7 @@ from .base import BaseSnapshot
 from .recreate import RecreateSnapshot
 from .filesystem import FilesystemSnapshot
 from .squashfs import SquashfsSnapshot
+from .topology_manager import TopologySnapshotManager
 
 __all__ = [
     'SnapshotManager',
@@ -20,5 +21,6 @@ __all__ = [
     'RecreateSnapshot',
     'FilesystemSnapshot',
     'SquashfsSnapshot',
+    'TopologySnapshotManager',
 ]
 

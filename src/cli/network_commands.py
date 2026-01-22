@@ -210,6 +210,59 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             raise typer.Exit(1)
     
     @app.command()
+    def restore(
+        snapshot: str = typer.Argument(None, help="Snapshot name to restore (run without args to see list)"),
+        wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for all nodes to come online after restore"),
+    ):
+        """🔄 Restore network from snapshot. Stops network, restores data+configs, restarts all nodes."""
+        from ..network.manager import NetworkManager
+        from ..snapshots import TopologySnapshotManager
+        from ..config.loader import ConfigLoader
+        
+        # Get config for snapshot info
+        config_path = get_config_path()
+        
+        # List available snapshots if no argument given
+        if snapshot is None:
+            print_info("Available snapshots:")
+            try:
+                config_loader = ConfigLoader(base_path)
+                suite_isolation = config_loader.get_suite_isolation_config()
+                snapshots_dir_rel = suite_isolation.get('snapshots_dir', '../testing/snapshots')
+                snapshots_dir = (base_path / snapshots_dir_rel).resolve()
+                
+                snapshot_mgr = TopologySnapshotManager(snapshots_dir)
+                snapshots = snapshot_mgr.list_snapshots()
+                
+                if snapshots:
+                    for s in snapshots:
+                        print_info(f"  • {s['topology_hash_short']} ({s['consensus_type']}, {s['node_count']} nodes)")
+                    print_info("\nUsage: ./stage-env restore <snapshot_hash>")
+                else:
+                    print_warning("No snapshots available. Run tests first to create one.")
+                return
+            except Exception as e:
+                print_error(f"Failed to list snapshots: {e}")
+                raise typer.Exit(1)
+        
+        print_info(f"🔄 Restoring network from snapshot: {snapshot}")
+        
+        network_mgr = NetworkManager(base_path, config_path=config_path)
+        
+        async def _restore():
+            await network_mgr.restore_clean_state(name=snapshot)
+        
+        try:
+            asyncio.run(_restore())
+            print_success(f"✓ Network restored from snapshot: {snapshot}")
+            if wait:
+                _show_status(network_mgr)
+        except Exception as e:
+            print_error(f"Failed to restore network: {e}")
+            print_info("💡 Try './stage-env clean --all' if permission issues persist")
+            raise typer.Exit(1)
+    
+    @app.command()
     def status():
         """📊 Show network status."""
         from ..network.manager import NetworkManager
