@@ -376,7 +376,7 @@ class NetworkManager:
             self.compose.up(services=all_services, detach=True, wait=False, no_build=True)
             
             # Wait for all nodes to come online
-            await self._wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
+            await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
             
             # Network is ready - no phases needed
             logger.info("network_started",
@@ -1033,7 +1033,7 @@ class NetworkManager:
                 logger.info("starting_remaining_nodes_after_phase2_skip", services=master_full_services)
                 all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
                 self.compose.up(services=all_services, detach=True, wait=False, no_build=True)
-                await self._wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
+                await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
         else:
             logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
         

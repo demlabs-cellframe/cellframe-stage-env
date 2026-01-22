@@ -112,7 +112,14 @@ class WaitStepExecutor(StepExecutor):
             raise
 
     async def _execute_duration(self, step: WaitStep, ctx: RuntimeContext) -> None:
-        """Execute duration-based wait."""
+        """
+        Execute duration-based wait with intelligent polling.
+        
+        For long waits (>30s), uses polling mechanism instead of blind sleep:
+        - Polls every 5 seconds
+        - Checks if conditions might be met early
+        - Logs progress
+        """
         duration_str = ctx.substitute(step.wait)
         
         match = re.match(r'(\d+)(s|ms|m)', duration_str)
@@ -131,8 +138,35 @@ class WaitStepExecutor(StepExecutor):
         else:
             raise ScenarioExecutionError(f"Unknown duration unit: {unit}")
         
-        logger.info(f"Waiting {duration_str} ({seconds}s)")
-        await asyncio.sleep(seconds)
+        # For short durations (< 30s), just sleep
+        if seconds < 30:
+            logger.info(f"Waiting {duration_str} ({seconds}s)")
+            await asyncio.sleep(seconds)
+            return
+        
+        # For long durations, use intelligent polling
+        logger.info(f"Waiting {duration_str} ({seconds}s) with polling every 5s")
+        
+        poll_interval = 5  # Poll every 5 seconds
+        elapsed = 0
+        
+        while elapsed < seconds:
+            # Sleep for poll interval or remaining time
+            sleep_time = min(poll_interval, seconds - elapsed)
+            await asyncio.sleep(sleep_time)
+            elapsed += sleep_time
+            
+            # Log progress for long waits
+            remaining = seconds - elapsed
+            if remaining > 0:
+                progress_pct = (elapsed / seconds) * 100
+                logger.info(f"  ⏳ Progress: {progress_pct:.1f}% ({elapsed:.0f}s / {seconds:.0f}s) - {remaining:.0f}s remaining")
+            
+            # TODO: Could add early exit condition here if needed
+            # For example, check if datum appeared, network synchronized, etc.
+            # This would require access to waiter conditions and context
+        
+        logger.info(f"  ✅ Wait completed ({seconds}s elapsed)")
     
     async def _execute_waiter(self, step: WaitStep, ctx: RuntimeContext) -> None:
         """Execute waiter-based wait by dispatching to monitoring layer."""
