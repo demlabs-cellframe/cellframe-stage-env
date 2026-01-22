@@ -34,6 +34,43 @@ fi
 
 **Все тесты проходят** ✅ - баг исправлен!
 
+---
+
+### test_cli_error_handling.py
+
+**Статус:** ✅  5/5 тестов ПРОХОДЯТ (улучшена обработка ошибок!)
+
+**Проблема (была):**
+CLI команды возвращают ошибки в YAML формате, но система пыталась извлечь хеш из текста ошибки:
+```
+errors:
+    code: 32
+    message: Arbitrage transaction failed: Network 'stagenet' has no fee address configured...
+```
+Результат: `Failed to extract hash from output` вместо реальной ошибки.
+
+**Исправление:**
+В `cli.py` (lines 127-162) добавлена проверка YAML ошибок **перед** извлечением хеша:
+```python
+# Check if output contains error in YAML format
+output_data = yaml.safe_load(output)
+if isinstance(output_data, dict) and 'errors' in output_data:
+    error_code = error_info.get('code', -1)
+    if error_code != 0:
+        raise ScenarioExecutionError(
+            f"CLI command returned error (code {error_code}): {error_message}"
+        )
+```
+
+**Тесты:**
+1. ✅ `test_detects_yaml_error_with_code_32` - PASSES (детектирует error code 32)
+2. ✅ `test_ignores_success_output` - PASSES (не ломает успешные команды)
+3. ✅ `test_detects_error_code_zero_as_success` - PASSES (code 0 = успех)
+4. ✅ `test_hash_pattern_matches_various_formats` - PASSES (паттерн хешей)
+5. ✅ `test_hash_pattern_ignores_old_hash` - PASSES (игнорирует "Old:" хеши)
+
+**Все тесты проходят** ✅ - ошибки теперь понятные!
+
 ## 🔧 Как использовать
 
 ### 1. Убедиться что тест фейлится (баг существует)
@@ -79,7 +116,8 @@ git commit -m "fix: skip unnecessary rebuild when package unchanged
 
 | Тест | Статус | Описание |
 |------|--------|----------|
-| test_issue_no_unnecessary_rebuild.py | 🔴 FAILING | Ненужная пересборка при каждом запуске |
+| test_issue_no_unnecessary_rebuild.py | ✅ 5/5 PASSING | Ненужная пересборка при каждом запуске |
+| test_cli_error_handling.py | ✅ 5/5 PASSING | Улучшена обработка YAML ошибок из CLI |
 
 ## 🎯 Добавление новых регрессионных тестов
 

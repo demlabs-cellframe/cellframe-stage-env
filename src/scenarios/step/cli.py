@@ -126,6 +126,40 @@ class CLIStepExecutor(StepExecutor):
         
         if step.save_hash:
             variable_name = ctx.substitute(step.save_hash)
+            
+            # Check if output contains error in YAML format
+            # CLI может возвращать ошибки в формате:
+            # errors:
+            #   code: 32
+            #   message: ...
+            try:
+                import yaml
+                output_data = yaml.safe_load(output)
+                if isinstance(output_data, dict) and 'errors' in output_data:
+                    error_info = output_data['errors']
+                    error_code = error_info.get('code', -1)
+                    error_message = error_info.get('message', '')
+                    
+                    if error_code != 0:
+                        logger.error("cli_command_returned_error",
+                                   variable=variable_name,
+                                   error_code=error_code,
+                                   error_message=error_message,
+                                   command=cmd[:200])
+                        raise ScenarioExecutionError(
+                            f"CLI command returned error (code {error_code}): {error_message}",
+                            step=cmd[:100],
+                            context={
+                                "error_code": error_code,
+                                "error_message": error_message,
+                                "output": output[:1000]
+                            }
+                        )
+            except yaml.YAMLError:
+                # Not YAML format - continue with hash extraction
+                pass
+            
+            # Extract hash from output
             pattern = DataExtractor.get_default_pattern(ExtractType.HASH)
             try:
                 hash_value, error = DataExtractor.extract_and_validate(
