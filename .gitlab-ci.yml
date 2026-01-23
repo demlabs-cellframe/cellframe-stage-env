@@ -23,35 +23,19 @@ test:all:
     - ci-test
   timeout: 3 hours
   before_script:
-    # Информация
     - echo "=== Cellframe Stage-Env CI ==="
-    - echo "Pipeline: ${CI_PIPELINE_ID}"
-    - echo "Commit: ${CI_COMMIT_SHORT_SHA}"
-    - echo "Branch: ${CI_COMMIT_REF_NAME}"
-    
-    # Проверка Docker
+    - echo "Pipeline ${CI_PIPELINE_ID} | Commit ${CI_COMMIT_SHORT_SHA} | Branch ${CI_COMMIT_REF_NAME}"
     - docker --version
     - docker compose version || docker-compose version
-    
-    # Проверка Python
     - python3 --version
-    
-    # Создание venv и установка зависимостей
     - python3 -m venv .venv
     - source .venv/bin/activate
     - pip install --upgrade pip -q
     - pip install -r requirements.txt -q
-    
-    # Создание директорий
     - mkdir -p testing/artifacts testing/logs testing/cache testing/snapshots
-    
-    # Подготовка конфига
     - cp config/stage-env.cfg.default config/stage-env.cfg
-    
-    # Проверка CLI
     - chmod +x stage-env 2>/dev/null || true
     - ./stage-env --help > /dev/null
-    
   script:
     - source .venv/bin/activate
     - |
@@ -100,17 +84,10 @@ test:all:
       exit $TEST_EXIT
 
   after_script:
-    # Гарантированная очистка через stage-env
-    - |
-      echo "=== Cleanup ==="
-      source .venv/bin/activate 2>/dev/null || true
-      cd ${CI_PROJECT_DIR}
-      
-      # Остановка сети
-      ./stage-env --config="${CI_PROJECT_DIR}/config/stage-env.cfg" stop --volumes 2>/dev/null || true
-      
-      # Полная очистка (сертификаты, конфиги, данные, снапшоты, Docker сети)
-      ./stage-env --config="${CI_PROJECT_DIR}/config/stage-env.cfg" clean --all --yes 2>/dev/null || true
+    - echo "=== Cleanup ==="
+    - source .venv/bin/activate 2>/dev/null || true
+    - ./stage-env --config="${CI_PROJECT_DIR}/config/stage-env.cfg" stop --volumes 2>/dev/null || true
+    - ./stage-env --config="${CI_PROJECT_DIR}/config/stage-env.cfg" clean --all --yes 2>/dev/null || true
 
   artifacts:
     when: always
