@@ -47,9 +47,17 @@ validators_addrs=[]
 poa_mode={{ poa_mode | default('false', true) }}
 # Authentication certificates prefix
 # Uses stagenet.master prefix for master node certificates (validators)
+# Authentication certificates prefix
+# Uses stagenet.master prefix for master node certificates (validators)
 auth_certs_prefix={{ auth_certs_prefix | default('stagenet.master', true) }}
 {% if blocks_sign_cert -%}
 blocks-sign-cert={{ blocks_sign_cert }}
+{% endif -%}
+# Network fee collection address (required for arbitrage transactions)
+# This address receives network fees from arbitrage operations
+# Set during genesis from the first root wallet address
+{% if fee_addr -%}
+fee_addr={{ fee_addr }}
 {% endif -%}
 # Timing parameters (configurable via topology consensus section)
 new_round_delay={{ new_round_delay | default(30, true) }}

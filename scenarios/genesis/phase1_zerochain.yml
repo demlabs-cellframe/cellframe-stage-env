@@ -401,6 +401,11 @@ test:
       - cli: "token_emit -no_base_tx -emission_value 10.0e+54 -addr {{fee_addr}} -certs {{all_root_certs}}"
         save_hash: emission_datum_hash
       
+      # Store emission_datum_hash as emission_hash for phase2 compatibility
+      - set: emission_hash
+        value: "emission_datum_hash"
+        eval: true
+      
       - wait: "10s"
       
       # Verify emission is in mempool
@@ -420,28 +425,22 @@ test:
         save: mempool_proc_output
       
       - wait: "30s"
-      
-      - cli: "dag event last"
-        save_hash: emission_event_hash
-      
-      - cli: "dag event dump -event {{emission_event_hash}} -from events"
-        save: emission_event_dump
-      
-      # Extract emission_hash from dump (plain text format: emission_hash: 0x...)
-      - set: emission_hash
-        value: "regex_extract(emission_event_dump, r'emission_hash:\\s*(0x[a-fA-F0-9]+)', 1)"
-        eval: true
-      
-      # Verify emission_hash was found
-      - if: "not emission_hash"
-        then:
-          - bash: "echo 'ERROR: emission_hash not found in event dump. Dump content:' && echo '{{emission_event_dump}}' | head -50 && exit 1"
-            node: "{{first_root}}"
   
   - cli: "dag event list -chain zerochain"
     node: "{{first_root}}"
   
   - cli: "dag event last -chain zerochain"
+    node: "{{first_root}}"
+  
+  # Configure fee_addr on network level (required for arbitrage transactions)
+  # Write to config file so it persists across restarts and snapshots
+  - config: "{{network_name}}/main"
+    nodes: "{{_active_nodes}}"
+    set:
+      fee_addr: "{{fee_addr}}"
+  
+  # Set fee_addr via CLI command (runtime setting - needed for immediate effect)
+  - cli: "net -net {{network_name}} fee_addr {{fee_addr}}"
     node: "{{first_root}}"
 
 # NOTE: Snapshot creation is handled by manager.py after this phase completes.

@@ -84,6 +84,13 @@ test:
   - wait: "40s"
   
   # Configure fee_addr on network level (required for arbitrage transactions)
+  # Write to config file so it persists across restarts
+  - config: "{{network_name}}/main"
+    nodes: "{{_active_nodes}}"
+    set:
+      fee_addr: "{{fee_addr}}"
+  
+  # Set fee_addr via CLI command (runtime setting - needed for immediate effect)
   - cli: "net -net {{network_name}} fee_addr {{fee_addr}}"
     node: "{{first_root}}"
 
