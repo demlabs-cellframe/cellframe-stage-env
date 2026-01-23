@@ -46,7 +46,7 @@ test:all:
       # === Запуск сети ===
       echo ""
       echo ">>> [1/3] Запуск тестовой сети..."
-      ./stage-env --config="$CONFIG" start --wait --timeout 600
+      ./stage-env --config="$CONFIG" start --wait
       START_EXIT=$?
       
       if [ $START_EXIT -ne 0 ]; then
