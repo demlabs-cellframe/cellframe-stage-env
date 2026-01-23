@@ -1,0 +1,122 @@
+# ============================================================================
+# GitLab CI Pipeline for Cellframe Stage Environment
+# ============================================================================
+# Standalone stage-env репозиторий - запуск 356+ тестов
+# Раннер: ci-test (требуется Docker)
+# ============================================================================
+
+stages:
+  - test
+
+# Глобальные переменные
+variables:
+  PIP_NO_INPUT: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  COMPOSE_PROJECT_NAME: "stage-env-ci-${CI_PIPELINE_ID}"
+
+# ============================================================================
+# Основной тестовый джоб - запускает ВСЕ тесты
+# ============================================================================
+test:all:
+  stage: test
+  tags:
+    - ci-test
+  timeout: 3 hours
+  before_script:
+    # Информация
+    - echo "=== Cellframe Stage-Env CI ==="
+    - echo "Pipeline: ${CI_PIPELINE_ID}"
+    - echo "Commit: ${CI_COMMIT_SHORT_SHA}"
+    - echo "Branch: ${CI_COMMIT_REF_NAME}"
+    
+    # Проверка Docker
+    - docker --version
+    - docker compose version || docker-compose version
+    
+    # Проверка Python
+    - python3 --version
+    
+    # Создание venv и установка зависимостей
+    - python3 -m venv .venv
+    - source .venv/bin/activate
+    - pip install --upgrade pip -q
+    - pip install -r requirements.txt -q
+    
+    # Создание директорий
+    - mkdir -p testing/artifacts testing/logs testing/cache testing/snapshots
+    
+    # Подготовка конфига
+    - cp config/stage-env.cfg.default config/stage-env.cfg
+    
+    # Проверка CLI
+    - chmod +x stage-env 2>/dev/null || true
+    - ./stage-env --help > /dev/null
+    
+  script:
+    - source .venv/bin/activate
+    - |
+      set +e  # Не прерывать при ошибке - нужно собрать артефакты
+      
+      CONFIG="${CI_PROJECT_DIR}/config/stage-env.cfg"
+      
+      # === Запуск сети ===
+      echo ""
+      echo ">>> [1/3] Запуск тестовой сети..."
+      ./stage-env --config="$CONFIG" start --wait --timeout 600
+      START_EXIT=$?
+      
+      if [ $START_EXIT -ne 0 ]; then
+        echo "❌ ERROR: Не удалось запустить сеть (exit: $START_EXIT)"
+        ./stage-env --config="$CONFIG" status 2>/dev/null || true
+        ./stage-env --config="$CONFIG" logs node-1 --tail 50 2>/dev/null || true
+        exit $START_EXIT
+      fi
+      
+      echo "✅ Сеть запущена"
+      ./stage-env --config="$CONFIG" status
+      
+      # === Запуск тестов ===
+      echo ""
+      echo ">>> [2/3] Запуск тестов из scenarios/..."
+      ./stage-env --config="$CONFIG" run-tests \
+        --no-start-network \
+        scenarios/ \
+        2>&1 | tee testing/logs/test-output.log
+      TEST_EXIT=${PIPESTATUS[0]}
+      
+      # === Остановка сети ===
+      echo ""
+      echo ">>> [3/3] Остановка сети..."
+      ./stage-env --config="$CONFIG" stop
+      
+      # === Результат ===
+      echo ""
+      if [ $TEST_EXIT -eq 0 ]; then
+        echo "✅ ВСЕ ТЕСТЫ ПРОЙДЕНЫ"
+      else
+        echo "❌ ЕСТЬ УПАВШИЕ ТЕСТЫ (exit: $TEST_EXIT)"
+      fi
+      
+      exit $TEST_EXIT
+
+  after_script:
+    # Гарантированная очистка через stage-env
+    - |
+      echo "=== Cleanup ==="
+      source .venv/bin/activate 2>/dev/null || true
+      cd ${CI_PROJECT_DIR}
+      
+      # Остановка сети
+      ./stage-env --config="${CI_PROJECT_DIR}/config/stage-env.cfg" stop --volumes 2>/dev/null || true
+      
+      # Полная очистка (сертификаты, конфиги, данные, снапшоты, Docker сети)
+      ./stage-env --config="${CI_PROJECT_DIR}/config/stage-env.cfg" clean --all --yes 2>/dev/null || true
+
+  artifacts:
+    when: always
+    paths:
+      - testing/artifacts/
+      - testing/logs/
+    reports:
+      junit: testing/artifacts/**/junit-report.xml
+    expire_in: 7 days
