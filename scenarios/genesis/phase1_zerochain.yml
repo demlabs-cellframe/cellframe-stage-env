@@ -229,6 +229,42 @@ test:
     not_contains: "No records"
     save: node_list_after_add
   
+  # Force master nodes to reconnect to network
+  # They failed initial connection because nodelist was empty
+  # Now that nodelist is populated, they can get links from balancer
+  - group: Reconnect master nodes to network
+    steps:
+      - for: node_idx
+        in: "{{master_indices}}"
+        steps:
+          - cli: "net -net {{network_name}} go online"
+            node: "node-{{node_idx}}"
+  
+  # Wait for links to establish
+  - wait: "10s"
+  
+  # Force GDB sync on master nodes - required to get nodelist quickly
+  - group: Force GDB sync on master nodes
+    steps:
+      - for: node_idx
+        in: "{{master_indices}}"
+        steps:
+          - cli: "net -net {{network_name}} sync gdb"
+            node: "node-{{node_idx}}"
+  
+  # Wait for GDB sync to complete
+  - wait: "30s"
+  
+  # Verify nodelist synced to all master nodes
+  - group: Verify nodelist on master nodes
+    steps:
+      - for: node_idx
+        in: "{{master_indices}}"
+        steps:
+          - cli: "node list"
+            node: "node-{{node_idx}}"
+            not_contains: "No records"
+  
   # Create wallets dynamically for all nodes
   - group: Create wallets
     defaults:

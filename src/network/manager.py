@@ -466,16 +466,18 @@ class NetworkManager:
                             logger.info("creating_phase1_snapshot_after_zerochain_genesis")
                             containers_shutdown = False
                             try:
-                                # CRITICAL: Gracefully shutdown ROOT containers before snapshot
+                                # CRITICAL: Gracefully shutdown ALL containers before snapshot
                                 # This ensures all data (GDB, chain files, configs) are flushed to disk
                                 # Graceful shutdown ensures:
                                 # - GDB flush completes (node list, validator orders)
                                 # - Chain files are saved (zerochain events)
                                 # - Configs are written to disk (static_genesis_event)
-                                logger.info("gracefully_shutting_down_root_containers_for_phase1_snapshot")
-                                root_services = [f"node-{nid}" for nid in root_node_ids]
+                                # NOTE: Must include master nodes to ensure nodelist is synced and flushed!
+                                # Without this, master nodes won't have nodelist in snapshot and ESBocs will fail.
+                                logger.info("gracefully_shutting_down_all_containers_for_phase1_snapshot")
+                                all_active_services = [f"node-{nid}" for nid in root_node_ids + master_node_ids]
                                 await self.lifecycle.graceful_shutdown_with_gdb_flush(
-                                    service_names=root_services,
+                                    service_names=all_active_services,
                                     flush_timeout=60
                                 )
                                 containers_shutdown = True
@@ -567,6 +569,7 @@ class NetworkManager:
                                 # CRITICAL: After graceful shutdown, containers are stopped
                                 # Need to restart them to continue with PHASE 2
                                 # They will use configs from snapshot (seed_mode=false, static_genesis_event set)
+                                # NOTE: Restart only root nodes here - master nodes will be started by Phase 2
                                 logger.info("restarting_root_containers_after_snapshot_creation")
                                 root_services = [f"node-{nid}" for nid in root_node_ids]
                                 self.compose.up(services=root_services, detach=True, wait=False)

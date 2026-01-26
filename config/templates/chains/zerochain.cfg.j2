@@ -7,9 +7,9 @@ load_priority=0
 # Match tests-in-docker configuration
 datum_types=[token,emission,ca,decree]
 default_datum_types=[token,emission,ca,decree]
-# mempool_auto_types empty - let auto_confirmation handle processing
-# With values here, datums are processed before other nodes can sign
-mempool_auto_types=[]
+# mempool_auto_types specifies which datum types can be processed by proc_all
+# Required for genesis event creation when is_add_directly=true
+mempool_auto_types=[token,emission,ca,decree]
 consensus=dag_poa
 # Authorized nodes have special permissions (can write to nodelist, mempool)
 # This MUST be in zerochain [chain] section for node add command to work
