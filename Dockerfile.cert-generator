@@ -28,14 +28,10 @@ COPY cellframe-sdk /project/cellframe-sdk
 RUN find /project/cellframe-sdk -name "CMakeCache.txt" -delete && \
     find /project/cellframe-sdk -name "CMakeFiles" -type d -exec rm -rf {} + 2>/dev/null || true
 
-# Build only required DAP SDK libraries (crypto stack only)
+# Build cellframe_sdk shared library
 WORKDIR /project/cellframe-sdk/build
 RUN cmake -DCMAKE_BUILD_TYPE=Release .. && \
-    make -j$(nproc) \
-        dap_core \
-        dap_crypto \
-        dap_chain_common \
-        dap_io
+    make -j$(nproc) cellframe_sdk
 
 # Copy and build cert-generator
 COPY tests/stage-env/src/certs /project/cert-generator
@@ -52,6 +48,11 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy the cellframe_sdk and dap-sdk shared libraries
+COPY --from=builder /project/cellframe-sdk/build/libcellframe_sdk.so* /usr/local/lib/
+COPY --from=builder /project/cellframe-sdk/build/dap-sdk/libdap-sdk.so /usr/local/lib/
+RUN ldconfig
 
 COPY --from=builder /project/cert-generator/build/cf-cert-generator /usr/local/bin/
 
