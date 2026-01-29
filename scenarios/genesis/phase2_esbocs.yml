@@ -19,24 +19,14 @@ setup:
     eval: true
   
   # Enable seed_mode on ALL root and master nodes to accept genesis block
+  # Note: is_add_directly for mainchain already set in PHASE 1
   - config: "cellframe-node"
     nodes: "{{_active_nodes}}"
     set:
       seed_mode: "true"
   
-  # Enable is_add_directly for mainchain genesis block (required for all active nodes)
-  - config: "{{network_name}}/main"
-    nodes: "{{_active_nodes}}"
-    set:
-      is_add_directly: "true"
-  
-  # Stop and start nodes to reload config (restart doesn't reload config files)
-  - docker_op: stop
+  - docker_op: restart
     services: "{{_active_nodes}}"
-  
-  - docker_op: start
-    services: "{{_active_nodes}}"
-    wait_for_ip: true
   
   - wait_network: online
     nodes: "{{_active_nodes}}"

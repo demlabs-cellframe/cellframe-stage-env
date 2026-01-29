@@ -144,10 +144,12 @@ test:
     eval: true
   
   # Set validators_addrs on ALL nodes
+  # Also enable is_add_directly for mainchain genesis (PHASE 2)
   - config: "{{network_name}}/main"
     nodes: "{{all_nodes}}"
     set:
       validators_addrs: "{{validators_addrs_str}}"
+      is_add_directly: "true"
   
   # Set authorized_nodes_addrs in ZEROCHAIN config
   - config: "{{network_name}}/zerochain"
