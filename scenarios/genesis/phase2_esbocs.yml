@@ -69,12 +69,9 @@ test:
       
       # Wait for genesis block to sync to ALL nodes (root + master)
       # Block is created on root node but must be visible on master nodes for verification
-      - for: node_id
-        in: "{{_active_nodes}}"
-        steps:
-          - wait: global_db_sync
-            node: "{{node_id}}"
-            timeout: 30
+      - wait: global_db_sync
+        nodes: "{{_active_nodes}}"
+        timeout: 60
       
       # Verify block was created and synced to master node
       - cli: "block list"
