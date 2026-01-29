@@ -24,11 +24,22 @@ setup:
     set:
       seed_mode: "true"
   
+  # Enable is_add_directly for mainchain genesis block (required for all active nodes)
+  - config: "{{network_name}}/main"
+    nodes: "{{_active_nodes}}"
+    set:
+      is_add_directly: "true"
+  
   - docker_op: restart
     services: "{{_active_nodes}}"
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
+    timeout: 60
+  
+  # Wait for Global DB synchronization after restart
+  - wait: global_db_sync
+    node: "{{first_root}}"
     timeout: 60
   
   # Get fee_addr from first root wallet
@@ -48,7 +59,18 @@ test:
       - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert {{network_name}}.root.pvt.0"
         save_hash: mainchain_genesis_tx
       
-      - wait: "180s"
+      # Process mainchain genesis transaction
+      - cli: "mempool proc -datum {{mainchain_genesis_tx}}"
+      
+      # Wait for Global DB sync
+      - wait: global_db_sync
+        node: "{{first_root}}"
+        timeout: 60
+      
+      # TODO: Replace with intelligent block_created waiter
+      # ESBocs consensus needs time to create genesis block from transaction
+      # This is the ONLY remaining fixed wait - waiting for block creation
+      - wait: "120s"
       
       - cli: "block list"
         node: "{{first_master}}"
@@ -58,11 +80,14 @@ test:
     node: "{{first_master}}"
     save_hash: genesis_block_hash
   
+  # Configure static genesis block and disable is_add_directly BEFORE restart
+  # This ensures nodes will load the genesis block from config after restart
   - config: "{{network_name}}/main"
     nodes: "{{_active_nodes}}"
     set:
       static_genesis_block: "{{genesis_block_hash}}"
       is_static_genesis_block: "true"
+      is_add_directly: "false"
   
   - config: "{{network_name}}/zerochain"
     nodes: "{{root_nodes}}"
@@ -81,9 +106,12 @@ test:
     nodes: "{{_active_nodes}}"
     timeout: 60
   
-  - wait: "40s"
+  # Wait for Global DB synchronization after all nodes restart
+  - wait: global_db_sync
+    node: "{{first_root}}"
+    timeout: 60
   
-  # Configure fee_addr in main.cfg (required for arbitrage transactions)
+  # Configure fee_addr in main.cfg 
   # SDK will automatically load it from config on node startup
   - config: "{{network_name}}/main"
     nodes: "{{_active_nodes}}"
