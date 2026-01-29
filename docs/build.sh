@@ -36,7 +36,7 @@ pandoc \
   "${DOCS_DIR}/en/scenarios/04_Test_Suites.md" \
   "${DOCS_DIR}/en/scenarios/05_Debugging_Scenarios.md" \
   "${DOCS_DIR}/en/scenarios/Cookbook.md" \
-  "${DOCS_DIR}/en/scenarios/Glossary.md" 2>&1 | grep -v "Missing character" || true
+  "${DOCS_DIR}/en/scenarios/Glossary.md"
 echo "✓ Generated: ${BUILD_DIR}/Stage-Env_Scenario_Language_Guide_EN.pdf"
 echo ""
 
@@ -56,7 +56,7 @@ pandoc \
   --metadata title="Stage-Env Developer Guide" \
   --metadata author="Demlabs" \
   --metadata date="$(date +%Y-%m-%d)" \
-  "${DOCS_DIR}/en/developer/DeveloperGuide.md" 2>&1 | grep -v "Missing character" || true
+  "${DOCS_DIR}/en/developer/DeveloperGuide.md"
 echo "✓ Generated: ${BUILD_DIR}/Stage-Env_Developer_Guide_EN.pdf"
 echo ""
 
@@ -83,7 +83,7 @@ pandoc \
   "${DOCS_DIR}/ru/scenarios/04_Test_Suites.md" \
   "${DOCS_DIR}/ru/scenarios/05_Debugging_Scenarios.md" \
   "${DOCS_DIR}/ru/scenarios/Cookbook.md" \
-  "${DOCS_DIR}/ru/scenarios/Glossary.md" 2>&1 | grep -v "Missing character" || true
+  "${DOCS_DIR}/ru/scenarios/Glossary.md"
 echo "✓ Generated: ${BUILD_DIR}/Stage-Env_Scenario_Language_Guide_RU.pdf"
 echo ""
 
@@ -103,7 +103,7 @@ pandoc \
   --metadata title="Stage-Env Руководство Разработчика" \
   --metadata author="Demlabs" \
   --metadata date="$(date +%Y-%m-%d)" \
-  "${DOCS_DIR}/ru/developer/DeveloperGuide.md" 2>&1 | grep -v "Missing character" || true
+  "${DOCS_DIR}/ru/developer/DeveloperGuide.md"
 echo "✓ Generated: ${BUILD_DIR}/Stage-Env_Developer_Guide_RU.pdf"
 echo ""
 

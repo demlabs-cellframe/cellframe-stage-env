@@ -12,7 +12,7 @@ This cookbook contains proven solutions for the most common testing tasks. Copy,
 
 - [Wallet Operations](#wallet-operations)
 - [Token Management](#token-management)
-- [Debugging & Monitoring](#debugging--monitoring)
+- [Debugging & Monitoring](#debugging-monitoring)
 - [Network Operations](#network-operations)
 - [Advanced Patterns](#advanced-patterns)
 - [Performance Tips](#performance-tips)

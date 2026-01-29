@@ -12,7 +12,7 @@
 
 - [Wallet Operations](#wallet-operations)
 - [Token Management](#token-management)
-- [Debugging & Monitoring](#debugging--monitoring-1)
+- [Debugging & Monitoring](#debugging-monitoring)
 - [Network Operations](#network-operations)
 - [Advanced Patterns](#advanced-patterns)
 - [Performance Tips](#performance-tips)
