@@ -71,7 +71,7 @@ tests/testing/artifacts/run_YYYYMMDD_HHMMSS/
     └── report.md
 ```
 
-## Interactive Debugging
+## Interactive Debugging Mode
 
 ```bash
 # Enter node container

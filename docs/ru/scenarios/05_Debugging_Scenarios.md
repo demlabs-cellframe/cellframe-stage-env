@@ -182,7 +182,7 @@ tail -f tests/testing/artifacts/latest/logs/cellframe-stage-node-1.log
 grep ERROR tests/testing/artifacts/latest/logs/*.log
 ```
 
-## Интерактивная Отладка
+## Режим Интерактивной Отладки
 
 ### Войти в Контейнер
 ```bash
