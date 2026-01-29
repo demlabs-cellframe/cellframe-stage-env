@@ -193,7 +193,7 @@ class CLICommandParser:
             if match:
                 cmd = match.group(1)
                 # Filter out common help keywords and special commands
-                if cmd not in ['help', 'version', 'exit', 'quit', '?', 'Commands']:
+                if cmd not in ['help', 'version', 'exit', 'quit', '?', 'Commands', 'Usage', 'Options']:
                     commands.append(cmd)
         
         return commands
