@@ -16,7 +16,7 @@ from src.utils.logger import get_logger
 from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
-    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
+    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     NetworkWaitStep, DockerOpStep, SnapshotStep,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
@@ -153,7 +153,7 @@ class ScenarioExecutor:
         self.container_manager = DockerContainerManager(self.base_path, node_cli_path)
         # Step executors
         from .step import (
-            CLIStepExecutor, RPCStepExecutor, PythonStepExecutor,
+            CLIStepExecutor, RPCStepExecutor, PythonStepExecutor, PrintStepExecutor,
             BashStepExecutor, ToolStepExecutor, WaitStepExecutor,
             WaitForDatumStepExecutor, LoopStepExecutor,
             NetworkWaitStepExecutor, DockerOpStepExecutor, SnapshotStepExecutor,
@@ -161,8 +161,10 @@ class ScenarioExecutor:
             ConfigStepExecutor
         )
         self.cli_executor = CLIStepExecutor(self.container_manager, log_file, debug)
+        self.cli_executor._executor_ref = self  # Pass executor reference for retry support
         self.rpc_executor = RPCStepExecutor(self.container_manager, log_file, debug)
         self.python_executor = PythonStepExecutor(self.container_manager, log_file, debug)
+        self.print_executor = PrintStepExecutor(self.container_manager, log_file, debug)
         self.bash_executor = BashStepExecutor(self.container_manager, log_file, debug)
         self.tool_executor = ToolStepExecutor(self.container_manager, log_file, debug)
         self.wait_executor = WaitStepExecutor(
@@ -636,6 +638,8 @@ class ScenarioExecutor:
                 await self.wait_for_datum_executor.execute(step, ctx)
             elif isinstance(step, PythonStep):
                 await self.python_executor.execute(step, ctx)
+            elif isinstance(step, PrintStep):
+                await self.print_executor.execute(step, ctx)
             elif isinstance(step, BashStep):
                 await self.bash_executor.execute(step, ctx)
             elif isinstance(step, ToolStep):
@@ -665,11 +669,15 @@ class ScenarioExecutor:
     
     
     def _create_exec_cli_for_waiter(self):
-        """Create synchronous exec_cli function for waiters."""
+        """Create synchronous exec_cli function for waiters with retry support."""
         # Waiters expect sync function, but we have async _run_cli_command
         # Use a closure that captures self and runs async command synchronously
         def exec_cli_sync(node_id: int, command: str, check_output: bool = True) -> tuple:
-            """Synchronous wrapper that runs async CLI command."""
+            """
+            Synchronous wrapper that runs async CLI command with automatic retry.
+            
+            Retries on CLI initialization failures (e.g., "Can't find state of my node").
+            """
             import asyncio
             try:
                 loop = asyncio.get_event_loop()
@@ -684,12 +692,18 @@ class ScenarioExecutor:
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(
                         asyncio.run,
-                        self._run_cli_command(command, f"node{node_id}", 30)
+                        self._run_cli_command(
+                            command, f"node{node_id}", 30,
+                            retry_on_init_failure=True  # Enable retry for waiters
+                        )
                     )
-                    result = future.result(timeout=35)
+                    result = future.result(timeout=40)  # Increased for retries
             else:
                 result = loop.run_until_complete(
-                    self._run_cli_command(command, f"node{node_id}", 30)
+                    self._run_cli_command(
+                        command, f"node{node_id}", 30,
+                        retry_on_init_failure=True  # Enable retry for waiters
+                    )
                 )
             
             return result.get("returncode", -1), result.get("stdout", ""), result.get("stderr", "")
@@ -762,12 +776,69 @@ class ScenarioExecutor:
     
     
     async def _run_cli_command(
-        self, command: str, node: str, timeout: Optional[int] = 30
+        self, command: str, node: str, timeout: Optional[int] = 30,
+        retry_on_init_failure: bool = False, max_retries: int = 10
     ) -> Dict[str, Any]:
-        """Run CLI command via docker exec (delegates to container manager)."""
+        """
+        Run CLI command via docker exec with retry logic for initialization failures.
+        
+        Args:
+            command: CLI command to execute
+            node: Target node name
+            timeout: Command timeout in seconds
+            retry_on_init_failure: Retry if CLI returns "Can't find state" or similar init errors
+            max_retries: Maximum number of retry attempts (default: 5)
+            
+        Returns:
+            Dict with stdout, stderr, returncode
+        """
         # Set test name for crash artifact collection
         self.container_manager.current_test_name = self.current_scenario_name
-        return await self.container_manager.exec_cli_command(command, node, timeout)
+        
+        # Patterns indicating CLI/node not fully initialized
+        init_failure_patterns = [
+            "Can't find state of my node",
+            "Connection refused",
+            "No such file or directory",  # Unix socket not created yet
+        ]
+        
+        retry_count = 0
+        retry_delay = 0.5  # Start with 0.5s
+        
+        while retry_count <= max_retries:
+            result = await self.container_manager.exec_cli_command(command, node, timeout)
+            
+            # Check if it's an initialization failure (regardless of exit_code)
+            # Cellframe CLI often returns exit_code=0 even with errors
+            stdout = result.get("stdout", "")
+            stderr = result.get("stderr", "")
+            output = stdout + stderr
+            
+            is_init_failure = any(pattern in output for pattern in init_failure_patterns)
+            
+            # If not an init failure or not retrying, return immediately
+            if not is_init_failure or not retry_on_init_failure:
+                return result
+            
+            # Init failure detected - check if we can retry
+            if retry_count >= max_retries:
+                # Exhausted retries - return error
+                return result
+            
+            # Retry with exponential backoff
+            retry_count += 1
+            logger.info("cli_init_retry",
+                       node=node,
+                       command=command[:50],
+                       attempt=retry_count,
+                       max_retries=max_retries,
+                       delay=retry_delay,
+                       error=output[:100])
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 5.0)  # Cap at 5s
+        
+        # Should never reach here, but return last result as fallback
+        return result
     
     async def _call_rpc(
         self, method: str, params: List[Any], node: str, timeout: Optional[int] = 30

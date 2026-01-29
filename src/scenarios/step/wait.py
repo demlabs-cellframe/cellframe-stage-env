@@ -188,6 +188,9 @@ class WaitStepExecutor(StepExecutor):
             "mempool": "datum_in_mempool",
             "finalized": "datum_finalized",
             "network_online": "network_online",
+            "global_db_sync": "global_db_sync",
+            "cli_ready": "cli_ready",
+            "block_created": "block_created",
         }
         
         registry_type = WAITER_TYPE_MAPPING.get(wait_type, wait_type)
@@ -261,9 +264,13 @@ class WaitStepExecutor(StepExecutor):
         if step.node:
             node_alias = ctx.substitute(step.node)
             if self.resolve_node_alias_callback:
-                params["node"] = self.resolve_node_alias_callback(node_alias)
+                resolved_node = self.resolve_node_alias_callback(node_alias)
             else:
-                params["node"] = node_alias
+                resolved_node = node_alias
+            params["node"] = resolved_node
+            # If no nodes list specified, create single-element list from node
+            if not step.nodes:
+                params["nodes"] = [resolved_node]
         
         if step.nodes:
             # Expand nodes list (can be template string like "{{all_nodes}}")
@@ -281,7 +288,7 @@ class WaitStepExecutor(StepExecutor):
                 params["node"] = resolved_nodes[0]
         
         # Network and chain
-        params["network"] = ctx.substitute(step.network) if step.network else ctx.get_variable('network_name', 'stagenet')
+        params["network"] = ctx.substitute(step.network) if step.network else ctx.variables.get('network_name', 'stagenet')
         if step.chain:
             params["chain"] = ctx.substitute(step.chain)
         
@@ -299,5 +306,9 @@ class WaitStepExecutor(StepExecutor):
             params["balance"] = ctx.substitute(str(step.balance))
         elif hasattr(step, 'wait_for') and step.wait_for:
             params["balance"] = ctx.substitute(str(step.wait_for))
+        
+        # Block creation parameters
+        if hasattr(step, 'min_blocks') and step.min_blocks is not None:
+            params["min_blocks"] = step.min_blocks
         
         return params

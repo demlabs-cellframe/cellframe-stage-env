@@ -38,6 +38,9 @@ class WaiterConfig:
         "wallet_balance": 2.0,
         "datum_in_chain": 2.0,
         "emission_in_ledger": 2.0,
+        "global_db_sync": 2.0,
+        "cli_ready": 0.5,
+        "block_created": 3.0,
         "default": 2.0,
     }
     
@@ -280,7 +283,8 @@ class WaiterDispatcher:
         
         # Handle waiters that need node configs
         if waiter_type in ["delegations_synced", "stake_service_ready", "cli_ready", 
-                          "gdb_sync_complete", "first_block", "esbocs_consensus_active"]:
+                          "gdb_sync_complete", "global_db_sync", "first_block", "esbocs_consensus_active",
+                          "block_created"]:
             node_configs = self._get_node_configs(nodes)
             
             if waiter_type == "delegations_synced":
@@ -303,6 +307,28 @@ class WaiterDispatcher:
                     exec_cli=exec_cli,
                     nodes=node_configs,
                     network_name=network,
+                    poll_interval=poll_interval
+                )
+            elif waiter_type == "global_db_sync":
+                # GlobalDBNodeListSyncWaiter supports single node or multiple nodes
+                if not node_configs:
+                    raise ValueError(f"global_db_sync waiter requires at least one node")
+                return waiter_class(
+                    exec_cli=exec_cli,
+                    nodes=node_configs,  # Pass all nodes (supports multi-node sync check)
+                    network_name=network,
+                    poll_interval=poll_interval
+                )
+            elif waiter_type == "block_created":
+                # BlockCreatedWaiter takes single node, chain, and min_blocks
+                if not node_configs:
+                    raise ValueError(f"block_created waiter requires at least one node")
+                return waiter_class(
+                    exec_cli=exec_cli,
+                    node=node_configs[0],  # Use first node
+                    chain=params.get("chain", "main"),
+                    network_name=network,
+                    min_blocks=params.get("min_blocks", 1),
                     poll_interval=poll_interval
                 )
             elif waiter_type == "first_block":

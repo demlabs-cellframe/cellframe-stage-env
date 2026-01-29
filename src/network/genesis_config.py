@@ -882,69 +882,47 @@ class GenesisConfigManager(BaseGenesisManager):
                         error=str(e))
             return None
     
-    def read_fee_addr_from_config(self, node_id: int) -> Optional[str]:
+    def read_fee_addr_from_config(self, node_id: int) -> str:
         """
-        Read fee_addr from mainchain config file on HOST filesystem.
+        Read fee_addr from mainchain config file.
         
         Args:
             node_id: Node ID
             
         Returns:
-            Fee address or None if not found
+            Fee address string
+            
+        Raises:
+            RuntimeError: If fee_addr not found (FAIL-FAST)
         """
-        try:
-            from ..config.manager import get_config_loader
-            config_loader = get_config_loader()
-            paths_config = config_loader.get_paths_config()
-            if 'cache_dir' not in paths_config:
-                raise RuntimeError(
-                    "CRITICAL: cache_dir not found in paths_config! "
-                    "Cannot proceed without cache directory configuration."
-                )
-            cache_dir_relative = paths_config['cache_dir']
-            cache_dir = (self.base_path / cache_dir_relative).resolve()
-            
-            config_file = cache_dir / "configs" / f"node{node_id}" / "network" / self.network_name / "main.cfg"
-            
-            if not config_file.exists():
-                logger.warning("main_cfg_not_found_for_reading_fee_addr",
-                             node_id=node_id,
-                             path=str(config_file))
-                return None
-            
-            # Use centralized config manager (already imported above)
-            config = config_loader.load_config_file(config_file)
-            
-            if 'esbocs' not in config:
-                raise RuntimeError(
-                    f"CRITICAL: [esbocs] section not found in config at {config_file}! "
-                    f"Cannot read fee_addr without [esbocs] section."
-                )
-            
-            if 'fee_addr' not in config['esbocs']:
-                raise RuntimeError(
-                    f"CRITICAL: fee_addr not found in [esbocs] section at {config_file}! "
-                    f"Cannot read fee address without fee_addr parameter."
-                )
-            
-            fee_addr = config['esbocs']['fee_addr'].strip()
-            if not fee_addr:
-                raise RuntimeError(
-                    f"CRITICAL: fee_addr is empty in config at {config_file}! "
-                    f"Cannot use empty fee address."
-                )
-            
-            logger.info("fee_addr_read_from_config",
-                      node_id=node_id,
-                      fee_addr=fee_addr[:16],
-                      path=str(config_file))
-            return fee_addr
-            
-        except Exception as e:
-            logger.error("failed_to_read_fee_addr_from_config",
-                        node_id=node_id,
-                        error=str(e))
-            return None
+        from ..config.manager import get_config_loader
+        config_loader = get_config_loader()
+        paths_config = config_loader.get_paths_config()
+        
+        if 'cache_dir' not in paths_config:
+            raise RuntimeError("cache_dir not found in paths_config")
+        
+        cache_dir_relative = paths_config['cache_dir']
+        cache_dir = (self.base_path / cache_dir_relative).resolve()
+        
+        config_file = cache_dir / "configs" / f"node{node_id}" / "network" / self.network_name / "main.cfg"
+        
+        if not config_file.exists():
+            raise RuntimeError(f"Config file not found: {config_file}")
+        
+        config = config_loader.load_config_file(config_file)
+        
+        if 'esbocs' not in config:
+            raise RuntimeError(f"[esbocs] section not found in {config_file}")
+        
+        if 'fee_addr' not in config['esbocs']:
+            raise RuntimeError(f"fee_addr not found in [esbocs] section at {config_file}")
+        
+        fee_addr = config['esbocs']['fee_addr'].strip()
+        if not fee_addr:
+            raise RuntimeError(f"fee_addr is empty in {config_file}")
+        
+        return fee_addr
     
     def disable_genesis_mode_in_chain_configs(self, chain_name: str, node_ids: List[int]) -> None:
         """

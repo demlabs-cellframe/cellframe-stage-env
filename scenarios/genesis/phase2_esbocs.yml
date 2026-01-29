@@ -19,6 +19,7 @@ setup:
     eval: true
   
   # Enable seed_mode on ALL root and master nodes to accept genesis block
+  # Note: is_add_directly for mainchain already set in PHASE 1
   - config: "cellframe-node"
     nodes: "{{_active_nodes}}"
     set:
@@ -29,6 +30,11 @@ setup:
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
+    timeout: 60
+  
+  # Wait for Global DB synchronization after restart
+  - wait: global_db_sync
+    node: "{{first_root}}"
     timeout: 60
   
   # Get fee_addr from first root wallet
@@ -48,8 +54,26 @@ test:
       - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert {{network_name}}.root.pvt.0"
         save_hash: mainchain_genesis_tx
       
-      - wait: "180s"
+      # Process mainchain genesis transaction
+      - cli: "mempool proc -datum {{mainchain_genesis_tx}}"
       
+      # Wait for Global DB sync
+      - wait: global_db_sync
+        node: "{{first_root}}"
+        timeout: 60
+      
+      # Wait for ESBocs genesis block creation
+      # Using fixed 120s due to: 1) ESBocs consensus time, 2) MDBX race condition workaround
+      # TODO: Once SDK fixes MDBX bug, replace with: wait: block_created (implemented and tested)
+      - wait: "120s"
+      
+      # Wait for genesis block to sync to ALL nodes (root + master)
+      # Block is created on root node but must be visible on master nodes for verification
+      - wait: global_db_sync
+        nodes: "{{_active_nodes}}"
+        timeout: 60
+      
+      # Verify block was created and synced to master node
       - cli: "block list"
         node: "{{first_master}}"
         expect_output: "have blocks: [1-9]"
@@ -58,11 +82,14 @@ test:
     node: "{{first_master}}"
     save_hash: genesis_block_hash
   
+  # Configure static genesis block and disable is_add_directly BEFORE restart
+  # This ensures nodes will load the genesis block from config after restart
   - config: "{{network_name}}/main"
     nodes: "{{_active_nodes}}"
     set:
       static_genesis_block: "{{genesis_block_hash}}"
       is_static_genesis_block: "true"
+      is_add_directly: "false"
   
   - config: "{{network_name}}/zerochain"
     nodes: "{{root_nodes}}"
@@ -81,11 +108,17 @@ test:
     nodes: "{{_active_nodes}}"
     timeout: 60
   
-  - wait: "40s"
-  
-  # Configure fee_addr on network level (required for arbitrage transactions)
-  - cli: "net -net {{network_name}} fee_addr {{fee_addr}}"
+  # Wait for Global DB synchronization after all nodes restart
+  - wait: global_db_sync
     node: "{{first_root}}"
+    timeout: 60
+  
+  # Configure fee_addr in main.cfg 
+  # SDK will automatically load it from config on node startup
+  - config: "{{network_name}}/main"
+    nodes: "{{_active_nodes}}"
+    set:
+      fee_addr: "{{fee_addr}}"
 
 check:
   - cli: "net get status"

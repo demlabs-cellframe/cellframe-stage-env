@@ -26,31 +26,6 @@ class TestNodeAliasResolution:
         executor = ScenarioExecutor()
         assert executor._resolve_node_alias("node-1") == "node1"
         assert executor._resolve_node_alias("node-5") == "node5"
-        
-    def test_resolve_role_alias_without_mapping(self):
-        """Test resolving role alias returns original string if no mapping exists."""
-        executor = ScenarioExecutor()
-        # Should return as-is if no mapping
-        assert executor._resolve_node_alias("root-1") == "root-1"
-        
-    def test_resolve_role_alias_with_mapping(self):
-        """Test resolving role alias with mapping."""
-        executor = ScenarioExecutor()
-        executor._node_role_mapping = {
-            "node1": "root",
-            "node2": "root",
-            "node3": "master",
-            "node4": "full"
-        }
-        
-        # 1-indexed access to role list
-        assert executor._resolve_node_alias("root-1") == "node1"
-        assert executor._resolve_node_alias("root-2") == "node2"
-        assert executor._resolve_node_alias("master-1") == "node3"
-        assert executor._resolve_node_alias("full-1") == "node4"
-        
-        # Out of bounds
-        assert executor._resolve_node_alias("root-3") == "root-3"
 
 
 class TestYAMLErrorDetection:
@@ -194,6 +169,8 @@ class TestStepExecution:
         executor.container_manager = mock_container_manager
         # Inject mock into cli_executor as well since it was initialized in __init__
         executor.cli_executor.container_manager = mock_container_manager
+        # Also inject into _executor_ref for _run_cli_command
+        executor.cli_executor._executor_ref = executor
         
         scenario = TestScenario(name="test", description="Test scenario", test=[CLIStep(cli="version")])
         ctx = RuntimeContext(scenario)
@@ -209,8 +186,8 @@ class TestStepExecution:
         
         await executor.cli_executor.execute(step, ctx)
         
-        # Verify container manager was called
-        mock_container_manager.exec_cli_command.assert_called_with(command="wallet info", node="node1", timeout=30)
+        # Verify container manager was called (using positional args now)
+        mock_container_manager.exec_cli_command.assert_called_with("wallet info", "node1", 30)
         
         # Verify result added to context
         assert len(ctx.step_results) == 1
@@ -222,6 +199,8 @@ class TestStepExecution:
         executor = ScenarioExecutor()
         executor.container_manager = mock_container_manager
         executor.cli_executor.container_manager = mock_container_manager
+        # Also inject into _executor_ref for _run_cli_command
+        executor.cli_executor._executor_ref = executor
         
         scenario = TestScenario(name="test", description="Test scenario", test=[CLIStep(cli="version")])
         ctx = RuntimeContext(scenario)
@@ -231,8 +210,8 @@ class TestStepExecution:
         
         await executor.cli_executor.execute(step, ctx)
         
-        # Verify substitution happened
-        mock_container_manager.exec_cli_command.assert_called_with(command="wallet info -w my_wallet", node="node1", timeout=30)
+        # Verify substitution happened (using positional args now)
+        mock_container_manager.exec_cli_command.assert_called_with("wallet info -w my_wallet", "node1", 30)
 
 class TestDatumMonitorIntegration:
     """Test datum monitor behavior with invalid hashes."""

@@ -378,6 +378,14 @@ class NetworkManager:
             # Wait for all nodes to come online
             await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
             
+            # Verify fee_addr is configured (should be set during genesis)
+            first_root = root_nodes[0]
+            fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(first_root.node_id)
+            logger.info("fee_addr_verified_in_config",
+                      fee_addr=fee_addr[:16],
+                      node_id=first_root.node_id,
+                      note="fee_addr is configured (set during genesis)")
+            
             # Network is ready - no phases needed
             logger.info("network_started",
                        nodes=len(node_configs),
@@ -778,6 +786,37 @@ class NetworkManager:
                        note="Waiting for nodes to load network with validated configs")
             await self.state_manager.wait_for_nodes_online(root_nodes, timeout=60.0)
             logger.info("root_nodes_online_after_snapshot_restore")
+            
+            # CRITICAL: Set fee_addr on network level if it exists in config
+            # This is needed for arbitrage transactions after snapshot restore
+            # The fee_addr is in config but must also be set at runtime via CLI
+            if fee_addr:
+                logger.info("setting_fee_addr_on_network_level_after_snapshot_restore",
+                          fee_addr=fee_addr[:16],
+                          note="Executing: net -net stagenet fee_addr <addr>")
+                try:
+                    first_root = root_nodes[0]
+                    exit_code, stdout, stderr = self.genesis._exec_cli(
+                        first_root.node_id,
+                        f"net -net {self.topology.network.name} fee_addr {fee_addr}",
+                        check_output=False
+                    )
+                    if exit_code == 0:
+                        logger.info("fee_addr_set_on_network_level",
+                                  fee_addr=fee_addr[:16],
+                                  note="fee_addr successfully set for arbitrage transactions")
+                    else:
+                        logger.error("fee_addr_set_failed",
+                                   exit_code=exit_code,
+                                   stderr=stderr,
+                                   note="Failed to set fee_addr on network level")
+                except Exception as e:
+                    logger.error("fee_addr_set_error",
+                               error=str(e),
+                               note="Exception while setting fee_addr on network level")
+            else:
+                logger.warning("fee_addr_not_set_on_network_level",
+                             note="fee_addr not found in config ")
             
             # Verify node list is available in GDB after restore
             logger.info("verifying_node_list_in_gdb_after_snapshot_restore")
