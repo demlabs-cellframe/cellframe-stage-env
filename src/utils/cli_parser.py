@@ -185,14 +185,15 @@ class CLICommandParser:
         # Look for lines that look like commands
         # Cellframe CLI format: "command_name:\t\t\tDescription"
         # Example: "token_decl:\t\t\tToken declaration"
-        pattern = r'^([a-zA-Z_][a-zA-Z0-9_]*):\s+'
+        # Also support indented commands like "    version:    Show version"
+        pattern = r'^\s*([a-zA-Z_][a-zA-Z0-9_]*):\s+'
         
         for line in help_text.split('\n'):
             match = re.match(pattern, line)
             if match:
                 cmd = match.group(1)
                 # Filter out common help keywords and special commands
-                if cmd not in ['help', 'version', 'exit', 'quit', '?']:
+                if cmd not in ['help', 'version', 'exit', 'quit', '?', 'Commands']:
                     commands.append(cmd)
         
         return commands

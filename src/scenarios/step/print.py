@@ -22,4 +22,5 @@ class PrintStepExecutor(StepExecutor):
         print(message)
         logger.info(f"Print: {message}")
         
-        ctx.add_result("print", True, {"message": message})
+        # Add result with proper structure
+        ctx.add_result("print", True, {"type": "print", "message": message})

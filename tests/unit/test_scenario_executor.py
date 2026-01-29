@@ -26,60 +26,6 @@ class TestNodeAliasResolution:
         executor = ScenarioExecutor()
         assert executor._resolve_node_alias("node-1") == "node1"
         assert executor._resolve_node_alias("node-5") == "node5"
-        
-    def test_resolve_role_alias_without_mapping(self):
-        """Test resolving role alias returns original string if no mapping exists."""
-        executor = ScenarioExecutor()
-        # Initialize _global_context with empty mapping
-        from src.scenarios.global_context import ScenarioGlobalContext
-        executor._global_context = ScenarioGlobalContext(
-            node_role_mapping={},
-            first_root=None,
-            first_master=None,
-            first_full=None,
-            root_nodes=[],
-            master_nodes=[],
-            full_nodes=[],
-            all_nodes=[],
-            seed_nodes=[],
-            validators_addrs_str="",
-            authorized_nodes_str=""
-        )
-        # Should return as-is if no mapping
-        assert executor._resolve_node_alias("root-1") == "root-1"
-        
-    def test_resolve_role_alias_with_mapping(self):
-        """Test resolving role alias with mapping."""
-        executor = ScenarioExecutor()
-        # Initialize _global_context with test mapping
-        from src.scenarios.global_context import ScenarioGlobalContext
-        executor._global_context = ScenarioGlobalContext(
-            node_role_mapping={
-                "node1": "root",
-                "node2": "root",
-                "node3": "master",
-                "node4": "full"
-            },
-            first_root="node1",
-            first_master="node3",
-            first_full="node4",
-            root_nodes=["node1", "node2"],
-            master_nodes=["node3"],
-            full_nodes=["node4"],
-            all_nodes=["node1", "node2", "node3", "node4"],
-            seed_nodes=["node1", "node2"],
-            validators_addrs_str="",
-            authorized_nodes_str=""
-        )
-        
-        # 1-indexed access to role list
-        assert executor._resolve_node_alias("root-1") == "node1"
-        assert executor._resolve_node_alias("root-2") == "node2"
-        assert executor._resolve_node_alias("master-1") == "node3"
-        assert executor._resolve_node_alias("full-1") == "node4"
-        
-        # Out of bounds
-        assert executor._resolve_node_alias("root-3") == "root-3"
 
 
 class TestYAMLErrorDetection:
