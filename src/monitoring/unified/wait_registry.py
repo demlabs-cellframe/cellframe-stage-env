@@ -97,6 +97,7 @@ def _initialize_registry():
         DelegationsSyncedWaiter,
         CLIReadyWaiter,
         WalletBalanceWaiter,
+        GlobalDBNodeListSyncWaiter,
     )
     
     # Validator waiters
@@ -135,6 +136,7 @@ def _initialize_registry():
     WaitRegistry.register("emission_in_ledger", EmissionInLedgerWaiter)
     WaitRegistry.register("transaction_processed", TransactionProcessedWaiter)
     WaitRegistry.register("gdb_sync_complete", GDBSyncCompleteWaiter)
+    WaitRegistry.register("global_db_sync", GlobalDBNodeListSyncWaiter)
     WaitRegistry.register("delegations_synced", DelegationsSyncedWaiter)
     WaitRegistry.register("cli_ready", CLIReadyWaiter)
     WaitRegistry.register("wallet_balance", WalletBalanceWaiter)

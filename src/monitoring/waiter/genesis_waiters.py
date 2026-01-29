@@ -568,3 +568,95 @@ class WalletBalanceWaiter(BaseWaiter):
         
         return False
 
+
+class GlobalDBNodeListSyncWaiter(BaseWaiter):
+    """
+    Wait for Global DB synchronization by checking node list.
+    
+    Monitors 'node list' command output to detect when Global DB has synchronized
+    records across the network. This is a lightweight check that indicates GDB
+    is ready for operations.
+    
+    Usage:
+        waiter = GlobalDBNodeListSyncWaiter(exec_cli_func, node_config, network_name)
+        await waiter.wait(timeout=60.0)
+    """
+    
+    def __init__(
+        self,
+        exec_cli: Callable,
+        node: NodeConfig,
+        network_name: str = "stagenet",
+        poll_interval: float = 2.0,
+        min_output_length: int = 50
+    ):
+        """
+        Initialize Global DB node list sync waiter.
+        
+        Args:
+            exec_cli: CLI execution function (node_id, command, check_output) -> (exit_code, stdout, stderr)
+            node: Node to check
+            network_name: Network name
+            poll_interval: Seconds between checks (default: 2.0s)
+            min_output_length: Minimum output length to consider synced (default: 50 chars)
+        """
+        super().__init__(poll_interval)
+        self.exec_cli = exec_cli
+        self.node = node
+        self.network_name = network_name
+        self.min_output_length = min_output_length
+        self._start_time = None
+        self._check_count = 0
+    
+    async def check(self) -> bool:
+        """Check if Global DB is synced by verifying node list has records."""
+        if self._start_time is None:
+            self._start_time = time.time()
+        
+        self._check_count += 1
+        
+        try:
+            # Execute 'node list' to check Global DB sync status
+            exit_code, stdout, stderr = self.exec_cli(
+                self.node.node_id,
+                f"node list -net {self.network_name}",
+                check_output=False
+            )
+            
+            if exit_code != 0:
+                logger.debug("global_db_node_list_sync_check",
+                           status="command_failed",
+                           node_id=self.node.node_id,
+                           check_count=self._check_count,
+                           exit_code=exit_code)
+                return False
+            
+            output = (stdout or '').strip()
+            
+            # Check if Global DB has records
+            # "No records" indicates GDB is not synced yet
+            # Valid output with nodes indicates GDB is synced
+            if "No records" in output or len(output) < self.min_output_length:
+                logger.debug("global_db_not_synced_yet",
+                           node_id=self.node.node_id,
+                           check_count=self._check_count,
+                           output_length=len(output),
+                           has_no_records="No records" in output)
+                return False
+            
+            # Global DB is synced
+            elapsed = time.time() - self._start_time
+            logger.info("global_db_synced",
+                       node_id=self.node.node_id,
+                       network=self.network_name,
+                       check_count=self._check_count,
+                       elapsed=f"{elapsed:.1f}s")
+            return True
+            
+        except Exception as e:
+            logger.debug("global_db_sync_check_error",
+                       node_id=self.node.node_id,
+                       check_count=self._check_count,
+                       error=str(e))
+            return False
+

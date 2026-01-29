@@ -378,139 +378,13 @@ class NetworkManager:
             # Wait for all nodes to come online
             await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
             
-            # CRITICAL: Set fee_addr on network level after clean_state restore
-            # The fee_addr is in config but must also be set at runtime via CLI
-            # This is needed for arbitrage transactions to work
-            try:
-                # Read fee_addr from first root node config
-                from ..config.manager import get_config_loader
-                config_loader = get_config_loader()
-                paths_config = config_loader.get_paths_config()
-                cache_dir_relative = paths_config.get('cache_dir', 'cache')
-                cache_dir = (self.base_path / cache_dir_relative).resolve()
-                
-                first_root = root_nodes[0]
-                main_config_path = cache_dir / "configs" / f"node{first_root.node_id}" / "network" / self.topology.network.name / "main.cfg"
-                
-                fee_addr = None
-                if main_config_path.exists():
-                    try:
-                        fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(first_root.node_id)
-                    except Exception as e:
-                        logger.debug("fee_addr_not_in_config",
-                                   error=str(e),
-                                   note="fee_addr not in config - will try to get from wallet")
-                
-                # FALLBACK: If fee_addr not in config, try to get it from existing wallets
-                if not fee_addr:
-                    # First, list all wallets to see what's available
-                    logger.info("listing_available_wallets",
-                              note="Checking what wallets exist in snapshot")
-                    try:
-                        exit_code, stdout, stderr = self.genesis._exec_cli(
-                            first_root.node_id,
-                            f"wallet list",
-                            check_output=False
-                        )
-                        if exit_code == 0 and stdout:
-                            logger.info("available_wallets", output=stdout[:500])
-                    except Exception:
-                        pass
-                    
-                    # Try several possible wallet names
-                    wallet_names = [
-                        f"{self.topology.network.name}_root_0",
-                        "fee_collector",
-                        f"{self.topology.network.name}.root.0",
-                        "root_0"
-                    ]
-                    
-                    for wallet_name in wallet_names:
-                        logger.debug("trying_wallet", wallet_name=wallet_name)
-                        try:
-                            # CRITICAL: Must specify -net to get address from wallet info
-                            exit_code, stdout, stderr = self.genesis._exec_cli(
-                                first_root.node_id,
-                                f"wallet info -w {wallet_name} -net {self.topology.network.name}",
-                                check_output=False
-                            )
-                            
-                            if exit_code == 0:
-                                import re
-                                # Extract base58 wallet address (75-105 chars)
-                                addr_match = re.search(r'\b([A-Za-z0-9]{75,105})\b', stdout)
-                                if addr_match:
-                                    fee_addr = addr_match.group(1)
-                                    logger.info("fee_addr_obtained_from_wallet",
-                                              fee_addr=fee_addr[:16],
-                                              wallet=wallet_name)
-                                    break  # Found it!
-                        except Exception:
-                            pass
-                    
-                    if not fee_addr:
-                        logger.warning("no_wallets_found_creating_fee_addr",
-                                     tried_wallets=wallet_names,
-                                     note="Will create fee_addr from node address")
-                        # Last resort: use first root node's address as fee_addr
-                        try:
-                            exit_code, stdout, stderr = self.genesis._exec_cli(
-                                first_root.node_id,
-                                f"node dump -addr",
-                                check_output=False
-                            )
-                            if exit_code == 0:
-                                import re
-                                # node dump -addr shows: "Node address: <addr>"
-                                addr_match = re.search(r'(?:Node address|address):\s*(\S+)', stdout, re.IGNORECASE)
-                                if not addr_match:
-                                    # Try second format: just the address on its own line
-                                    addr_match = re.search(r'\b([A-Za-z0-9]{48,52})\b', stdout)
-                                
-                                if addr_match:
-                                    fee_addr = addr_match.group(1)
-                                    logger.info("using_node_address_as_fee_addr",
-                                              fee_addr=fee_addr[:16],
-                                              note="Using first root node address as temporary fee_addr")
-                                else:
-                                    logger.warning("failed_to_parse_node_address",
-                                                 output=stdout[:300])
-                            else:
-                                logger.warning("node_dump_failed",
-                                             exit_code=exit_code,
-                                             stderr=stderr)
-                        except Exception as node_err:
-                            logger.warning("failed_to_get_node_address",
-                                         error=str(node_err))
-                
-                if fee_addr:
-                    logger.info("setting_fee_addr_on_network_level_after_clean_state_restore",
-                              fee_addr=fee_addr[:16],
-                              note="Executing: net -net stagenet fee_addr <addr>")
-                    
-                    exit_code, stdout, stderr = self.genesis._exec_cli(
-                        first_root.node_id,
-                        f"net -net {self.topology.network.name} fee_addr {fee_addr}",
-                        check_output=False
-                    )
-                    
-                    if exit_code == 0:
-                        logger.info("fee_addr_set_on_network_level_success",
-                                  fee_addr=fee_addr[:16],
-                                  note="fee_addr successfully set for arbitrage transactions")
-                    else:
-                        logger.error("fee_addr_set_failed_after_clean_state_restore",
-                                   exit_code=exit_code,
-                                   stderr=stderr,
-                                   note="Failed to set fee_addr on network level")
-                else:
-                    logger.warning("fee_addr_not_found_in_clean_state_config",
-                                 note="fee_addr not in config and not in wallet - arbitrage transactions will not work")
-                    
-            except Exception as e:
-                logger.error("fee_addr_set_error_after_clean_state_restore",
-                           error=str(e),
-                           note="Exception while setting fee_addr on network level")
+            # Verify fee_addr is configured (should be set during genesis)
+            first_root = root_nodes[0]
+            fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(first_root.node_id)
+            logger.info("fee_addr_verified_in_config",
+                      fee_addr=fee_addr[:16],
+                      node_id=first_root.node_id,
+                      note="fee_addr is configured (set during genesis)")
             
             # Network is ready - no phases needed
             logger.info("network_started",
@@ -942,7 +816,7 @@ class NetworkManager:
                                note="Exception while setting fee_addr on network level")
             else:
                 logger.warning("fee_addr_not_set_on_network_level",
-                             note="fee_addr not found in config - arbitrage transactions will not work")
+                             note="fee_addr not found in config ")
             
             # Verify node list is available in GDB after restore
             logger.info("verifying_node_list_in_gdb_after_snapshot_restore")

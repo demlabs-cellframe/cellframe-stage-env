@@ -48,12 +48,17 @@ class WaitForDatumStepExecutor(StepExecutor):
         for datum_hash in datum_hashes:
             logger.debug(f"Monitoring datum: {datum_hash[:16]}...")
             
+            # Substitute variables in parameters
+            node = ctx.substitute(step.node) if step.node else None
+            network = ctx.substitute(step.network) if step.network else "stagenet"
+            chain = ctx.substitute(step.chain) if step.chain else None
+            
             # Wait for datum to complete processing
             result = await monitoring.datum.wait_for_datum(
                 datum_hash=datum_hash,
-                node=step.node,
-                network=step.network,
-                chain=step.chain,
+                node=node,
+                network=network,
+                chain=chain,
                 check_master_nodes=step.check_master_nodes,
                 timeout_total=step.timeout_total,
                 timeout_mempool=step.timeout_mempool,

@@ -57,12 +57,26 @@ class CLIStepExecutor(StepExecutor):
         # Resolve node
         node = ctx.substitute(step.node) if step.node else "node1"
         
-        # Execute command via container manager
-        result = await self.container_manager.exec_cli_command(
-            command=cmd,
-            node=node,
-            timeout=step.timeout
-        )
+        # Execute command with retry support for save_node operations
+        # Use executor's _run_cli_command which has retry logic
+        has_executor_ref = hasattr(self, '_executor_ref')
+        has_run_cli = hasattr(self._executor_ref, '_run_cli_command') if has_executor_ref else False
+        
+        if has_executor_ref and has_run_cli:
+            # If we have executor reference, use its _run_cli_command with retry
+            result = await self._executor_ref._run_cli_command(
+                command=cmd,
+                node=node,
+                timeout=step.timeout,
+                retry_on_init_failure=(step.save_node is not None)  # Enable retry for save_node
+            )
+        else:
+            # Fallback to direct container manager call (no retry)
+            result = await self.container_manager.exec_cli_command(
+                command=cmd,
+                node=node,
+                timeout=step.timeout
+            )
         
         output = result["stdout"]
         exit_code = result["returncode"]

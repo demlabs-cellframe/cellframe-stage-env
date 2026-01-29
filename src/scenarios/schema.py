@@ -263,6 +263,11 @@ class PythonStep(BaseModel):
     save: Optional[str] = Field(None, description="Variable name to save result to")
 
 
+class PrintStep(BaseModel):
+    """Print message with variable substitution for debugging."""
+    print: str = Field(..., description="Message to print (supports {{variable}} substitution)")
+
+
 class BashStep(BaseModel):
     """Execute Bash script."""
     bash: str = Field(..., description="Bash script to execute")
@@ -426,7 +431,7 @@ class StepGroup(BaseModel):
 # NetworkWaitStep must come before WaitStep.
 TestStep = Union[
     NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep,
-    CLIStep, RPCStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
+    CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
     WaitStep 

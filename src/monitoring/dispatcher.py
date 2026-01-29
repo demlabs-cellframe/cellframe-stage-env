@@ -38,6 +38,7 @@ class WaiterConfig:
         "wallet_balance": 2.0,
         "datum_in_chain": 2.0,
         "emission_in_ledger": 2.0,
+        "global_db_sync": 2.0,
         "default": 2.0,
     }
     
@@ -280,7 +281,7 @@ class WaiterDispatcher:
         
         # Handle waiters that need node configs
         if waiter_type in ["delegations_synced", "stake_service_ready", "cli_ready", 
-                          "gdb_sync_complete", "first_block", "esbocs_consensus_active"]:
+                          "gdb_sync_complete", "global_db_sync", "first_block", "esbocs_consensus_active"]:
             node_configs = self._get_node_configs(nodes)
             
             if waiter_type == "delegations_synced":
@@ -302,6 +303,16 @@ class WaiterDispatcher:
                 return waiter_class(
                     exec_cli=exec_cli,
                     nodes=node_configs,
+                    network_name=network,
+                    poll_interval=poll_interval
+                )
+            elif waiter_type == "global_db_sync":
+                # GlobalDBNodeListSyncWaiter takes single node, not list
+                if not node_configs:
+                    raise ValueError(f"global_db_sync waiter requires at least one node")
+                return waiter_class(
+                    exec_cli=exec_cli,
+                    node=node_configs[0],  # Use first node
                     network_name=network,
                     poll_interval=poll_interval
                 )
