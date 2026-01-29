@@ -6,11 +6,40 @@ set -e
 # Define source and output directories
 DOCS_DIR="$(dirname "$0")"
 BUILD_DIR="${DOCS_DIR}/_build"
+TEMP_DIR="${BUILD_DIR}/temp"
 
-# Ensure build directory exists
-mkdir -p "${BUILD_DIR}"
+# Ensure directories exist
+mkdir -p "${BUILD_DIR}" "${TEMP_DIR}"
+
+# Function to remove emoji from files
+remove_emoji() {
+    local input_file="$1"
+    local output_file="$2"
+    # Remove emoji unicode characters (U+1F000 to U+1FFFF range and common symbols)
+    # Keep: -, +, *, #, numbers, letters, spaces, punctuation
+    perl -CSD -pe 's/[\x{1F000}-\x{1FFFF}\x{2700}-\x{27BF}\x{2B50}\x{2705}\x{274C}]//g' "$input_file" > "$output_file"
+}
 
 echo "Building documentation PDFs..."
+echo ""
+echo "Preparing emoji-free copies for PDF generation..."
+
+# Prepare emoji-free versions of all markdown files
+for lang in en ru; do
+    for category in scenarios developer; do
+        if [ -d "${DOCS_DIR}/${lang}/${category}" ]; then
+            mkdir -p "${TEMP_DIR}/${lang}/${category}"
+            for md_file in "${DOCS_DIR}/${lang}/${category}"/*.md; do
+                if [ -f "$md_file" ]; then
+                    filename=$(basename "$md_file")
+                    remove_emoji "$md_file" "${TEMP_DIR}/${lang}/${category}/${filename}"
+                fi
+            done
+        fi
+    done
+done
+
+echo "✓ Emoji-free copies prepared"
 echo ""
 
 # --- English Scenario Language Guide ---
@@ -29,14 +58,14 @@ pandoc \
   --metadata title="Stage-Env Scenario Language Guide" \
   --metadata author="Demlabs" \
   --metadata date="$(date +%Y-%m-%d)" \
-  "${DOCS_DIR}/en/scenarios/Tutorial.md" \
-  "${DOCS_DIR}/en/scenarios/01_Language_Semantics.md" \
-  "${DOCS_DIR}/en/scenarios/02_Language_Constructs.md" \
-  "${DOCS_DIR}/en/scenarios/03_All_Operands.md" \
-  "${DOCS_DIR}/en/scenarios/04_Test_Suites.md" \
-  "${DOCS_DIR}/en/scenarios/05_Debugging_Scenarios.md" \
-  "${DOCS_DIR}/en/scenarios/Cookbook.md" \
-  "${DOCS_DIR}/en/scenarios/Glossary.md"
+  "${TEMP_DIR}/en/scenarios/Tutorial.md" \
+  "${TEMP_DIR}/en/scenarios/01_Language_Semantics.md" \
+  "${TEMP_DIR}/en/scenarios/02_Language_Constructs.md" \
+  "${TEMP_DIR}/en/scenarios/03_All_Operands.md" \
+  "${TEMP_DIR}/en/scenarios/04_Test_Suites.md" \
+  "${TEMP_DIR}/en/scenarios/05_Debugging_Scenarios.md" \
+  "${TEMP_DIR}/en/scenarios/Cookbook.md" \
+  "${TEMP_DIR}/en/scenarios/Glossary.md" 2>&1 | grep -v "Missing character" || true
 echo "✓ Generated: ${BUILD_DIR}/Stage-Env_Scenario_Language_Guide_EN.pdf"
 echo ""
 
@@ -56,7 +85,7 @@ pandoc \
   --metadata title="Stage-Env Developer Guide" \
   --metadata author="Demlabs" \
   --metadata date="$(date +%Y-%m-%d)" \
-  "${DOCS_DIR}/en/developer/DeveloperGuide.md"
+  "${TEMP_DIR}/en/developer/DeveloperGuide.md" 2>&1 | grep -v "Missing character" || true
 echo "✓ Generated: ${BUILD_DIR}/Stage-Env_Developer_Guide_EN.pdf"
 echo ""
 
@@ -76,14 +105,14 @@ pandoc \
   --metadata title="Stage-Env Руководство по Языку Сценариев" \
   --metadata author="Demlabs" \
   --metadata date="$(date +%Y-%m-%d)" \
-  "${DOCS_DIR}/ru/scenarios/Tutorial.md" \
-  "${DOCS_DIR}/ru/scenarios/01_Language_Semantics.md" \
-  "${DOCS_DIR}/ru/scenarios/02_Language_Constructs.md" \
-  "${DOCS_DIR}/ru/scenarios/03_All_Operands.md" \
-  "${DOCS_DIR}/ru/scenarios/04_Test_Suites.md" \
-  "${DOCS_DIR}/ru/scenarios/05_Debugging_Scenarios.md" \
-  "${DOCS_DIR}/ru/scenarios/Cookbook.md" \
-  "${DOCS_DIR}/ru/scenarios/Glossary.md"
+  "${TEMP_DIR}/ru/scenarios/Tutorial.md" \
+  "${TEMP_DIR}/ru/scenarios/01_Language_Semantics.md" \
+  "${TEMP_DIR}/ru/scenarios/02_Language_Constructs.md" \
+  "${TEMP_DIR}/ru/scenarios/03_All_Operands.md" \
+  "${TEMP_DIR}/ru/scenarios/04_Test_Suites.md" \
+  "${TEMP_DIR}/ru/scenarios/05_Debugging_Scenarios.md" \
+  "${TEMP_DIR}/ru/scenarios/Cookbook.md" \
+  "${TEMP_DIR}/ru/scenarios/Glossary.md" 2>&1 | grep -v "Missing character" || true
 echo "✓ Generated: ${BUILD_DIR}/Stage-Env_Scenario_Language_Guide_RU.pdf"
 echo ""
 
@@ -103,8 +132,13 @@ pandoc \
   --metadata title="Stage-Env Руководство Разработчика" \
   --metadata author="Demlabs" \
   --metadata date="$(date +%Y-%m-%d)" \
-  "${DOCS_DIR}/ru/developer/DeveloperGuide.md"
+  "${TEMP_DIR}/ru/developer/DeveloperGuide.md" 2>&1 | grep -v "Missing character" || true
 echo "✓ Generated: ${BUILD_DIR}/Stage-Env_Developer_Guide_RU.pdf"
+echo ""
+
+# Cleanup temp files
+rm -rf "${TEMP_DIR}"
+echo "✓ Cleaned up temporary files"
 echo ""
 
 echo "================================================"
@@ -125,3 +159,6 @@ if [ -d "${BUILD_DIR}" ]; then
   echo "File sizes:"
   ls -lh "${BUILD_DIR}"/*.pdf 2>/dev/null | awk '{print "  " $9 ": " $5}' || echo "  No PDF files found"
 fi
+
+echo ""
+echo "Note: Emoji removed from PDFs (source markdown files unchanged)"
