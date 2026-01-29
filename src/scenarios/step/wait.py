@@ -189,6 +189,8 @@ class WaitStepExecutor(StepExecutor):
             "finalized": "datum_finalized",
             "network_online": "network_online",
             "global_db_sync": "global_db_sync",
+            "cli_ready": "cli_ready",
+            "block_created": "block_created",
         }
         
         registry_type = WAITER_TYPE_MAPPING.get(wait_type, wait_type)
@@ -304,5 +306,9 @@ class WaitStepExecutor(StepExecutor):
             params["balance"] = ctx.substitute(str(step.balance))
         elif hasattr(step, 'wait_for') and step.wait_for:
             params["balance"] = ctx.substitute(str(step.wait_for))
+        
+        # Block creation parameters
+        if hasattr(step, 'min_blocks') and step.min_blocks is not None:
+            params["min_blocks"] = step.min_blocks
         
         return params

@@ -67,11 +67,12 @@ test:
         node: "{{first_root}}"
         timeout: 60
       
-      # TODO: Replace with intelligent block_created waiter
-      # ESBocs consensus needs time to create genesis block from transaction
-      # This is the ONLY remaining fixed wait - waiting for block creation
+      # Wait for ESBocs genesis block creation
+      # Using fixed 120s due to: 1) ESBocs consensus time, 2) MDBX race condition workaround
+      # TODO: Once SDK fixes MDBX bug, replace with: wait: block_created (implemented and tested)
       - wait: "120s"
       
+      # Verify block was created
       - cli: "block list"
         node: "{{first_master}}"
         expect_output: "have blocks: [1-9]"

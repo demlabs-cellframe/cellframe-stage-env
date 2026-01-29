@@ -569,6 +569,123 @@ class WalletBalanceWaiter(BaseWaiter):
         return False
 
 
+class BlockCreatedWaiter(BaseWaiter):
+    """
+    Wait for block(s) to be created on a chain.
+    
+    Monitors 'block list' command output to detect when blocks have been created
+    on the specified chain. This is critical for ESBocs consensus where block
+    creation takes time and requires validators.
+    
+    Usage:
+        waiter = BlockCreatedWaiter(exec_cli_func, node_config, chain_name, network_name, min_blocks)
+        await waiter.wait(timeout=180.0)
+    """
+    
+    def __init__(
+        self,
+        exec_cli: Callable,
+        node: NodeConfig,
+        chain: str,
+        network_name: str = "stagenet",
+        min_blocks: int = 1,
+        poll_interval: float = 3.0
+    ):
+        """
+        Initialize block created waiter.
+        
+        Args:
+            exec_cli: CLI execution function (node_id, command, check_output) -> (exit_code, stdout, stderr)
+            node: Node to check blocks on
+            chain: Chain name (e.g., "main", "zerochain")
+            network_name: Network name
+            min_blocks: Minimum number of blocks required (default: 1)
+            poll_interval: Seconds between checks (default: 3.0s - ESBocs is slow)
+        """
+        super().__init__(poll_interval)
+        self.exec_cli = exec_cli
+        self.node = node
+        self.chain = chain
+        self.network_name = network_name
+        self.min_blocks = min_blocks
+        self._start_time = None
+        self._check_count = 0
+    
+    async def check(self) -> bool:
+        """Check if block(s) have been created on the chain."""
+        if self._start_time is None:
+            self._start_time = time.time()
+        
+        self._check_count += 1
+        
+        try:
+            # Execute 'block list' to check for blocks
+            exit_code, stdout, stderr = self.exec_cli(
+                self.node.node_id,
+                f"block list -chain {self.chain} -net {self.network_name}",
+                check_output=False
+            )
+            
+            if exit_code != 0:
+                logger.debug("block_created_check",
+                           status="command_failed",
+                           node_id=self.node.node_id,
+                           chain=self.chain,
+                           check_count=self._check_count,
+                           exit_code=exit_code)
+                return False
+            
+            output = (stdout or '').strip()
+            
+            # Parse block count from "have blocks: N"
+            import re
+            match = re.search(r'have blocks:\s*(\d+)', output, re.IGNORECASE)
+            
+            if match:
+                block_count = int(match.group(1))
+                
+                if block_count >= self.min_blocks:
+                    elapsed = time.time() - self._start_time
+                    logger.info("blocks_created",
+                               node_id=self.node.node_id,
+                               chain=self.chain,
+                               network=self.network_name,
+                               block_count=block_count,
+                               min_blocks=self.min_blocks,
+                               check_count=self._check_count,
+                               elapsed=f"{elapsed:.1f}s")
+                    return True
+                else:
+                    # Log progress every 10 checks (30s with 3s interval)
+                    if self._check_count % 10 == 0:
+                        elapsed = time.time() - self._start_time
+                        logger.info("waiting_for_block_creation",
+                                   node_id=self.node.node_id,
+                                   chain=self.chain,
+                                   current_blocks=block_count,
+                                   min_blocks=self.min_blocks,
+                                   check_count=self._check_count,
+                                   elapsed=f"{elapsed:.1f}s")
+                    return False
+            else:
+                # Pattern not found - log for debugging
+                if self._check_count % 10 == 0:
+                    logger.debug("block_count_pattern_not_found",
+                               node_id=self.node.node_id,
+                               chain=self.chain,
+                               check_count=self._check_count,
+                               output_preview=output[:100])
+                return False
+            
+        except Exception as e:
+            logger.debug("block_created_check_error",
+                       node_id=self.node.node_id,
+                       chain=self.chain,
+                       check_count=self._check_count,
+                       error=str(e))
+            return False
+
+
 class GlobalDBNodeListSyncWaiter(BaseWaiter):
     """
     Wait for Global DB synchronization by checking node list.

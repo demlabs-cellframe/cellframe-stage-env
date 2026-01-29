@@ -252,6 +252,9 @@ class WaitStep(BaseModel):
     token: Optional[str] = Field(None, description="Token ticker (for wallet_balance)")
     balance: Optional[str] = Field(None, description="Balance condition e.g. '> 1000' (for wallet_balance)")
     
+    # Block creation parameters
+    min_blocks: Optional[int] = Field(None, description="Minimum number of blocks (for block_created)")
+    
     # Advanced options
     check_master: bool = Field(True, description="Check master nodes (for finalized)")
     expected_count: Optional[int] = Field(None, description="Expected count (for specific waiters)")

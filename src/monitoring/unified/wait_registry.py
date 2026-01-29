@@ -97,6 +97,7 @@ def _initialize_registry():
         DelegationsSyncedWaiter,
         CLIReadyWaiter,
         WalletBalanceWaiter,
+        BlockCreatedWaiter,
         GlobalDBNodeListSyncWaiter,
     )
     
@@ -140,6 +141,7 @@ def _initialize_registry():
     WaitRegistry.register("delegations_synced", DelegationsSyncedWaiter)
     WaitRegistry.register("cli_ready", CLIReadyWaiter)
     WaitRegistry.register("wallet_balance", WalletBalanceWaiter)
+    WaitRegistry.register("block_created", BlockCreatedWaiter)
     WaitRegistry.register("validator_mode_active", ValidatorModeActiveWaiter)
     WaitRegistry.register("stake_service_ready", StakeServiceReadyWaiter)
     WaitRegistry.register("esbocs_consensus_active", ESBocsConsensusActiveWaiter)
