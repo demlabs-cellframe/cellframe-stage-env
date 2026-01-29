@@ -65,13 +65,13 @@ def cli_help_main():
 Cellframe Node CLI tool
 
 Commands:
-    version                     Show version
-    help                        Show help
-    exit                        Exit
-    token_decl                  Token declaration
-    token_emit                  Token emission
-    wallet                      Wallet operations
-    tx_create                   Create transaction
+    version:                    Show version
+    help:                       Show help
+    exit:                       Exit
+    token_decl:                 Token declaration
+    token_emit:                 Token emission
+    wallet:                     Wallet operations
+    tx_create:                  Create transaction
 """
 
 @pytest.fixture
