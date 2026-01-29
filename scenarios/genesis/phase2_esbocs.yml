@@ -30,8 +30,13 @@ setup:
     set:
       is_add_directly: "true"
   
-  - docker_op: restart
+  # Stop and start nodes to reload config (restart doesn't reload config files)
+  - docker_op: stop
     services: "{{_active_nodes}}"
+  
+  - docker_op: start
+    services: "{{_active_nodes}}"
+    wait_for_ip: true
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
