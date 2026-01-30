@@ -88,6 +88,12 @@ setup:
 
 
 test:
+  # MDBX race condition workaround: wait for DB initialization to stabilize
+  # Without this, node dump immediately after restart can cause SIGSEGV
+  # when MDBX is creating DB contexts (e.g., 'stagenet.nodes.states')
+  # See: https://gitlab.demlabs.net/cellframe/cellframe-sdk/-/issues/XXXXX
+  - wait: "15s"
+  
   # Get ALL node addresses dynamically
   - group: Get node addresses
     steps:
