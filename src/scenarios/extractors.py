@@ -307,8 +307,14 @@ class DataExtractor:
         without specifying a custom pattern.
         """
         defaults = {
-            ExtractType.WALLET_ADDRESS: r'addr:\s+(\S+)',
-            ExtractType.NODE_ADDRESS: r'Node addr:\s+([A-Fa-f0-9:]+)',
+            # Match wallet address in both text and JSON formats:
+            # - Text: "addr: XYZABC123..."
+            # - JSON: "addr": "XYZABC123..." or "address": "XYZABC123..."
+            ExtractType.WALLET_ADDRESS: r'(?:"addr(?:ess)?":\s*"|addr:\s+)([A-Za-z0-9]{75,105})',
+            # Match node address in both text and JSON formats:
+            # - Text: "Node addr: A1B2::C3D4::E5F6"
+            # - JSON: "current_addr": "A1B2::C3D4::E5F6" or "node_addr": "..."
+            ExtractType.NODE_ADDRESS: r'(?:"(?:current_|node_)?addr(?:ess)?":\s*"|Node addr:\s+)([A-Fa-f0-9:]+)',
             # Match hash in various formats:
             # - "New: 0x..." (from token_decl_sign)
             # - "hash: 0x..." (from JSON)

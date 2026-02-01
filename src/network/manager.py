@@ -403,7 +403,9 @@ class NetworkManager:
                 from ..scenarios.parser import ScenarioParser
                 
                 scenario_parser = ScenarioParser(self.base_path / "scenarios")
-                phase1_scenario = scenario_parser.load_scenario("genesis/phase1_zerochain.yml")
+                # Get version-specific scenario path (e.g., "genesis/6.0/phase1_zerochain.yml")
+                phase1_path = self.config_loader.get_genesis_scenario_path("phase1_zerochain.yml")
+                phase1_scenario = scenario_parser.load_scenario(phase1_path)
                 
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
@@ -852,13 +854,36 @@ class NetworkManager:
                     continue
                 
                 # Step 3: Extract emission_hash from dump output
-                # Format: "emission_hash: 0x..." (plain text format)
-                emission_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump_stdout, re.IGNORECASE)
-                if emission_match:
-                    emission_hash = emission_match.group(1)
-                    logger.info("emission_hash_extracted_from_event_dump",
-                               emission_hash=emission_hash[:20],
-                               event_hash=last_event_hash[:20])
+                # Try JSON format first (6.0+): for DATUM_TOKEN_EMISSION events, event_hash IS the emission hash
+                # Then fallback to text format: "emission_hash: 0x..."
+                import json
+                try:
+                    dump_stripped = dump_stdout.strip()
+                    if dump_stripped.startswith('[') or dump_stripped.startswith('{'):
+                        data = json.loads(dump_stripped)
+                        if isinstance(data, list) and len(data) > 0:
+                            data = data[0]
+                        if isinstance(data, dict):
+                            type_id = data.get('type_id', '')
+                            # For DATUM_TOKEN_EMISSION events, the event_hash IS the emission hash
+                            if 'TOKEN_EMISSION' in type_id:
+                                emission_hash = data.get('event_hash', last_event_hash)
+                                logger.info("emission_hash_from_json_event",
+                                           emission_hash=emission_hash[:20] if emission_hash else "NONE",
+                                           type_id=type_id)
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    pass  # Fall back to text parsing
+                
+                # Fallback: text format
+                if not emission_hash:
+                    emission_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump_stdout, re.IGNORECASE)
+                    if emission_match:
+                        emission_hash = emission_match.group(1)
+                        logger.info("emission_hash_extracted_from_event_dump",
+                                   emission_hash=emission_hash[:20],
+                                   event_hash=last_event_hash[:20])
+                
+                if emission_hash:
                     break
                 else:
                     # If emission_hash not found, event might not be an emission event
@@ -873,13 +898,27 @@ class NetworkManager:
                         check_output=False
                     )
                     if exit_code == 0 and list_stdout:
-                        # Find all event hashes
-                        all_event_hashes = re.findall(r'event_hash:\s*(0x[A-Fa-f0-9]{64})', list_stdout)
+                        # Find all event hashes - try JSON first, then text
+                        all_event_hashes = []
+                        try:
+                            list_stripped = list_stdout.strip()
+                            if list_stripped.startswith('['):
+                                events_data = json.loads(list_stripped)
+                                for evt in events_data:
+                                    if isinstance(evt, dict) and 'event_hash' in evt:
+                                        all_event_hashes.append(evt['event_hash'])
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                        
+                        # Fallback: text format
+                        if not all_event_hashes:
+                            all_event_hashes = re.findall(r'(?:"event_hash":\s*"|event_hash:\s*)(0x[A-Fa-f0-9]{64})', list_stdout)
+                        
                         logger.info("dag_events_list_for_emission",
                                    event_count=len(all_event_hashes),
                                    hashes=all_event_hashes[:5])
                         
-                        # Try each event to find one with emission_hash
+                        # Try each event to find one with emission_hash (type_id = DATUM_TOKEN_EMISSION)
                         for evt_hash in all_event_hashes:
                             exit_code2, dump2, _ = self.genesis._exec_cli(
                                 root_node.node_id,
@@ -887,13 +926,33 @@ class NetworkManager:
                                 check_output=False
                             )
                             if exit_code2 == 0 and dump2:
-                                em_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump2, re.IGNORECASE)
-                                if em_match:
-                                    emission_hash = em_match.group(1)
-                                    logger.info("emission_hash_found_in_event",
-                                               emission_hash=emission_hash[:20],
-                                               event_hash=evt_hash[:20])
-                                    break
+                                # Try JSON format first
+                                try:
+                                    dump_stripped = dump2.strip()
+                                    if dump_stripped.startswith('[') or dump_stripped.startswith('{'):
+                                        data = json.loads(dump_stripped)
+                                        if isinstance(data, list) and len(data) > 0:
+                                            data = data[0]
+                                        if isinstance(data, dict):
+                                            type_id = data.get('type_id', '')
+                                            if 'TOKEN_EMISSION' in type_id:
+                                                emission_hash = data.get('event_hash', evt_hash)
+                                                logger.info("emission_hash_found_in_event_json",
+                                                           emission_hash=emission_hash[:20],
+                                                           event_hash=evt_hash[:20])
+                                                break
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                                
+                                # Fallback: text format
+                                if not emission_hash:
+                                    em_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump2, re.IGNORECASE)
+                                    if em_match:
+                                        emission_hash = em_match.group(1)
+                                        logger.info("emission_hash_found_in_event",
+                                                   emission_hash=emission_hash[:20],
+                                                   event_hash=evt_hash[:20])
+                                        break
                         if emission_hash:
                             break
             
@@ -1073,7 +1132,9 @@ class NetworkManager:
                 from ..scenarios.parser import ScenarioParser
                 
                 scenario_parser = ScenarioParser(self.base_path / "scenarios")
-                phase2_scenario = scenario_parser.load_scenario("genesis/phase2_esbocs.yml")
+                # Get version-specific scenario path (e.g., "genesis/6.0/phase2_esbocs.yml")
+                phase2_path = self.config_loader.get_genesis_scenario_path("phase2_esbocs.yml")
+                phase2_scenario = scenario_parser.load_scenario(phase2_path)
                 
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()

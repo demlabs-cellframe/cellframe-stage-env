@@ -758,4 +758,127 @@ class ConfigLoader:
                    build_dir=str(build_dir))
         
         return node_source
+    
+    def get_node_version(self) -> Optional[str]:
+        """
+        Extract version from the node package name.
+        
+        Package name formats:
+        - cellframe-node-6.0-LOCALBUILD1-dbg-amd64.deb -> "6.0"
+        - cellframe-node-5.2.123-amd64.deb -> "5.2"
+        - cellframe-node-latest.deb -> None (unknown)
+        
+        Returns:
+            Major.minor version string (e.g., "6.0", "5.2") or None if unknown
+        """
+        import re
+        
+        node_source = self.get_node_source_config()
+        local_path = node_source.get('local_path')
+        
+        if not local_path:
+            logger.debug("no_local_path_for_version_detection")
+            return None
+        
+        # Extract filename from path
+        package_name = Path(local_path).name
+        
+        # Pattern: cellframe-node-X.Y... where X.Y is major.minor
+        # Examples:
+        #   cellframe-node-6.0-LOCALBUILD1-dbg-amd64.deb
+        #   cellframe-node-5.2.345-amd64.deb
+        #   cellframe-node-5.0-amd64.deb
+        match = re.search(r'cellframe-node-(\d+\.\d+)', package_name)
+        
+        if match:
+            version = match.group(1)
+            logger.info("node_version_detected", 
+                       package_name=package_name, 
+                       version=version)
+            return version
+        
+        logger.warning("could_not_detect_version_from_package",
+                      package_name=package_name)
+        return None
+    
+    def get_genesis_scenario_path(self, scenario_name: str) -> str:
+        """
+        Get path to genesis scenario based on detected node version.
+        
+        Search order:
+        1. Version-specific path: genesis/{detected_version}/{scenario_name}
+        2. Default path: genesis/{scenario_name}  
+        3. Auto-detect: find any version subdirectory with the scenario
+        
+        Args:
+            scenario_name: Scenario filename (e.g., "phase1_zerochain.yml")
+            
+        Returns:
+            Path relative to scenarios directory (e.g., "genesis/6.0/phase1_zerochain.yml")
+            
+        Raises:
+            FileNotFoundError: If scenario not found in any location
+        """
+        # scenarios/ is at stage-env root level, not under config/
+        # config_dir is stage-env/config/, so go up one level
+        stage_env_dir = self.config_dir.parent
+        scenarios_dir = stage_env_dir / "scenarios"
+        genesis_dir = scenarios_dir / "genesis"
+        
+        version = self.get_node_version()
+        
+        # 1. Try version-specific path first
+        if version:
+            version_path = f"genesis/{version}/{scenario_name}"
+            full_path = scenarios_dir / version_path
+            
+            if full_path.exists():
+                logger.info("using_version_specific_genesis_scenario",
+                          version=version,
+                          scenario=version_path)
+                return version_path
+            else:
+                logger.warning("version_specific_scenario_not_found",
+                             version=version,
+                             scenario=scenario_name,
+                             tried_path=str(full_path))
+        
+        # 2. Try default path (genesis/{scenario_name})
+        default_path = f"genesis/{scenario_name}"
+        if (scenarios_dir / default_path).exists():
+            logger.info("using_default_genesis_scenario", scenario=default_path)
+            return default_path
+        
+        # 3. Auto-detect: find any version subdirectory with the scenario
+        if genesis_dir.exists():
+            # Get version subdirectories (e.g., "5.0", "6.0")
+            version_dirs = sorted(
+                [d for d in genesis_dir.iterdir() 
+                 if d.is_dir() and d.name[0].isdigit()],
+                key=lambda d: d.name,
+                reverse=True  # Prefer newest version
+            )
+            
+            for ver_dir in version_dirs:
+                candidate = ver_dir / scenario_name
+                if candidate.exists():
+                    found_path = f"genesis/{ver_dir.name}/{scenario_name}"
+                    logger.warning("auto_detected_genesis_scenario",
+                                 detected_version=ver_dir.name,
+                                 scenario=found_path,
+                                 note="Version not detected from package, using auto-detected scenario")
+                    return found_path
+        
+        # No scenario found anywhere
+        available_versions = []
+        if genesis_dir.exists():
+            available_versions = [d.name for d in genesis_dir.iterdir() 
+                                 if d.is_dir() and d.name[0].isdigit()]
+        
+        raise FileNotFoundError(
+            f"Genesis scenario '{scenario_name}' not found. "
+            f"Detected version: {version or 'unknown'}. "
+            f"Available version directories: {available_versions or 'none'}. "
+            f"Searched paths: genesis/{version}/{scenario_name}, genesis/{scenario_name}"
+        )
 

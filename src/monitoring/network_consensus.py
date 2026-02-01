@@ -19,6 +19,7 @@ Usage:
 """
 
 import asyncio
+import json
 from typing import Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -423,15 +424,41 @@ class NetworkConsensusMonitor:
                         f"net -net {self.network_name} get status"
                     )
                     
-                    # Parse YAML to get active and required links
-                    import re
-                    active_match = re.search(r'active:\s*(\d+)', net_status)
-                    required_match = re.search(r'required:\s*(\d+)', net_status)
+                    active = None
+                    required = None
                     
-                    if active_match and required_match:
-                        active = int(active_match.group(1))
-                        required = int(required_match.group(1))
-                        
+                    # Try JSON parsing first (new CLI format)
+                    try:
+                        output_stripped = net_status.strip()
+                        if output_stripped.startswith('[') or output_stripped.startswith('{'):
+                            data = json.loads(output_stripped)
+                            # Handle array format: [{"status": {...}}]
+                            if isinstance(data, list) and len(data) > 0:
+                                data = data[0]
+                            # Extract links from JSON: status.links.active/required
+                            if isinstance(data, dict):
+                                links = None
+                                if 'status' in data and 'links' in data['status']:
+                                    links = data['status']['links']
+                                elif 'links' in data:
+                                    links = data['links']
+                                if links and isinstance(links, dict):
+                                    active = links.get('active')
+                                    required = links.get('required')
+                    except (json.JSONDecodeError, KeyError, TypeError):
+                        pass  # Fall back to text parsing
+                    
+                    # Fallback: Parse text/YAML format
+                    if active is None or required is None:
+                        import re
+                        active_match = re.search(r'active:\s*(\d+)', net_status)
+                        required_match = re.search(r'required:\s*(\d+)', net_status)
+                        if active_match:
+                            active = int(active_match.group(1))
+                        if required_match:
+                            required = int(required_match.group(1))
+                    
+                    if active is not None and required is not None:
                         if active >= required:
                             ready_count += 1
                             logger.debug("node_links_established",

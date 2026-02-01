@@ -8,6 +8,7 @@ Provides intelligent waiting for node state transitions:
 """
 
 import asyncio
+import json
 from typing import List, Set
 from enum import Enum
 
@@ -304,18 +305,54 @@ class NodeStateManager:
                              note="Network status command returned error - network may not be initialized")
             
             # Parse state from output
-            # Format:
-            #   states:
-            #       current: NET_STATE_ONLINE
-            #       target: NET_STATE_ONLINE
-            # We need to extract the "current" state
+            # CLI can return two formats:
+            # 1. JSON format (new): [{"status":{"states":{"current":"NET_STATE_ONLINE",...}}}]
+            # 2. Text format (legacy):
+            #      states:
+            #          current: NET_STATE_ONLINE
+            #          target: NET_STATE_ONLINE
+            
+            # Try JSON parsing first (new format)
+            try:
+                # Strip any whitespace and try to parse as JSON
+                output_stripped = output_str.strip()
+                if output_stripped.startswith('[') or output_stripped.startswith('{'):
+                    data = json.loads(output_stripped)
+                    
+                    # Handle array format: [{"status": {...}}]
+                    if isinstance(data, list) and len(data) > 0:
+                        data = data[0]
+                    
+                    # Extract state from JSON structure
+                    # Path: status.states.current or states.current
+                    current_state_str = None
+                    if isinstance(data, dict):
+                        if 'status' in data and 'states' in data['status']:
+                            current_state_str = data['status']['states'].get('current')
+                        elif 'states' in data:
+                            current_state_str = data['states'].get('current')
+                    
+                    if current_state_str:
+                        for state in NodeState:
+                            if state.value == current_state_str:
+                                logger.debug("node_state_detected_json",
+                                           node_id=node_id,
+                                           state=state.value)
+                                return state
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                logger.debug("json_parse_attempt_failed",
+                           node_id=node_id,
+                           error=str(e),
+                           note="Falling back to text parsing")
+            
+            # Fallback: Text format parsing (legacy)
             for line in output_str.split('\n'):
                 line_stripped = line.strip()
                 # Look for "current: NET_STATE_XXX" line
                 if line_stripped.startswith('current:'):
                     for state in NodeState:
                         if state.value in line_stripped:
-                            logger.debug("node_state_detected",
+                            logger.debug("node_state_detected_text",
                                        node_id=node_id,
                                        state=state.value)
                             return state

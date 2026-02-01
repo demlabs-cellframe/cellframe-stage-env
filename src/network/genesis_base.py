@@ -99,9 +99,10 @@ class BaseGenesisManager:
                 )
                 
                 if exit_code == 0 and stdout_str:
-                    # Parse node address from output
-                    # Format: "Node addr: XXXX::YYYY::ZZZZ::WWWW"
-                    addr_match = re.search(r'Node addr:\s*([A-Fa-f0-9:]+)', stdout_str)
+                    # Parse node address from output (text or JSON format)
+                    # Text: "Node addr: XXXX::YYYY::ZZZZ::WWWW"
+                    # JSON: "current_addr": "XXXX::YYYY::ZZZZ::WWWW"
+                    addr_match = re.search(r'(?:"(?:current_|node_)?addr(?:ess)?":\s*"|Node addr:\s*)([A-Fa-f0-9:]+)', stdout_str)
                     if addr_match:
                         node_addr = addr_match.group(1)
                         logger.debug("node_addr_found",
@@ -190,11 +191,15 @@ class BaseGenesisManager:
             if exit_code != 0:
                 raise RuntimeError(f"wallet new failed: exit_code={exit_code}, stderr={stderr}")
             
-            # Parse wallet address from output
-            # Format: "new address: WkojSeUjApyYYy5XF6sFwwiLvXnxv5oV6moCWVaicdsj1D"
+            # Parse wallet address from output (text or JSON format)
+            # Text: "new address: XYZ..." or "addr: XYZ..." or "Address: XYZ..."
+            # JSON: "addr": "XYZ..." or "address": "XYZ..."
             addr_match = re.search(r'new address:\s*([A-Za-z0-9]+)', stdout)
             if not addr_match:
-                # Try alternative formats
+                # Try JSON format
+                addr_match = re.search(r'"addr(?:ess)?":\s*"([A-Za-z0-9]+)"', stdout)
+            if not addr_match:
+                # Try alternative text formats
                 addr_match = re.search(r'addr:\s*([A-Za-z0-9]+)', stdout)
             if not addr_match:
                 addr_match = re.search(r'Address:\s*([A-Za-z0-9]+)', stdout)
@@ -240,11 +245,15 @@ class BaseGenesisManager:
             if exit_code != 0:
                 raise RuntimeError(f"wallet info failed: exit_code={exit_code}, stderr={stderr}")
             
-            # Parse wallet address from output
-            # Format: "new address: WkojSeUjApyYYy5XF6sFwwiLvXnxv5oV6moCWVaicdsj1D"
+            # Parse wallet address from output (text or JSON format)
+            # Text: "new address: XYZ..." or "addr: XYZ..." or "Address: XYZ..."
+            # JSON: "addr": "XYZ..." or "address": "XYZ..."
             addr_match = re.search(r'new address:\s*([A-Za-z0-9]+)', stdout)
             if not addr_match:
-                # Try alternative formats
+                # Try JSON format
+                addr_match = re.search(r'"addr(?:ess)?":\s*"([A-Za-z0-9]+)"', stdout)
+            if not addr_match:
+                # Try alternative text formats
                 addr_match = re.search(r'addr:\s*([A-Za-z0-9]+)', stdout)
             if not addr_match:
                 addr_match = re.search(r'Address:\s*([A-Za-z0-9]+)', stdout)
