@@ -463,17 +463,18 @@ test:
       - cli: "dag event dump -event {{emission_event_hash}} -from events"
         save: emission_event_dump
       
-      # Extract emission_hash from dump
-      # JSON format (6.0+): "event_hash":"0x..." - for DATUM_TOKEN_EMISSION events, event_hash IS the emission_hash
-      # Text format (5.x): emission_hash: 0x...
+      # Set emission_hash to the actual datum hash from token_emit command
+      # IMPORTANT: The emission_datum_hash (from token_emit) is the DATUM hash
+      # The event_hash in the dump is the DAG EVENT hash - these are different!
+      # tx create -from_emission needs the DATUM hash, not the event hash
       - set: emission_hash
-        value: "regex_extract(emission_event_dump, r'(?:\"event_hash\":\"|emission_hash:\\s*)(0x[a-fA-F0-9]+)', 1)"
+        value: "emission_datum_hash"
         eval: true
       
       # Verify emission_hash was found
       - if: "not emission_hash"
         then:
-          - bash: "echo 'ERROR: emission_hash not found in event dump. Dump content:' && echo '{{emission_event_dump}}' | head -50 && exit 1"
+          - bash: "echo 'ERROR: emission_datum_hash not set from token_emit command' && exit 1"
             node: "{{first_root}}"
   
   - cli: "dag event list -chain zerochain"
