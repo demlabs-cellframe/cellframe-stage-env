@@ -477,6 +477,9 @@ class SuiteDescriptor(BaseModel):
     # Suite-specific metadata
     scenarios: List[str] = Field(default_factory=list, description="List of scenario files in this suite")
     
+    # Explicit execution order for scenarios (if specified, only these scenarios run in this order)
+    execution_order: List[str] = Field(default_factory=list, description="Explicit order of scenario execution (full filenames)")
+    
     # Optional network configuration for suite-level defaults
     network: Optional[NetworkConfig] = Field(None, description="Default network topology for suite")
     
