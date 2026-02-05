@@ -644,10 +644,30 @@ class DockerComposeManager:
                "-p", self.project_name, "down"]
         
         if volumes:
-            cmd.append("-v")
+            cmd.append("--volumes")
         
         if remove_images:
-            cmd.extend(["--rmi", "all"])
+            cmd.append("--rmi all")
+        
+        run_command(cmd, cwd=self.project_dir)
+        logger.info("services_stopped")
+    
+    def stop(self, services: Optional[List[str]] = None) -> None:
+        """
+        Stop running containers without removing them.
+        
+        Args:
+            services: List of service names (None = all)
+        """
+        logger.info("stopping_services", services=services or "all")
+        
+        from src.utils.cli import run_command
+        
+        cmd = ["docker", "compose", "-f", str(self.compose_file),
+               "-p", self.project_name, "stop"]
+        
+        if services:
+            cmd.extend(services)
         
         run_command(cmd, cwd=self.project_dir)
         logger.info("services_stopped")

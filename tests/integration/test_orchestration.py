@@ -129,10 +129,10 @@ class TestScenarioOrchestration:
             
             assert ctx.get_summary()["passed"] == 1
             
-            # Verify call
+            # Verify call (using positional args now)
             scenario_executor.container_manager.exec_cli_command.assert_called_with(
-                command="wallet info -net stagenet",
-                node="node2",
-                timeout=30
+                "wallet info -net stagenet",
+                "node2",
+                30
             )
 

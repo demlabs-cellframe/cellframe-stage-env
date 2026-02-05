@@ -246,8 +246,24 @@ elif $SKIP_BUILD; then
         fi
     fi
 elif $IN_CELLFRAME_REPO; then
-    # In cellframe-node repo with type=local or no type - build
-    SHOULD_BUILD=true
+    # In cellframe-node repo with type=local or no type
+    # Check if package already exists and is up to date
+    info "Checking for existing package in $TEST_BUILD_DIR..."
+    DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f 2>/dev/null | head -n 1)
+    
+    if [ -n "$DEB_PACKAGE" ]; then
+        # Package exists - check if we need to rebuild
+        info "Found existing package: $(basename "$DEB_PACKAGE")"
+        
+        # TODO: Add hash check here to detect if package changed
+        # For now, assume existing package is good
+        SHOULD_BUILD=false
+        success "Using existing package (no rebuild needed)"
+    else
+        # No package exists - need to build
+        info "No existing package found"
+        SHOULD_BUILD=true
+    fi
 fi
 
 # Build if needed

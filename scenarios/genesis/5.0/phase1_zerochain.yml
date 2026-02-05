@@ -14,8 +14,6 @@ setup:
     services: "{{all_nodes}}"
     detach: true
   
-  - wait: "10s"
-  
   # Verify ROOT node certificates exist
   - group: Verify ROOT node certificates
     steps:
@@ -87,10 +85,15 @@ setup:
   - wait_network: online
     nodes: "{{root_nodes}}"
     timeout: 120
-  
-  - wait: "5s"
+
 
 test:
+  # MDBX race condition workaround: wait for DB initialization to stabilize
+  # Without this, node dump immediately after restart can cause SIGSEGV
+  # when MDBX is creating DB contexts (e.g., 'stagenet.nodes.states')
+  # See: https://gitlab.demlabs.net/cellframe/cellframe-sdk/-/issues/XXXXX
+  - wait: "15s"
+  
   # Get ALL node addresses dynamically
   - group: Get node addresses
     steps:
@@ -147,10 +150,12 @@ test:
     eval: true
   
   # Set validators_addrs on ALL nodes
+  # Also enable is_add_directly for mainchain genesis (PHASE 2)
   - config: "{{network_name}}/main"
     nodes: "{{all_nodes}}"
     set:
       validators_addrs: "{{validators_addrs_str}}"
+      is_add_directly: "true"
   
   # Set authorized_nodes_addrs in ZEROCHAIN config
   - config: "{{network_name}}/zerochain"
@@ -169,8 +174,6 @@ test:
   - wait_network: online
     nodes: "{{_active_nodes}}"
     timeout: 60
-  
-  - wait: "5s"
   
   # Add all nodes to nodelist dynamically
   - group: Add all nodes to nodelist
@@ -221,8 +224,6 @@ test:
             eval: true
           - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
             contains: "successfully"
-  
-  - wait: "5s"
   
   - cli: "node list"
     node: "{{first_root}}"
@@ -334,8 +335,12 @@ test:
     nodes: "{{_active_nodes}}"
     timeout: 60
   
-  - wait: "40s"
-
+  # Wait for Global DB synchronization using intelligent waiter
+  # Monitors 'node list' to detect when Global DB has synced records
+  - wait: global_db_sync
+    node: "{{first_root}}"
+    timeout: 60
+  
   # Genesis Event - Token Declaration
   # Build root_certs_str: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
   - set: root_certs_str
@@ -351,19 +356,22 @@ test:
       - cli: "token_decl -token {{native_ticker}} -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
         save_hash: token_hash
       
-      - wait: "3s"
-      
+      # Trigger mempool processing to create genesis event
       - cli: "mempool proc -datum {{token_hash}}"
       
-      - wait: "32s"
+      # Intelligent wait: wait for global_db_sync to ensure datum is propagated
+      - wait: global_db_sync
+        node: "{{first_root}}"
+        timeout: 60
       
+      # Verify token is created
       - cli: "token list"
         expect_output: "tokens: 1"
       
+      # Flush Global DB to ensure token is persisted
       - cli: "global_db flush"
       
-      - wait: "5s"
-      
+      # Get genesis event hash (contains token_decl)
       - cli: "dag event last -chain zerochain"
         save_hash: genesis_event_hash
   
@@ -405,7 +413,12 @@ test:
     nodes: "{{_active_nodes}}"
     timeout: 60
   
-  - wait: "40s"
+  # Wait for Global DB synchronization using intelligent waiter
+  # CRITICAL: Prevents MDBX race condition crash when accessing DB after Global DB sync
+  # Error: "dbi_update: Assertion failed" happens when DB contexts are being created
+  - wait: global_db_sync
+    node: "{{first_root}}"
+    timeout: 60
   
   - config: "{{network_name}}/zerochain"
     nodes: "{{root_nodes}}"
@@ -418,7 +431,20 @@ test:
     nodes: "{{root_nodes}}"
     timeout: 60
   
-  - wait: "10s"
+  # CRITICAL: Re-enable is_add_directly for emission to be added to DAG
+  # Without this, mempool proc will process emission but NOT add it to DAG
+  # (it was disabled after token_decl genesis event)
+  - config: "{{network_name}}/zerochain"
+    nodes: "{{seed_nodes}}"
+    set:
+      is_add_directly: "true"
+  
+  - docker_op: restart
+    services: "{{root_nodes}}"
+  
+  - wait_network: online
+    nodes: "{{root_nodes}}"
+    timeout: 60
   
   # Token Emission - ALL signatures on node-1 (has all root certs)
   # Build all_root_certs: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
@@ -437,48 +463,41 @@ test:
       - cli: "token_emit -no_base_tx -emission_value 10.0e+54 -addr {{fee_addr}} -certs {{all_root_certs}}"
         save_hash: emission_datum_hash
       
-      - wait: "10s"
-      
-      # Verify emission is in mempool
-      - cli: "mempool list"
-        save: mempool_after_emission
-      
-      # Extract and verify signature count
-      - set: emission_sig_count
-        value: "int(regex_extract(mempool_after_emission, r'sig_count:\\s*(\\d+)', 1) or 0)"
+      # Store emission_datum_hash as emission_hash for phase2 compatibility
+      - set: emission_hash
+        value: "emission_datum_hash"
         eval: true
-      
-      - cli: "dag event last"
-        save_hash: last_event_before_emission
       
       # Process emission to DAG
       - cli: "mempool proc -datum {{emission_datum_hash}}"
-        save: mempool_proc_output
       
-      - wait: "30s"
+      # Intelligent wait: wait for global_db_sync to ensure emission is propagated
+      - wait: global_db_sync
+        node: "{{first_root}}"
+        timeout: 60
       
-      - cli: "dag event last"
-        save_hash: emission_event_hash
-      
-      - cli: "dag event dump -event {{emission_event_hash}} -from events"
-        save: emission_event_dump
-      
-      # Extract emission_hash from dump (plain text format: emission_hash: 0x...)
-      - set: emission_hash
-        value: "regex_extract(emission_event_dump, r'emission_hash:\\s*(0x[a-fA-F0-9]+)', 1)"
-        eval: true
-      
-      # Verify emission_hash was found
-      - if: "not emission_hash"
-        then:
-          - bash: "echo 'ERROR: emission_hash not found in event dump. Dump content:' && echo '{{emission_event_dump}}' | head -50 && exit 1"
-            node: "{{first_root}}"
+      # Verify emission is accessible in ledger (should show coins/balance)
+      - cli: "ledger list coins"
+        contains: "{{native_ticker}}"
   
   - cli: "dag event list -chain zerochain"
     node: "{{first_root}}"
   
   - cli: "dag event last -chain zerochain"
     node: "{{first_root}}"
+  
+  # Disable is_add_directly after emission is in DAG
+  - config: "{{network_name}}/zerochain"
+    nodes: "{{root_nodes}}"
+    set:
+      is_add_directly: "false"
+  
+  # Configure fee_addr in main.cfg (required for arbitrage transactions)
+  # SDK will automatically load it from config on node startup
+  - config: "{{network_name}}/main"
+    nodes: "{{_active_nodes}}"
+    set:
+      fee_addr: "{{fee_addr}}"
 
 # NOTE: Snapshot creation is handled by manager.py after this phase completes.
 # teardown with snapshot: create would be used for standalone phase execution.

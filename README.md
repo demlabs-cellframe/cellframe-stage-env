@@ -57,6 +57,9 @@ cd tests
 - ✅ YAML-based test scenarios (no programming required)
 - ✅ Docker-isolated test environment
 - ✅ Flexible network topologies
+- ✅ Intelligent waiters (datum processing, block creation, Global DB sync)
+- ✅ Multi-node synchronization checks
+- ✅ Built-in debugging with `print` operand
 - ✅ Automatic artifacts collection & PDF reports
 - ✅ Rich CLI with colored output
 

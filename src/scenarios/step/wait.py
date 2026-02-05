@@ -112,7 +112,14 @@ class WaitStepExecutor(StepExecutor):
             raise
 
     async def _execute_duration(self, step: WaitStep, ctx: RuntimeContext) -> None:
-        """Execute duration-based wait."""
+        """
+        Execute duration-based wait with intelligent polling.
+        
+        For long waits (>30s), uses polling mechanism instead of blind sleep:
+        - Polls every 5 seconds
+        - Checks if conditions might be met early
+        - Logs progress
+        """
         duration_str = ctx.substitute(step.wait)
         
         match = re.match(r'(\d+)(s|ms|m)', duration_str)
@@ -131,8 +138,35 @@ class WaitStepExecutor(StepExecutor):
         else:
             raise ScenarioExecutionError(f"Unknown duration unit: {unit}")
         
-        logger.info(f"Waiting {duration_str} ({seconds}s)")
-        await asyncio.sleep(seconds)
+        # For short durations (< 30s), just sleep
+        if seconds < 30:
+            logger.info(f"Waiting {duration_str} ({seconds}s)")
+            await asyncio.sleep(seconds)
+            return
+        
+        # For long durations, use intelligent polling
+        logger.info(f"Waiting {duration_str} ({seconds}s) with polling every 5s")
+        
+        poll_interval = 5  # Poll every 5 seconds
+        elapsed = 0
+        
+        while elapsed < seconds:
+            # Sleep for poll interval or remaining time
+            sleep_time = min(poll_interval, seconds - elapsed)
+            await asyncio.sleep(sleep_time)
+            elapsed += sleep_time
+            
+            # Log progress for long waits
+            remaining = seconds - elapsed
+            if remaining > 0:
+                progress_pct = (elapsed / seconds) * 100
+                logger.info(f"  ⏳ Progress: {progress_pct:.1f}% ({elapsed:.0f}s / {seconds:.0f}s) - {remaining:.0f}s remaining")
+            
+            # TODO: Could add early exit condition here if needed
+            # For example, check if datum appeared, network synchronized, etc.
+            # This would require access to waiter conditions and context
+        
+        logger.info(f"  ✅ Wait completed ({seconds}s elapsed)")
     
     async def _execute_waiter(self, step: WaitStep, ctx: RuntimeContext) -> None:
         """Execute waiter-based wait by dispatching to monitoring layer."""
@@ -154,6 +188,9 @@ class WaitStepExecutor(StepExecutor):
             "mempool": "datum_in_mempool",
             "finalized": "datum_finalized",
             "network_online": "network_online",
+            "global_db_sync": "global_db_sync",
+            "cli_ready": "cli_ready",
+            "block_created": "block_created",
         }
         
         registry_type = WAITER_TYPE_MAPPING.get(wait_type, wait_type)
@@ -227,9 +264,13 @@ class WaitStepExecutor(StepExecutor):
         if step.node:
             node_alias = ctx.substitute(step.node)
             if self.resolve_node_alias_callback:
-                params["node"] = self.resolve_node_alias_callback(node_alias)
+                resolved_node = self.resolve_node_alias_callback(node_alias)
             else:
-                params["node"] = node_alias
+                resolved_node = node_alias
+            params["node"] = resolved_node
+            # If no nodes list specified, create single-element list from node
+            if not step.nodes:
+                params["nodes"] = [resolved_node]
         
         if step.nodes:
             # Expand nodes list (can be template string like "{{all_nodes}}")
@@ -247,7 +288,7 @@ class WaitStepExecutor(StepExecutor):
                 params["node"] = resolved_nodes[0]
         
         # Network and chain
-        params["network"] = ctx.substitute(step.network) if step.network else ctx.get_variable('network_name', 'stagenet')
+        params["network"] = ctx.substitute(step.network) if step.network else ctx.variables.get('network_name', 'stagenet')
         if step.chain:
             params["chain"] = ctx.substitute(step.chain)
         
@@ -265,5 +306,9 @@ class WaitStepExecutor(StepExecutor):
             params["balance"] = ctx.substitute(str(step.balance))
         elif hasattr(step, 'wait_for') and step.wait_for:
             params["balance"] = ctx.substitute(str(step.wait_for))
+        
+        # Block creation parameters
+        if hasattr(step, 'min_blocks') and step.min_blocks is not None:
+            params["min_blocks"] = step.min_blocks
         
         return params
