@@ -340,6 +340,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             except Exception as e:
                                 print_warning(f"Failed to restore state: {e}")
 
+                    # Variables from suite setup to pass to scenarios
+                    suite_setup_variables = {}
+                    
                     # CRITICAL: Execute suite-level setup AFTER restore for EVERY suite
                     # This ensures certificates and other ephemeral resources are created
                     # even after snapshot restore (which doesn't include certs)
@@ -373,9 +376,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             )
                             
                             async def _run_suite_setup():
-                                await executor.execute_scenario(suite_setup_scenario)
+                                return await executor.execute_scenario(suite_setup_scenario)
                             
-                            asyncio.run(_run_suite_setup())
+                            setup_ctx = asyncio.run(_run_suite_setup())
+                            # Save variables from suite setup to pass to scenarios
+                            suite_setup_variables = dict(setup_ctx.variables)
                             print_success("✓ Suite setup completed")
                             
                         except Exception as e:
@@ -509,7 +514,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             )
                             
                             async def _execute():
-                                return await executor.execute_scenario(scenario)
+                                return await executor.execute_scenario(
+                                    scenario,
+                                    initial_variables=suite_setup_variables if suite_setup_variables else None
+                                )
                             
                             print_info("  ▶️  Executing...")
                             ctx = asyncio.run(_execute())
