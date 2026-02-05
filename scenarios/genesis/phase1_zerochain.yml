@@ -410,6 +410,16 @@ test:
     nodes: "{{root_nodes}}"
     timeout: 60
   
+  # CRITICAL: Wait for DAG-PoA round.new cluster to stabilize
+  # Without this, round events don't collect enough signatures
+  - wait: global_db_sync
+    node: "{{first_root}}"
+    timeout: 60
+  
+  # Additional wait for all root nodes to establish round.new cluster connections
+  # This ensures DAG-PoA round consensus can collect signatures from all roots
+  - wait: "30s"
+  
   # Token Emission - ALL signatures on node-1 (has all root certs)
   # Build all_root_certs: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
   - set: all_root_certs
@@ -433,7 +443,25 @@ test:
         eval: true
       
       # Process emission to DAG
+      # NOTE: With is_add_directly=true, emission should be added directly to DAG
+      # Without round consensus. If round consensus is triggered, it means
+      # is_add_directly was not properly set in config.
       - cli: "mempool proc -datum {{emission_datum_hash}}"
+      
+      # Wait for DAG event to be created (with is_add_directly=true, this should be instant)
+      - wait: "10s"
+      
+      # Verify emission event was added to DAG
+      # If this shows only 1 event (token_decl), emission round consensus failed
+      - cli: "dag event list -chain zerochain"
+        save_to: _dag_events_after_emission
+      
+      - print: "DAG events after emission: {{_dag_events_after_emission}}"
+      
+      # CRITICAL: Verify we have 2 events (token_decl + emission)
+      # If only 1 event exists, emission round consensus didn't work
+      - cli: "dag event list -chain zerochain"
+        expect_output: "total_events: 2"
       
       # Intelligent wait: wait for global_db_sync to ensure emission is propagated
       - wait: global_db_sync
