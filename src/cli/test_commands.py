@@ -472,6 +472,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                             if opt not in scenario.defaults.cli:
                                                 scenario.defaults.cli[opt] = val
                             
+                            # Merge suite variables into scenario (suite as base, scenario overrides)
+                            if isinstance(suite_spec, SuiteDescriptor) and suite_spec.variables:
+                                merged_vars = dict(suite_spec.variables)
+                                merged_vars.update(scenario.variables)
+                                scenario.variables = merged_vars
+                            
                             print_info(f"  📋 Name: {scenario.name}")
                             if hasattr(scenario, 'description') and scenario.description:
                                 print_info(f"  📝 Description: {scenario.description}")
