@@ -18,25 +18,23 @@ setup:
     value: "root_nodes + master_nodes"
     eval: true
   
-  # Enable seed_mode and is_add_directly on ALL root and master nodes to accept genesis block
+  # Enable seed_mode on ALL root and master nodes to accept genesis block
+  # Note: is_add_directly for mainchain already set in PHASE 1
   - config: "cellframe-node"
     nodes: "{{_active_nodes}}"
     set:
       seed_mode: "true"
   
-  # Ensure is_add_directly is set for mainchain (required for tx_create)
-  - config: "{{network_name}}/main"
-    nodes: "{{_active_nodes}}"
+  # CRITICAL: Enable is_add_directly for zerochain on root nodes
+  # Phase1 snapshot may contain emission in mempool (not in DAG) if round consensus failed.
+  # With is_add_directly=true, emission will be added directly to DAG without round consensus.
+  - config: "{{network_name}}/zerochain"
+    nodes: "{{root_nodes}}"
     set:
       is_add_directly: "true"
   
-  # Use stop + start instead of restart to ensure config is reloaded
-  - docker_op: stop
+  - docker_op: restart
     services: "{{_active_nodes}}"
-  
-  - docker_op: start
-    services: "{{_active_nodes}}"
-    wait_for_ip: true
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
@@ -54,6 +52,75 @@ setup:
     save_wallet: fee_addr
 
 test:
+  - group: Verify network connectivity and emission on root
+    description: Ensure root nodes have emission and network is ready
+    steps:
+      # Verify network is online on root node
+      - cli: "net get status"
+        node: "{{first_root}}"
+        contains: "NET_STATE_ONLINE"
+      
+      # Verify emission is in ledger on root node (added in Phase 1)
+      - cli: "ledger list coins"
+        node: "{{first_root}}"
+        contains: "{{native_ticker}}"
+      
+      # Debug: Check zerochain events count on root
+      - cli: "dag event list -chain zerochain"
+        node: "{{first_root}}"
+        save_to: _dag_events_output
+      
+      - print: "Root node zerochain events: {{_dag_events_output}}"
+  
+  - group: Wait for master nodes to sync
+    description: Wait for ledger propagation via Global DB
+    steps:
+      # Wait for Global DB sync on first root (ensures GDB is ready)
+      - wait: global_db_sync
+        node: "{{first_root}}"
+        timeout: 60
+      
+      # Wait for network to stabilize and ledger cache to propagate
+      # Ledger cache is synced via Global DB groups
+      - wait: "60s"
+      
+      # Verify network is online on first master
+      - cli: "net get status"
+        node: "{{first_master}}"
+        contains: "NET_STATE_ONLINE"
+      
+      # Debug: Check zerochain events on master (may be empty - that's OK)
+      - cli: "dag event list -chain zerochain"
+        node: "{{first_master}}"
+        save_to: _master_dag_events
+      
+      - print: "Master node zerochain events: {{_master_dag_events}}"
+      
+      # CRITICAL: Check if emission is in ledger on master node
+      # If not, we need to trigger chain sync
+      - cli: "ledger list coins"
+        node: "{{first_master}}"
+        save_to: _master_ledger_coins
+      
+      - print: "Master ledger coins: {{_master_ledger_coins}}"
+  
+  - group: Force chain sync if needed
+    description: Ensure chains are synced from root to master
+    steps:
+      # Force sync on master node to get latest data from root
+      - cli: "net go sync"
+        node: "{{first_master}}"
+      
+      # Wait for sync to complete
+      - wait: "30s"
+      
+      # Verify emission is now in ledger on master
+      - cli: "ledger list coins"
+        node: "{{first_master}}"
+        contains: "{{native_ticker}}"
+      
+      - print: "✓ Emission synced to master node ledger"
+  
   - group: Genesis Block - Create from emission
     defaults:
       node: "{{first_root}}"
@@ -64,24 +131,42 @@ test:
       - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert {{network_name}}.root.pvt.0"
         save_hash: mainchain_genesis_tx
       
-      # Process mainchain genesis transaction
+      # Process mainchain genesis transaction on root
       - cli: "mempool proc -datum {{mainchain_genesis_tx}}"
       
-      # Wait for Global DB sync
-      - wait: global_db_sync
-        node: "{{first_root}}"
-        timeout: 60
+      # Wait for mempool sync via Global DB
+      - wait: "30s"
       
-      # Wait for ESBocs genesis block creation
-      # Using fixed 120s due to: 1) ESBocs consensus time, 2) MDBX race condition workaround
-      # TODO: Once SDK fixes MDBX bug, replace with: wait: block_created (implemented and tested)
+      # Debug: Show mempool status on master
+      - cli: "mempool list -chain main"
+        node: "{{first_master}}"
+        save_to: _master_mempool_status
+      
+      - print: "Master mempool: {{_master_mempool_status}}"
+      
+      # ARCHITECTURE NOTE:
+      # - Genesis TX is created on ROOT node 
+      # - TX is synced to MASTER nodes via Global DB mempool cluster
+      # - MASTER nodes have proc_chains=[main] configured, so they auto-process main chain
+      # - When master node processes genesis TX:
+      #   1. Verify emission exists in ledger (synced via net go sync)
+      #   2. Create genesis block via ESBocs consensus
+      #   3. Sync genesis block to all nodes via Global DB
+      # - ROOT node has seed_mode=true, so it will ACCEPT genesis block when synced
+      
+      # Wait for ESBocs consensus to create genesis block
+      # This includes: TX validation, consensus round, block signing, propagation
       - wait: "120s"
       
-      # Wait for genesis block to sync to ALL nodes (root + master)
-      # Block is created on root node but must be visible on master nodes for verification
-      - wait: global_db_sync
-        nodes: "{{_active_nodes}}"
-        timeout: 60
+      # Check if genesis block was created
+      - cli: "block list"
+        node: "{{first_master}}"
+        save_to: _master_blocks_status
+      
+      - print: "Master blocks status: {{_master_blocks_status}}"
+      
+      # Additional wait if no blocks yet
+      - wait: "30s"
       
       # Verify block was created and synced to master node
       - cli: "block list"

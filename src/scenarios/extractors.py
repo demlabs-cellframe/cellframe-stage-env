@@ -147,7 +147,7 @@ class DataExtractor:
         default: Optional[str] = None
     ) -> Tuple[Optional[str], Optional[str]]:
         """
-        Extract data from output using regex and validate against type.
+        Extract data from output using JSON parsing (priority) or regex fallback.
         
         Args:
             output: Command output to extract from
@@ -165,7 +165,39 @@ class DataExtractor:
         Raises:
             ExtractionError: If extraction/validation fails and required=True
         """
-        # Try to extract using pattern
+        # STRATEGY 1: Try JSON parsing first (modern CLI output format)
+        if extract_type == ExtractType.HASH:
+            try:
+                import json
+                json_data = json.loads(output)
+                
+                # Handle cellframe-node-cli JSON-RPC response format
+                # Structure: {"result": [[...blocks...], {...summary...}]}
+                if isinstance(json_data, dict) and "result" in json_data:
+                    result = json_data["result"]
+                    if isinstance(result, list) and len(result) > 0:
+                        # result[0] is blocks array, result[1] is summary
+                        blocks_array = result[0]
+                        if isinstance(blocks_array, list) and len(blocks_array) > 0:
+                            first_block = blocks_array[0]
+                            # Look for hash in block object
+                            # Try both v1 format ("hash") and v2 format ("block_hash")
+                            hash_value = first_block.get("hash") or first_block.get("block_hash")
+                            if hash_value:
+                                _debug_print(f"[EXTRACT_DEBUG] ✓ Extracted hash from JSON: {hash_value}")
+                                # Validate and return
+                                error_msg = DataExtractor._validate_type(hash_value, extract_type)
+                                if error_msg:
+                                    if required:
+                                        raise ExtractionError(error_msg)
+                                    return (default, error_msg if default is None else None)
+                                return (hash_value, None)
+                        else:
+                            _debug_print(f"[EXTRACT_DEBUG] JSON parsed but blocks array is empty")
+            except (json.JSONDecodeError, KeyError, TypeError, IndexError) as e:
+                _debug_print(f"[EXTRACT_DEBUG] JSON parsing failed: {e}, falling back to regex")
+        
+        # STRATEGY 2: Regex fallback (legacy text output format or non-JSON output)
         match = re.search(pattern, output, re.MULTILINE)
         
         if not match:

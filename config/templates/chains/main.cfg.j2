@@ -25,6 +25,10 @@ is_celled=false
 # Static genesis block hash (filled dynamically during network initialization)
 is_static_genesis_block={{ is_static_genesis_block | default('false', true) }}
 static_genesis_block={{ static_genesis_block | default('', true) }}
+# Direct ledger addition mode (skip mempool verification for genesis)
+# CRITICAL: Set to true ONLY during genesis block creation
+# Must be set to false after genesis completes
+is_add_directly={{ is_add_directly | default('false', true) }}
 
 [esbocs]
 consensus_debug={{ consensus_debug | default('true', true) }}
@@ -38,9 +42,6 @@ min_validators_count={{ min_validators_count | default(2, true) }}
 validators_addrs={{ mainchain_validators_addrs }}
 {% elif validators_addrs and validators_addrs != '[]' -%}
 validators_addrs={{ validators_addrs }}
-{% else -%}
-# Placeholder - will be filled dynamically by config: step in scenarios
-validators_addrs=[]
 {% endif -%}
 # PoA mode: when true, uses validators_addrs as authorized validators
 # CRITICAL: Set to false to enable PoS (Proof of Stake) via srv_stake
@@ -49,10 +50,7 @@ poa_mode={{ poa_mode | default('false', true) }}
 # Uses stagenet.master prefix for master node certificates (validators)
 # Authentication certificates prefix
 # Uses stagenet.master prefix for master node certificates (validators)
-auth_certs_prefix={{ auth_certs_prefix | default('stagenet.master', true) }}
-{% if blocks_sign_cert -%}
-blocks-sign-cert={{ blocks_sign_cert }}
-{% endif -%}
+auth_certs_prefix={{ network_name | default('stagenet') }}.master
 # Network fee collection address (required for arbitrage transactions)
 # This address receives network fees from arbitrage operations
 # Set during genesis from the first root wallet address
