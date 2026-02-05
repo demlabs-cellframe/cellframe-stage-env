@@ -375,8 +375,14 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 base_path=base_path
                             )
                             
+                            # Pass suite variables to setup so {{var}} works in setup steps
+                            suite_vars = dict(suite_spec.variables) if suite_spec.variables else None
+                            
                             async def _run_suite_setup():
-                                return await executor.execute_scenario(suite_setup_scenario)
+                                return await executor.execute_scenario(
+                                    suite_setup_scenario,
+                                    initial_variables=suite_vars
+                                )
                             
                             setup_ctx = asyncio.run(_run_suite_setup())
                             # Save variables from suite setup to pass to scenarios
