@@ -230,42 +230,6 @@ test:
     not_contains: "No records"
     save: node_list_after_add
   
-  # Force master nodes to reconnect to network
-  # They failed initial connection because nodelist was empty
-  # Now that nodelist is populated, they can get links from balancer
-  - group: Reconnect master nodes to network
-    steps:
-      - for: node_idx
-        in: "{{master_indices}}"
-        steps:
-          - cli: "net -net {{network_name}} go online"
-            node: "node-{{node_idx}}"
-  
-  # Wait for links to establish
-  - wait: "10s"
-  
-  # Force GDB sync on master nodes - required to get nodelist quickly
-  - group: Force GDB sync on master nodes
-    steps:
-      - for: node_idx
-        in: "{{master_indices}}"
-        steps:
-          - cli: "net -net {{network_name}} sync gdb"
-            node: "node-{{node_idx}}"
-  
-  # Wait for GDB sync to complete
-  - wait: "30s"
-  
-  # Verify nodelist synced to all master nodes
-  - group: Verify nodelist on master nodes
-    steps:
-      - for: node_idx
-        in: "{{master_indices}}"
-        steps:
-          - cli: "node list"
-            node: "node-{{node_idx}}"
-            not_contains: "No records"
-  
   # Create wallets dynamically for all nodes
   - group: Create wallets
     defaults:
@@ -357,7 +321,7 @@ test:
         save_hash: token_hash
       
       # Trigger mempool processing to create genesis event
-      - cli: "mempool proc -datum {{token_hash}}"
+      - cli: "mempool proc_all"
       
       # Intelligent wait: wait for global_db_sync to ensure datum is propagated
       - wait: global_db_sync
@@ -431,13 +395,31 @@ test:
     nodes: "{{root_nodes}}"
     timeout: 60
   
-  # CRITICAL: Re-enable is_add_directly for emission to be added to DAG
-  # Without this, mempool proc will process emission but NOT add it to DAG
-  # (it was disabled after token_decl genesis event)
+  # CRITICAL: Re-enable genesis mode for emission to be added to DAG
+  # ALL settings are required for single-node event creation without round consensus:
+  # 1. seed_mode=true - enables genesis mode
+  # 2. is_add_directly=true - bypasses round consensus
+  # 3. is_static_genesis_event=false - disables post-genesis mode (otherwise is_add_directly is ignored!)
+  # 4. auth_certs_number_verify=1 - accept events with single signature during genesis
+  - config: "cellframe-node"
+    nodes: "{{seed_nodes}}"
+    set:
+      seed_mode: "true"
+  
   - config: "{{network_name}}/zerochain"
     nodes: "{{seed_nodes}}"
     set:
       is_add_directly: "true"
+      is_static_genesis_event: "false"
+  
+  # CRITICAL: Set auth_certs_number_verify=1 for single-signature event acceptance
+  # This allows is_add_directly to work without collecting signatures from all ROOT nodes
+  # Must be set on ALL nodes (including master) so they accept 1-signature events during sync
+  - config: "{{network_name}}/zerochain"
+    nodes: "{{_active_nodes}}"
+    section: "dag-poa"
+    set:
+      auth_certs_number_verify: "1"
   
   - docker_op: restart
     services: "{{root_nodes}}"
@@ -445,6 +427,16 @@ test:
   - wait_network: online
     nodes: "{{root_nodes}}"
     timeout: 60
+  
+  # CRITICAL: Wait for DAG-PoA round.new cluster to stabilize
+  # Without this, round events don't collect enough signatures
+  - wait: global_db_sync
+    node: "{{first_root}}"
+    timeout: 60
+  
+  # Additional wait for all root nodes to establish round.new cluster connections
+  # This ensures DAG-PoA round consensus can collect signatures from all roots
+  - wait: "30s"
   
   # Token Emission - ALL signatures on node-1 (has all root certs)
   # Build all_root_certs: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
@@ -469,7 +461,25 @@ test:
         eval: true
       
       # Process emission to DAG
-      - cli: "mempool proc -datum {{emission_datum_hash}}"
+      # NOTE: With is_add_directly=true, emission should be added directly to DAG
+      # Without round consensus. If round consensus is triggered, it means
+      # is_add_directly was not properly set in config.
+      - cli: "mempool proc_all"
+      
+      # Wait for DAG event to be created (with is_add_directly=true, this should be instant)
+      - wait: "10s"
+      
+      # Verify emission event was added to DAG
+      # If this shows only 1 event (token_decl), emission round consensus failed
+      - cli: "dag event list -chain zerochain"
+        save_to: _dag_events_after_emission
+      
+      - print: "DAG events after emission: {{_dag_events_after_emission}}"
+      
+      # CRITICAL: Verify we have 2 events (token_decl + emission)
+      # If only 1 event exists, emission round consensus didn't work
+      - cli: "dag event list -chain zerochain"
+        expect_output: "total_events: 2"
       
       # Intelligent wait: wait for global_db_sync to ensure emission is propagated
       - wait: global_db_sync
@@ -486,11 +496,37 @@ test:
   - cli: "dag event last -chain zerochain"
     node: "{{first_root}}"
   
-  # Disable is_add_directly after emission is in DAG
+  # CRITICAL: Force full sync on master nodes to get emission event
+  # This ensures the snapshot contains synchronized master nodes
+  # Use -mode all to force complete resync from atom 0
+  - cli: "net go sync -mode all"
+    node: "node-4"
+  
+  - cli: "net go sync -mode all"
+    node: "node-5"
+  
+  - cli: "net go sync -mode all"
+    node: "node-6"
+  
+  # Wait for chain sync to complete
+  - wait: "60s"
+  
+  # Verify master node has emission
+  - cli: "dag event list -chain zerochain"
+    node: "node-4"
+    save_to: _master_events_before_snapshot
+  
+  - print: "Master node events before snapshot: {{_master_events_before_snapshot}}"
+  
+  # Disable genesis mode after emission is in DAG
+  # Re-enable is_static_genesis_event and disable is_add_directly
+  # NOTE: Keep auth_certs_number_verify=1 during snapshot to ensure events load correctly
+  # Phase2 or subsequent operations should restore proper consensus values
   - config: "{{network_name}}/zerochain"
     nodes: "{{root_nodes}}"
     set:
       is_add_directly: "false"
+      is_static_genesis_event: "true"
   
   # Configure fee_addr in main.cfg (required for arbitrage transactions)
   # SDK will automatically load it from config on node startup

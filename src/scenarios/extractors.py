@@ -315,17 +315,20 @@ class DataExtractor:
             # - Text: "Node addr: A1B2::C3D4::E5F6"
             # - JSON: "current_addr": "A1B2::C3D4::E5F6" or "node_addr": "..."
             ExtractType.NODE_ADDRESS: r'(?:"(?:current_|node_)?addr(?:ess)?":\s*"|Node addr:\s+)([A-Fa-f0-9:]+)',
-            # Match hash in various formats:
+            # Match hash in various formats (v5.7 and v6.0 compatible):
             # - "New: 0x..." (from token_decl_sign)
-            # - "hash: 0x..." (from JSON)
+            # - "hash: 0x..." or "hash": "0x..." (from JSON)
+            # - "hash_value: 0x..." or "hash_value": "0x..." (nested JSON format)
+            # - "tx_hash: 0x..." or "tx_hash": "0x..." (transaction hash)
             # - "datum_hash: 0x..." (from JSON)
             # - "emission_hash: 0x..." (from token_emit)
             # - "last_event_hash: 0x..." (from dag event last)
             # - "event_hash: 0x..." (from dag event commands)
             # - "Datum 0x..." (from token_decl result)
+            # - "Created datum hash: 0x..." (from token_emit v5.7)
             # - standalone "0x..." (64 hex chars)
             # NOTE: Uses negative lookbehind (?<!Old: ) to ignore "Old: 0x..." hashes in replacement outputs
-            ExtractType.HASH: r'(?:New:\s+|(?:last_)?(?:event_)?hash["\']?\s*:\s*["\']?|datum_hash["\']?\s*:\s*["\']?|emission_hash["\']?\s*:\s*["\']?|Datum\s+)?(?<!Old: )(0x[A-Fa-f0-9]{64})',
+            ExtractType.HASH: r'(?:New:\s+|(?:last_)?(?:event_)?hash["\']?\s*:\s*["\']?|(?:tx_|datum_|emission_)?hash(?:_value)?["\']?\s*:\s*["\']?|Created\s+datum\s+hash:\s*|Datum\s+)?(?<!Old: )(0x[A-Fa-f0-9]{64})',
             ExtractType.TOKEN_NAME: r'token:\s*([A-Z0-9_]+)',
             ExtractType.NUMBER: r'(\d+(?:\.\d+)?)',
             ExtractType.BOOL: r'(true|false|yes|no|1|0|on|off|enabled|disabled)',

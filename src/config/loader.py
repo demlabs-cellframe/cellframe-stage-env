@@ -761,7 +761,7 @@ class ConfigLoader:
     
     def get_node_version(self) -> Optional[str]:
         """
-        Extract version from the node package name.
+        Extract version from the node package name based on source type.
         
         Package name formats:
         - cellframe-node-6.0-LOCALBUILD1-dbg-amd64.deb -> "6.0"
@@ -772,16 +772,23 @@ class ConfigLoader:
             Major.minor version string (e.g., "6.0", "5.2") or None if unknown
         """
         import re
+        from urllib.parse import urlparse
         
         node_source = self.get_node_source_config()
-        local_path = node_source.get('local_path')
+        source_type = node_source.get('type', 'local')
         
-        if not local_path:
-            logger.debug("no_local_path_for_version_detection")
-            return None
-        
-        # Extract filename from path
-        package_name = Path(local_path).name
+        if source_type == 'url':
+            url = node_source.get('url')
+            if not url:
+                logger.debug("no_url_for_version_detection")
+                return None
+            package_name = Path(urlparse(url).path).name
+        else:
+            local_path = node_source.get('local_path')
+            if not local_path:
+                logger.debug("no_local_path_for_version_detection")
+                return None
+            package_name = Path(local_path).name
         
         # Pattern: cellframe-node-X.Y... where X.Y is major.minor
         # Examples:
