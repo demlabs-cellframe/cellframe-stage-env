@@ -68,6 +68,7 @@ class SetStepExecutor(StepExecutor):
                     "int": int,
                     "list": list,
                     "re": regex_module,
+                    **ctx.variables,
                 }
                 value = eval(expr, eval_globals, ctx.variables)
             except Exception as e:
