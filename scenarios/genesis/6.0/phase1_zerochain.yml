@@ -452,6 +452,9 @@ test:
         save_hash: last_event_before_emission
       
       # Process emission to DAG
+      # NOTE: With is_add_directly=true, emission should be added directly to DAG
+      # Without round consensus. If round consensus is triggered, it means
+      # is_add_directly was not properly set in config.
       - cli: "mempool proc -datum {{emission_datum_hash}}"
         save: mempool_proc_output
       

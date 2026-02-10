@@ -38,6 +38,75 @@ setup:
     save_wallet: fee_addr
 
 test:
+  - group: Verify network connectivity and emission on root
+    description: Ensure root nodes have emission and network is ready
+    steps:
+      # Verify network is online on root node
+      - cli: "net get status"
+        node: "{{first_root}}"
+        contains: "NET_STATE_ONLINE"
+      
+      # Verify emission is in ledger on root node (added in Phase 1)
+      - cli: "ledger list coins"
+        node: "{{first_root}}"
+        contains: "{{native_ticker}}"
+      
+      # Debug: Check zerochain events count on root
+      - cli: "dag event list -chain zerochain"
+        node: "{{first_root}}"
+        save_to: _dag_events_output
+      
+      - print: "Root node zerochain events: {{_dag_events_output}}"
+  
+  - group: Wait for master nodes to sync
+    description: Wait for ledger propagation via Global DB
+    steps:
+      # Wait for Global DB sync on first root (ensures GDB is ready)
+      - wait: global_db_sync
+        node: "{{first_root}}"
+        timeout: 60
+      
+      # Wait for network to stabilize and ledger cache to propagate
+      # Ledger cache is synced via Global DB groups
+      - wait: "60s"
+      
+      # Verify network is online on first master
+      - cli: "net get status"
+        node: "{{first_master}}"
+        contains: "NET_STATE_ONLINE"
+      
+      # Debug: Check zerochain events on master (may be empty - that's OK)
+      - cli: "dag event list -chain zerochain"
+        node: "{{first_master}}"
+        save_to: _master_dag_events
+      
+      - print: "Master node zerochain events: {{_master_dag_events}}"
+      
+      # CRITICAL: Check if emission is in ledger on master node
+      # If not, we need to trigger chain sync
+      - cli: "ledger list coins"
+        node: "{{first_master}}"
+        save_to: _master_ledger_coins
+      
+      - print: "Master ledger coins: {{_master_ledger_coins}}"
+  
+  - group: Force chain sync if needed
+    description: Ensure chains are synced from root to master
+    steps:
+      # Force sync on master node to get latest data from root
+      - cli: "net go sync"
+        node: "{{first_master}}"
+      
+      # Wait for sync to complete
+      - wait: "30s"
+      
+      # Verify emission is now in ledger on master
+      - cli: "ledger list coins"
+        node: "{{first_master}}"
+        contains: "{{native_ticker}}"
+      
+      - print: "✓ Emission synced to master node ledger"
+  
   - group: Genesis Block - Create from emission
     defaults:
       node: "{{first_root}}"
