@@ -1,0 +1,53 @@
+# Version compatibility layer for CLI commands
+# Include this file to get version-aware command variables
+#
+# This file detects the node version and sets command variables that work
+# across different versions:
+#   - 5.x: Uses underscore commands (tx_create, tx_history, etc.)
+#   - 6.x: Uses space commands (tx create, tx history, etc.)
+#
+# Available variables after including this file:
+#   {{tx_create_cmd}}  - "tx_create" (5.x) or "tx create" (6.x)
+#   {{tx_history_cmd}} - "tx_history" (5.x) or "tx history" (6.x)
+#   {{ledger_list_cmd}} - "ledger list coins" (5.x) or "token info" (6.x)
+
+setup:
+  # Detect node version via CLI and set version-specific command names
+  - python: |
+      import re
+      
+      # Try to get version from CLI
+      try:
+          # Execute version command to detect node version
+          exit_code, stdout, stderr = ctx.exec_cli("version")
+          
+          # Parse version from output (e.g., "Cellframe Node version 6.0.123")
+          version_match = re.search(r'(\d+)\.(\d+)', stdout or '')
+          if version_match:
+              major = int(version_match.group(1))
+              minor = int(version_match.group(2))
+          else:
+              # Default to 6.x if can't detect
+              major, minor = 6, 0
+      except Exception:
+          # Default to 6.x if detection fails
+          major, minor = 6, 0
+      
+      # Set version variables
+      ctx.set_variable('node_version_major', str(major))
+      ctx.set_variable('node_version_minor', str(minor))
+      
+      # Set version-specific command names
+      if major >= 6:
+          # 6.x uses space-separated subcommands
+          ctx.set_variable('tx_create_cmd', 'tx create')
+          ctx.set_variable('tx_history_cmd', 'tx history')
+          ctx.set_variable('tx_verify_cmd', 'tx verify')
+          ctx.set_variable('ledger_list_cmd', 'token info')
+      else:
+          # 5.x uses underscore commands
+          ctx.set_variable('tx_create_cmd', 'tx_create')
+          ctx.set_variable('tx_history_cmd', 'tx_history')
+          ctx.set_variable('tx_verify_cmd', 'tx_verify')
+          ctx.set_variable('ledger_list_cmd', 'ledger list coins')
+    description: "Detect node version and set version-specific command variables"

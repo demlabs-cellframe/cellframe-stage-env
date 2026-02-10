@@ -46,8 +46,8 @@ test:
         node: "{{first_root}}"
         contains: "NET_STATE_ONLINE"
       
-      # Verify emission is in ledger on root node (added in Phase 1)
-      - cli: "ledger list coins"
+      # Verify token exists in ledger on root node (added in Phase 1)
+      - cli: "token info -name {{native_ticker}}"
         node: "{{first_root}}"
         contains: "{{native_ticker}}"
       
@@ -82,13 +82,13 @@ test:
       
       - print: "Master node zerochain events: {{_master_dag_events}}"
       
-      # CRITICAL: Check if emission is in ledger on master node
+      # CRITICAL: Check if token is in ledger on master node
       # If not, we need to trigger chain sync
-      - cli: "ledger list coins"
+      - cli: "token info -name {{native_ticker}}"
         node: "{{first_master}}"
-        save_to: _master_ledger_coins
+        save_to: _master_token_info
       
-      - print: "Master ledger coins: {{_master_ledger_coins}}"
+      - print: "Master token info: {{_master_token_info}}"
   
   - group: Force chain sync if needed
     description: Ensure chains are synced from root to master
@@ -100,8 +100,8 @@ test:
       # Wait for sync to complete
       - wait: "30s"
       
-      # Verify emission is now in ledger on master
-      - cli: "ledger list coins"
+      # Verify token is now in ledger on master
+      - cli: "token info -name {{native_ticker}}"
         node: "{{first_master}}"
         contains: "{{native_ticker}}"
       
