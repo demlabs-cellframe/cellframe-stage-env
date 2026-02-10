@@ -186,7 +186,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     parent_dir = yml_file.parent
                     file_stem = yml_file.stem
                     
-                    # Check if this is a suite descriptor
+                    # Check if this is a suite descriptor beside a folder
                     matching_dir = parent_dir / file_stem
                     if matching_dir.exists() and matching_dir.is_dir():
                         suite_key = str(matching_dir.relative_to(test_path))
@@ -198,14 +198,41 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             }
                         continue
                     
+                    # Check if this is a suite descriptor inside a folder ({folder}.yml)
+                    if yml_file.name == f"{parent_dir.name}.yml":
+                        # Check if parent dir has scenarios (is a suite folder)
+                        has_other_yml = any(
+                            f.suffix == '.yml' and f != yml_file
+                            for f in parent_dir.iterdir() if f.is_file()
+                        )
+                        if has_other_yml:
+                            suite_key = str(parent_dir.relative_to(test_path))
+                            if suite_key not in suites:
+                                suites[suite_key] = {
+                                    'descriptor': yml_file,
+                                    'scenarios': [],
+                                    'path': parent_dir
+                                }
+                            continue
+                    
                     # Check if this scenario belongs to a suite
                     suite_found = False
                     for potential_suite_dir in [parent_dir] + list(parent_dir.parents):
                         if potential_suite_dir == test_path:
                             break
                         suite_name = potential_suite_dir.name
-                        descriptor_file = potential_suite_dir.parent / f"{suite_name}.yml"
-                        if descriptor_file.exists():
+                        
+                        # Look for descriptor: inside the folder first, then beside
+                        descriptor_file = None
+                        inside_named_yml = potential_suite_dir / f"{suite_name}.yml"
+                        beside_descriptor = potential_suite_dir.parent / f"{suite_name}.yml"
+                        
+                        if inside_named_yml.exists():
+                            descriptor_file = inside_named_yml
+                        elif beside_descriptor.exists():
+                            descriptor_file = beside_descriptor
+                        
+                        if descriptor_file:
                             suite_key = str(potential_suite_dir.relative_to(test_path))
                             if suite_key not in suites:
                                 suites[suite_key] = {
@@ -244,6 +271,18 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         suite_name = suite_path.name
                         suite_description = None
                         print_warning(f"Failed to parse suite descriptor {suite_descriptor.name}: {e}")
+                    
+                    # Apply execution_order if specified in suite descriptor
+                    if isinstance(suite_spec, SuiteDescriptor) and suite_spec.execution_order:
+                        ordered_scenarios = []
+                        for scenario_name in suite_spec.execution_order:
+                            scenario_path = suite_path / scenario_name
+                            if not scenario_path.exists():
+                                print_error(f"Scenario '{scenario_name}' specified in execution_order not found: {suite_path}")
+                                raise typer.Exit(1)
+                            ordered_scenarios.append(scenario_path)
+                        suite_scenarios = ordered_scenarios
+                        print_info(f"📋 Apply explicit execution order: {len(suite_scenarios)} scenario(s)")
                     
                     # Create suite-specific directory
                     test_type = test_path.name
@@ -301,6 +340,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             except Exception as e:
                                 print_warning(f"Failed to restore state: {e}")
 
+                    # Variables from suite setup to pass to scenarios
+                    suite_setup_variables = {}
+                    
                     # CRITICAL: Execute suite-level setup AFTER restore for EVERY suite
                     # This ensures certificates and other ephemeral resources are created
                     # even after snapshot restore (which doesn't include certs)
@@ -333,10 +375,18 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 base_path=base_path
                             )
                             
-                            async def _run_suite_setup():
-                                await executor.execute_scenario(suite_setup_scenario)
+                            # Pass suite variables to setup so {{var}} works in setup steps
+                            suite_vars = dict(suite_spec.variables) if suite_spec.variables else None
                             
-                            asyncio.run(_run_suite_setup())
+                            async def _run_suite_setup():
+                                return await executor.execute_scenario(
+                                    suite_setup_scenario,
+                                    initial_variables=suite_vars
+                                )
+                            
+                            setup_ctx = asyncio.run(_run_suite_setup())
+                            # Save variables from suite setup to pass to scenarios
+                            suite_setup_variables = dict(setup_ctx.variables)
                             print_success("✓ Suite setup completed")
                             
                         except Exception as e:
@@ -433,6 +483,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                             if opt not in scenario.defaults.cli:
                                                 scenario.defaults.cli[opt] = val
                             
+                            # Merge suite variables into scenario (suite as base, scenario overrides)
+                            if isinstance(suite_spec, SuiteDescriptor) and suite_spec.variables:
+                                merged_vars = dict(suite_spec.variables)
+                                merged_vars.update(scenario.variables)
+                                scenario.variables = merged_vars
+                            
                             print_info(f"  📋 Name: {scenario.name}")
                             if hasattr(scenario, 'description') and scenario.description:
                                 print_info(f"  📝 Description: {scenario.description}")
@@ -464,7 +520,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             )
                             
                             async def _execute():
-                                return await executor.execute_scenario(scenario)
+                                return await executor.execute_scenario(
+                                    scenario,
+                                    initial_variables=suite_setup_variables if suite_setup_variables else None
+                                )
                             
                             print_info("  ▶️  Executing...")
                             ctx = asyncio.run(_execute())
