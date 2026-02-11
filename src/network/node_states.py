@@ -29,6 +29,8 @@ class NodeState(Enum):
     LINKS_CONNECTING = "NET_STATE_LINKS_CONNECTING"
     LINKS_ESTABLISHED = "NET_STATE_LINKS_ESTABLISHED"
     ADDR_REQUEST = "NET_STATE_ADDR_REQUEST"
+    SYNC_CHAINS = "NET_STATE_SYNC_CHAINS"
+    SYNC_GDB = "NET_STATE_SYNC_GDB"
     UNKNOWN = "UNKNOWN"
 
 
@@ -170,7 +172,8 @@ class NodeStateManager:
                                note="Waiting for node to reach ONLINE state")
                 
                 if state in [NodeState.ONLINE, NodeState.LINKS_CONNECTING, 
-                            NodeState.LINKS_ESTABLISHED]:
+                            NodeState.LINKS_ESTABLISHED, NodeState.SYNC_CHAINS,
+                            NodeState.SYNC_GDB]:
                     nodes_online.add(node.node_id)
                     logger.debug("node_online", node_id=node.node_id, state=state.value)
                 elif state == NodeState.UNKNOWN:
