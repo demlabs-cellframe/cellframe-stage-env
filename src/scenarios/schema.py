@@ -258,6 +258,7 @@ class WaitStep(BaseModel):
     # Advanced options
     check_master: bool = Field(True, description="Check master nodes (for finalized)")
     expected_count: Optional[int] = Field(None, description="Expected count (for specific waiters)")
+    optional: bool = Field(False, description="If True, timeout doesn't raise exception (useful in retry loops)")
 
 
 class PythonStep(BaseModel):
