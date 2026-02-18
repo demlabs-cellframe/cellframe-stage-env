@@ -29,6 +29,9 @@ include_directories(
     ${DAP_SDK_SRC}/module/core/src/unix
     ${CELLFRAME_SDK_BUILD}/dap-sdk/module/core
     
+    # JSON module
+    ${DAP_SDK_SRC}/module/json/include
+    
     # Crypto
     ${DAP_SDK_SRC}/module/crypto/include
     ${DAP_SDK_SRC}/module/crypto/src/Kyber/crypto_kem/kyber512/optimized

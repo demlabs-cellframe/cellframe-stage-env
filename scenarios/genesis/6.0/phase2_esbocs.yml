@@ -24,7 +24,11 @@ setup:
     set:
       seed_mode: "true"
   
-  - docker_op: restart
+  # Use stop + start instead of restart to ensure config files are re-read
+  - docker_op: stop
+    services: "{{_active_nodes}}"
+  
+  - docker_op: start
     services: "{{_active_nodes}}"
   
   - wait_network: online
@@ -154,7 +158,11 @@ test:
     set:
       seed_mode: "false"
   
-  - docker_op: restart
+  # Use stop + start instead of restart to ensure config files are re-read
+  - docker_op: stop
+    services: "{{all_nodes}}"
+  
+  - docker_op: start
     services: "{{all_nodes}}"
   
   - wait_network: online

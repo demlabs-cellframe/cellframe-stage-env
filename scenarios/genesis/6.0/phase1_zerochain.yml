@@ -65,7 +65,8 @@ setup:
             src: "node-{{_src_node_id}}:{{_cert_path}}"
             dst: "node-1:{{_cert_path}}"
   
-  # Configure events_sign_cert for each ROOT node
+  # Configure events_sign_cert for each ROOT node in zerochain config
+  # DAG-PoA reads events-sign-cert from [dag-poa] section of chain config
   - for: node_idx
     in: "{{root_indices}}"
     steps:
@@ -76,12 +77,16 @@ setup:
         value: "node-{{node_idx}}"
       - set: _current_cert
         value: "{{network_name}}.root.pvt.{{_cert_idx}}"
-      - config: "{{network_name}}"
+      - config: "{{network_name}}/zerochain"
         nodes: ["{{_current_node}}"]
         set:
           events_sign_cert: "{{_current_cert}}"
   
-  - docker_op: restart
+  # Use stop + start instead of restart to ensure config files are re-read
+  - docker_op: stop
+    services: "{{all_nodes}}"
+  
+  - docker_op: start
     services: "{{all_nodes}}"
   
   - wait_network: online
@@ -163,7 +168,11 @@ test:
     value: "root_nodes + master_nodes"
     eval: true
   
-  - docker_op: restart
+  # Use stop + start instead of restart to ensure config files are re-read
+  - docker_op: stop
+    services: "{{_active_nodes}}"
+  
+  - docker_op: start
     services: "{{_active_nodes}}"
   
   - wait_network: online
@@ -327,7 +336,12 @@ test:
     set:
       is_add_directly: "true"
   
-  - docker_op: restart
+  # Use stop + start instead of restart to ensure config files are re-read
+  # (docker compose restart doesn't properly reload node configs)
+  - docker_op: stop
+    services: "{{_active_nodes}}"
+  
+  - docker_op: start
     services: "{{_active_nodes}}"
   
   - wait_network: online
@@ -353,7 +367,8 @@ test:
       
       - wait: "3s"
       
-      - cli: "mempool proc -datum {{token_hash}}"
+      # mempool proc -datum is deprecated in 6.0, use proc_all instead
+      - cli: "mempool proc_all -chain zerochain"
       
       - wait: "32s"
       
@@ -398,7 +413,11 @@ test:
             node: "{{_stake_node}}"
             save: stake_order_result
   
-  - docker_op: restart
+  # Use stop + start instead of restart for consistency
+  - docker_op: stop
+    services: "{{_active_nodes}}"
+  
+  - docker_op: start
     services: "{{_active_nodes}}"
   
   - wait_network: online
@@ -407,16 +426,8 @@ test:
   
   - wait: "40s"
   
-  - config: "{{network_name}}/zerochain"
-    nodes: "{{root_nodes}}"
-    set:
-      static_genesis_event: "{{genesis_event_hash}}"
-      is_static_genesis_event: "true"
-      is_add_directly: "false"
-  
-  - wait_network: online
-    nodes: "{{root_nodes}}"
-    timeout: 60
+  # Note: static_genesis_event config was already applied at lines 385-391 for _active_nodes
+  # and restart happened at lines 417-421, so no need for redundant config here
   
   - wait: "10s"
   
@@ -455,7 +466,8 @@ test:
       # NOTE: With is_add_directly=true, emission should be added directly to DAG
       # Without round consensus. If round consensus is triggered, it means
       # is_add_directly was not properly set in config.
-      - cli: "mempool proc -datum {{emission_datum_hash}}"
+      # mempool proc -datum is deprecated in 6.0, use proc_all instead
+      - cli: "mempool proc_all -chain zerochain"
         save: mempool_proc_output
       
       - wait: "30s"

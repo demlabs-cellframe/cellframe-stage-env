@@ -45,8 +45,10 @@ auth_certs_prefix={{ network_name | default('stagenet') }}.root
 auth_certs_number={{ auth_certs_number }}
 # Minimum required signatures (N/2 + 1)
 auth_certs_number_verify={{ auth_certs_number_verify }}
-# Events signing certificate moved to network config (stagenet.cfg)
-# SDK loads it from l_net->pub.config, not from chain config
+# Events signing certificate - required for creating DAG events
+{% if events_sign_cert %}
+events-sign-cert={{ events_sign_cert }}
+{% endif %}
 # Timeout for collecting confirmations from other ROOT nodes
 # Using same values as tests-in-docker for faster consensus
 confirmations_timeout=15
