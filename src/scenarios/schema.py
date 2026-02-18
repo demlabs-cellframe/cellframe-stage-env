@@ -308,6 +308,17 @@ class WaitForDatumStep(BaseModel):
     save_status: Optional[str] = Field(None, description="Variable name to save final status")
 
 
+class WaitForTxStep(BaseModel):
+    """Wait for common transaction to complete: mempool → chain."""
+    wait_for_tx: str = Field(..., description="Transaction hash for tracking in mempool & chains")
+    node: str = Field("node1", description="Target node for CLI checks")
+    network: str = Field("stagenet", description="Network name (default: stagenet)")
+    chain: str = Field("main", description="Chain name (default: main)")
+    description: Optional[str] = Field(None, description="Step description for logging")
+    timeout_per_stage: int = Field(120, description="Timeout per stage for the transaction to complete, in seconds")
+    check_interval: int = Field(5, description="Check interval in stages for the transaction tracking, in seconds")
+
+
 class NetworkWaitStep(BaseModel):
     """Wait for network state (online, offline, links_connecting, links_established, sync_complete)."""
     wait_network: str = Field(..., description="Network state to wait for: 'online', 'offline', 'links_connecting', 'links_established', 'sync_complete'")
@@ -395,7 +406,7 @@ class BashCheck(BaseModel):
     timeout: Optional[int] = Field(30, description="Script timeout")
 
 
-CheckSpec = Union[CLICheck, RPCCheck, PythonCheck, BashCheck]
+CheckSpec = Union[CLICheck, RPCCheck, PythonCheck, BashCheck, WaitForTxStep]
 
 
 # ============================================================================
@@ -425,7 +436,7 @@ class StepGroup(BaseModel):
 # IMPORTANT: Order matters! Specific types must come before generic ones to ensure correct parsing.
 # NetworkWaitStep must come before WaitStep.
 TestStep = Union[
-    NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep,
+    NetworkWaitStep, WaitForDatumStep, WaitForTxStep, SnapshotStep, DockerOpStep,
     CLIStep, RPCStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,

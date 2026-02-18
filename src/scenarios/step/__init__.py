@@ -12,6 +12,7 @@ from .bash import BashStepExecutor
 from .tool import ToolStepExecutor
 from .wait import WaitStepExecutor
 from .wait_for_datum import WaitForDatumStepExecutor
+from .wait_for_tx import WaitForTxStepExecutor
 from .loop import LoopStepExecutor
 from .network_wait import NetworkWaitStepExecutor
 from .docker_op import DockerOpStepExecutor
@@ -28,6 +29,7 @@ __all__ = [
     'ToolStepExecutor',
     'WaitStepExecutor',
     'WaitForDatumStepExecutor',
+    'WaitForTxStepExecutor',
     'LoopStepExecutor',
     'NetworkWaitStepExecutor',
     'DockerOpStepExecutor',
