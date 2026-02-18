@@ -7,7 +7,7 @@ ensuring validation and user-friendly error messages.
 
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -309,8 +309,9 @@ class WaitForDatumStep(BaseModel):
 
 
 class WaitForTxStep(BaseModel):
-    """Wait for common transaction to complete: mempool → chain."""
+    """Wait for common transaction to complete: mempool → chain → block (success) or mempool → hole → no block (failure)."""
     wait_for_tx: str = Field(..., description="Transaction hash for tracking in mempool & chains")
+    expected_status: Literal["success", "failure"] = Field(..., description="Expected outcome: 'success' (tx in chain) or 'failure' (tx rejected, status: hole)")
     node: str = Field("node1", description="Target node for CLI checks")
     network: str = Field("stagenet", description="Network name (default: stagenet)")
     chain: str = Field("main", description="Chain name (default: main)")

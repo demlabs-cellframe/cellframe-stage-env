@@ -609,7 +609,8 @@ class ScenarioExecutor:
                 from .step.wait_for_tx import format_tx_hash_preview
                 tx_hash = ctx.substitute(step.wait_for_tx)
                 tx_preview = format_tx_hash_preview(tx_hash)
-                step_desc = f"WaitForTxStep '{tx_preview}'"
+                expected = ctx.substitute(step.expected_status)
+                step_desc = f"WaitForTxStep '{tx_preview}' (expect={expected})"
                 if step.description:
                     step_desc += f" - {ctx.substitute(step.description)}"
             elif isinstance(step, StepGroup) and step.name:

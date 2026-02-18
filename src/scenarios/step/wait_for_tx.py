@@ -1,13 +1,20 @@
 """
 Wait-for-tx step executor.
 
-Waits for common transaction to complete through few verification stages:
+Waits for common transaction to complete through few verification stages depending on the expected scenario:
+
+expected_status='success':
   1. Validate format for the recieved hash of transaction (0x + 64 hex)
   2. Check for certain transaction appearance in mempool ('find: true' & 'source: mempool')
   3. Check for certain transaction to reach the chain ('find: true' & 'source: chain')
   4. Check for new block (containing the certain transaction) to appear in network (block find: total: 1, blocks with 0x+64hex)
 
-After successfully completing all the stages - waits 5 seconds before continuing.
+expected_status='failure':
+  1. Validate format for the recieved hash of transaction (0x + 64 hex)
+  2. Check for certain transaction appearance in mempool ('find: true' & 'status: hole')
+  3. Check for new block (containing the certain transaction) to not appear in network (block find: total: 0, no blocks with 0x+64hex)
+
+After success: waits 5 seconds before continuing.
 """
 
 import asyncio
@@ -37,13 +44,17 @@ class WaitForTxStepExecutor(StepExecutor):
     async def execute(self, step: WaitForTxStep, ctx: RuntimeContext) -> None:
         """Execute wait-for-tx step."""
         tx_hash = ctx.substitute(step.wait_for_tx)
+        expected_status = ctx.substitute(step.expected_status)
         network = ctx.substitute(step.network) if step.network else "stagenet"
         chain = ctx.substitute(step.chain) if step.chain else "main"
         node = ctx.substitute(step.node) if step.node else "node1"
         timeout = step.timeout_per_stage
         interval = step.check_interval
 
-        logger.info(f"Tracking specified transaction: '{format_tx_hash_preview(tx_hash)}' (network={network}, node={node})")
+        logger.info(
+            f"Tracking specified transaction: '{format_tx_hash_preview(tx_hash)}' "
+            f"(network={network}, node={node}, expected_status={expected_status})"
+        )
 
         # Stage 1: Validate hash format.
         if not HASH_PATTERN.match(tx_hash):
@@ -53,18 +64,34 @@ class WaitForTxStepExecutor(StepExecutor):
                 context={"error": "invalid_hash_format"}
             )
 
-        # Stage 2: Wait for tx appearance in mempool (find: true, source: mempool).
+        if expected_status == "success":
+            await self._execute_success_flow(tx_hash, node, network, chain, timeout, interval, step)
+        elif expected_status == "failure":
+            await self._execute_failure_flow(tx_hash, node, network, chain, timeout, interval, step)
+        else:
+            raise ScenarioExecutionError(
+                f"Invalid key for 'expected_status' parameter: '{expected_status}'. Must be 'success' or 'failure'.",
+                step=step,
+                context={"error": "invalid_expected_status"}
+            )
+
+        await asyncio.sleep(5)
+        ctx.add_result("wait_for_tx", True, {"tx_hash": format_tx_hash_preview(tx_hash), "expected_status": expected_status})
+
+    async def _execute_success_flow(
+        self, tx_hash: str, node: str, network: str, chain: str,
+        timeout: int, interval: int, step: WaitForTxStep
+    ) -> None:
+        """Success flow for the specified transaction: mempool → chain → block."""
         await self._wait_stage(
             name="mempool",
             tx_hash=tx_hash,
-            check_success_fn=lambda: self._check_mempool(node, network, chain, tx_hash),
+            check_success_fn=lambda: self._check_mempool_success(node, network, chain, tx_hash),
             timeout=timeout,
             interval=interval,
             error_code="timeout_mempool_verification",
             step=step,
         )
-
-        # Stage 3: Wait for tx appearance in chain (find: true, source: chain).
         await self._wait_stage(
             name="chain",
             tx_hash=tx_hash,
@@ -74,21 +101,41 @@ class WaitForTxStepExecutor(StepExecutor):
             error_code="timeout_chain_verification",
             step=step,
         )
-
-        # Stage 4: Wait for new block containing the transaction to appear (block find: total: 1, valid block hash).
         await self._wait_stage(
             name="block",
             tx_hash=tx_hash,
-            check_success_fn=lambda: self._check_block(node, network, tx_hash),
+            check_success_fn=lambda: self._check_block_success(node, network, tx_hash),
             timeout=timeout,
             interval=interval,
             error_code="timeout_block_verification",
             step=step,
         )
-
         logger.info(f"Specified transaction '{format_tx_hash_preview(tx_hash)}' successfully passed 'mempool', 'chain' and was confirmed in 'blocks'")
-        await asyncio.sleep(5)
-        ctx.add_result("wait_for_tx", True, {"tx_hash": format_tx_hash_preview(tx_hash)})
+
+    async def _execute_failure_flow(
+        self, tx_hash: str, node: str, network: str, chain: str,
+        timeout: int, interval: int, step: WaitForTxStep
+    ) -> None:
+        """Failure flow for the specified transaction: mempool (status: hole) → block (total: 0)."""
+        await self._wait_stage(
+            name="mempool (status: hole)",
+            tx_hash=tx_hash,
+            check_success_fn=lambda: self._check_mempool_failure(node, network, chain, tx_hash),
+            timeout=timeout,
+            interval=interval,
+            error_code="timeout_mempool_failure_verification",
+            step=step,
+        )
+        await self._wait_stage(
+            name="block (total: 0)",
+            tx_hash=tx_hash,
+            check_success_fn=lambda: self._check_block_failure(node, network, tx_hash),
+            timeout=timeout,
+            interval=interval,
+            error_code="timeout_block_failure_verification",
+            step=step,
+        )
+        logger.info(f"Specified transaction '{format_tx_hash_preview(tx_hash)}' was correctly rejected by ledger, as expected")
 
     async def _wait_stage(
         self,
@@ -134,24 +181,32 @@ class WaitForTxStepExecutor(StepExecutor):
         stderr = result.get("stderr", "") or ""
         return result.get("returncode", 1), stdout, stderr
 
-    async def _check_mempool(self, node: str, network: str, chain: str, tx_hash: str) -> bool:
-        """Specified transaction tracking in mempool (mempool check): 'find: true' and 'source: mempool'."""
+    async def _check_mempool_success(self, node: str, network: str, chain: str, tx_hash: str) -> bool:
+        """Success: specified transaction has 'find: true' and 'source: mempool' in mempool check output."""
         cmd = f"mempool check -net {network} -chain {chain} -datum {tx_hash}"
         exit_code, stdout, _ = await self._run_cli(node, cmd)
         if exit_code != 0:
             return False
         return "find: true" in stdout and "source: mempool" in stdout
 
+    async def _check_mempool_failure(self, node: str, network: str, chain: str, tx_hash: str) -> bool:
+        """Failure: specified transaction has 'find: true' and 'status: hole' in mempool check output."""
+        cmd = f"mempool check -net {network} -chain {chain} -datum {tx_hash}"
+        exit_code, stdout, _ = await self._run_cli(node, cmd)
+        if exit_code != 0:
+            return False
+        return "find: true" in stdout and "status: hole" in stdout
+
     async def _check_chain(self, node: str, network: str, chain: str, tx_hash: str) -> bool:
-        """Specified transaction tracking in chain (mempool check): 'find: true' and 'source: chain'."""
+        """Success: specified transaction has 'find: true' and 'source: chain' in mempool check output."""
         cmd = f"mempool check -net {network} -chain {chain} -datum {tx_hash}"
         exit_code, stdout, _ = await self._run_cli(node, cmd)
         if exit_code != 0:
             return False
         return "find: true" in stdout and "source: chain" in stdout
 
-    async def _check_block(self, node: str, network: str, tx_hash: str) -> bool:
-        """Waiting for block containing the transaction (block find) to appear in net: 'total: 1' and at least one block hash (0x+64hex)."""
+    async def _check_block_success(self, node: str, network: str, tx_hash: str) -> bool:
+        """Success: specified transaction has 'total: 1' and at least one block hash in block find output."""
         cmd = f"block find -net {network} -datum {tx_hash}"
         exit_code, stdout, _ = await self._run_cli(node, cmd)
         if exit_code != 0:
@@ -160,3 +215,14 @@ class WaitForTxStepExecutor(StepExecutor):
             return False
         block_hashes = BLOCK_HASH_IN_OUTPUT.findall(stdout)
         return len(block_hashes) >= 1
+
+    async def _check_block_failure(self, node: str, network: str, tx_hash: str) -> bool:
+        """Failure: specified transaction has 'total: 0' and no block hash in block find output."""
+        cmd = f"block find -net {network} -datum {tx_hash}"
+        exit_code, stdout, _ = await self._run_cli(node, cmd)
+        if exit_code != 0:
+            return False
+        if "total: 0" not in stdout:
+            return False
+        block_hashes = BLOCK_HASH_IN_OUTPUT.findall(stdout)
+        return len(block_hashes) == 0
