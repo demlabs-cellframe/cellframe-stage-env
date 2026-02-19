@@ -198,7 +198,7 @@ test:
           - set: _add_host
             value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
             eval: true
-          - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
+          - cli: "node add -net {{network_name}} -addr {{_add_addr}} -host {{_add_host}} -port 8079"
             contains: "successfully"
       
       - for: node_idx
@@ -213,7 +213,7 @@ test:
           - set: _add_host
             value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
             eval: true
-          - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
+          - cli: "node add -net {{network_name}} -addr {{_add_addr}} -host {{_add_host}} -port 8079"
             contains: "successfully"
       
       - for: node_idx
@@ -228,7 +228,7 @@ test:
           - set: _add_host
             value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
             eval: true
-          - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
+          - cli: "node add -net {{network_name}} -addr {{_add_addr}} -host {{_add_host}} -port 8079"
             contains: "successfully"
   
   - wait: "5s"
@@ -290,7 +290,7 @@ test:
             value: "node-{{node_idx}}"
           - set: _wallet_name
             value: "{{network_name}}_root_{{_wallet_idx}}"
-          - cli: "wallet new -w {{_wallet_name}}"
+          - cli: "wallet new -net {{network_name}} -w {{_wallet_name}}"
             node: "{{_wallet_node}}"
       
       - for: node_idx
@@ -303,7 +303,7 @@ test:
             value: "node-{{node_idx}}"
           - set: _wallet_name
             value: "{{network_name}}_master_{{_wallet_idx}}"
-          - cli: "wallet new -w {{_wallet_name}}"
+          - cli: "wallet new -net {{network_name}} -w {{_wallet_name}}"
             node: "{{_wallet_node}}"
       
       - for: node_idx
@@ -316,11 +316,11 @@ test:
             value: "node-{{node_idx}}"
           - set: _wallet_name
             value: "{{network_name}}_full_{{_wallet_idx}}"
-          - cli: "wallet new -w {{_wallet_name}}"
+          - cli: "wallet new -net {{network_name}} -w {{_wallet_name}}"
             node: "{{_wallet_node}}"
   
   # Get fee_addr from first root wallet
-  - cli: "wallet info -w {{network_name}}_root_0"
+  - cli: "wallet info -net {{network_name}} -w {{network_name}}_root_0"
     node: "{{first_root}}"
     save_wallet: fee_addr
   

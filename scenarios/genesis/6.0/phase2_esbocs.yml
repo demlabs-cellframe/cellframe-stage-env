@@ -37,7 +37,7 @@ setup:
   
   # Get fee_addr from first root wallet
   # This wallet was created in phase1 and exists in the snapshot
-  - cli: "wallet info -w {{network_name}}_root_0"
+  - cli: "wallet info -net {{network_name}} -w {{network_name}}_root_0"
     node: "{{first_root}}"
     save_wallet: fee_addr
 

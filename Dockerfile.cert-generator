@@ -23,12 +23,15 @@ WORKDIR /project
 
 # Copy cellframe-sdk source
 COPY cellframe-sdk /project/cellframe-sdk
+# cellframe-sdk's dap-sdk has no uthash in tree; use repo root dap-sdk uthash so build finds uthash.h
+COPY dap-sdk/3rdparty/uthash /project/cellframe-sdk/dap-sdk/3rdparty/uthash
 
 # Clean any host CMake artifacts
 RUN find /project/cellframe-sdk -name "CMakeCache.txt" -delete && \
     find /project/cellframe-sdk -name "CMakeFiles" -type d -exec rm -rf {} + 2>/dev/null || true
 
-# Build cellframe_sdk shared library
+# Build cellframe_sdk shared library (bump REBUILD_SDK to force rebuild when crypto/keccak changes)
+ARG REBUILD_SDK=2
 WORKDIR /project/cellframe-sdk/build
 RUN cmake -DCMAKE_BUILD_TYPE=Release .. && \
     make -j$(nproc) cellframe_sdk
