@@ -362,24 +362,24 @@ test:
       cli:
         chain: "zerochain"
     steps:
-      - cli: "token_decl -token {{native_ticker}} -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
+      - cli: "token_decl -net {{network_name}} -token {{native_ticker}} -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
         save_hash: token_hash
       
       - wait: "3s"
       
       # mempool proc -datum is deprecated in 6.0, use proc_all instead
-      - cli: "mempool proc_all -chain zerochain"
+      - cli: "mempool proc_all -net {{network_name}} -chain zerochain"
       
       - wait: "32s"
       
-      - cli: "token list"
+      - cli: "token list -net {{network_name}}"
         expect_output: "tokens: 1"
       
-      - cli: "global_db flush"
+      - cli: "global_db flush -net {{network_name}}"
       
       - wait: "5s"
       
-      - cli: "dag event last -chain zerochain"
+      - cli: "dag event last -net {{network_name}} -chain zerochain"
         save_hash: genesis_event_hash
   
   # Set static genesis event on all active nodes
@@ -445,13 +445,13 @@ test:
         token: "{{native_ticker}}"
     steps:
       # Create emission with ALL signatures at once (all certs are on node-1)
-      - cli: "token_emit -no_base_tx -emission_value 10.0e+54 -addr {{fee_addr}} -certs {{all_root_certs}}"
+      - cli: "token_emit -net {{network_name}} -token {{native_ticker}} -no_base_tx -emission_value 10.0e+54 -addr {{fee_addr}} -certs {{all_root_certs}}"
         save_hash: emission_datum_hash
       
       - wait: "10s"
       
       # Verify emission is in mempool
-      - cli: "mempool list"
+      - cli: "mempool list -net {{network_name}}"
         save: mempool_after_emission
       
       # Extract and verify signature count
@@ -459,7 +459,7 @@ test:
         value: "int(regex_extract(mempool_after_emission, r'sig_count:\\s*(\\d+)', 1) or 0)"
         eval: true
       
-      - cli: "dag event last"
+      - cli: "dag event last -net {{network_name}}"
         save_hash: last_event_before_emission
       
       # Process emission to DAG
@@ -467,15 +467,15 @@ test:
       # Without round consensus. If round consensus is triggered, it means
       # is_add_directly was not properly set in config.
       # mempool proc -datum is deprecated in 6.0, use proc_all instead
-      - cli: "mempool proc_all -chain zerochain"
+      - cli: "mempool proc_all -net {{network_name}} -chain zerochain"
         save: mempool_proc_output
       
       - wait: "30s"
       
-      - cli: "dag event last"
+      - cli: "dag event last -net {{network_name}}"
         save_hash: emission_event_hash
       
-      - cli: "dag event dump -event {{emission_event_hash}} -from events"
+      - cli: "dag event dump -net {{network_name}} -event {{emission_event_hash}} -from events"
         save: emission_event_dump
       
       # Set emission_hash to the actual datum hash from token_emit command
@@ -492,10 +492,10 @@ test:
           - bash: "echo 'ERROR: emission_datum_hash not set from token_emit command' && exit 1"
             node: "{{first_root}}"
   
-  - cli: "dag event list -chain zerochain"
+  - cli: "dag event list -net {{network_name}} -chain zerochain"
     node: "{{first_root}}"
   
-  - cli: "dag event last -chain zerochain"
+  - cli: "dag event last -net {{network_name}} -chain zerochain"
     node: "{{first_root}}"
 
 # NOTE: Snapshot creation is handled by manager.py after this phase completes.

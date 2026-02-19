@@ -46,17 +46,17 @@ test:
     description: Ensure root nodes have emission and network is ready
     steps:
       # Verify network is online on root node
-      - cli: "net get status"
+      - cli: "net -net {{network_name}} get status"
         node: "{{first_root}}"
         contains: "NET_STATE_ONLINE"
       
       # Verify token exists in ledger on root node (added in Phase 1)
-      - cli: "token info -name {{native_ticker}}"
+      - cli: "token info -net {{network_name}} -name {{native_ticker}}"
         node: "{{first_root}}"
         contains: "{{native_ticker}}"
       
       # Debug: Check zerochain events count on root
-      - cli: "dag event list -chain zerochain"
+      - cli: "dag event list -net {{network_name}} -chain zerochain"
         node: "{{first_root}}"
         save_to: _dag_events_output
       
@@ -75,12 +75,12 @@ test:
       - wait: "60s"
       
       # Verify network is online on first master
-      - cli: "net get status"
+      - cli: "net -net {{network_name}} get status"
         node: "{{first_master}}"
         contains: "NET_STATE_ONLINE"
       
       # Debug: Check zerochain events on master (may be empty - that's OK)
-      - cli: "dag event list -chain zerochain"
+      - cli: "dag event list -net {{network_name}} -chain zerochain"
         node: "{{first_master}}"
         save_to: _master_dag_events
       
@@ -88,7 +88,7 @@ test:
       
       # CRITICAL: Check if token is in ledger on master node
       # If not, we need to trigger chain sync
-      - cli: "token info -name {{native_ticker}}"
+      - cli: "token info -net {{network_name}} -name {{native_ticker}}"
         node: "{{first_master}}"
         save_to: _master_token_info
       
@@ -98,14 +98,14 @@ test:
     description: Ensure chains are synced from root to master
     steps:
       # Force sync on master node to get latest data from root
-      - cli: "net go sync"
+      - cli: "net -net {{network_name}} go sync"
         node: "{{first_master}}"
       
       # Wait for sync to complete
       - wait: "30s"
       
       # Verify token is now in ledger on master
-      - cli: "token info -name {{native_ticker}}"
+      - cli: "token info -net {{network_name}} -name {{native_ticker}}"
         node: "{{first_master}}"
         contains: "{{native_ticker}}"
       
@@ -134,11 +134,11 @@ test:
       
       - wait: "180s"
       
-      - cli: "block list"
+      - cli: "block list -net {{network_name}} -chain main"
         node: "{{first_master}}"
         expect_output: "have blocks: [1-9]"
   
-  - cli: "block list -chain main"
+  - cli: "block list -net {{network_name}} -chain main"
     node: "{{first_master}}"
     save_hash: genesis_block_hash
   
@@ -176,15 +176,15 @@ test:
     node: "{{first_root}}"
 
 check:
-  - cli: "net get status"
+  - cli: "net -net {{network_name}} get status"
     node: "{{first_master}}"
     expect_output: "NET_STATE_ONLINE"
   
-  - cli: "block list -chain main"
+  - cli: "block list -net {{network_name}} -chain main"
     node: "{{first_root}}"
     expect_output: "have blocks:"
   
-  - cli: "token list"
+  - cli: "token list -net {{network_name}}"
     node: "{{first_root}}"
     expect_output: "tokens:"
 
