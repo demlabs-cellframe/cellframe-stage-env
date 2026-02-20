@@ -362,7 +362,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             # Load and parse suite setup with includes
                             suite_setup_scenario = suite_setup_parser.load_suite_setup(
                                 suite_includes=suite_spec.includes or [],
-                                suite_setup=suite_spec.setup.dict() if suite_spec.setup else None,
+                                suite_setup=suite_spec.setup.model_dump() if suite_spec.setup else None,
                                 suite_name=suite_name,
                                 base_dir=suite_path
                             )

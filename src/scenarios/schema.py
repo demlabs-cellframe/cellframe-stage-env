@@ -428,7 +428,7 @@ class StepDefaults(BaseModel):
 
 class StepGroup(BaseModel):
     """Group of steps with shared defaults."""
-    name: Optional[str] = Field(None, description="Group name for logging")
+    name: Optional[str] = Field(None, alias="group", description="Group name for logging")
     defaults: Optional[StepDefaults] = Field(None, description="Default parameters for this group")
     steps: List[Union["TestStep", "StepGroup"]] = Field(..., description="Steps in this group")
 
@@ -506,7 +506,15 @@ class SuiteDescriptor(BaseModel):
     variables: Dict[str, Any] = Field(default_factory=dict, description="Variables inherited by scenarios")
     
     # Optional setup steps for suite (executed once before all scenarios)
-    setup: Optional[SectionConfig] = Field(None, description="Suite-level setup steps")
+    # Accepts flat list (like test) or SectionConfig for backward compatibility.
+    setup: Optional[Union[List[TestStep], SectionConfig]] = Field(None, description="Suite-level setup steps")
+    
+    @model_validator(mode='after')
+    def normalize_setup(self) -> 'SuiteDescriptor':
+        """Normalize flat list to SectionConfig (same as TestScenario)."""
+        if self.setup is not None and isinstance(self.setup, list):
+            self.setup = SectionConfig(steps=self.setup)
+        return self
     
     @property
     def name(self) -> str:
