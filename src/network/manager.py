@@ -380,11 +380,18 @@ class NetworkManager:
             
             # Verify fee_addr is configured (should be set during genesis)
             first_root = root_nodes[0]
-            fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(first_root.node_id)
-            logger.info("fee_addr_verified_in_config",
-                      fee_addr=fee_addr[:16],
-                      node_id=first_root.node_id,
-                      note="fee_addr is configured (set during genesis)")
+            try:
+                fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(first_root.node_id)
+                logger.info("fee_addr_verified_in_config",
+                          fee_addr=fee_addr[:16],
+                          node_id=first_root.node_id,
+                          note="fee_addr is configured (set during genesis)")
+            except RuntimeError as e:
+                logger.warning("fee_addr_missing_in_snapshot",
+                             error=str(e),
+                             note="fee_addr not found in restored snapshot config. "
+                                  "Snapshot may need to be recreated with current genesis flow. "
+                                  "Continuing without fee_addr - some operations may fail.")
             
             # Network is ready - no phases needed
             logger.info("network_started",

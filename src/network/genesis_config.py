@@ -918,7 +918,7 @@ class GenesisConfigManager(BaseGenesisManager):
         if 'fee_addr' not in config['esbocs']:
             raise RuntimeError(f"fee_addr not found in [esbocs] section at {config_file}")
         
-        fee_addr = config['esbocs']['fee_addr'].strip()
+        fee_addr = config['esbocs'].get('fee_addr', '').strip()
         if not fee_addr:
             raise RuntimeError(f"fee_addr is empty in {config_file}")
         
