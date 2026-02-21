@@ -408,6 +408,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     # Create fresh parser for each suite to avoid stale cache
                     parser = ScenarioParser(scenarios_root=suite_path, common_root=common_root)
                     
+                    # Suite-scoped "global" variables: passed to each scenario and accumulated after each run.
+                    # Isolated per suite — reset when moving to the next suite.
+                    suite_accumulated_vars = dict(suite_setup_variables)
+                    
                     for scenario_file in suite_scenarios:
                         total_scenarios += 1
                         print_info(f"\n{'─' * 60}")
@@ -522,7 +526,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             async def _execute():
                                 return await executor.execute_scenario(
                                     scenario,
-                                    initial_variables=suite_setup_variables if suite_setup_variables else None
+                                    initial_variables=suite_accumulated_vars if suite_accumulated_vars else None
                                 )
                             
                             print_info("  ▶️  Executing...")
@@ -546,6 +550,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             print_info(f"     Steps: {summary['passed']}/{summary['total_steps']} passed")
                             if summary.get('variables'):
                                 print_info(f"     Variables: {len(summary['variables'])} saved")
+                            
+                            # Merge scenario vars into suite-scoped globals for next scenarios
+                            suite_accumulated_vars.update(ctx.variables)
                             
                             passed_scenarios += 1
                             

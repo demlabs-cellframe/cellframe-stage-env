@@ -280,6 +280,7 @@ class ToolStep(BaseModel):
     tool: str = Field(..., description="Tool command (e.g., 'cert create test_cert sig_dil')")
     node: str = Field("node1", description="Node to execute on")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+    save_hash: Optional[str] = Field(None, description="Extract and save hash (0x[hex]) to variable")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     timeout: Optional[int] = Field(30, description="Command timeout in seconds")
     
