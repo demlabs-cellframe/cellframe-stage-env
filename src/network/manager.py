@@ -331,12 +331,16 @@ class NetworkManager:
         # Generate dynamic docker-compose.yml for all nodes
         logger.info("generating_docker_compose")
         cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
-        # Get node_source configuration from config loader
         node_source_config = self.config_loader.get_node_source_config()
+        settings = self.topology.network_settings
         self.compose.generate_compose_for_nodes(
             node_configs, 
             cache_dir_relative=cache_dir_relative,
-            node_source_config=node_source_config
+            node_source_config=node_source_config,
+            network_settings={
+                'subnet': settings.subnet,
+                'base_ip': settings.base_ip,
+            }
         )
         
         # Build images if requested

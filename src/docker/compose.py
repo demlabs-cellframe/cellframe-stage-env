@@ -233,7 +233,8 @@ class DockerComposeManager:
         build_type: str = "debug",
         cellframe_version: str = "latest",
         cache_dir_relative: str = "cache",
-        node_source_config: Optional[Dict[str, Any]] = None
+        node_source_config: Optional[Dict[str, Any]] = None,
+        network_settings: Optional[Dict[str, str]] = None
     ) -> None:
         """
         Generate docker-compose.yml dynamically for given nodes.
@@ -244,6 +245,7 @@ class DockerComposeManager:
             cellframe_version: Cellframe version tag
             cache_dir_relative: Relative path to cache directory
             node_source_config: Node source configuration (type, url, local_path, etc.)
+            network_settings: Dict with 'subnet' and 'base_ip' from config
         """
         logger.info("generating_compose_file",
                    node_count=len(nodes),
@@ -265,6 +267,22 @@ class DockerComposeManager:
         node_template = compose_data.get('x-cf-node-template')
         if not node_template:
             raise ValueError("No x-cf-node-template found in docker-compose.yml")
+        
+        # Override network config from stage-env.cfg (template has defaults)
+        if network_settings:
+            subnet = network_settings.get('subnet')
+            if subnet:
+                import ipaddress
+                net = ipaddress.ip_network(subnet, strict=False)
+                gateway = str(net.network_address + 1)
+                network_settings['gateway'] = gateway
+                compose_data.setdefault('networks', {}) \
+                    .setdefault(self.network_name, {}) \
+                    .setdefault('ipam', {})['config'] = [
+                        {'subnet': subnet, 'gateway': gateway}
+                    ]
+                logger.info("network_config_injected",
+                           subnet=subnet, gateway=gateway)
         
         # Clear existing node services (keep monitoring/test services)
         services_to_keep = {}
@@ -429,7 +447,7 @@ class DockerComposeManager:
                            volumes=node.docker_volumes)
             
             # Set environment variables
-            node_service['environment'] = {
+            env = {
                 'NODE_ID': str(node.node_id),
                 'NODE_ROLE': node.role,
                 'NODE_TYPE': node.node_type,
@@ -438,6 +456,10 @@ class DockerComposeManager:
                 'DAP_DEBUG': '1',
                 'CELLFRAME_DEBUG': '1'
             }
+            if network_settings:
+                env['DOCKER_SUBNET'] = network_settings.get('subnet', '172.20.0.0/16')
+                env['DOCKER_GATEWAY'] = network_settings.get('gateway', '172.20.0.1')
+            node_service['environment'] = env
             
             # Add custom environment variables if specified
             if hasattr(node, 'custom_env_vars') and node.custom_env_vars:
