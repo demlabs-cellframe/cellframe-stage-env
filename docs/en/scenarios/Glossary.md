@@ -13,7 +13,7 @@ Comprehensive description of all YAML scenario language features. Use as referen
 5. [Defaults System](#defaults-system)
 6. [Data Extraction](#data-extraction)
 7. [Suite System](#suite-system)
-8. [Advanced Features](#advanced-features)
+8. [Suite System](#suite-system)
 
 ---
 

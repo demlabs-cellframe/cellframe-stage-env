@@ -1,0 +1,192 @@
+name: PHASE 2 - ESBocs Genesis
+description: Create mainchain genesis block from emission (dynamic topology)
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: "{{network_name}}"
+
+setup:
+  # NOTE: When running as part of genesis flow (via manager.py), 
+  # containers are already running from phase1.
+  # snapshot: restore is only needed when running phase2 standalone.
+  
+  # Build active nodes list (root + master)
+  - set: _active_nodes
+    value: "root_nodes + master_nodes"
+    eval: true
+  
+  # Enable seed_mode on ALL root and master nodes to accept genesis block
+  - config: "cellframe-node"
+    nodes: "{{_active_nodes}}"
+    set:
+      seed_mode: "true"
+  
+  # Use stop + start instead of restart to ensure config files are re-read
+  - docker_op: stop
+    services: "{{_active_nodes}}"
+  
+  - docker_op: start
+    services: "{{_active_nodes}}"
+  
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 60
+  
+  # Get fee_addr from first root wallet
+  # This wallet was created in phase1 and exists in the snapshot
+  - cli: "wallet info -net {{network_name}} -w {{network_name}}_root_0"
+    node: "{{first_root}}"
+    save_wallet: fee_addr
+
+test:
+  - group: Verify network connectivity and emission on root
+    description: Ensure root nodes have emission and network is ready
+    steps:
+      # Verify network is online on root node
+      - cli: "net -net {{network_name}} get status"
+        node: "{{first_root}}"
+        contains: "NET_STATE_ONLINE"
+      
+      # Verify token exists in ledger on root node (added in Phase 1)
+      - cli: "token info -net {{network_name}} -name {{native_ticker}}"
+        node: "{{first_root}}"
+        contains: "{{native_ticker}}"
+      
+      # Debug: Check zerochain events count on root
+      - cli: "dag event list -net {{network_name}} -chain zerochain"
+        node: "{{first_root}}"
+        save_to: _dag_events_output
+      
+      - print: "Root node zerochain events: {{_dag_events_output}}"
+  
+  - group: Wait for master nodes to sync
+    description: Wait for ledger propagation via Global DB
+    steps:
+      # Wait for Global DB sync on first root (ensures GDB is ready)
+      - wait: global_db_sync
+        node: "{{first_root}}"
+        timeout: 60
+      
+      # Wait for network to stabilize and ledger cache to propagate
+      # Ledger cache is synced via Global DB groups
+      - wait: "60s"
+      
+      # Verify network is online on first master
+      - cli: "net -net {{network_name}} get status"
+        node: "{{first_master}}"
+        contains: "NET_STATE_ONLINE"
+      
+      # Debug: Check zerochain events on master (may be empty - that's OK)
+      - cli: "dag event list -net {{network_name}} -chain zerochain"
+        node: "{{first_master}}"
+        save_to: _master_dag_events
+      
+      - print: "Master node zerochain events: {{_master_dag_events}}"
+      
+      # CRITICAL: Check if token is in ledger on master node
+      # If not, we need to trigger chain sync
+      - cli: "token info -net {{network_name}} -name {{native_ticker}}"
+        node: "{{first_master}}"
+        save_to: _master_token_info
+      
+      - print: "Master token info: {{_master_token_info}}"
+  
+  - group: Force chain sync if needed
+    description: Ensure chains are synced from root to master
+    steps:
+      # Force sync on master node to get latest data from root
+      - cli: "net -net {{network_name}} go sync"
+        node: "{{first_master}}"
+      
+      # Wait for sync to complete
+      - wait: "30s"
+      
+      # Verify token is now in ledger on master
+      - cli: "token info -net {{network_name}} -name {{native_ticker}}"
+        node: "{{first_master}}"
+        contains: "{{native_ticker}}"
+      
+      - print: "✓ Emission synced to master node ledger"
+  
+  - group: Genesis Block - Create from emission
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "main"
+        token: "{{native_ticker}}"
+    steps:
+      # Wait for network to come online naturally first
+      - wait: "30s"
+        message: "Waiting for network to initialize"
+      
+      # Ensure network is online before transaction
+      - cli: "net -net {{network_name}} go online"
+      
+      - wait: "30s"
+        message: "Waiting for network to be online"
+      
+      # v6.0+ requires -from_wallet and -token parameters for tx create
+      - cli: "tx create -net {{network_name}} -chain_emission zerochain -from_emission {{emission_hash}} -from_wallet {{network_name}}_root_0 -token {{native_ticker}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert {{network_name}}.root.pvt.0"
+        save_hash: mainchain_genesis_tx
+      
+      - wait: "180s"
+      
+      - cli: "block list -net {{network_name}} -chain main"
+        node: "{{first_master}}"
+        expect_output: "have blocks: [1-9]"
+  
+  - cli: "block list -net {{network_name}} -chain main"
+    node: "{{first_master}}"
+    save_hash: genesis_block_hash
+  
+  - config: "{{network_name}}/main"
+    nodes: "{{_active_nodes}}"
+    set:
+      static_genesis_block: "{{genesis_block_hash}}"
+      is_static_genesis_block: "true"
+  
+  - config: "{{network_name}}/zerochain"
+    nodes: "{{root_nodes}}"
+    set:
+      is_add_directly: "false"
+  
+  - config: "cellframe-node"
+    nodes: "{{seed_nodes}}"
+    set:
+      seed_mode: "false"
+  
+  # Use stop + start instead of restart to ensure config files are re-read
+  - docker_op: stop
+    services: "{{all_nodes}}"
+  
+  - docker_op: start
+    services: "{{all_nodes}}"
+  
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 60
+  
+  - wait: "40s"
+  
+  # Configure fee_addr on network level (required for arbitrage transactions)
+  - cli: "net -net {{network_name}} fee_addr {{fee_addr}}"
+    node: "{{first_root}}"
+
+check:
+  - cli: "net -net {{network_name}} get status"
+    node: "{{first_master}}"
+    expect_output: "NET_STATE_ONLINE"
+  
+  - cli: "block list -net {{network_name}} -chain main"
+    node: "{{first_root}}"
+    expect_output: "have blocks:"
+  
+  - cli: "token list -net {{network_name}}"
+    node: "{{first_root}}"
+    expect_output: "tokens:"
+
+# NOTE: Snapshot creation is handled by manager.py after genesis flow completes.
+# teardown with snapshot: create would be used for standalone phase execution.

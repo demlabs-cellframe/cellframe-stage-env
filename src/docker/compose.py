@@ -644,10 +644,30 @@ class DockerComposeManager:
                "-p", self.project_name, "down"]
         
         if volumes:
-            cmd.append("-v")
+            cmd.append("--volumes")
         
         if remove_images:
-            cmd.extend(["--rmi", "all"])
+            cmd.append("--rmi all")
+        
+        run_command(cmd, cwd=self.project_dir)
+        logger.info("services_stopped")
+    
+    def stop(self, services: Optional[List[str]] = None) -> None:
+        """
+        Stop running containers without removing them.
+        
+        Args:
+            services: List of service names (None = all)
+        """
+        logger.info("stopping_services", services=services or "all")
+        
+        from src.utils.cli import run_command
+        
+        cmd = ["docker", "compose", "-f", str(self.compose_file),
+               "-p", self.project_name, "stop"]
+        
+        if services:
+            cmd.extend(services)
         
         run_command(cmd, cwd=self.project_dir)
         logger.info("services_stopped")
@@ -1075,29 +1095,63 @@ class DockerComposeManager:
             
             if cli_result.exit_code == 0:
                 output = cli_result.output.decode("utf-8")
-                # Parse CLI output for current state
-                for line in output.split('\n'):
-                    line = line.strip()
-                    if 'current:' in line and 'NET_STATE_' in line:
-                        # Extract state like "current: NET_STATE_ONLINE"
-                        parts = line.split(':', 1)
-                        if len(parts) == 2:
-                            state = parts[1].strip()
-                            # Get link info if available
-                            if "NET_STATE_LINKS_CONNECTING" in state or "NET_STATE_ONLINE" in state:
-                                for info_line in output.split('\n'):
-                                    if 'active:' in info_line:
-                                        try:
-                                            active = int(info_line.split(':')[1].strip())
-                                            for req_line in output.split('\n'):
-                                                if 'required:' in req_line:
-                                                    required = int(req_line.split(':')[1].strip())
-                                                    if "NET_STATE_LINKS_CONNECTING" in state:
-                                                        return f"NET_STATE_LINKS_CONNECTING ({active}/{required} links)"
-                                                    break
-                                        except:
-                                            pass
-                            return state
+                state = None
+                active_links = None
+                required_links = None
+                
+                # Try JSON parsing first (new CLI format)
+                try:
+                    output_stripped = output.strip()
+                    if output_stripped.startswith('[') or output_stripped.startswith('{'):
+                        import json
+                        data = json.loads(output_stripped)
+                        if isinstance(data, list) and len(data) > 0:
+                            data = data[0]
+                        if isinstance(data, dict):
+                            # Extract state from status.states.current
+                            if 'status' in data:
+                                status = data['status']
+                                if 'states' in status and 'current' in status['states']:
+                                    state = status['states']['current']
+                                if 'links' in status:
+                                    active_links = status['links'].get('active')
+                                    required_links = status['links'].get('required')
+                            elif 'states' in data and 'current' in data['states']:
+                                state = data['states']['current']
+                                if 'links' in data:
+                                    active_links = data['links'].get('active')
+                                    required_links = data['links'].get('required')
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    pass  # Fall back to text parsing
+                
+                # Fallback: Parse text format for state
+                if state is None:
+                    for line in output.split('\n'):
+                        line = line.strip()
+                        if 'current:' in line and 'NET_STATE_' in line:
+                            parts = line.split(':', 1)
+                            if len(parts) == 2:
+                                state = parts[1].strip()
+                                break
+                
+                # Fallback: Parse text format for links
+                if active_links is None or required_links is None:
+                    for info_line in output.split('\n'):
+                        if 'active:' in info_line:
+                            try:
+                                active_links = int(info_line.split(':')[1].strip())
+                            except:
+                                pass
+                        if 'required:' in info_line:
+                            try:
+                                required_links = int(info_line.split(':')[1].strip())
+                            except:
+                                pass
+                
+                if state:
+                    if "NET_STATE_LINKS_CONNECTING" in state and active_links is not None and required_links is not None:
+                        return f"NET_STATE_LINKS_CONNECTING ({active_links}/{required_links} links)"
+                    return state
                 return "Loading"
             
             # Fallback to log parsing
@@ -1246,7 +1300,8 @@ class DockerComposeManager:
                     continue
                 
                 output = dump_result.output[0].decode('utf-8') if dump_result.output[0] else ""
-                match = re.search(r'Node addr:\s*([0-9A-F:]+)', output)
+                # Match node address in both text and JSON formats
+                match = re.search(r'(?:"(?:current_|node_)?addr(?:ess)?":\s*"|Node addr:\s*)([0-9A-Fa-f:]+)', output)
                 if not match:
                     continue
                 

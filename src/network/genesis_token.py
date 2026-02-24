@@ -68,8 +68,10 @@ class TokenGenesisManager(BaseGenesisManager):
             if exit_code_addr != 0:
                 raise RuntimeError(f"Wallet info failed: exit code {exit_code_addr}")
             
-            # Parse address
-            addr_match = re.search(r'addr:\s+(\S+)', stdout_addr, re.IGNORECASE)
+            # Parse address from both text and JSON formats:
+            # - Text: "addr: XYZABC123..."
+            # - JSON: "addr": "XYZABC123..." or "address": "XYZABC123..."
+            addr_match = re.search(r'(?:"addr(?:ess)?":\s*"|addr:\s+)([A-Za-z0-9]{75,105})', stdout_addr, re.IGNORECASE)
             if addr_match:
                 fee_addr = addr_match.group(1)
                 logger.info("fee_wallet_generated", address=fee_addr[:20] + "...")

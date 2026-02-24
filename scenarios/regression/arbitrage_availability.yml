@@ -60,7 +60,7 @@ test:
         token: "ARB_TEST"
         fee: "100"
     steps:
-      - cli: "tx_create -from_wallet arb_owner -to_addr {{owner_addr}} -value 100 -arbitrage -certs {{network_name}}.root.pvt.0"
+      - cli: "tx create -from_wallet arb_owner -to_addr {{owner_addr}} -value 100 -arbitrage -certs {{network_name}}.root.pvt.0"
         save_hash: arb_tx_hash
         expect: success
 

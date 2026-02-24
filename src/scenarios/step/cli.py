@@ -57,12 +57,26 @@ class CLIStepExecutor(StepExecutor):
         # Resolve node
         node = ctx.substitute(step.node) if step.node else "node1"
         
-        # Execute command via container manager
-        result = await self.container_manager.exec_cli_command(
-            command=cmd,
-            node=node,
-            timeout=step.timeout
-        )
+        # Execute command with retry support for save_node operations
+        # Use executor's _run_cli_command which has retry logic
+        has_executor_ref = hasattr(self, '_executor_ref')
+        has_run_cli = hasattr(self._executor_ref, '_run_cli_command') if has_executor_ref else False
+        
+        if has_executor_ref and has_run_cli:
+            # If we have executor reference, use its _run_cli_command with retry
+            result = await self._executor_ref._run_cli_command(
+                command=cmd,
+                node=node,
+                timeout=step.timeout,
+                retry_on_init_failure=(step.save_node is not None)  # Enable retry for save_node
+            )
+        else:
+            # Fallback to direct container manager call (no retry)
+            result = await self.container_manager.exec_cli_command(
+                command=cmd,
+                node=node,
+                timeout=step.timeout
+            )
         
         output = result["stdout"]
         exit_code = result["returncode"]
@@ -126,6 +140,40 @@ class CLIStepExecutor(StepExecutor):
         
         if step.save_hash:
             variable_name = ctx.substitute(step.save_hash)
+            
+            # Check if output contains error in YAML format
+            # CLI может возвращать ошибки в формате:
+            # errors:
+            #   code: 32
+            #   message: ...
+            try:
+                import yaml
+                output_data = yaml.safe_load(output)
+                if isinstance(output_data, dict) and 'errors' in output_data:
+                    error_info = output_data['errors']
+                    error_code = error_info.get('code', -1)
+                    error_message = error_info.get('message', '')
+                    
+                    if error_code != 0:
+                        logger.error("cli_command_returned_error",
+                                   variable=variable_name,
+                                   error_code=error_code,
+                                   error_message=error_message,
+                                   command=cmd[:200])
+                        raise ScenarioExecutionError(
+                            f"CLI command returned error (code {error_code}): {error_message}",
+                            step=cmd[:100],
+                            context={
+                                "error_code": error_code,
+                                "error_message": error_message,
+                                "output": output[:1000]
+                            }
+                        )
+            except yaml.YAMLError:
+                # Not YAML format - continue with hash extraction
+                pass
+            
+            # Extract hash from output
             pattern = DataExtractor.get_default_pattern(ExtractType.HASH)
             try:
                 hash_value, error = DataExtractor.extract_and_validate(

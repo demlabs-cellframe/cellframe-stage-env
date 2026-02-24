@@ -252,6 +252,9 @@ class WaitStep(BaseModel):
     token: Optional[str] = Field(None, description="Token ticker (for wallet_balance)")
     balance: Optional[str] = Field(None, description="Balance condition e.g. '> 1000' (for wallet_balance)")
     
+    # Block creation parameters
+    min_blocks: Optional[int] = Field(None, description="Minimum number of blocks (for block_created)")
+    
     # Advanced options
     check_master: bool = Field(True, description="Check master nodes (for finalized)")
     expected_count: Optional[int] = Field(None, description="Expected count (for specific waiters)")
@@ -261,6 +264,11 @@ class PythonStep(BaseModel):
     """Execute Python code with access to context."""
     python: str = Field(..., description="Python code to execute")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+
+
+class PrintStep(BaseModel):
+    """Print message with variable substitution for debugging."""
+    print: str = Field(..., description="Message to print (supports {{variable}} substitution)")
 
 
 class BashStep(BaseModel):
@@ -439,7 +447,7 @@ class StepGroup(BaseModel):
 # NetworkWaitStep must come before WaitStep.
 TestStep = Union[
     NetworkWaitStep, WaitForDatumStep, WaitForTxStep, SnapshotStep, DockerOpStep,
-    CLIStep, RPCStep, PythonStep, BashStep, ToolStep, LoopStep, StepGroup,
+    CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
     WaitStep 

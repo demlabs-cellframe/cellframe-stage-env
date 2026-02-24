@@ -147,7 +147,7 @@ class DataExtractor:
         default: Optional[str] = None
     ) -> Tuple[Optional[str], Optional[str]]:
         """
-        Extract data from output using regex and validate against type.
+        Extract data from output using JSON parsing (priority) or regex fallback.
         
         Args:
             output: Command output to extract from
@@ -165,7 +165,39 @@ class DataExtractor:
         Raises:
             ExtractionError: If extraction/validation fails and required=True
         """
-        # Try to extract using pattern
+        # STRATEGY 1: Try JSON parsing first (modern CLI output format)
+        if extract_type == ExtractType.HASH:
+            try:
+                import json
+                json_data = json.loads(output)
+                
+                # Handle cellframe-node-cli JSON-RPC response format
+                # Structure: {"result": [[...blocks...], {...summary...}]}
+                if isinstance(json_data, dict) and "result" in json_data:
+                    result = json_data["result"]
+                    if isinstance(result, list) and len(result) > 0:
+                        # result[0] is blocks array, result[1] is summary
+                        blocks_array = result[0]
+                        if isinstance(blocks_array, list) and len(blocks_array) > 0:
+                            first_block = blocks_array[0]
+                            # Look for hash in block object
+                            # Try both v1 format ("hash") and v2 format ("block_hash")
+                            hash_value = first_block.get("hash") or first_block.get("block_hash")
+                            if hash_value:
+                                _debug_print(f"[EXTRACT_DEBUG] ✓ Extracted hash from JSON: {hash_value}")
+                                # Validate and return
+                                error_msg = DataExtractor._validate_type(hash_value, extract_type)
+                                if error_msg:
+                                    if required:
+                                        raise ExtractionError(error_msg)
+                                    return (default, error_msg if default is None else None)
+                                return (hash_value, None)
+                        else:
+                            _debug_print(f"[EXTRACT_DEBUG] JSON parsed but blocks array is empty")
+            except (json.JSONDecodeError, KeyError, TypeError, IndexError) as e:
+                _debug_print(f"[EXTRACT_DEBUG] JSON parsing failed: {e}, falling back to regex")
+        
+        # STRATEGY 2: Regex fallback (legacy text output format or non-JSON output)
         match = re.search(pattern, output, re.MULTILINE)
         
         if not match:
@@ -307,19 +339,28 @@ class DataExtractor:
         without specifying a custom pattern.
         """
         defaults = {
-            ExtractType.WALLET_ADDRESS: r'addr:\s+(\S+)',
-            ExtractType.NODE_ADDRESS: r'Node addr:\s+([A-Fa-f0-9:]+)',
-            # Match hash in various formats:
+            # Match wallet address in both text and JSON formats:
+            # - Text: "addr: XYZABC123..."
+            # - JSON: "addr": "XYZABC123..." or "address": "XYZABC123..."
+            ExtractType.WALLET_ADDRESS: r'(?:"addr(?:ess)?":\s*"|addr:\s+)([A-Za-z0-9]{75,105})',
+            # Match node address in both text and JSON formats:
+            # - Text: "Node addr: A1B2::C3D4::E5F6"
+            # - JSON: "current_addr": "A1B2::C3D4::E5F6" or "node_addr": "..."
+            ExtractType.NODE_ADDRESS: r'(?:"(?:current_|node_)?addr(?:ess)?":\s*"|Node addr:\s+)([A-Fa-f0-9:]+)',
+            # Match hash in various formats (v5.7 and v6.0 compatible):
             # - "New: 0x..." (from token_decl_sign)
-            # - "hash: 0x..." (from JSON)
+            # - "hash: 0x..." or "hash": "0x..." (from JSON)
+            # - "hash_value: 0x..." or "hash_value": "0x..." (nested JSON format)
+            # - "tx_hash: 0x..." or "tx_hash": "0x..." (transaction hash)
             # - "datum_hash: 0x..." (from JSON)
             # - "emission_hash: 0x..." (from token_emit)
             # - "last_event_hash: 0x..." (from dag event last)
             # - "event_hash: 0x..." (from dag event commands)
             # - "Datum 0x..." (from token_decl result)
+            # - "Created datum hash: 0x..." (from token_emit v5.7)
             # - standalone "0x..." (64 hex chars)
             # NOTE: Uses negative lookbehind (?<!Old: ) to ignore "Old: 0x..." hashes in replacement outputs
-            ExtractType.HASH: r'(?:New:\s+|(?:last_)?(?:event_)?hash["\']?\s*:\s*["\']?|datum_hash["\']?\s*:\s*["\']?|emission_hash["\']?\s*:\s*["\']?|Datum\s+)?(?<!Old: )(0x[A-Fa-f0-9]{64})',
+            ExtractType.HASH: r'(?:New:\s+|(?:last_)?(?:event_)?hash["\']?\s*:\s*["\']?|(?:tx_|datum_|emission_)?hash(?:_value)?["\']?\s*:\s*["\']?|Created\s+datum\s+hash:\s*|Datum\s+)?(?<!Old: )(0x[A-Fa-f0-9]{64})',
             ExtractType.TOKEN_NAME: r'token:\s*([A-Z0-9_]+)',
             ExtractType.NUMBER: r'(\d+(?:\.\d+)?)',
             ExtractType.BOOL: r'(true|false|yes|no|1|0|on|off|enabled|disabled)',

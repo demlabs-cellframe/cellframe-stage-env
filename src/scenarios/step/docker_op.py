@@ -144,7 +144,7 @@ class DockerOpStepExecutor(StepExecutor):
                     logger.info("✅ All containers have IP addresses", count=len(container_names))
                 
             elif operation == "stop":
-                compose_manager.down(services=services)
+                compose_manager.stop(services=services)
             elif operation == "restart":
                 compose_manager.restart(services=services)
             elif operation == "logs":

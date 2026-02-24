@@ -5,6 +5,7 @@ Extracted from genesis_validator.py for better code organization.
 """
 
 import asyncio
+import json
 import re
 import time
 from typing import List, Callable, Optional
@@ -532,10 +533,32 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
                         check_output=False
                     )
                     if exit_code_net == 0 and stdout_net:
-                        links_match = re.search(r'active:\s*(\d+)', stdout_net, re.IGNORECASE)
-                        required_match = re.search(r'required:\s*(\d+)', stdout_net, re.IGNORECASE)
-                        active_links = int(links_match.group(1)) if links_match else 0
-                        required_links = int(required_match.group(1)) if required_match else 0
+                        active_links = 0
+                        required_links = 0
+                        
+                        # Try JSON parsing first (new CLI format)
+                        try:
+                            output_stripped = stdout_net.strip()
+                            if output_stripped.startswith('[') or output_stripped.startswith('{'):
+                                data = json.loads(output_stripped)
+                                if isinstance(data, list) and len(data) > 0:
+                                    data = data[0]
+                                if isinstance(data, dict):
+                                    links = None
+                                    if 'status' in data and 'links' in data['status']:
+                                        links = data['status']['links']
+                                    elif 'links' in data:
+                                        links = data['links']
+                                    if links and isinstance(links, dict):
+                                        active_links = links.get('active', 0)
+                                        required_links = links.get('required', 0)
+                        except (json.JSONDecodeError, KeyError, TypeError):
+                            # Fallback: Parse text format
+                            links_match = re.search(r'active:\s*(\d+)', stdout_net, re.IGNORECASE)
+                            required_match = re.search(r'required:\s*(\d+)', stdout_net, re.IGNORECASE)
+                            active_links = int(links_match.group(1)) if links_match else 0
+                            required_links = int(required_match.group(1)) if required_match else 0
+                        
                         if node.node_id in node_diagnostics:
                             node_diagnostics[node.node_id]['network_links'] = {
                                 'active': active_links,

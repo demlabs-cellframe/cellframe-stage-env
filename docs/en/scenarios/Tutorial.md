@@ -556,5 +556,5 @@ Good luck testing! 🚀
 
 ---
 
-**Last updated:** 2025-12-23
+**Last updated:** 2026-01-29
 **Language:** English | [Русский](../../ru/scenarios/Tutorial.md)

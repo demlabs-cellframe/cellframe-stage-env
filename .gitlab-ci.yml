@@ -1,0 +1,44 @@
+# ============================================================================
+# GitLab CI Pipeline for Cellframe Stage Environment
+# ============================================================================
+# Тесты самого stage-env (unit, integration, regression)
+# Docker НЕ требуется - тесты используют моки
+# Раннер: ci-test
+# ============================================================================
+
+stages:
+  - test
+
+variables:
+  PIP_NO_INPUT: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+# ============================================================================
+# Тесты stage-env (pytest)
+# ============================================================================
+test:stage-env:
+  stage: test
+  tags:
+    - ci-test
+  timeout: 30 minutes
+  before_script:
+    - echo "=== Stage-Env Tests ==="
+    - echo "Pipeline ${CI_PIPELINE_ID} | Commit ${CI_COMMIT_SHORT_SHA} | Branch ${CI_COMMIT_REF_NAME}"
+    - python3 --version
+    - python3 -m venv .venv
+    - source .venv/bin/activate
+    - pip install --upgrade pip -q
+    - pip install -r requirements.txt -q
+  script:
+    - source .venv/bin/activate
+    - cd tests
+    - echo ">>> Запуск всех тестов stage-env..."
+    - pytest -v --tb=short --junitxml=junit-report.xml
+    - echo "✅ Тесты завершены"
+  artifacts:
+    when: always
+    paths:
+      - tests/junit-report.xml
+    reports:
+      junit: tests/junit-report.xml
+    expire_in: 7 days

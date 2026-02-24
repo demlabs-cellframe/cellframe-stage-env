@@ -1,5 +1,5 @@
 name: Regression - Arbitrage Arguments
-description: Verify tx_create -arbitrage respects -value and -token arguments (Bug #2)
+description: Verify tx create -arbitrage respects -value and -token arguments (Bug #2)
 
 includes:
   - common/set_net_default.yml
@@ -61,7 +61,7 @@ test:
         token: "ARB_ARGS"
         fee: "100"
     steps:
-      - cli: "tx_create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 1000000000000000000 -certs {{network_name}}.root.pvt.0"
+      - cli: "tx create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 1000000000000000000 -certs {{network_name}}.root.pvt.0"
         save_hash: normal_tx_hash
       
       - wait_for_datum: "{{normal_tx_hash}}"
@@ -81,7 +81,7 @@ test:
         token: "ARB_ARGS"
         fee: "100"
     steps:
-      - cli: "tx_create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 500 -arbitrage -certs {{network_name}}.root.pvt.0"
+      - cli: "tx create -from_wallet arb_args_owner -to_addr {{owner_addr}} -value 500 -arbitrage -certs {{network_name}}.root.pvt.0"
         save_hash: arb_tx_hash
       
       - wait_for_datum: "{{arb_tx_hash}}"

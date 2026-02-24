@@ -376,7 +376,22 @@ class NetworkManager:
             self.compose.up(services=all_services, detach=True, wait=False, no_build=True)
             
             # Wait for all nodes to come online
-            await self._wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
+            await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
+            
+            # Verify fee_addr is configured (should be set during genesis)
+            first_root = root_nodes[0]
+            try:
+                fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(first_root.node_id)
+                logger.info("fee_addr_verified_in_config",
+                          fee_addr=fee_addr[:16],
+                          node_id=first_root.node_id,
+                          note="fee_addr is configured (set during genesis)")
+            except RuntimeError as e:
+                logger.warning("fee_addr_missing_in_snapshot",
+                             error=str(e),
+                             note="fee_addr not found in restored snapshot config. "
+                                  "Snapshot may need to be recreated with current genesis flow. "
+                                  "Continuing without fee_addr - some operations may fail.")
             
             # Network is ready - no phases needed
             logger.info("network_started",
@@ -403,7 +418,9 @@ class NetworkManager:
                 from ..scenarios.parser import ScenarioParser
                 
                 scenario_parser = ScenarioParser(self.base_path / "scenarios")
-                phase1_scenario = scenario_parser.load_scenario("genesis/phase1_zerochain.yml")
+                # Get version-specific scenario path (e.g., "genesis/6.0/phase1_zerochain.yml")
+                phase1_path = self.config_loader.get_genesis_scenario_path("phase1_zerochain.yml")
+                phase1_scenario = scenario_parser.load_scenario(phase1_path)
                 
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
@@ -466,16 +483,18 @@ class NetworkManager:
                             logger.info("creating_phase1_snapshot_after_zerochain_genesis")
                             containers_shutdown = False
                             try:
-                                # CRITICAL: Gracefully shutdown ROOT containers before snapshot
+                                # CRITICAL: Gracefully shutdown ALL containers before snapshot
                                 # This ensures all data (GDB, chain files, configs) are flushed to disk
                                 # Graceful shutdown ensures:
                                 # - GDB flush completes (node list, validator orders)
                                 # - Chain files are saved (zerochain events)
                                 # - Configs are written to disk (static_genesis_event)
-                                logger.info("gracefully_shutting_down_root_containers_for_phase1_snapshot")
-                                root_services = [f"node-{nid}" for nid in root_node_ids]
+                                # NOTE: Must include master nodes to ensure nodelist is synced and flushed!
+                                # Without this, master nodes won't have nodelist in snapshot and ESBocs will fail.
+                                logger.info("gracefully_shutting_down_all_containers_for_phase1_snapshot")
+                                all_active_services = [f"node-{nid}" for nid in root_node_ids + master_node_ids]
                                 await self.lifecycle.graceful_shutdown_with_gdb_flush(
-                                    service_names=root_services,
+                                    service_names=all_active_services,
                                     flush_timeout=60
                                 )
                                 containers_shutdown = True
@@ -567,6 +586,7 @@ class NetworkManager:
                                 # CRITICAL: After graceful shutdown, containers are stopped
                                 # Need to restart them to continue with PHASE 2
                                 # They will use configs from snapshot (seed_mode=false, static_genesis_event set)
+                                # NOTE: Restart only root nodes here - master nodes will be started by Phase 2
                                 logger.info("restarting_root_containers_after_snapshot_creation")
                                 root_services = [f"node-{nid}" for nid in root_node_ids]
                                 self.compose.up(services=root_services, detach=True, wait=False)
@@ -779,6 +799,37 @@ class NetworkManager:
             await self.state_manager.wait_for_nodes_online(root_nodes, timeout=60.0)
             logger.info("root_nodes_online_after_snapshot_restore")
             
+            # CRITICAL: Set fee_addr on network level if it exists in config
+            # This is needed for arbitrage transactions after snapshot restore
+            # The fee_addr is in config but must also be set at runtime via CLI
+            if fee_addr:
+                logger.info("setting_fee_addr_on_network_level_after_snapshot_restore",
+                          fee_addr=fee_addr[:16],
+                          note="Executing: net -net stagenet fee_addr <addr>")
+                try:
+                    first_root = root_nodes[0]
+                    exit_code, stdout, stderr = self.genesis._exec_cli(
+                        first_root.node_id,
+                        f"net -net {self.topology.network.name} fee_addr {fee_addr}",
+                        check_output=False
+                    )
+                    if exit_code == 0:
+                        logger.info("fee_addr_set_on_network_level",
+                                  fee_addr=fee_addr[:16],
+                                  note="fee_addr successfully set for arbitrage transactions")
+                    else:
+                        logger.error("fee_addr_set_failed",
+                                   exit_code=exit_code,
+                                   stderr=stderr,
+                                   note="Failed to set fee_addr on network level")
+                except Exception as e:
+                    logger.error("fee_addr_set_error",
+                               error=str(e),
+                               note="Exception while setting fee_addr on network level")
+            else:
+                logger.warning("fee_addr_not_set_on_network_level",
+                             note="fee_addr not found in config ")
+            
             # Verify node list is available in GDB after restore
             logger.info("verifying_node_list_in_gdb_after_snapshot_restore")
             from ..monitoring.network_consensus import NetworkConsensusMonitor
@@ -849,13 +900,36 @@ class NetworkManager:
                     continue
                 
                 # Step 3: Extract emission_hash from dump output
-                # Format: "emission_hash: 0x..." (plain text format)
-                emission_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump_stdout, re.IGNORECASE)
-                if emission_match:
-                    emission_hash = emission_match.group(1)
-                    logger.info("emission_hash_extracted_from_event_dump",
-                               emission_hash=emission_hash[:20],
-                               event_hash=last_event_hash[:20])
+                # Try JSON format first (6.0+): for DATUM_TOKEN_EMISSION events, event_hash IS the emission hash
+                # Then fallback to text format: "emission_hash: 0x..."
+                import json
+                try:
+                    dump_stripped = dump_stdout.strip()
+                    if dump_stripped.startswith('[') or dump_stripped.startswith('{'):
+                        data = json.loads(dump_stripped)
+                        if isinstance(data, list) and len(data) > 0:
+                            data = data[0]
+                        if isinstance(data, dict):
+                            type_id = data.get('type_id', '')
+                            # For DATUM_TOKEN_EMISSION events, the event_hash IS the emission hash
+                            if 'TOKEN_EMISSION' in type_id:
+                                emission_hash = data.get('event_hash', last_event_hash)
+                                logger.info("emission_hash_from_json_event",
+                                           emission_hash=emission_hash[:20] if emission_hash else "NONE",
+                                           type_id=type_id)
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    pass  # Fall back to text parsing
+                
+                # Fallback: text format
+                if not emission_hash:
+                    emission_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump_stdout, re.IGNORECASE)
+                    if emission_match:
+                        emission_hash = emission_match.group(1)
+                        logger.info("emission_hash_extracted_from_event_dump",
+                                   emission_hash=emission_hash[:20],
+                                   event_hash=last_event_hash[:20])
+                
+                if emission_hash:
                     break
                 else:
                     # If emission_hash not found, event might not be an emission event
@@ -870,13 +944,27 @@ class NetworkManager:
                         check_output=False
                     )
                     if exit_code == 0 and list_stdout:
-                        # Find all event hashes
-                        all_event_hashes = re.findall(r'event_hash:\s*(0x[A-Fa-f0-9]{64})', list_stdout)
+                        # Find all event hashes - try JSON first, then text
+                        all_event_hashes = []
+                        try:
+                            list_stripped = list_stdout.strip()
+                            if list_stripped.startswith('['):
+                                events_data = json.loads(list_stripped)
+                                for evt in events_data:
+                                    if isinstance(evt, dict) and 'event_hash' in evt:
+                                        all_event_hashes.append(evt['event_hash'])
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                        
+                        # Fallback: text format
+                        if not all_event_hashes:
+                            all_event_hashes = re.findall(r'(?:"event_hash":\s*"|event_hash:\s*)(0x[A-Fa-f0-9]{64})', list_stdout)
+                        
                         logger.info("dag_events_list_for_emission",
                                    event_count=len(all_event_hashes),
                                    hashes=all_event_hashes[:5])
                         
-                        # Try each event to find one with emission_hash
+                        # Try each event to find one with emission_hash (type_id = DATUM_TOKEN_EMISSION)
                         for evt_hash in all_event_hashes:
                             exit_code2, dump2, _ = self.genesis._exec_cli(
                                 root_node.node_id,
@@ -884,13 +972,33 @@ class NetworkManager:
                                 check_output=False
                             )
                             if exit_code2 == 0 and dump2:
-                                em_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump2, re.IGNORECASE)
-                                if em_match:
-                                    emission_hash = em_match.group(1)
-                                    logger.info("emission_hash_found_in_event",
-                                               emission_hash=emission_hash[:20],
-                                               event_hash=evt_hash[:20])
-                                    break
+                                # Try JSON format first
+                                try:
+                                    dump_stripped = dump2.strip()
+                                    if dump_stripped.startswith('[') or dump_stripped.startswith('{'):
+                                        data = json.loads(dump_stripped)
+                                        if isinstance(data, list) and len(data) > 0:
+                                            data = data[0]
+                                        if isinstance(data, dict):
+                                            type_id = data.get('type_id', '')
+                                            if 'TOKEN_EMISSION' in type_id:
+                                                emission_hash = data.get('event_hash', evt_hash)
+                                                logger.info("emission_hash_found_in_event_json",
+                                                           emission_hash=emission_hash[:20],
+                                                           event_hash=evt_hash[:20])
+                                                break
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                                
+                                # Fallback: text format
+                                if not emission_hash:
+                                    em_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump2, re.IGNORECASE)
+                                    if em_match:
+                                        emission_hash = em_match.group(1)
+                                        logger.info("emission_hash_found_in_event",
+                                                   emission_hash=emission_hash[:20],
+                                                   event_hash=evt_hash[:20])
+                                        break
                         if emission_hash:
                             break
             
@@ -1033,7 +1141,7 @@ class NetworkManager:
                 logger.info("starting_remaining_nodes_after_phase2_skip", services=master_full_services)
                 all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
                 self.compose.up(services=all_services, detach=True, wait=False, no_build=True)
-                await self._wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
+                await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
         else:
             logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
         
@@ -1070,7 +1178,9 @@ class NetworkManager:
                 from ..scenarios.parser import ScenarioParser
                 
                 scenario_parser = ScenarioParser(self.base_path / "scenarios")
-                phase2_scenario = scenario_parser.load_scenario("genesis/phase2_esbocs.yml")
+                # Get version-specific scenario path (e.g., "genesis/6.0/phase2_esbocs.yml")
+                phase2_path = self.config_loader.get_genesis_scenario_path("phase2_esbocs.yml")
+                phase2_scenario = scenario_parser.load_scenario(phase2_path)
                 
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()

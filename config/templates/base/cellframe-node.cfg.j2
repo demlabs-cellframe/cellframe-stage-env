@@ -206,10 +206,11 @@ ca_folders=[../var/lib/ca,../share/ca]
 path=../etc/network
 
 [global_db]
-#debug_more=true
+debug_more=true
 path=../var/lib/global_db
 driver=mdbx
-#debug_more=true
+# Enable sync idle time of 5s for faster testing
+sync_idle_time=5
 # mdbx_upper_limit_of_db_size=1024
 #pgsql conninfo array
 # pg_conninfo=[dbname=postgres]
