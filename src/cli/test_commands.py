@@ -349,6 +349,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 gc.set_static_node_info(node_configs_for_setup)
                                 gc.collect_node_ips(node_configs_for_setup, wait_for_ips=False)
                                 topology_vars = gc.to_dict()
+                                topology_vars['project_root'] = str(project_root)
 
                             async def _run_suite_setup():
                                 await executor.execute_scenario(
