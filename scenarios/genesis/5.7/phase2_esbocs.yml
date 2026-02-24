@@ -19,19 +19,10 @@ setup:
     eval: true
   
   # Enable seed_mode on ALL root and master nodes to accept genesis block
-  # Note: is_add_directly for mainchain already set in PHASE 1
   - config: "cellframe-node"
     nodes: "{{_active_nodes}}"
     set:
       seed_mode: "true"
-  
-  # CRITICAL: Enable is_add_directly for zerochain on root nodes
-  # Phase1 snapshot may contain emission in mempool (not in DAG) if round consensus failed.
-  # With is_add_directly=true, emission will be added directly to DAG without round consensus.
-  - config: "{{network_name}}/zerochain"
-    nodes: "{{root_nodes}}"
-    set:
-      is_add_directly: "true"
   
   - docker_op: restart
     services: "{{_active_nodes}}"
@@ -210,19 +201,13 @@ test:
     node: "{{first_master}}"
     save_hash: genesis_block_hash
   
-  # Configure static genesis block and disable is_add_directly BEFORE restart
+  # Configure static genesis block BEFORE restart
   # This ensures nodes will load the genesis block from config after restart
   - config: "{{network_name}}/main"
     nodes: "{{_active_nodes}}"
     set:
       static_genesis_block: "{{genesis_block_hash}}"
       is_static_genesis_block: "true"
-      is_add_directly: "false"
-  
-  - config: "{{network_name}}/zerochain"
-    nodes: "{{root_nodes}}"
-    set:
-      is_add_directly: "false"
   
   - config: "cellframe-node"
     nodes: "{{seed_nodes}}"

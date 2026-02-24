@@ -25,11 +25,9 @@ storage_dir=../../../var/lib/network/{{ network_name | default('stagenet') }}/ze
 is_single_line=true
 is_celled=false
 # is_add_directly: Controls whether events are added directly or via confirmation round
-# During genesis (seed_mode=true): use true to allow single-node event creation
-# After genesis: use false to require multi-node confirmation
-# For functional tests on single node: use true to bypass consensus rounds
-# For multi-node e2e tests: use false to test full consensus
-is_add_directly={{ is_add_directly | default('true', true) }}
+# Production-like mode: use false to require multi-node confirmation via DAG-PoA round consensus
+# Genesis events are created manually via dag event sign + dag round complete
+is_add_directly={{ is_add_directly | default('false', true) }}
 datum_add_hashes_count=1
 # Enable detailed debug logging for DAG consensus (includes datums table operations)
 debug_more=true
