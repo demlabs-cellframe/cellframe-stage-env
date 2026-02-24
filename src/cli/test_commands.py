@@ -486,7 +486,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             )
                             
                             async def _execute():
-                                return await executor.execute_scenario(scenario)
+                                return await executor.execute_scenario(
+                                    scenario,
+                                    compose_manager=network_mgr.compose if network_mgr else None,
+                                    snapshot_manager=network_mgr.snapshot_manager if network_mgr else None,
+                                    initial_variables=topology_vars or None
+                                )
                             
                             print_info("  ▶️  Executing...")
                             ctx = asyncio.run(_execute())
