@@ -105,6 +105,7 @@ ARG PACKAGE_URL=
 ARG REPOSITORY_URL=
 ARG REPOSITORY_BRANCH=master
 ARG DEBIAN_MIRROR=
+ARG TOOLS_BASE_URL=https://pub.cellframe.net
 
 # Note: Debian Trixie (testing) is not available on most mirrors yet
 # Skip mirror substitution for Trixie - use official repos only
@@ -183,8 +184,9 @@ RUN DPKG_ARCH=$(dpkg --print-architecture) \
          ARCH_SUFFIX="amd64"; \
        fi \
     && echo "Building for architecture: ${DPKG_ARCH} -> ${ARCH_SUFFIX}" \
-    && curl -O https://internal-pub.cellframe.net/linux/cellframe-tool-sign/feature/20325/cellframe-tool-sign-${ARCH_SUFFIX} \
-    && curl -O https://internal-pub.cellframe.net/linux/cellframe-tool-compose/feature/20325/cellframe-tool-compose-${ARCH_SUFFIX} \
+    && echo "Tools base URL: ${TOOLS_BASE_URL}" \
+    && curl -fSL -O ${TOOLS_BASE_URL}/linux/cellframe-tool-sign/feature/20325/cellframe-tool-sign-${ARCH_SUFFIX} \
+    && curl -fSL -O ${TOOLS_BASE_URL}/linux/cellframe-tool-compose/feature/20325/cellframe-tool-compose-${ARCH_SUFFIX} \
     && chmod +x /cellframe-tool-compose-${ARCH_SUFFIX} \
     && chmod +x /cellframe-tool-sign-${ARCH_SUFFIX} \
     && ln -sf /cellframe-tool-sign-${ARCH_SUFFIX} /cellframe-tool-sign \
@@ -293,7 +295,7 @@ RUN set -x && \
             elif [ "$CELLFRAME_VERSION" = "latest" ]; then \
                 # For latest version, get the most recent available for current architecture
                 echo "Fetching latest version for architecture: $ARCH" && \
-                LATEST_VERSION=$(wget -qO- http://pub.cellframe.net/linux/cellframe-node/master/ | \
+                LATEST_VERSION=$(wget -qO- ${TOOLS_BASE_URL}/linux/cellframe-node/master/ | \
                                 grep -oP "cellframe-node-\K[0-9]+\.[0-9]+-[0-9]+(?=${PACKAGE_SUFFIX}-${ARCH}\.deb)" | \
                                 sort -V | tail -1); \
                 if [ -z "$LATEST_VERSION" ]; then \
@@ -301,11 +303,11 @@ RUN set -x && \
                     echo "FAIL FAST: Check package availability or use specific version" && \
                     exit 1; \
                 fi && \
-                DOWNLOAD_URL="http://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-${LATEST_VERSION}${PACKAGE_SUFFIX}-${ARCH}.deb" && \
+                DOWNLOAD_URL="${TOOLS_BASE_URL}/linux/cellframe-node/master/cellframe-node-${LATEST_VERSION}${PACKAGE_SUFFIX}-${ARCH}.deb" && \
                 ACTUAL_VERSION="$LATEST_VERSION"; \
             else \
                 # Use specific version for current architecture
-                DOWNLOAD_URL="http://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-${CELLFRAME_VERSION}${PACKAGE_SUFFIX}-${ARCH}.deb" && \
+                DOWNLOAD_URL="${TOOLS_BASE_URL}/linux/cellframe-node/master/cellframe-node-${CELLFRAME_VERSION}${PACKAGE_SUFFIX}-${ARCH}.deb" && \
                 ACTUAL_VERSION="$CELLFRAME_VERSION"; \
             fi && \
             \

@@ -1,15 +1,25 @@
-# Dockerfile for Certificate Generator
-# 
-# Minimal build - only crypto libraries, no network stack
-# Uses DAP SDK crypto for post-quantum certificate generation
+# Dockerfile for Certificate Generator Builder
 #
-# Usage:
-#   docker build -f tests/stage-env/Dockerfile.cert-generator -t cf-cert-generator:latest .
-#   docker run --rm -v $(pwd)/certs:/output cf-cert-generator:latest /output 6 stagenet 0x1234
+# Provides build environment only — SDK sources are mounted at runtime
+# via `docker run -v`, not copied into the image.
 #
-FROM debian:bookworm-slim AS builder
+# Build image:
+#   docker build -f tools/stage-env/Dockerfile.cert-generator \
+#                -t cf-cert-builder:latest tools/stage-env
+#
+# Run (SDKs mounted, build cached via named volumes):
+#   docker run --rm \
+#     -v /path/to/cellframe-sdk:/project/cellframe-sdk:ro \
+#     -v /path/to/dap-sdk:/project/cellframe-sdk/dap-sdk:ro \
+#     -v /path/to/stage-env/src/certs:/project/cert-generator:ro \
+#     -v /path/to/output:/output \
+#     -v cf-cert-sdk-cache:/tmp/sdk-build \
+#     -v cf-cert-build-cache:/tmp/cert-build \
+#     cf-cert-builder:latest \
+#     bash -c "... cmake && make && ./cf-cert-generator /output ..."
+#
+FROM debian:bookworm-slim
 
-# Install build dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
@@ -21,43 +31,5 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /project
 
-# Copy cellframe-sdk source
-COPY cellframe-sdk /project/cellframe-sdk
-
-# Clean any host CMake artifacts
-RUN find /project/cellframe-sdk -name "CMakeCache.txt" -delete && \
-    find /project/cellframe-sdk -name "CMakeFiles" -type d -exec rm -rf {} + 2>/dev/null || true
-
-# Build only required DAP SDK libraries (crypto stack only)
-WORKDIR /project/cellframe-sdk/build
-RUN cmake -DCMAKE_BUILD_TYPE=Release .. && \
-    make -j$(nproc) \
-        dap_core \
-        dap_crypto \
-        dap_chain_common \
-        dap_io
-
-# Copy and build cert-generator
-COPY tests/stage-env/src/certs /project/cert-generator
-WORKDIR /project/cert-generator/build
-RUN cmake -DCELLFRAME_SDK_BUILD=/project/cellframe-sdk/build \
-          -DCELLFRAME_SDK_SRC=/project/cellframe-sdk \
-          .. && \
-    make -j$(nproc) cf-cert-generator && \
-    strip cf-cert-generator
-
-# Runtime image - minimal
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y \
-    libssl3 \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /project/cert-generator/build/cf-cert-generator /usr/local/bin/
-
-WORKDIR /output
-ENTRYPOINT ["/usr/local/bin/cf-cert-generator"]
-CMD ["--help"]
-
 LABEL maintainer="Cellframe Team"
-LABEL description="Certificate generator with post-quantum crypto (minimal build)"
+LABEL description="Build environment for cf-cert-generator (SDKs mounted at runtime)"

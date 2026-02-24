@@ -120,7 +120,7 @@ class NetworkManager:
         
         # Pass full config including cache_dir
         snapshot_config = dict(suite_isolation_config)
-        snapshot_config['cache_dir'] = self.paths_config.get('cache_dir', '../testing/cache')
+        snapshot_config['cache_dir'] = self.paths_config.get('cache_dir', '../../cache')
         
         self.snapshot_manager = SnapshotManager(
             base_path,
@@ -1361,7 +1361,7 @@ class NetworkManager:
         Implementation: Uses temporary Docker container (Alpine) to clean files.
         This ensures proper permissions for root-owned files created by node containers.
         """
-        cache_dir = self.paths_config.get('cache_dir', '../testing/cache')
+        cache_dir = self.paths_config.get('cache_dir', '../../cache')
         cache_path = (self.base_path / cache_dir).resolve()
         data_dir = cache_path / "data"
         

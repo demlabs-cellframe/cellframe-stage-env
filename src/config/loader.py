@@ -405,6 +405,9 @@ class ConfigLoader:
         paths = {
             'cache_dir': 'cache',
             'artifacts_dir': 'artifacts',
+            'cellframe_sdk_path': 'cellframe-sdk',
+            'dap_sdk_path': 'dap-sdk',
+            'tools_base_url': 'https://pub.cellframe.net',
         }
         
         if not config_file.exists():
@@ -470,7 +473,7 @@ class ConfigLoader:
         if config.has_section('paths') and config.has_option('paths', 'artifacts_dir'):
             artifacts['artifacts_dir'] = config.get('paths', 'artifacts_dir')
         else:
-            artifacts['artifacts_dir'] = '../testing/artifacts'
+            artifacts['artifacts_dir'] = '../../cache/artifacts'
         
         logger.debug("artifacts_config_loaded", **artifacts)
         return artifacts
@@ -583,7 +586,7 @@ class ConfigLoader:
             'phase1_snapshot_name': 'phase1_zerochain_genesis',
             'auto_cleanup': True,
             'keep_snapshot_count': 5,
-            'snapshots_dir': '../testing/snapshots',
+            'snapshots_dir': '../../cache/snapshots',
         }
         
         if not config_file.exists():
@@ -718,12 +721,12 @@ class ConfigLoader:
         
         # Try relative paths from stage-env directory
         if not build_dir or not build_dir.exists():
-            # stage-env is typically in cellframe-node/tests/stage-env/
-            # test_build is in cellframe-node/test_build/
+            paths_config = self.get_paths_config()
+            project_root = (self.base_path / paths_config.get('project_root', '../..')).resolve()
             candidates = [
-                self.config_dir.parent.parent / "test_build",  # ../../test_build
-                self.config_dir.parent / "test_build",          # ../test_build
-                Path.cwd() / "test_build",                      # ./test_build
+                project_root / "test_build",
+                self.config_dir.parent / "test_build",
+                Path.cwd() / "test_build",
             ]
             for candidate in candidates:
                 if candidate.exists():

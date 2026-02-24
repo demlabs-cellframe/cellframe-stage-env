@@ -186,19 +186,18 @@ class CertificateOrderMatchChecker(BaseChecker):
         
         mismatches = []
         
+        config_loader = get_config_loader()
+        paths_config = config_loader.get_paths_config()
+        cache_dir = (self.base_path / paths_config.get('cache_dir', '../../cache')).resolve()
+        
         for node in self.nodes:
-            # Calculate validator_idx based on root_nodes_count
             validator_idx = node.node_id - self.root_nodes_count - 1
-            # Certificate format: {network}.master.pvt.{idx}
             expected_cert = f"{self.network_name}.master.pvt.{validator_idx}"
             
-            # Read blocks-sign-cert from config file directly
-            # Config files are in tests/testing/cache/configs/node{X}/etc/network/{network_name}/{chain_name}
-            # or in tests/testing/cache/configs/node{X}/cellframe-node.cfg.d/node{X}.cfg
             config_found = False
             
             # Try chain config first (main chain)
-            chain_config_path = self.base_path.parent / "testing" / "cache" / "configs" / f"node{node.node_id}" / "etc" / "network" / self.network_name / "main"
+            chain_config_path = cache_dir / "configs" / f"node{node.node_id}" / "etc" / "network" / self.network_name / "main"
             if chain_config_path.exists():
                 try:
                     # Use centralized config manager
@@ -233,7 +232,7 @@ class CertificateOrderMatchChecker(BaseChecker):
             
             # Try network config (cellframe-node.cfg.d/node{X}.cfg)
             if not config_found:
-                network_config_path = self.base_path.parent / "testing" / "cache" / "configs" / f"node{node.node_id}" / "cellframe-node.cfg.d" / f"node{node.node_id}.cfg"
+                network_config_path = cache_dir / "configs" / f"node{node.node_id}" / "cellframe-node.cfg.d" / f"node{node.node_id}.cfg"
                 if network_config_path.exists():
                     try:
                         # Use centralized config manager
@@ -269,7 +268,7 @@ class CertificateOrderMatchChecker(BaseChecker):
             
             # Try network/{network_name}/main.cfg
             if not config_found:
-                network_file_path = self.base_path.parent / "testing" / "cache" / "configs" / f"node{node.node_id}" / "network" / self.network_name / "main"
+                network_file_path = cache_dir / "configs" / f"node{node.node_id}" / "network" / self.network_name / "main"
                 if network_file_path.exists():
                     try:
                         # Use centralized config manager

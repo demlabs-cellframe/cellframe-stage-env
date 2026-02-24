@@ -63,15 +63,23 @@ crash_artifacts = true
 
 [logging]
 # Logging configuration
-log_dir = ../testing/logs
+log_dir = ../../cache/logs
 log_level = info
 scenario_logs = true
 retain_days = 7
 
 [paths]
 # Directory paths (relative to stage-env/)
-cache_dir = ../testing/cache
-artifacts_dir = ../testing/artifacts
+project_root = ../..
+cache_dir = ../../cache
+artifacts_dir = ../../cache/artifacts
+# SDK paths (relative to project_root)
+cellframe_sdk_path = cellframe-sdk
+dap_sdk_path = dap-sdk
+
+# Base URL for downloading Cellframe tools and packages
+# Used for cellframe-tool-sign, cellframe-tool-compose, and node packages
+tools_base_url = https://pub.cellframe.net
 
 [artifacts]
 # Artifacts collection settings
@@ -162,7 +170,7 @@ url = https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-m
 
 # Cache downloaded/built packages to speed up subsequent runs
 # cache_packages = true
-# cache_dir = ../testing/cache/packages
+# cache_dir = ../../cache/packages
 
 # Verify package signature (for official releases)
 # verify_signature = true
@@ -526,4 +534,4 @@ auto_cleanup = true
 keep_snapshot_count = 5
 
 # Snapshot storage directory (relative to stage-env/)
-snapshots_dir = ../testing/snapshots
+snapshots_dir = ../../cache/snapshots

@@ -104,7 +104,7 @@ class ConfigStepExecutor(StepExecutor):
         
         config_loader = get_config_loader()
         paths_config = config_loader.get_paths_config()
-        cache_dir_relative = paths_config.get('cache_dir', '../testing/cache')
+        cache_dir_relative = paths_config.get('cache_dir', '../../cache')
         cache_dir = (self.base_path / cache_dir_relative).resolve()
         
         # Initialize generator to access templates

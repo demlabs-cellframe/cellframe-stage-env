@@ -146,7 +146,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             print_info("Removing snapshots...")
             try:
                 snapshots_config = config_loader.get_suite_isolation_config()
-                snapshots_dir_relative = snapshots_config.get('snapshots_dir', '../testing/snapshots')
+                snapshots_dir_relative = snapshots_config.get('snapshots_dir', '../../cache/snapshots')
                 snapshots_dir = (base_path / snapshots_dir_relative).resolve()
                 
                 if snapshots_dir.exists():

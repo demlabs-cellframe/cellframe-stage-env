@@ -312,6 +312,11 @@ class DockerComposeManager:
                 
                 logger.info("using_local_package", path=str(local_package_path))
         
+        # Resolve TOOLS_BASE_URL from paths config (once, before node loop)
+        from src.config.manager import get_config_loader
+        paths_config = get_config_loader().get_paths_config()
+        tools_base_url = paths_config.get('tools_base_url', 'https://pub.cellframe.net')
+        
         # Generate service for each node
         for node in nodes:
             service_name = f"node-{node.node_id}"
@@ -363,6 +368,9 @@ class DockerComposeManager:
                 node_service['build'] = {}
             if 'args' not in node_service['build']:
                 node_service['build']['args'] = {}
+            
+            # Set TOOLS_BASE_URL from paths config
+            node_service['build']['args']['TOOLS_BASE_URL'] = tools_base_url
             
             # Set build args for node source
             node_service['build']['args']['NODE_SOURCE_TYPE'] = node_source_type
