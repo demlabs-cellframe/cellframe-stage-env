@@ -2,6 +2,7 @@
 CLI command step executor.
 """
 
+import json
 from typing import Any, Dict, Optional
 
 from ...utils.logger import get_logger
@@ -14,6 +15,78 @@ logger = get_logger(__name__)
 
 class CLIStepExecutor(StepExecutor):
     """Executor for CLI command steps."""
+    
+    @staticmethod
+    def _detect_cli_error(output: str) -> bool:
+        """Check CLI output for error indicators.
+        
+        cellframe-node-cli always returns exit code 0 for successfully communicated
+        commands, even if the command itself failed (the return code from the handler
+        is not propagated to the process exit code). This method detects errors
+        from the output content.
+        
+        Returns True if the output indicates a command failure.
+        """
+        if not output or not output.strip():
+            return False
+        
+        # Try JSON parsing first
+        try:
+            data = json.loads(output)
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                # Check for JSON-RPC errors array
+                if 'errors' in item:
+                    errors = item['errors']
+                    if isinstance(errors, list) and len(errors) > 0:
+                        return True
+                    if isinstance(errors, dict):
+                        if errors.get('code', -1) != 0:
+                            return True
+                # Check "transfer": "False" pattern (tx_create failure indicator)
+                if item.get('transfer') == 'False':
+                    return True
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+        
+        # YAML-like format (cellframe CLI often outputs in this format)
+        try:
+            import yaml
+            data = yaml.safe_load(output)
+            if isinstance(data, dict):
+                if 'errors' in data:
+                    errors = data['errors']
+                    if isinstance(errors, dict) and errors.get('code', -1) != 0:
+                        return True
+                    if isinstance(errors, list) and len(errors) > 0:
+                        return True
+                if data.get('transfer') == 'False':
+                    return True
+        except Exception:
+            pass
+        
+        # Regex-based error pattern detection (fallback for YAML/JSON parsing issues)
+        # cellframe-node-cli outputs errors in YAML-like format with indentation:
+        #   errors:
+        #     code: 32
+        #     message: ...
+        # The blank lines and indentation may confuse yaml.safe_load
+        import re
+        error_code_match = re.search(r'errors:\s*\n.*?code:\s*(\d+)', output, re.DOTALL)
+        if error_code_match:
+            error_code = int(error_code_match.group(1))
+            if error_code != 0:
+                return True
+        
+        # Text pattern fallback: check for common failure indicators
+        # "transfer: False" in YAML-like output
+        output_lower = output.lower().strip()
+        if 'transfer: false' in output_lower or '"transfer":"false"' in output_lower:
+            return True
+        
+        return False
     
     async def execute(
         self,
@@ -80,6 +153,7 @@ class CLIStepExecutor(StepExecutor):
         
         output = result["stdout"]
         exit_code = result["returncode"]
+        has_output_error = False
         
         # Check expectation FIRST - if command failed, don't try to extract data
         if step.expect == "success" and exit_code != 0:
@@ -88,16 +162,28 @@ class CLIStepExecutor(StepExecutor):
                 step=cmd[:100],
                 context=result
             )
-        elif step.expect == "error" and exit_code == 0:
-            raise ScenarioExecutionError(
-                f"CLI command succeeded: Expected error but got exit code 0",
-                step=cmd[:100]
-            )
+        elif step.expect == "error":
+            # cellframe-node-cli always returns exit code 0 for successfully communicated
+            # commands, even if the command handler returned an error code.
+            # We must also check the output content for error indicators.
+            has_output_error = self._detect_cli_error(output) if exit_code == 0 else True
+            if exit_code == 0 and not has_output_error:
+                raise ScenarioExecutionError(
+                    f"CLI command succeeded: Expected error but got exit code 0 "
+                    f"and no error indicators in output",
+                    step=cmd[:100],
+                    context={"output": output[:500]}
+                )
         
-        # Only extract data if command succeeded (exit_code == 0)
+        # Determine if command actually failed
+        # For expect: error - check both exit code and output errors
+        # For expect: success (default) - only exit code matters
+        command_failed = exit_code != 0 or (step.expect == "error" and has_output_error)
+        
+        # Only extract data if command succeeded
         # If command failed but we're not checking expectation, skip extraction
-        if exit_code != 0:
-            # Command failed - don't try to extract data from empty/failed output
+        if command_failed:
+            # Command failed - don't try to extract data from failed output
             if step.save_node or step.save_hash or step.save_wallet or step.save_token:
                 raise ScenarioExecutionError(
                     f"Cannot extract data from failed command (exit_code={exit_code}). "

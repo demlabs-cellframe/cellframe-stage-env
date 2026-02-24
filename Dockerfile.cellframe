@@ -191,7 +191,6 @@ RUN DPKG_ARCH=$(dpkg --print-architecture) \
     && chmod +x /cellframe-tool-sign-${ARCH_SUFFIX} \
     && ln -sf /cellframe-tool-sign-${ARCH_SUFFIX} /cellframe-tool-sign \
     && ln -sf /cellframe-tool-compose-${ARCH_SUFFIX} /cellframe-tool-compose
-
 # Create cache directory for Cellframe packages (persistent across builds)
 RUN mkdir -p /var/cache/cellframe-packages
 
