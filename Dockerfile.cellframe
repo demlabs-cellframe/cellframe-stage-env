@@ -175,21 +175,6 @@ RUN apt-get update && \
 RUN echo '#!/bin/bash\nexit 0' > /usr/bin/systemctl && \
     chmod +x /usr/bin/systemctl
 
-# Download architecture-specific cellframe tools (same as tests-in-docker)
-RUN DPKG_ARCH=$(dpkg --print-architecture) \
-    && if [ "$DPKG_ARCH" = "arm64" ] || [ "$DPKG_ARCH" = "aarch64" ]; then \
-         ARCH_SUFFIX="arm64"; \
-       else \
-         ARCH_SUFFIX="amd64"; \
-       fi \
-    && echo "Building for architecture: ${DPKG_ARCH} -> ${ARCH_SUFFIX}" \
-    && curl -O https://internal-pub.cellframe.net/linux/cellframe-tool-sign/feature/20325/cellframe-tool-sign-${ARCH_SUFFIX} \
-    && curl -O https://internal-pub.cellframe.net/linux/cellframe-tool-compose/feature/20325/cellframe-tool-compose-${ARCH_SUFFIX} \
-    && chmod +x /cellframe-tool-compose-${ARCH_SUFFIX} \
-    && chmod +x /cellframe-tool-sign-${ARCH_SUFFIX} \
-    && ln -sf /cellframe-tool-sign-${ARCH_SUFFIX} /cellframe-tool-sign \
-    && ln -sf /cellframe-tool-compose-${ARCH_SUFFIX} /cellframe-tool-compose
-
 # Create cache directory for Cellframe packages (persistent across builds)
 RUN mkdir -p /var/cache/cellframe-packages
 
