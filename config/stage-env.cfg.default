@@ -237,6 +237,31 @@ local_path = ../../build/cellframe-node.deb
 # local_path = /opt/cellframe-builds/cellframe-node-custom.deb
 
 # ============================================================================
+# Extra DEB Packages (Optional)
+# ============================================================================
+# Additional DEB packages installed in the Docker image alongside cellframe-node.
+# Keys starting with 'local_' reference local .deb files (paths relative to project root).
+# Keys starting with 'url_' download .deb from a URL.
+#
+# [extra_packages]
+# local_1 = build/cellframe-node-cdb.deb
+# local_2 = build/kelvpn-client.deb
+# url_1 = https://example.com/my-plugin_1.0_amd64.deb
+
+# ============================================================================
+# Plugin Loading Configuration
+# ============================================================================
+# Controls whether cellframe-node loads plugins at startup.
+# Plugins are disabled by default to reduce overhead for tests that don't need them.
+#
+# [plugins]
+# enabled = false
+# # Enable plugins for specific node roles (comma-separated):
+# enabled_roles = root,master
+# # Or enable for specific node IDs (comma-separated):
+# enabled_nodes = 1,2,3
+
+# ============================================================================
 # Docker Image Customization (Optional)
 # ============================================================================
 # Uncomment and configure to customize Docker images for nodes

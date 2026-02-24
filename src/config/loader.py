@@ -13,7 +13,7 @@ Direct instantiation of ConfigLoader is deprecated - use global manager instead.
 import json
 import configparser
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from jinja2 import Environment, FileSystemLoader, Template
@@ -761,4 +761,89 @@ class ConfigLoader:
                    build_dir=str(build_dir))
         
         return node_source
+
+    def get_extra_packages(self) -> List[Dict[str, str]]:
+        """
+        Load extra DEB packages to install alongside cellframe-node.
+
+        Reads [extra_packages] section from stage-env.cfg.
+        Keys starting with 'local_' are resolved as local file paths.
+        Keys starting with 'url_' are treated as download URLs.
+
+        Returns:
+            List of dicts: [{'type': 'local', 'path': '/abs/path.deb'}, ...]
+        """
+        from pathlib import Path
+
+        config_file = self.custom_config_path or (self.config_dir / "stage-env.cfg")
+        if not config_file.exists():
+            return []
+
+        config = configparser.ConfigParser()
+        config.read(config_file)
+
+        if not config.has_section('extra_packages'):
+            return []
+
+        packages = []
+        paths_config = self.get_paths_config()
+        project_root = (self.base_path / paths_config.get('project_root', '../..')).resolve()
+
+        for key, value in config.items('extra_packages'):
+            value = value.strip()
+            if not value or value.startswith('#'):
+                continue
+
+            if key.startswith('local'):
+                pkg_path = Path(value)
+                if not pkg_path.is_absolute():
+                    pkg_path = (project_root / value).resolve()
+                if not pkg_path.exists():
+                    logger.warning("extra_package_not_found", key=key, path=str(pkg_path))
+                    continue
+                packages.append({'type': 'local', 'path': str(pkg_path)})
+                logger.info("extra_package_local", key=key, path=str(pkg_path))
+            elif key.startswith('url'):
+                packages.append({'type': 'url', 'url': value})
+                logger.info("extra_package_url", key=key, url=value)
+
+        return packages
+
+    def get_plugins_config(self) -> Dict[str, Any]:
+        """
+        Load [plugins] configuration.
+
+        Returns:
+            Dict with plugins settings:
+            - enabled: bool (global default)
+            - enabled_roles: list of roles where plugins are enabled
+            - enabled_nodes: list of node IDs where plugins are enabled
+        """
+        result = {
+            'enabled': False,
+            'enabled_roles': [],
+            'enabled_nodes': [],
+        }
+
+        config_file = self.custom_config_path or (self.config_dir / "stage-env.cfg")
+        if not config_file.exists():
+            return result
+
+        config = configparser.ConfigParser()
+        config.read(config_file)
+
+        if not config.has_section('plugins'):
+            return result
+
+        if config.has_option('plugins', 'enabled'):
+            result['enabled'] = config.getboolean('plugins', 'enabled')
+        if config.has_option('plugins', 'enabled_roles'):
+            roles = config.get('plugins', 'enabled_roles')
+            result['enabled_roles'] = [r.strip() for r in roles.split(',') if r.strip()]
+        if config.has_option('plugins', 'enabled_nodes'):
+            nodes = config.get('plugins', 'enabled_nodes')
+            result['enabled_nodes'] = [int(n.strip()) for n in nodes.split(',') if n.strip()]
+
+        logger.debug("plugins_config_loaded", **result)
+        return result
 

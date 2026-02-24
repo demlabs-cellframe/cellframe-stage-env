@@ -12,7 +12,7 @@ Manages the lifecycle of test network:
 import asyncio
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import traceback
 
 from ..config.loader import NetworkTopology
@@ -49,6 +49,9 @@ class NetworkManager:
         
         # Keep containers running after tests (for debugging)
         self.keep_running = False
+        
+        # Extra docker-compose services from suite descriptor
+        self.extra_services: Dict[str, Any] = {}
         
         # CLI path for node commands
         self.node_cli_path = "cellframe-node-cli"
@@ -340,7 +343,8 @@ class NetworkManager:
             network_settings={
                 'subnet': settings.subnet,
                 'base_ip': settings.base_ip,
-            }
+            },
+            extra_services=self.extra_services or None
         )
         
         # Build images if requested

@@ -349,8 +349,12 @@ class SnapshotStep(BaseModel):
       - snapshot: restore
         name: phase1
         
+      - snapshot: verify
+        name: cdb_ready
+        save: has_cdb_snapshot    # saves True/False instead of raising
+        
       - snapshot: create
-        name: "{{topology_name}}"  # Base topology snapshot after all phases
+        name: "{{topology_name}}"
         is_base: true
     """
     snapshot: str = Field(..., description="Snapshot operation: 'create', 'restore', 'verify', 'delete'")
@@ -358,6 +362,7 @@ class SnapshotStep(BaseModel):
     is_base: bool = Field(False, description="Mark as base topology snapshot (used as default for suites)")
     nodes: Optional[Union[str, List[str]]] = Field(None, description="Nodes to include (optional, defaults to all)")
     stop_containers: bool = Field(True, description="Stop containers before create (ensures consistent state)")
+    save: Optional[str] = Field(None, description="Variable name to save result (verify: True/False; restore: True/False)")
 
 
 # ============================================================================
@@ -497,7 +502,21 @@ class SuiteDescriptor(BaseModel):
     includes: List[str] = Field(default_factory=list, description="Common includes for all scenarios in suite")
     
     # Optional setup steps for suite (executed once before all scenarios)
-    setup: Optional[SectionConfig] = Field(None, description="Suite-level setup steps")
+    setup: Optional[Union[List[TestStep], SectionConfig]] = Field(None, description="Suite-level setup steps")
+    
+    # Additional docker-compose services merged into the generated compose file.
+    # Each key is a service name, value is a full docker-compose service definition.
+    extra_services: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional docker-compose services to add for this suite"
+    )
+    
+    @model_validator(mode='after')
+    def normalize_setup(self) -> 'SuiteDescriptor':
+        """Normalize setup list to SectionConfig."""
+        if isinstance(self.setup, list):
+            self.setup = SectionConfig(steps=self.setup) if self.setup else None
+        return self
     
     @property
     def name(self) -> str:

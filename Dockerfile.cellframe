@@ -382,7 +382,30 @@ RUN set -x && \
         echo "ERROR: Package files not found after installation"; \
         exit 1; \
     fi && \
-    rm /tmp/cellframe-node.deb
+    rm /tmp/cellframe-node.deb && \
+    \
+    # Install extra packages (plugins, tools, etc.) from packages/ directory
+    EXTRA_INSTALLED=0 && \
+    for pkg in /tmp/packages/*.deb; do \
+        [ ! -f "$pkg" ] && continue; \
+        BASENAME="$(basename "$pkg")"; \
+        [ "$BASENAME" = "$LOCAL_PACKAGE_NAME" ] && continue; \
+        echo "Installing extra package: $BASENAME" && \
+        set +e && \
+        DEBIAN_FRONTEND=noninteractive dpkg -i --force-depends --force-confold "$pkg" 2>&1; \
+        PKG_EXIT=$?; \
+        set -e && \
+        if [ "$PKG_EXIT" -ne 0 ]; then \
+            echo "Extra package $BASENAME had install errors (exit $PKG_EXIT), will fix later"; \
+        fi && \
+        EXTRA_INSTALLED=$((EXTRA_INSTALLED + 1)); \
+    done && \
+    if [ "$EXTRA_INSTALLED" -gt 0 ]; then \
+        echo "Installed $EXTRA_INSTALLED extra package(s), fixing dependencies..." && \
+        apt-get update -qq 2>&1 || true && \
+        DEBIAN_FRONTEND=noninteractive apt-get install -f -y -qq 2>&1 || true && \
+        DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>&1 || true; \
+    fi
 
 # Copy modular configs to disable production networks
 # Using cellframe-node.cfg.d/ approach - proper modular configuration

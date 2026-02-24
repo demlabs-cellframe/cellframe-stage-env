@@ -110,39 +110,49 @@ class ConfigStepExecutor(StepExecutor):
         # Initialize generator to access templates
         generator = ConfigGenerator(self.base_path, config_loader.config_path)
         
+        # cfg.d snippets: write directly as INI (no template needed)
+        if config_name.startswith("cellframe-node.cfg.d/"):
+            snippet_name = config_name.split("/", 1)[1]
+            for node_id in node_ids:
+                target = cache_dir / "configs" / f"node{node_id}" / "cellframe-node.cfg.d" / snippet_name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                lines = []
+                current_section = None
+                for k, v in variables.items():
+                    if '.' in k:
+                        section, key = k.rsplit('.', 1)
+                        if section != current_section:
+                            lines.append(f"[{section}]")
+                            current_section = section
+                        lines.append(f"{key}={v}")
+                    else:
+                        lines.append(f"{k}={v}")
+                target.write_text("\n".join(lines) + "\n")
+                logger.info("config_snippet_written", node_id=node_id, file=snippet_name)
+            return
+
         # Determine template path based on config_name
-        # config_name e.g. "cellframe-node" or "{network_name}/zerochain"
-        
-        # Mapping heuristic
         is_chain = False
         is_network = False
         parts = []
         
         if '/' in config_name:
-            # "{network_name}/zerochain" -> chains template
             parts = config_name.split('/')
-            network = parts[0]
-            chain_file = parts[1]  # e.g. "zerochain", "main"
+            chain_file = parts[1]
             template_name = f"chains/{chain_file}.cfg.j2"
             is_chain = True
         elif config_name == network_name:
-            # Network config (dynamic - uses network_name from context)
-            # Template is always "stagenet.cfg.j2" but output uses network_name
             template_name = "stagenet.cfg.j2"
             is_network = True
         else:
-            # "cellframe-node" -> base template
             template_name = f"base/{config_name}.cfg.j2"
             
-        # Verify template exists
         template_path = generator.templates_dir / template_name
         if not template_path.exists():
-             # Fallback: try direct name
              template_path = generator.templates_dir / f"{config_name}.cfg.j2"
              if not template_path.exists():
                  raise RuntimeError(f"Template not found for {config_name}: tried {template_name} and {config_name}.cfg.j2")
         
-        # Load template
         import jinja2
         env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(generator.templates_dir)))
         template = env.get_template(str(template_path.relative_to(generator.templates_dir)))

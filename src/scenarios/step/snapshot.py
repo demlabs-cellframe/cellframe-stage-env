@@ -130,23 +130,23 @@ class SnapshotStepExecutor(StepExecutor):
         manager, 
         ctx: RuntimeContext
     ) -> None:
-        """Verify snapshot exists and is valid."""
+        """Verify snapshot exists. With save=varname, stores True/False instead of raising."""
+        exists = False
         if hasattr(manager, 'snapshot') and manager.snapshot:
             snapshots_path = manager.snapshot.snapshots_path
-            
-            # Check for snapshot in various formats
             exists = any([
-                (snapshots_path / name).exists(),  # Directory
-                (snapshots_path / f"{name}.sqfs").exists(),  # SquashFS
-                (snapshots_path / f"{name}.marker").exists(),  # Marker
+                (snapshots_path / name).exists(),
+                (snapshots_path / f"{name}.sqfs").exists(),
+                (snapshots_path / f"{name}.marker").exists(),
             ])
-            
-            if not exists:
-                raise RuntimeError(f"Snapshot not found: {name}")
-            
-            logger.info("snapshot_verified", name=name)
+
+        if step.save:
+            ctx.set_variable(step.save, exists)
+            logger.info("snapshot_verify_result", name=name, exists=exists, saved_to=step.save)
+        elif not exists:
+            raise RuntimeError(f"Snapshot not found: {name}")
         else:
-            logger.warning("snapshot_verify_skipped_no_handler")
+            logger.info("snapshot_verified", name=name)
     
     async def _execute_delete(
         self, 

@@ -38,42 +38,18 @@ class DockerOpStepExecutor(StepExecutor):
         
         logger.info(f"Docker operation: {operation} on services {step.services}")
         
-        # Handle services - can be a list or a template string that expands to a list
         raw_services = step.services
         if raw_services is None:
             raise ScenarioExecutionError(f"services required for '{operation}' operation", step=step)
         if isinstance(raw_services, str):
-            # Template string like "{{all_nodes}}" - substitute and parse
             expanded = ctx.substitute(raw_services)
-            # After substitution, should be a list representation or comma-separated
             if expanded.startswith('[') and expanded.endswith(']'):
-                # Parse as Python list literal
                 import ast
                 try:
                     raw_services = ast.literal_eval(expanded)
                 except (ValueError, SyntaxError):
-                    # Fallback: treat as single service
                     raw_services = [expanded]
             else:
-                # Comma-separated or single value
-                raw_services = [s.strip() for s in expanded.split(',') if s.strip()]
-        
-        # Handle services - can be a list or a template string that expands to a list
-        raw_services = step.services
-        if isinstance(raw_services, str):
-            # Template string like "{{all_nodes}}" - substitute and parse
-            expanded = ctx.substitute(raw_services)
-            # After substitution, should be a list representation or comma-separated
-            if expanded.startswith('[') and expanded.endswith(']'):
-                # Parse as Python list literal
-                import ast
-                try:
-                    raw_services = ast.literal_eval(expanded)
-                except (ValueError, SyntaxError):
-                    # Fallback: treat as single service
-                    raw_services = [expanded]
-            else:
-                # Comma-separated or single value
                 raw_services = [s.strip() for s in expanded.split(',') if s.strip()]
         
         # Substitute variables and resolve node aliases to docker service names

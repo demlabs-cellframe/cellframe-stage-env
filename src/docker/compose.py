@@ -234,7 +234,8 @@ class DockerComposeManager:
         cellframe_version: str = "latest",
         cache_dir_relative: str = "cache",
         node_source_config: Optional[Dict[str, Any]] = None,
-        network_settings: Optional[Dict[str, str]] = None
+        network_settings: Optional[Dict[str, str]] = None,
+        extra_services: Optional[Dict[str, Any]] = None
     ) -> None:
         """
         Generate docker-compose.yml dynamically for given nodes.
@@ -246,6 +247,7 @@ class DockerComposeManager:
             cache_dir_relative: Relative path to cache directory
             node_source_config: Node source configuration (type, url, local_path, etc.)
             network_settings: Dict with 'subnet' and 'base_ip' from config
+            extra_services: Additional docker-compose services to merge (from suite descriptor)
         """
         logger.info("generating_compose_file",
                    node_count=len(nodes),
@@ -300,19 +302,38 @@ class DockerComposeManager:
         # Determine node source configuration
         node_source_type = node_source_config.get('type', 'url') if node_source_config else 'url'
         
-        # CRITICAL: Clear packages/ directory if using URL source to prevent using stale local packages
-        # Dockerfile COPY will copy everything from packages/, so we must ensure it's empty for URL sources
-        if node_source_type == 'url':
-            # Remove all .deb files but keep .gitkeep
-            for item in build_context_packages_dir.iterdir():
-                if item.is_file() and item.suffix == '.deb':
-                    logger.debug("removing_stale_local_package", path=str(item))
-                    item.unlink()
-            # Ensure .gitkeep exists
-            (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
-        else:
-            # For local/repository sources, just ensure .gitkeep exists
-            (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
+        # Clear stale .deb files from packages/ build context
+        for item in build_context_packages_dir.iterdir():
+            if item.is_file() and item.suffix == '.deb':
+                logger.debug("removing_stale_package", path=str(item))
+                item.unlink()
+        (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
+        
+        # Copy extra packages into build context (installed after cellframe-node)
+        from src.config.manager import get_config_loader
+        try:
+            extra_packages = get_config_loader().get_extra_packages()
+        except Exception:
+            extra_packages = []
+        
+        if extra_packages:
+            import shutil as _shutil
+            for pkg_info in extra_packages:
+                if pkg_info['type'] == 'local':
+                    src = Path(pkg_info['path'])
+                    dst = build_context_packages_dir / src.name
+                    _shutil.copy2(src, dst)
+                    logger.info("extra_package_copied", name=src.name,
+                               size_mb=round(src.stat().st_size / (1024 * 1024), 2))
+                elif pkg_info['type'] == 'url':
+                    import urllib.request
+                    url = pkg_info['url']
+                    fname = url.rsplit('/', 1)[-1]
+                    dst = build_context_packages_dir / fname
+                    logger.info("extra_package_downloading", url=url)
+                    urllib.request.urlretrieve(url, str(dst))
+                    logger.info("extra_package_downloaded", name=fname)
+        
         local_package_path = None
         
         if node_source_type == 'local' and node_source_config:
@@ -507,6 +528,12 @@ class DockerComposeManager:
             # Add to services
             compose_data['services'][service_name] = node_service
         
+        # Merge extra services from suite descriptor
+        if extra_services:
+            for svc_name, svc_config in extra_services.items():
+                compose_data['services'][svc_name] = svc_config
+                logger.info("extra_service_added", name=svc_name)
+        
         # Write generated compose file
         generated_file = self.project_dir / "docker-compose.generated.yml"
         
@@ -518,7 +545,7 @@ class DockerComposeManager:
         
         logger.info("compose_file_generated",
                    path=str(generated_file),
-                   services=len(nodes))
+                   services=len(compose_data.get('services', {})))
     
     def up(
         self,
