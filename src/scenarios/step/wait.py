@@ -232,12 +232,22 @@ class WaitStepExecutor(StepExecutor):
             ctx.add_result("wait", True, {"type": wait_type, **result})
             
         except TimeoutError as e:
+            # Check if waiter is optional (useful in retry loops)
+            if getattr(step, 'optional', False):
+                logger.warning(f"⚠️ Waiter '{wait_type}' timeout (optional, continuing): {str(e)}")
+                ctx.add_result("wait", False, {"type": wait_type, "timeout": True, "error": str(e)})
+                return  # Don't raise, just continue
             raise ScenarioExecutionError(
                 f"Waiter '{wait_type}' timeout: {str(e)}",
                 step=step,
                 context=params
             )
         except RuntimeError as e:
+            # Check if waiter is optional
+            if getattr(step, 'optional', False):
+                logger.warning(f"⚠️ Waiter '{wait_type}' failed (optional, continuing): {str(e)}")
+                ctx.add_result("wait", False, {"type": wait_type, "error": str(e)})
+                return
             raise ScenarioExecutionError(
                 f"Waiter '{wait_type}' failed: {str(e)}",
                 step=step,

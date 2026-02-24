@@ -16,3 +16,6 @@ variables:
   
   # Single ROOT cert (only works if auth_certs_number_verify=1)
   root_cert_single: "stagenet.root.pvt.0"
+  
+  # All 3 ROOT certificates (for TCELL which requires 3 signatures)
+  root_certs_tcell: "stagenet.root.pvt.0,stagenet.root.pvt.1,stagenet.root.pvt.2"
