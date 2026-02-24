@@ -7,7 +7,7 @@ ensuring validation and user-friendly error messages.
 
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -288,6 +288,7 @@ class ToolStep(BaseModel):
     tool: str = Field(..., description="Tool command (e.g., 'cert create test_cert sig_dil')")
     node: str = Field("node1", description="Node to execute on")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+    save_hash: Optional[str] = Field(None, description="Extract and save hash (0x[hex]) to variable")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     timeout: Optional[int] = Field(30, description="Command timeout in seconds")
     
@@ -314,6 +315,18 @@ class WaitForDatumStep(BaseModel):
     timeout_in_blocks: int = Field(180, description="Timeout after appearing in blocks")
     check_interval: int = Field(2, description="Check interval in seconds")
     save_status: Optional[str] = Field(None, description="Variable name to save final status")
+
+
+class WaitForTxStep(BaseModel):
+    """Wait for common transaction to complete: mempool → chain → block (success) or mempool → hole → no block (failure)."""
+    wait_for_tx: str = Field(..., description="Transaction hash for tracking in mempool & chains")
+    expected_status: Literal["success", "failure"] = Field(..., description="Expected outcome: 'success' (tx in chain) or 'failure' (tx rejected, status: hole)")
+    node: str = Field("node1", description="Target node for CLI checks")
+    network: str = Field("stagenet", description="Network name (default: stagenet)")
+    chain: str = Field("main", description="Chain name (default: main)")
+    description: Optional[str] = Field(None, description="Step description for logging")
+    timeout_per_stage: int = Field(120, description="Timeout per stage for the transaction to complete, in seconds")
+    check_interval: int = Field(5, description="Check interval in stages for the transaction tracking, in seconds")
 
 
 class NetworkWaitStep(BaseModel):
@@ -403,7 +416,7 @@ class BashCheck(BaseModel):
     timeout: Optional[int] = Field(30, description="Script timeout")
 
 
-CheckSpec = Union[CLICheck, RPCCheck, PythonCheck, BashCheck]
+CheckSpec = Union[CLICheck, RPCCheck, PythonCheck, BashCheck, WaitForTxStep]
 
 
 # ============================================================================
@@ -424,7 +437,7 @@ class StepDefaults(BaseModel):
 
 class StepGroup(BaseModel):
     """Group of steps with shared defaults."""
-    name: Optional[str] = Field(None, description="Group name for logging")
+    name: Optional[str] = Field(None, alias="group", description="Group name for logging")
     defaults: Optional[StepDefaults] = Field(None, description="Default parameters for this group")
     steps: List[Union["TestStep", "StepGroup"]] = Field(..., description="Steps in this group")
 
@@ -433,7 +446,7 @@ class StepGroup(BaseModel):
 # IMPORTANT: Order matters! Specific types must come before generic ones to ensure correct parsing.
 # NetworkWaitStep must come before WaitStep.
 TestStep = Union[
-    NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep,
+    NetworkWaitStep, WaitForDatumStep, WaitForTxStep, SnapshotStep, DockerOpStep,
     CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
@@ -502,7 +515,15 @@ class SuiteDescriptor(BaseModel):
     variables: Dict[str, Any] = Field(default_factory=dict, description="Variables inherited by scenarios")
     
     # Optional setup steps for suite (executed once before all scenarios)
-    setup: Optional[SectionConfig] = Field(None, description="Suite-level setup steps")
+    # Accepts flat list (like test) or SectionConfig for backward compatibility.
+    setup: Optional[Union[List[TestStep], SectionConfig]] = Field(None, description="Suite-level setup steps")
+    
+    @model_validator(mode='after')
+    def normalize_setup(self) -> 'SuiteDescriptor':
+        """Normalize flat list to SectionConfig (same as TestScenario)."""
+        if self.setup is not None and isinstance(self.setup, list):
+            self.setup = SectionConfig(steps=self.setup)
+        return self
     
     @property
     def name(self) -> str:

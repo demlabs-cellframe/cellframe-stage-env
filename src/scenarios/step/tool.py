@@ -2,6 +2,7 @@
 Cellframe-node-tool command step executor.
 """
 
+import re
 from typing import Any, Dict
 
 from ...utils.logger import get_logger
@@ -43,9 +44,26 @@ class ToolStepExecutor(StepExecutor):
             self._log_to_file(f"Stderr:\n{result['stderr']}")
         self._log_to_file("\n" + "=" * 70 + "\n")
         
-        # Save result if requested
+        stdout = (result.get("stdout") or "").strip()
+
+        # Save hash if requested (e.g. wallet pkey show outputs "0x..." on a line)
+        if step.save_hash and stdout:
+            hash_match = re.search(r"0x[0-9a-fA-F]{64}", stdout)
+            if hash_match:
+                variable_name = ctx.substitute(step.save_hash)
+                ctx.set_variable(variable_name, hash_match.group(0))
+                self._log_to_file(f"✓ Saved hash to variable: {variable_name}")
+                logger.debug("tool_step_saved_hash", variable=variable_name)
+            else:
+                raise ScenarioExecutionError(
+                    "Failed to extract hash from tool output: no 0x[hex]{64} pattern found",
+                    step=f"cellframe-node-tool {tool_cmd}",
+                    context={"output": stdout[:500]}
+                )
+
+        # Save raw result if requested
         if step.save:
-            ctx.set_variable(step.save, result["stdout"].strip())
+            ctx.set_variable(step.save, stdout)
             self._log_to_file(f"✓ Saved to variable: {step.save}")
             logger.debug("tool_step_saved", variable=step.save)
         

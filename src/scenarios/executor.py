@@ -16,7 +16,7 @@ from src.utils.logger import get_logger
 from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
-    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
+    CLIStep, RPCStep, WaitStep, WaitForDatumStep, WaitForTxStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     NetworkWaitStep, DockerOpStep, SnapshotStep,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
@@ -155,7 +155,7 @@ class ScenarioExecutor:
         from .step import (
             CLIStepExecutor, RPCStepExecutor, PythonStepExecutor, PrintStepExecutor,
             BashStepExecutor, ToolStepExecutor, WaitStepExecutor,
-            WaitForDatumStepExecutor, LoopStepExecutor,
+            WaitForDatumStepExecutor, WaitForTxStepExecutor, LoopStepExecutor,
             NetworkWaitStepExecutor, DockerOpStepExecutor, SnapshotStepExecutor,
             SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor,
             ConfigStepExecutor
@@ -175,6 +175,9 @@ class ScenarioExecutor:
         )
         self.wait_for_datum_executor = WaitForDatumStepExecutor(
             self.container_manager, log_file, debug, node_cli_path
+        )
+        self.wait_for_tx_executor = WaitForTxStepExecutor(
+            self.container_manager, log_file, debug
         )
         self.loop_executor = LoopStepExecutor(
             self.container_manager, log_file, debug,
@@ -604,6 +607,14 @@ class ScenarioExecutor:
             if isinstance(step, WaitForDatumStep):
                 datum_count = len(step.wait_for_datum) if isinstance(step.wait_for_datum, list) else 1
                 step_desc = f"WaitForDatumStep ({datum_count} datum{'s' if datum_count > 1 else ''})"
+            elif isinstance(step, WaitForTxStep):
+                from .step.wait_for_tx import format_tx_hash_preview
+                tx_hash = ctx.substitute(step.wait_for_tx)
+                tx_preview = format_tx_hash_preview(tx_hash)
+                expected = ctx.substitute(step.expected_status)
+                step_desc = f"WaitForTxStep '{tx_preview}' (expect={expected})"
+                if step.description:
+                    step_desc += f" - {ctx.substitute(step.description)}"
             elif isinstance(step, StepGroup) and step.name:
                 step_desc = f"StepGroup: {step.name}"
             elif isinstance(step, ConfigStep):
@@ -636,6 +647,8 @@ class ScenarioExecutor:
                 await self.wait_executor.execute(step, ctx)
             elif isinstance(step, WaitForDatumStep):
                 await self.wait_for_datum_executor.execute(step, ctx)
+            elif isinstance(step, WaitForTxStep):
+                await self.wait_for_tx_executor.execute(step, ctx)
             elif isinstance(step, PythonStep):
                 await self.python_executor.execute(step, ctx)
             elif isinstance(step, PrintStep):
@@ -771,6 +784,8 @@ class ScenarioExecutor:
                 await self.python_check_executor.execute(check, ctx)
             elif isinstance(check, BashCheck):
                 await self.bash_check_executor.execute(check, ctx)
+            elif isinstance(check, WaitForTxStep):
+                await self.wait_for_tx_executor.execute(check, ctx)
             else:
                 raise ScenarioExecutionError(f"Unknown check type: {type(check)}")
     
