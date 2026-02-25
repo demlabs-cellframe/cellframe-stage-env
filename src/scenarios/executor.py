@@ -452,9 +452,14 @@ class ScenarioExecutor:
         self._global_context = global_context
         self._node_configs = node_configs
         
-        # Set initial variables if provided
+        # Set initial variables if provided (suite_accumulated_vars from previous scenarios).
         if initial_variables:
             for key, value in initial_variables.items():
+                ctx.set_variable(key, value)
+        
+        # Scenario variables override initial_variables (each scenario defines its own wallet_name, etc.).
+        if hasattr(scenario, 'variables') and scenario.variables:
+            for key, value in scenario.variables.items():
                 ctx.set_variable(key, value)
         
         # CRITICAL: Pre-inject static node lists BEFORE setup phase
