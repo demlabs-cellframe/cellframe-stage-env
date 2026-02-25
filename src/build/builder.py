@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from src.utils.logger import get_logger
 from src.utils.cli import run_command, print_info, print_success, print_error
+from src.config.manager import get_config_loader
 
 logger = get_logger(__name__)
 
@@ -45,7 +46,8 @@ class BuildManager:
             node_source_config: Node source configuration from stage-env.cfg
         """
         self.base_path = base_path
-        self.project_root = base_path.parent.parent  # Go up to project root
+        paths_config = get_config_loader().get_paths_config()
+        self.project_root = (base_path / paths_config.get('project_root', '../..')).resolve()
         self.build_dir = self.project_root / "build"
         self.cache_dir = base_path / "cache" / "build"
         self.node_source_config = node_source_config or {}

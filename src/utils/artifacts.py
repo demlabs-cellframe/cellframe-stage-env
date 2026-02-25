@@ -32,7 +32,7 @@ class ArtifactsManager:
         self.config = config
         
         # Get artifacts directory from config
-        artifacts_dir = config.get('artifacts_dir', '../testing/artifacts')
+        artifacts_dir = config.get('artifacts_dir', '../../cache/artifacts')
         self.artifacts_root = (base_path / artifacts_dir).resolve()
         
         # Collection flags (use different names to avoid conflict with methods)

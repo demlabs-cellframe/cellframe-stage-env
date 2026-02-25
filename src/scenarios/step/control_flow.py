@@ -98,11 +98,13 @@ class IfStepExecutor(StepExecutor):
         condition = step.condition
         try:
             # Evaluate condition
-            result = eval(condition, {"__builtins__": __builtins__}, ctx.variables)
+            eval_ns = dict(ctx.variables)
+            eval_ns['ctx'] = ctx
+            result = eval(condition, {"__builtins__": __builtins__}, eval_ns)
             logger.info(f"Condition '{condition}' evaluated to: {result}")
         except Exception as e:
             raise ScenarioExecutionError(f"Failed to evaluate condition '{condition}': {e}", step=step)
-            
+
         if result:
             logger.info("Condition is TRUE, executing 'then' steps")
             await self.execute_steps_callback(step.then_steps, ctx, defaults)
@@ -135,10 +137,12 @@ class WhileStepExecutor(StepExecutor):
         
         while loops < max_loops:
             try:
-                result = eval(condition, {"__builtins__": __builtins__}, ctx.variables)
+                eval_ns = dict(ctx.variables)
+                eval_ns['ctx'] = ctx
+                result = eval(condition, {"__builtins__": __builtins__}, eval_ns)
             except Exception as e:
                 raise ScenarioExecutionError(f"Failed to evaluate condition '{condition}': {e}", step=step)
-                
+
             if not result:
                 logger.info(f"While loop ended: condition false after {loops} iterations")
                 break

@@ -108,8 +108,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             print_info("🔗 Connecting to running network...")
             config_path = get_config_path()
             network_mgr = NetworkManager(base_path, topology_name="default", config_path=config_path)
-            # Pass keep_running flag to prevent network shutdown on errors
             network_mgr.keep_running = not stop_after
+
+            # Point compose manager to generated file if it exists
+            generated = network_mgr.compose.project_dir / "docker-compose.generated.yml"
+            if generated.exists():
+                network_mgr.compose.compose_file = generated
             
             # Still need to initialize CLI parser
             print_info("📖 Initializing CLI parser from running network...")
@@ -227,7 +231,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     suite_scenarios = suite_info['scenarios']
                     
                     # Parse suite descriptor to get metadata
-                    common_root = base_path / "tests"
+                    # common_root: use project's tests/e2e/ for cross-suite common includes
+                    paths_config = get_config_loader().get_paths_config()
+                    project_root = (base_path / paths_config.get('project_root', '../..')).resolve()
+                    common_root = project_root / "tests" / "e2e"
+                    if not common_root.exists():
+                        common_root = base_path / "tests"
                     parser = ScenarioParser(scenarios_root=suite_descriptor.parent, common_root=common_root)
                     
                     suite_spec = None  # Initialize to None in case of parse failure
@@ -265,26 +274,19 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     
                     # Clean test data before each suite (if network is running)
                     if network_mgr:
-                        # Determine snapshot to restore
                         restore_snapshot_name = None
                         if isinstance(suite_spec, SuiteDescriptor) and suite_spec.restore_snapshot:
-                            # Use suite-specific snapshot
                             restore_snapshot_name = suite_spec.restore_snapshot
-                            # Substitute {{topology_name}} if present
                             if "{{topology_name}}" in restore_snapshot_name:
                                 topology_name = getattr(suite_spec.network, 'topology', 'default') if suite_spec.network else 'default'
                                 restore_snapshot_name = restore_snapshot_name.replace("{{topology_name}}", topology_name)
                         
-                        # OPTIMIZATION: Skip restore for first suite if we have pristine network
                         if is_first_suite:
-                            # CRITICAL: Remove marker IMMEDIATELY before using pristine network
-                            # Even if suite fails, next run will correctly do restore
                             try:
                                 pristine_marker.unlink()
                             except FileNotFoundError:
-                                pass  # Already removed, that's fine
-                            is_first_suite = False  # Only first suite gets this benefit
-                            
+                                pass
+                            is_first_suite = False
                             print_success("🚀 Using pristine network (no restore needed)")
                         else:
                             if restore_snapshot_name:
@@ -301,9 +303,14 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             except Exception as e:
                                 print_warning(f"Failed to restore state: {e}")
 
-                    # CRITICAL: Execute suite-level setup AFTER restore for EVERY suite
-                    # This ensures certificates and other ephemeral resources are created
-                    # even after snapshot restore (which doesn't include certs)
+                    # Propagate extra_services from suite descriptor to network manager
+                    if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.extra_services:
+                        network_mgr.extra_services = suite_spec.extra_services
+                        print_info(f"🐳 Extra services: {', '.join(suite_spec.extra_services.keys())}")
+
+                    # Execute suite-level setup (includes + setup steps).
+                    # Includes always run — each include decides internally whether
+                    # to act (e.g. by checking snapshot: verify) or skip.
                     if isinstance(suite_spec, SuiteDescriptor) and (suite_spec.includes or suite_spec.setup):
                         print_info("🔧 Executing suite-level setup...")
                         
@@ -311,13 +318,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         from ..scenarios.parser import SuiteSetupParser
                         
                         try:
-                            # Use dedicated SuiteSetupParser to process includes
                             suite_setup_parser = SuiteSetupParser(
                                 scenarios_root=suite_path,
                                 common_root=common_root
                             )
                             
-                            # Load and parse suite setup with includes
                             suite_setup_scenario = suite_setup_parser.load_suite_setup(
                                 suite_includes=suite_spec.includes or [],
                                 suite_setup=suite_spec.setup.dict() if suite_spec.setup else None,
@@ -325,7 +330,6 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 base_dir=suite_path
                             )
                             
-                            # Execute setup
                             executor = ScenarioExecutor(
                                 node_cli_path="cellframe-node-cli",
                                 log_file=suite_dir / "suite-setup.log",
@@ -333,8 +337,27 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 base_path=base_path
                             )
                             
+                            topology_vars = {}
+                            if network_mgr:
+                                from ..scenarios.global_context import ScenarioGlobalContext
+                                gc = ScenarioGlobalContext(
+                                    network_name=network_mgr.topology.network.name,
+                                    topology_name=network_mgr.topology_name,
+                                    native_ticker=getattr(network_mgr.topology.network, 'native_ticker', 'TCELL')
+                                )
+                                node_configs_for_setup = network_mgr.generate_node_configs()
+                                gc.set_static_node_info(node_configs_for_setup)
+                                gc.collect_node_ips(node_configs_for_setup, wait_for_ips=False)
+                                topology_vars = gc.to_dict()
+                                topology_vars['project_root'] = str(project_root)
+
                             async def _run_suite_setup():
-                                await executor.execute_scenario(suite_setup_scenario)
+                                await executor.execute_scenario(
+                                    suite_setup_scenario,
+                                    compose_manager=network_mgr.compose if network_mgr else None,
+                                    snapshot_manager=network_mgr.snapshot_manager if network_mgr else None,
+                                    initial_variables=topology_vars or None
+                                )
                             
                             asyncio.run(_run_suite_setup())
                             print_success("✓ Suite setup completed")
@@ -342,7 +365,6 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         except Exception as e:
                             print_error(f"Suite setup failed: {e}")
                             print_error(f"❌ Skipping all scenarios in suite: {suite_name}")
-                            # Skip all scenarios in this suite
                             continue
 
 
@@ -464,7 +486,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             )
                             
                             async def _execute():
-                                return await executor.execute_scenario(scenario)
+                                return await executor.execute_scenario(
+                                    scenario,
+                                    compose_manager=network_mgr.compose if network_mgr else None,
+                                    snapshot_manager=network_mgr.snapshot_manager if network_mgr else None,
+                                    initial_variables=topology_vars or None
+                                )
                             
                             print_info("  ▶️  Executing...")
                             ctx = asyncio.run(_execute())

@@ -23,11 +23,16 @@ from pydantic import BaseModel
 
 from src.utils.logger import get_logger
 from src.utils.cli import run_command, print_info, print_success, print_error
+from src.config.manager import get_config_loader
 
 logger = get_logger(__name__)
 
-# Docker image name for certificate generator
-CERT_GENERATOR_IMAGE = "cf-cert-generator:latest"
+# Docker image name for the builder environment (SDKs mounted, not copied)
+CERT_BUILDER_IMAGE = "cf-cert-builder:latest"
+
+# Named Docker volumes for caching SDK and cert-generator builds between runs
+_SDK_BUILD_CACHE_VOLUME = "cf-cert-sdk-cache"
+_CERT_BUILD_CACHE_VOLUME = "cf-cert-build-cache"
 
 
 class CertConfig(BaseModel):
@@ -61,59 +66,52 @@ class CertGenerator:
     
     def build_docker_image(self) -> bool:
         """
-        Build Docker image for certificate generator if needed.
-        
+        Build lightweight builder Docker image if needed.
+
+        The image contains only build tools (cmake, gcc, etc.).
+        SDK sources are mounted at runtime via ``docker run -v``.
+
         Returns:
             True if image is ready
         """
-        # Check if image exists
         try:
             result = subprocess.run(
-                ["docker", "images", "-q", CERT_GENERATOR_IMAGE],
-                capture_output=True,
-                text=True,
-                check=True
+                ["docker", "images", "-q", CERT_BUILDER_IMAGE],
+                capture_output=True, text=True, check=True,
             )
-            
             if result.stdout.strip():
-                logger.debug("cert_generator_image_exists")
+                logger.debug("cert_builder_image_exists")
                 return True
         except subprocess.CalledProcessError:
             pass
-        
-        logger.info("building_cert_generator_image")
-        print_info("Building certificate generator Docker image...")
-        
+
+        logger.info("building_cert_builder_image")
+        print_info("Building certificate builder Docker image...")
+
         try:
-            # Build Docker image from project root
-            project_root = self.base_path.parent.parent  # Go up from stage-env to project root
-            
             result = subprocess.run(
                 [
                     "docker", "build",
                     "-f", str(self.dockerfile),
-                    "-t", CERT_GENERATOR_IMAGE,
-                    str(project_root)
+                    "-t", CERT_BUILDER_IMAGE,
+                    str(self.dockerfile.parent),
                 ],
-                capture_output=True,
-                text=True,
-                cwd=project_root
+                capture_output=True, text=True,
             )
-            
+
             if result.returncode != 0:
-                logger.error("image_build_failed", 
-                           stderr=result.stderr,
-                           stdout=result.stdout)
-                print_error(f"Failed to build image: {result.stderr}")
+                logger.error("builder_image_build_failed",
+                             stderr=result.stderr, stdout=result.stdout)
+                print_error(f"Failed to build builder image: {result.stderr}")
                 return False
-            
-            print_success("Certificate generator image built")
-            logger.info("cert_generator_image_built")
+
+            print_success("Certificate builder image built")
+            logger.info("cert_builder_image_built")
             return True
-            
+
         except Exception as e:
-            logger.error("image_build_exception", error=str(e))
-            print_error(f"Exception building image: {e}")
+            logger.error("builder_image_build_exception", error=str(e))
+            print_error(f"Exception building builder image: {e}")
             return False
     
     def generate_node_cert(
@@ -223,54 +221,68 @@ class CertGenerator:
                    network=network_name,
                    nodes=node_count,
                    root_count=root_count,
-                   method="docker")
-        
-        print_info(f"Generating {node_count} node certificates using Docker...")
-        
-        # Ensure Docker image is built
+                   method="docker_mount")
+
+        print_info(f"Generating {node_count} node certificates (Docker + mounted SDKs)...")
+
         if not self.build_docker_image():
-            raise RuntimeError("Failed to build certificate generator Docker image")
-        
-        # Network ID for stagenet
+            raise RuntimeError("Failed to build certificate builder Docker image")
+
         network_id = "0x1234"
-        
-        # Prepare output directory with correct permissions
         self.certs_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Run certificate generator in Docker
-        # Mount certs directory as /output in container
+
+        paths_config = get_config_loader().get_paths_config()
+        project_root = (self.base_path / paths_config.get('project_root', '../..')).resolve()
+        sdk_src = (project_root / paths_config.get('cellframe_sdk_path', 'cellframe-sdk')).resolve()
+        dap_src = (project_root / paths_config.get('dap_sdk_path', 'dap-sdk')).resolve()
+        cert_src = (self.base_path / "src" / "certs").resolve()
+
+        uid, gid = os.getuid(), os.getgid()
+
+        # Single script: build SDK libs (cached) → build cert-generator (cached) → generate certs
+        build_and_generate = (
+            "set -e && "
+            "cd /tmp/sdk-build && "
+            "cmake -DCMAKE_BUILD_TYPE=Release /project/cellframe-sdk >/dev/null 2>&1 && "
+            "make -j$(nproc) dap_core dap_crypto dap_chain_common dap_io 2>&1 && "
+            "cd /tmp/cert-build && "
+            "cmake -DCELLFRAME_SDK_BUILD=/tmp/sdk-build "
+            "-DCELLFRAME_SDK_SRC=/project/cellframe-sdk "
+            "/project/cert-generator >/dev/null 2>&1 && "
+            "make -j$(nproc) cf-cert-generator 2>&1 && "
+            f"./cf-cert-generator /output {node_count} {network_name} {network_id} {root_count} && "
+            f"chown -R {uid}:{gid} /output"
+        )
+
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "-v", f"{sdk_src}:/project/cellframe-sdk:ro",
+            "-v", f"{dap_src}:/project/cellframe-sdk/dap-sdk:ro",
+            "-v", f"{cert_src}:/project/cert-generator:ro",
+            "-v", f"{self.certs_dir.absolute()}:/output",
+            "-v", f"{_SDK_BUILD_CACHE_VOLUME}:/tmp/sdk-build",
+            "-v", f"{_CERT_BUILD_CACHE_VOLUME}:/tmp/cert-build",
+            CERT_BUILDER_IMAGE,
+            "bash", "-c", build_and_generate,
+        ]
+
         try:
             logger.info("calling_docker_cert_generator",
-                       image=CERT_GENERATOR_IMAGE,
+                       image=CERT_BUILDER_IMAGE,
                        output_dir=str(self.certs_dir),
                        node_count=node_count,
                        network_name=network_name,
                        network_id=network_id)
-            
-            # Docker command: docker run --rm -v <host_path>:/output <image> /output <count> <network> <id> <root_count>
+
             result_proc = subprocess.run(
-                [
-                    "docker", "run",
-                    "--rm",  # Remove container after execution
-                    "-v", f"{self.certs_dir.absolute()}:/output",  # Mount certs directory
-                    "-u", f"{os.getuid()}:{os.getgid()}",  # Run as current user to avoid permission issues
-                    CERT_GENERATOR_IMAGE,
-                    "/output",  # output directory inside container
-                    str(node_count),  # number of nodes
-                    network_name,  # network name
-                    network_id,  # network ID
-                    str(root_count)  # number of ROOT nodes
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
+                docker_cmd,
+                capture_output=True, text=True, check=True,
             )
-            
+
             logger.info("cert_generator_docker_output", stdout=result_proc.stdout)
-            
             if result_proc.stderr:
                 logger.warning("cert_generator_docker_stderr", stderr=result_proc.stderr)
-            
+
         except subprocess.CalledProcessError as e:
             print_error(f"Certificate generation failed: {e}")
             logger.error("cert_generation_docker_failed",
