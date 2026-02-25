@@ -24,6 +24,10 @@ mkdir -p /opt/cellframe-node/var/lib/ca
 # Fix permissions for mounted volumes
 chmod -R 755 /opt/cellframe-node/var 2>/dev/null || true
 
+# Enable core dumps for crash analysis
+ulimit -c unlimited
+echo "/tmp/core.%p" > /proc/sys/kernel/core_pattern 2>/dev/null || true
+
 # Start cellframe-node with maximum debug level
 echo "Starting cellframe-node..."
 exec /opt/cellframe-node/bin/cellframe-node -D 5

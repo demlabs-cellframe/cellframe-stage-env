@@ -371,6 +371,7 @@ class SnapshotStep(BaseModel):
 
 from .schema_control_flow import SetStep, IfStep, WhileStep, ForStep, SwitchStep
 from .schema_config import ConfigStep
+from .schema_dpkg import DpkgStep
 
 
 # ============================================================================
@@ -439,7 +440,7 @@ class StepGroup(BaseModel):
 # IMPORTANT: Order matters! Specific types must come before generic ones to ensure correct parsing.
 # NetworkWaitStep must come before WaitStep.
 TestStep = Union[
-    NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep,
+    NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep, DpkgStep,
     CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,

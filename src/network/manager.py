@@ -1227,8 +1227,9 @@ class NetworkManager:
                 node_cli_path=self.node_cli_path
             )
             
+            consensus_timeout = float(self.timeouts.get('startup', 600))
             try:
-                await final_consensus_monitor.wait_for_network_ready(timeout=150.0)
+                await final_consensus_monitor.wait_for_network_ready(timeout=consensus_timeout)
                 logger.info("all_nodes_ready_for_snapshot")
             except TimeoutError as e:
                 logger.error("full_network_not_ready", error=str(e))
@@ -1266,7 +1267,7 @@ class NetworkManager:
         )
         
         try:
-            await consensus_monitor.wait_for_network_ready(timeout=150.0)  # 150s for 8-node topology
+            await consensus_monitor.wait_for_network_ready(timeout=float(self.timeouts.get('startup', 600)))
             logger.info("network_consensus_achieved")
         except TimeoutError as e:
             logger.error("network_consensus_timeout_critical",

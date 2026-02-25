@@ -2,6 +2,8 @@
 Docker operation step executor.
 """
 
+import subprocess
+
 from ...utils.logger import get_logger
 from .base import StepExecutor
 from ..schema import DockerOpStep, WaitStep
