@@ -8,10 +8,9 @@ set -e
 
 # Resolve actual script location (following symlinks)
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-# Navigate from scripts/ up to tests/
-TESTS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-STAGE_ENV_DIR="$TESTS_DIR/stage-env"
-TESTING_DIR="$TESTS_DIR/testing"
+STAGE_ENV_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$STAGE_ENV_DIR/../.." && pwd)"
+CACHE_DIR="$PROJECT_ROOT/cache"
 
 # Colors
 RED='\033[0;31m'
@@ -62,10 +61,10 @@ done
 if [ "$FORCE" = false ]; then
     echo "This will delete:"
     echo "  - stage-env/cache (configs, data, certs, crash-artifacts)"
-    echo "  - testing/snapshots"
-    echo "  - testing/artifacts"
-    echo "  - testing/cache (configs, data, certs)"
-    echo "  - testing/logs"
+    echo "  - cache/snapshots"
+    echo "  - cache/artifacts"
+    echo "  - cache/configs, cache/data, cache/certs"
+    echo "  - cache/logs"
     echo "  - All cellframe-stage Docker containers"
     echo "  - All cellframe-stage Docker networks"
     echo "  - All cf-node Docker images"
@@ -160,34 +159,34 @@ fi
 
 # Clean testing snapshots
 info "Cleaning testing snapshots..."
-if [ -d "$TESTING_DIR/snapshots" ]; then
-    sudo rm -rf "$TESTING_DIR/snapshots"/* 2>/dev/null || rm -rf "$TESTING_DIR/snapshots"/* 2>/dev/null || true
-    success "testing/snapshots cleaned"
+if [ -d "$CACHE_DIR/snapshots" ]; then
+    sudo rm -rf "$CACHE_DIR/snapshots"/* 2>/dev/null || rm -rf "$CACHE_DIR/snapshots"/* 2>/dev/null || true
+    success "cache/snapshots cleaned"
 else
-    warning "testing/snapshots not found"
+    warning "cache/snapshots not found"
 fi
 
-# Clean testing artifacts
-info "Cleaning testing artifacts..."
-if [ -d "$TESTING_DIR/artifacts" ]; then
-    rm -rf "$TESTING_DIR/artifacts"/* 2>/dev/null || true
-    success "testing/artifacts cleaned"
+# Clean cache artifacts
+info "Cleaning cache artifacts..."
+if [ -d "$CACHE_DIR/artifacts" ]; then
+    rm -rf "$CACHE_DIR/artifacts"/* 2>/dev/null || true
+    success "cache/artifacts cleaned"
 fi
 
-# Clean testing cache
-info "Cleaning testing cache..."
-if [ -d "$TESTING_DIR/cache" ]; then
-    sudo rm -rf "$TESTING_DIR/cache/configs" 2>/dev/null || rm -rf "$TESTING_DIR/cache/configs" 2>/dev/null || true
-    sudo rm -rf "$TESTING_DIR/cache/data" 2>/dev/null || rm -rf "$TESTING_DIR/cache/data" 2>/dev/null || true
-    sudo rm -rf "$TESTING_DIR/cache/certs" 2>/dev/null || rm -rf "$TESTING_DIR/cache/certs" 2>/dev/null || true
-    success "testing/cache cleaned"
+# Clean cache data
+info "Cleaning cache data..."
+if [ -d "$CACHE_DIR" ]; then
+    sudo rm -rf "$CACHE_DIR/configs" 2>/dev/null || rm -rf "$CACHE_DIR/configs" 2>/dev/null || true
+    sudo rm -rf "$CACHE_DIR/data" 2>/dev/null || rm -rf "$CACHE_DIR/data" 2>/dev/null || true
+    sudo rm -rf "$CACHE_DIR/certs" 2>/dev/null || rm -rf "$CACHE_DIR/certs" 2>/dev/null || true
+    success "cache cleaned"
 fi
 
-# Clean testing logs
-info "Cleaning testing logs..."
-if [ -d "$TESTING_DIR/logs" ]; then
-    rm -rf "$TESTING_DIR/logs"/* 2>/dev/null || true
-    success "testing/logs cleaned"
+# Clean cache logs
+info "Cleaning cache logs..."
+if [ -d "$CACHE_DIR/logs" ]; then
+    rm -rf "$CACHE_DIR/logs"/* 2>/dev/null || true
+    success "cache/logs cleaned"
 fi
 
 # Clean generated compose file

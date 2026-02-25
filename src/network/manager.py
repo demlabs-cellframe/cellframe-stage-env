@@ -12,7 +12,7 @@ Manages the lifecycle of test network:
 import asyncio
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import traceback
 
 from ..config.loader import NetworkTopology
@@ -49,6 +49,9 @@ class NetworkManager:
         
         # Keep containers running after tests (for debugging)
         self.keep_running = False
+        
+        # Extra docker-compose services from suite descriptor
+        self.extra_services: Dict[str, Any] = {}
         
         # CLI path for node commands
         self.node_cli_path = "cellframe-node-cli"
@@ -120,7 +123,7 @@ class NetworkManager:
         
         # Pass full config including cache_dir
         snapshot_config = dict(suite_isolation_config)
-        snapshot_config['cache_dir'] = self.paths_config.get('cache_dir', '../testing/cache')
+        snapshot_config['cache_dir'] = self.paths_config.get('cache_dir', '../../cache')
         
         self.snapshot_manager = SnapshotManager(
             base_path,
@@ -331,12 +334,17 @@ class NetworkManager:
         # Generate dynamic docker-compose.yml for all nodes
         logger.info("generating_docker_compose")
         cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
-        # Get node_source configuration from config loader
         node_source_config = self.config_loader.get_node_source_config()
+        settings = self.topology.network_settings
         self.compose.generate_compose_for_nodes(
             node_configs, 
             cache_dir_relative=cache_dir_relative,
-            node_source_config=node_source_config
+            node_source_config=node_source_config,
+            network_settings={
+                'subnet': settings.subnet,
+                'base_ip': settings.base_ip,
+            },
+            extra_services=self.extra_services or None
         )
         
         # Build images if requested
@@ -1361,7 +1369,7 @@ class NetworkManager:
         Implementation: Uses temporary Docker container (Alpine) to clean files.
         This ensures proper permissions for root-owned files created by node containers.
         """
-        cache_dir = self.paths_config.get('cache_dir', '../testing/cache')
+        cache_dir = self.paths_config.get('cache_dir', '../../cache')
         cache_path = (self.base_path / cache_dir).resolve()
         data_dir = cache_path / "data"
         

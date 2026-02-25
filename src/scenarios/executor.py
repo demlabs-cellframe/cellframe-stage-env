@@ -484,6 +484,27 @@ class ScenarioExecutor:
                 if global_defaults.cli:
                     self._log_to_file(f"[DEBUG] CLI defaults: {global_defaults.cli}")
             
+            # Install runtime packages/files before setup phase
+            if hasattr(scenario, 'packages') and scenario.packages:
+                from .step.package import PackageInstaller
+                pkg_installer = PackageInstaller(
+                    self.container_manager, self.log_file, self.debug,
+                    resolve_node_alias_callback=self._resolve_node_alias,
+                    base_path=self.base_path
+                )
+                logger.info("installing_runtime_packages", count=len(scenario.packages))
+                await pkg_installer.install_packages(scenario.packages)
+
+            if hasattr(scenario, 'files') and scenario.files:
+                from .step.file import FileInstaller
+                file_installer = FileInstaller(
+                    self.container_manager, self.log_file, self.debug,
+                    resolve_node_alias_callback=self._resolve_node_alias,
+                    base_path=self.base_path
+                )
+                logger.info("installing_runtime_files", count=len(scenario.files))
+                await file_installer.install_files(scenario.files)
+
             # Setup phase
             if hasattr(scenario, 'setup') and scenario.setup:
                 logger.info("Executing setup phase...")

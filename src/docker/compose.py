@@ -233,7 +233,9 @@ class DockerComposeManager:
         build_type: str = "debug",
         cellframe_version: str = "latest",
         cache_dir_relative: str = "cache",
-        node_source_config: Optional[Dict[str, Any]] = None
+        node_source_config: Optional[Dict[str, Any]] = None,
+        network_settings: Optional[Dict[str, str]] = None,
+        extra_services: Optional[Dict[str, Any]] = None
     ) -> None:
         """
         Generate docker-compose.yml dynamically for given nodes.
@@ -244,6 +246,8 @@ class DockerComposeManager:
             cellframe_version: Cellframe version tag
             cache_dir_relative: Relative path to cache directory
             node_source_config: Node source configuration (type, url, local_path, etc.)
+            network_settings: Dict with 'subnet' and 'base_ip' from config
+            extra_services: Additional docker-compose services to merge (from suite descriptor)
         """
         logger.info("generating_compose_file",
                    node_count=len(nodes),
@@ -266,6 +270,22 @@ class DockerComposeManager:
         if not node_template:
             raise ValueError("No x-cf-node-template found in docker-compose.yml")
         
+        # Override network config from stage-env.cfg (template has defaults)
+        if network_settings:
+            subnet = network_settings.get('subnet')
+            if subnet:
+                import ipaddress
+                net = ipaddress.ip_network(subnet, strict=False)
+                gateway = str(net.network_address + 1)
+                network_settings['gateway'] = gateway
+                compose_data.setdefault('networks', {}) \
+                    .setdefault(self.network_name, {}) \
+                    .setdefault('ipam', {})['config'] = [
+                        {'subnet': subnet, 'gateway': gateway}
+                    ]
+                logger.info("network_config_injected",
+                           subnet=subnet, gateway=gateway)
+        
         # Clear existing node services (keep monitoring/test services)
         services_to_keep = {}
         for svc_name, svc_config in compose_data.get('services', {}).items():
@@ -282,19 +302,38 @@ class DockerComposeManager:
         # Determine node source configuration
         node_source_type = node_source_config.get('type', 'url') if node_source_config else 'url'
         
-        # CRITICAL: Clear packages/ directory if using URL source to prevent using stale local packages
-        # Dockerfile COPY will copy everything from packages/, so we must ensure it's empty for URL sources
-        if node_source_type == 'url':
-            # Remove all .deb files but keep .gitkeep
-            for item in build_context_packages_dir.iterdir():
-                if item.is_file() and item.suffix == '.deb':
-                    logger.debug("removing_stale_local_package", path=str(item))
-                    item.unlink()
-            # Ensure .gitkeep exists
-            (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
-        else:
-            # For local/repository sources, just ensure .gitkeep exists
-            (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
+        # Clear stale .deb files from packages/ build context
+        for item in build_context_packages_dir.iterdir():
+            if item.is_file() and item.suffix == '.deb':
+                logger.debug("removing_stale_package", path=str(item))
+                item.unlink()
+        (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
+        
+        # Copy extra packages into build context (installed after cellframe-node)
+        from src.config.manager import get_config_loader
+        try:
+            extra_packages = get_config_loader().get_extra_packages()
+        except Exception:
+            extra_packages = []
+        
+        if extra_packages:
+            import shutil as _shutil
+            for pkg_info in extra_packages:
+                if pkg_info['type'] == 'local':
+                    src = Path(pkg_info['path'])
+                    dst = build_context_packages_dir / src.name
+                    _shutil.copy2(src, dst)
+                    logger.info("extra_package_copied", name=src.name,
+                               size_mb=round(src.stat().st_size / (1024 * 1024), 2))
+                elif pkg_info['type'] == 'url':
+                    import urllib.request
+                    url = pkg_info['url']
+                    fname = url.rsplit('/', 1)[-1]
+                    dst = build_context_packages_dir / fname
+                    logger.info("extra_package_downloading", url=url)
+                    urllib.request.urlretrieve(url, str(dst))
+                    logger.info("extra_package_downloaded", name=fname)
+        
         local_package_path = None
         
         if node_source_type == 'local' and node_source_config:
@@ -311,6 +350,11 @@ class DockerComposeManager:
                     raise FileNotFoundError(f"Local package not found: {local_package_path}")
                 
                 logger.info("using_local_package", path=str(local_package_path))
+        
+        # Resolve TOOLS_BASE_URL from paths config (once, before node loop)
+        from src.config.manager import get_config_loader
+        paths_config = get_config_loader().get_paths_config()
+        tools_base_url = paths_config.get('tools_base_url', 'https://pub.cellframe.net')
         
         # Generate service for each node
         for node in nodes:
@@ -363,6 +407,9 @@ class DockerComposeManager:
                 node_service['build'] = {}
             if 'args' not in node_service['build']:
                 node_service['build']['args'] = {}
+            
+            # Set TOOLS_BASE_URL from paths config
+            node_service['build']['args']['TOOLS_BASE_URL'] = tools_base_url
             
             # Set build args for node source
             node_service['build']['args']['NODE_SOURCE_TYPE'] = node_source_type
@@ -421,7 +468,7 @@ class DockerComposeManager:
                            volumes=node.docker_volumes)
             
             # Set environment variables
-            node_service['environment'] = {
+            env = {
                 'NODE_ID': str(node.node_id),
                 'NODE_ROLE': node.role,
                 'NODE_TYPE': node.node_type,
@@ -430,6 +477,10 @@ class DockerComposeManager:
                 'DAP_DEBUG': '1',
                 'CELLFRAME_DEBUG': '1'
             }
+            if network_settings:
+                env['DOCKER_SUBNET'] = network_settings.get('subnet', '172.20.0.0/16')
+                env['DOCKER_GATEWAY'] = network_settings.get('gateway', '172.20.0.1')
+            node_service['environment'] = env
             
             # Add custom environment variables if specified
             if hasattr(node, 'custom_env_vars') and node.custom_env_vars:
@@ -477,6 +528,12 @@ class DockerComposeManager:
             # Add to services
             compose_data['services'][service_name] = node_service
         
+        # Merge extra services from suite descriptor
+        if extra_services:
+            for svc_name, svc_config in extra_services.items():
+                compose_data['services'][svc_name] = svc_config
+                logger.info("extra_service_added", name=svc_name)
+        
         # Write generated compose file
         generated_file = self.project_dir / "docker-compose.generated.yml"
         
@@ -488,7 +545,7 @@ class DockerComposeManager:
         
         logger.info("compose_file_generated",
                    path=str(generated_file),
-                   services=len(nodes))
+                   services=len(compose_data.get('services', {})))
     
     def up(
         self,
