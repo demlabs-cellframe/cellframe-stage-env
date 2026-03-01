@@ -21,10 +21,13 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /project
 
-# Copy cellframe-sdk source
+# Copy cellframe-sdk source and root dap-sdk (cellframe-sdk's dap-sdk submodule may be outdated)
 COPY cellframe-sdk /project/cellframe-sdk
-# cellframe-sdk's dap-sdk has no uthash in tree; use repo root dap-sdk uthash so build finds uthash.h
-COPY dap-sdk/3rdparty/uthash /project/cellframe-sdk/dap-sdk/3rdparty/uthash
+COPY dap-sdk /project/dap-sdk
+
+# Replace cellframe-sdk's dap-sdk submodule with the root dap-sdk (which has no3rdparty changes)
+RUN rm -rf /project/cellframe-sdk/dap-sdk && \
+    cp -a /project/dap-sdk /project/cellframe-sdk/dap-sdk
 
 # Clean any host CMake artifacts
 RUN find /project/cellframe-sdk -name "CMakeCache.txt" -delete && \
@@ -41,6 +44,7 @@ COPY tests/stage-env/src/certs /project/cert-generator
 WORKDIR /project/cert-generator/build
 RUN cmake -DCELLFRAME_SDK_BUILD=/project/cellframe-sdk/build \
           -DCELLFRAME_SDK_SRC=/project/cellframe-sdk \
+          -DDAP_SDK_SRC=/project/dap-sdk \
           .. && \
     make -j$(nproc) cf-cert-generator && \
     strip cf-cert-generator

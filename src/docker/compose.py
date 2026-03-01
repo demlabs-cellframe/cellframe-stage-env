@@ -428,7 +428,8 @@ class DockerComposeManager:
                 'NODE_IP': node.ip_address,
                 'NETWORK_NAME': self.network_name,
                 'DAP_DEBUG': '1',
-                'CELLFRAME_DEBUG': '1'
+                'CELLFRAME_DEBUG': '1',
+                'ASAN_OPTIONS': 'detect_leaks=0:halt_on_error=0:print_stacktrace=1:log_path=/opt/cellframe-node/var/log/asan'
             }
             
             # Add custom environment variables if specified

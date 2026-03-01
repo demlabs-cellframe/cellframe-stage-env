@@ -12,7 +12,14 @@ if(NOT DEFINED CELLFRAME_SDK_SRC)
     set(CELLFRAME_SDK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../cellframe-sdk")
 endif()
 
-set(DAP_SDK_SRC "${CELLFRAME_SDK_SRC}/dap-sdk")
+# Prefer root dap-sdk (cellframe-sdk's submodule may be outdated)
+if(NOT DEFINED DAP_SDK_SRC)
+    if(EXISTS "${CELLFRAME_SDK_SRC}/../dap-sdk/module")
+        set(DAP_SDK_SRC "${CELLFRAME_SDK_SRC}/../dap-sdk")
+    else()
+        set(DAP_SDK_SRC "${CELLFRAME_SDK_SRC}/dap-sdk")
+    endif()
+endif()
 
 message(STATUS "Cellframe SDK Build: ${CELLFRAME_SDK_BUILD}")
 message(STATUS "Cellframe SDK Source: ${CELLFRAME_SDK_SRC}")
@@ -36,10 +43,12 @@ include_directories(
     ${DAP_SDK_SRC}/module/crypto/include
     ${DAP_SDK_SRC}/module/crypto/src/Kyber/crypto_kem/kyber512/optimized
     
-    # 3rdparty
-    ${DAP_SDK_SRC}/3rdparty/uthash/src
-    ${DAP_SDK_SRC}/3rdparty/json-c
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/module/core/json-c
+    # Hash table (replaces uthash)
+    ${DAP_SDK_SRC}/module/hash/table/include
+    ${DAP_SDK_SRC}/module/hash/include
+    
+    # Math
+    ${DAP_SDK_SRC}/module/math/include
     
     # I/O
     ${DAP_SDK_SRC}/module/io/include
