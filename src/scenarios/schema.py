@@ -371,6 +371,7 @@ class SnapshotStep(BaseModel):
 
 from .schema_control_flow import SetStep, IfStep, WhileStep, ForStep, SwitchStep
 from .schema_config import ConfigStep
+from .schema_dpkg import DpkgStep
 
 
 # ============================================================================
@@ -439,7 +440,7 @@ class StepGroup(BaseModel):
 # IMPORTANT: Order matters! Specific types must come before generic ones to ensure correct parsing.
 # NetworkWaitStep must come before WaitStep.
 TestStep = Union[
-    NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep,
+    NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep, DpkgStep,
     CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
@@ -498,9 +499,12 @@ class SuiteDescriptor(BaseModel):
     # Set to topology_name to restore from base topology snapshot
     restore_snapshot: Optional[str] = Field(None, description="Snapshot name to restore (supports '{{topology_name}}')")
     
+    # Suite-level variables inherited by all scenarios (scenario variables take priority)
+    variables: Dict[str, Any] = Field(default_factory=dict, description="Variables inherited by all scenarios in suite")
+
     # Optional includes for suite-level setup (executed once before all scenarios)
     includes: List[str] = Field(default_factory=list, description="Common includes for all scenarios in suite")
-    
+
     # Optional setup steps for suite (executed once before all scenarios)
     setup: Optional[Union[List[TestStep], SectionConfig]] = Field(None, description="Suite-level setup steps")
     

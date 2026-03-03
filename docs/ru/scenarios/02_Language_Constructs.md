@@ -219,9 +219,22 @@ test:
 ```
 
 ### regex_extract
+Извлекает первое совпадение (одну группу): `regex_extract(text, pattern, group=1) -> str`
 ```yaml
 - set: hash
   value: regex_extract(output, r'hash:\s*(\w+)', 1)
+  eval: true
+```
+
+### find_all
+Возвращает список всех совпадений: `find_all(text, pattern) -> list`
+```yaml
+- set: _serials
+  value: "find_all(raw_output, r'[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}')"
+  eval: true
+
+- set: first_serial
+  value: "_serials[0]"
   eval: true
 ```
 

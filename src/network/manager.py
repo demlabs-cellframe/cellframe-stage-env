@@ -128,7 +128,8 @@ class NetworkManager:
         self.snapshot_manager = SnapshotManager(
             base_path,
             mode=snapshot_mode,
-            config=snapshot_config
+            config=snapshot_config,
+            compose_manager=self.compose,
         )
         
         self.suite_isolation_config = suite_isolation_config
@@ -1230,8 +1231,9 @@ class NetworkManager:
                 network_name=self.topology.network.name
             )
             
+            consensus_timeout = float(self.timeouts.get('startup', 600))
             try:
-                await final_consensus_monitor.wait_for_network_ready(timeout=150.0)
+                await final_consensus_monitor.wait_for_network_ready(timeout=consensus_timeout)
                 logger.info("all_nodes_ready_for_snapshot")
             except TimeoutError as e:
                 logger.error("full_network_not_ready", error=str(e))
@@ -1269,7 +1271,7 @@ class NetworkManager:
         )
         
         try:
-            await consensus_monitor.wait_for_network_ready(timeout=150.0)  # 150s for 8-node topology
+            await consensus_monitor.wait_for_network_ready(timeout=float(self.timeouts.get('startup', 600)))
             logger.info("network_consensus_achieved")
         except TimeoutError as e:
             logger.error("network_consensus_timeout_critical",
@@ -1650,8 +1652,9 @@ class NetworkManager:
         """
         Restore environment to clean snapshot state.
         
-        This replaces the current clean_test_data() approach with snapshot restoration,
-        providing much faster suite isolation.
+        Uses lightweight compose.up() instead of full start() to preserve
+        committed Docker images set by the hybrid snapshot system. The full
+        start() would regenerate the compose file, overwriting image overrides.
         
         Args:
             name: Optional snapshot name (defaults to config snapshot_name)
@@ -1665,23 +1668,21 @@ class NetworkManager:
                    name=snapshot_name,
                    mode=self.snapshot_manager.mode.value)
         
-        # DISABLED mode - do nothing, keep current state
         if self.snapshot_manager.mode == SnapshotMode.DISABLED:
             logger.info("snapshot_mode_disabled_skipping_restore")
             return True
         
-        # Special case for 'recreate' mode - use traditional cleanup
         if self.snapshot_manager.mode == SnapshotMode.RECREATE:
             logger.info("recreate_mode_using_clean_test_data")
             await self.clean_test_data()
             return True
         
-        # For other modes, restore from snapshot
-        # CRITICAL: Stop containers before restore to avoid file conflicts
+        # Remove containers+networks so compose.up() creates fresh ones
+        # with correct bind mounts (compose.stop() would leave stale mounts
+        # after _docker_cleanup replaces host directories)
         logger.info("stopping_containers_before_snapshot_restore")
-        await self.stop(remove_volumes=False)
+        self.compose.down(volumes=False)
         
-        # Restore snapshot with containers stopped
         result = await self.snapshot_manager.restore_snapshot(snapshot_name)
         
         if not result:
@@ -1694,9 +1695,21 @@ class NetworkManager:
                 "Run './clean.sh' to remove root-owned files and try again."
             )
         
-        # Restart containers with restored data
-        logger.info("starting_containers_after_snapshot_restore")
-        await self.start(rebuild=False, wait_ready=True)
+        # Start node services only (extra_services are started by suite setup)
+        node_configs = list(self.nodes.values())
+        node_services = [f"node-{n.node_id}" for n in node_configs]
+        
+        logger.info("starting_containers_after_snapshot_restore",
+                   services=node_services)
+        self.compose.up(
+            services=node_services,
+            detach=True, wait=False, no_build=True,
+        )
+        
+        startup_timeout = self.timeouts.get('startup', 600)
+        await self.state_manager.wait_for_nodes_online(
+            node_configs, timeout=startup_timeout,
+        )
         
         return result
     

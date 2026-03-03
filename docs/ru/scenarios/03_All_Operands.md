@@ -212,12 +212,38 @@ JSON-RPC вызов.
 ## Управляющие Конструкции
 
 ### set
-Установка/вычисление переменной.
+Установка/вычисление переменной. Имя переменной поддерживает подстановку `{{}}`.
 
 ```yaml
 - set: var_name
   value: "{{expression}}"
   eval: true  # Вычислить как Python
+```
+
+**Доступные helper-функции** (при `eval: true`):
+
+| Функция | Описание |
+|---------|----------|
+| `regex_extract(text, pattern, group=1)` | Первое совпадение regex (строка) |
+| `find_all(text, pattern)` | Все совпадения regex (список) |
+| `concat(*args)` | Конкатенация строк |
+| `join_vars(prefix, count, sep)` | Объединение переменных по префиксу |
+| `get_var(name, default)` | Получение переменной по динамическому имени |
+| `get_var_dict(name)` | Получение dict-переменной |
+
+```yaml
+# Извлечь все серийники из вывода CLI
+- set: _serials
+  value: "find_all(raw_output, r'[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}')"
+  eval: true
+
+# Динамическое имя переменной в for-цикле
+- for: _i
+  in: "range(1, len(_serials) + 1)"
+  steps:
+    - set: "serial_{{_i}}"
+      value: "_serials[_i - 1]"
+      eval: true
 ```
 
 ### if

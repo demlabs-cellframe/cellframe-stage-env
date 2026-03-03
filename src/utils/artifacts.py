@@ -169,6 +169,7 @@ class ArtifactsManager:
     def collect_core_dumps(self, run_dir: Path, docker_client, node_names: List[str]):
         """
         Collect core dumps from containers if they exist.
+        Works with both running and stopped containers using get_archive().
         
         Args:
             run_dir: Run directory
@@ -186,40 +187,60 @@ class ArtifactsManager:
             try:
                 container_name = f"cellframe-stage-{node_name}"
                 container = docker_client.containers.get(container_name)
+                is_running = container.status == "running"
                 
-                # Check for core dumps in common locations
-                core_paths = [
-                    "/tmp/core*",
-                    "/var/crash/*",
-                    "/opt/cellframe-node/var/log/core*"
-                ]
+                core_paths = ["/tmp/core*", "/var/crash/*", "/opt/cellframe-node/var/log/core*"]
                 
-                for pattern in core_paths:
-                    try:
-                        # List files matching pattern
-                        result = container.exec_run(f"sh -c 'ls -1 {pattern} 2>/dev/null || true'")
-                        if result.exit_code == 0 and result.output:
-                            files = result.output.decode('utf-8').strip().split('\n')
-                            for file_path in files:
-                                if file_path:
-                                    self._extract_file_from_container(
-                                        container, file_path, 
-                                        core_dumps_dir / f"{node_name}_{Path(file_path).name}"
-                                    )
-                                    
-                                    # Try to generate stack trace
-                                    self._generate_stack_trace(
-                                        container, file_path, node_name, stack_traces_dir
-                                    )
-                    except Exception as e:
-                        logger.debug("no_core_dumps_for_pattern",
-                                    node=node_name,
-                                    pattern=pattern,
-                                    error=str(e))
+                if is_running:
+                    for pattern in core_paths:
+                        try:
+                            result = container.exec_run(f"sh -c 'ls -1 {pattern} 2>/dev/null || true'")
+                            if result.exit_code == 0 and result.output:
+                                files = result.output.decode('utf-8').strip().split('\n')
+                                for file_path in files:
+                                    if file_path:
+                                        self._extract_file_from_container(
+                                            container, file_path,
+                                            core_dumps_dir / f"{node_name}_{Path(file_path).name}"
+                                        )
+                                        self._generate_stack_trace(
+                                            container, file_path, node_name, stack_traces_dir
+                                        )
+                        except Exception as e:
+                            logger.debug("no_core_dumps_for_pattern",
+                                        node=node_name, pattern=pattern, error=str(e))
+                else:
+                    self._collect_cores_from_stopped_container(
+                        container, node_name, core_dumps_dir, stack_traces_dir
+                    )
             except Exception as e:
                 logger.error("failed_to_check_core_dumps",
-                            node=node_name,
-                            error=str(e))
+                            node=node_name, error=str(e))
+    
+    def _collect_cores_from_stopped_container(self, container, node_name: str,
+                                               core_dumps_dir: Path, stack_traces_dir: Path):
+        """Extract core dumps from stopped container using get_archive (docker cp)."""
+        import tarfile
+        import io
+        
+        try:
+            stream, stat = container.get_archive("/tmp/")
+            tar_bytes = io.BytesIO()
+            for chunk in stream:
+                tar_bytes.write(chunk)
+            tar_bytes.seek(0)
+            
+            with tarfile.open(fileobj=tar_bytes) as tar:
+                for member in tar.getmembers():
+                    if member.isfile() and "core." in member.name:
+                        dest = core_dumps_dir / f"{node_name}_{Path(member.name).name}"
+                        with tar.extractfile(member) as src:
+                            dest.write_bytes(src.read())
+                        logger.info("extracted_core_from_stopped_container",
+                                   node=node_name, file=str(dest), size=dest.stat().st_size)
+        except Exception as e:
+            logger.debug("no_cores_in_stopped_container",
+                        node=node_name, error=str(e))
     
     def _extract_file_from_container(self, container, src_path: str, dest_path: Path):
         """Extract a file from Docker container."""
