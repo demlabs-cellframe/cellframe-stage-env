@@ -190,7 +190,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     parent_dir = yml_file.parent
                     file_stem = yml_file.stem
                     
-                    # Check if this is a suite descriptor
+                    # Pattern A: External descriptor (parent/name.yml + parent/name/)
                     matching_dir = parent_dir / file_stem
                     if matching_dir.exists() and matching_dir.is_dir():
                         suite_key = str(matching_dir.relative_to(test_path))
@@ -202,14 +202,33 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             }
                         continue
                     
+                    # Pattern B: Internal descriptor (dir/suite.yml)
+                    if file_stem == 'suite':
+                        suite_key = str(parent_dir.relative_to(test_path))
+                        if suite_key not in suites:
+                            suites[suite_key] = {
+                                'descriptor': yml_file,
+                                'scenarios': [],
+                                'path': parent_dir
+                            }
+                        continue
+                    
                     # Check if this scenario belongs to a suite
                     suite_found = False
                     for potential_suite_dir in [parent_dir] + list(parent_dir.parents):
                         if potential_suite_dir == test_path:
                             break
                         suite_name = potential_suite_dir.name
-                        descriptor_file = potential_suite_dir.parent / f"{suite_name}.yml"
-                        if descriptor_file.exists():
+                        # Check external descriptor (parent/name.yml)
+                        external_descriptor = potential_suite_dir.parent / f"{suite_name}.yml"
+                        # Check internal descriptor (dir/suite.yml)
+                        internal_descriptor = potential_suite_dir / "suite.yml"
+                        descriptor_file = None
+                        if external_descriptor.exists():
+                            descriptor_file = external_descriptor
+                        elif internal_descriptor.exists():
+                            descriptor_file = internal_descriptor
+                        if descriptor_file:
                             suite_key = str(potential_suite_dir.relative_to(test_path))
                             if suite_key not in suites:
                                 suites[suite_key] = {
@@ -370,6 +389,20 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
 
 
                     
+                    # Order scenarios according to suite descriptor if specified
+                    if isinstance(suite_spec, SuiteDescriptor) and suite_spec.scenarios:
+                        order_map = {}
+                        for idx, name in enumerate(suite_spec.scenarios):
+                            order_map[name] = idx
+                            order_map[Path(name).stem] = idx
+                        def _scenario_order_key(path: Path) -> int:
+                            if path.name in order_map:
+                                return order_map[path.name]
+                            if path.stem in order_map:
+                                return order_map[path.stem]
+                            return len(suite_spec.scenarios)
+                        suite_scenarios = sorted(suite_scenarios, key=_scenario_order_key)
+                    
                     # Filter scenarios if needed
                     if filter:
                         suite_scenarios = [f for f in suite_scenarios if filter.lower() in f.name.lower()]
@@ -455,6 +488,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                         for opt, val in suite_defaults_dict['cli'].items():
                                             if opt not in scenario.defaults.cli:
                                                 scenario.defaults.cli[opt] = val
+                            
+                            # Merge suite-level variables into scenario (scenario vars take priority)
+                            if isinstance(suite_spec, SuiteDescriptor) and suite_spec.variables:
+                                merged_vars = dict(suite_spec.variables)
+                                merged_vars.update(scenario.variables)
+                                scenario.variables = merged_vars
                             
                             print_info(f"  📋 Name: {scenario.name}")
                             if hasattr(scenario, 'description') and scenario.description:

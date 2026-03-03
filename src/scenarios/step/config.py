@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Union
 import re
+import subprocess
 from pathlib import Path
 
 from src.utils.logger import get_logger
@@ -193,12 +194,18 @@ class ConfigStepExecutor(StepExecutor):
 
             existing_context = {}
             if target.exists():
-                existing_context = self._extract_context_from_ini(target.read_text())
+                try:
+                    existing_context = self._extract_context_from_ini(target.read_text())
+                except PermissionError:
+                    existing_context = self._read_root_owned_file(target)
 
             full_context = {**existing_context, **variables, "node_id": node_id}
 
             rendered = template.render(full_context)
-            target.write_text(rendered)
+            try:
+                target.write_text(rendered)
+            except PermissionError:
+                self._write_root_owned_file(target, rendered)
             logger.info("config_rendered", node_id=node_id, target=str(target), template=str(tpl_path))
 
     async def _regenerate_standard_config(
@@ -261,6 +268,31 @@ class ConfigStepExecutor(StepExecutor):
             except Exception as e:
                 logger.error(f"Failed to render template for node {node_id}: {e}")
                 raise
+
+    def _write_root_owned_file(self, target: Path, content: str) -> None:
+        """Write to a root-owned file via Docker (containers create files as root)."""
+        logger.info("config_write_via_docker", target=str(target))
+        subprocess.run(
+            ["docker", "run", "--rm",
+             "-v", f"{target.parent}:/target",
+             "alpine", "sh", "-c",
+             f"chmod 666 /target/{target.name} 2>/dev/null; true"],
+            capture_output=True
+        )
+        target.write_text(content)
+
+    def _read_root_owned_file(self, target: Path) -> Dict[str, Any]:
+        """Read a root-owned config file via Docker and parse INI context."""
+        logger.info("config_read_via_docker", target=str(target))
+        result = subprocess.run(
+            ["docker", "run", "--rm",
+             "-v", f"{target.parent}:/target:ro",
+             "alpine", "cat", f"/target/{target.name}"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return self._extract_context_from_ini(result.stdout)
+        return {}
 
     def _extract_context_from_ini(self, content: str) -> Dict[str, Any]:
         """Extract key=value pairs from INI-like content to recreate a context."""
