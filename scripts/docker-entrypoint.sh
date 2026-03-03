@@ -26,7 +26,9 @@ chmod -R 755 /opt/cellframe-node/var 2>/dev/null || true
 
 # Enable core dumps for crash analysis
 ulimit -c unlimited
-echo "/tmp/core.%p" > /proc/sys/kernel/core_pattern 2>/dev/null || true
+# core_pattern is set on the host (/tmp/core.%e.%p.%t)
+# Core dumps land in the container's /tmp (mount namespace isolation)
+# Use `docker cp <container>:/tmp/core.*` to extract from stopped containers
 
 # Start cellframe-node with maximum debug level
 echo "Starting cellframe-node..."
