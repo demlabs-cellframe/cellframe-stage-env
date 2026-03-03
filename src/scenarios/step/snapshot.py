@@ -100,28 +100,34 @@ class SnapshotStepExecutor(StepExecutor):
         manager, 
         ctx: RuntimeContext
     ) -> None:
-        """Restore snapshot."""
-        # Pre-cleanup to handle root-owned files from containers
-        if self.container_manager:
-            try:
-                if hasattr(manager, 'snapshot') and manager.snapshot:
-                    cache_path = manager.snapshot.cache_path
-                    data_path = cache_path / "data"
-                    configs_path = cache_path / "configs"
-                    
-                    if data_path.exists():
-                        logger.info("pre_cleaning_data", path=str(data_path))
-                        self.container_manager.cleanup_volume(str(data_path))
-                    
-                    if configs_path.exists():
-                        logger.info("pre_cleaning_configs", path=str(configs_path))
-                        self.container_manager.cleanup_volume(str(configs_path))
-            except Exception as e:
-                logger.warning("pre_restore_cleanup_failed", error=str(e))
+        """Restore snapshot with proper container lifecycle.
+        
+        Stops containers before restore to prevent bind mount invalidation,
+        then restarts them (from committed images if available).
+        """
+        running_services = None
+        if self.compose_manager:
+            running_services = [
+                c.labels.get("com.docker.compose.service")
+                for c in self.compose_manager.ps()
+                if c.status == "running"
+                and c.labels.get("com.docker.compose.service")
+            ]
+            logger.info("removing_containers_before_restore",
+                       services=running_services)
+            self.compose_manager.down(volumes=False)
         
         result = await manager.restore_snapshot(name)
         if not result:
             raise RuntimeError(f"Failed to restore snapshot: {name}")
+        
+        if self.compose_manager:
+            logger.info("restarting_containers_after_restore",
+                       services=running_services)
+            self.compose_manager.up(
+                services=running_services or None,
+                detach=True, wait=False, no_build=True,
+            )
     
     async def _execute_verify(
         self, 

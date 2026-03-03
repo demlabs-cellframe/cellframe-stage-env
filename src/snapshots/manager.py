@@ -42,7 +42,8 @@ class SnapshotManager:
         self,
         base_path: Path,
         mode: SnapshotMode = SnapshotMode.FILESYSTEM,
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
+        compose_manager=None,
     ):
         """
         Initialize snapshot manager.
@@ -51,12 +52,13 @@ class SnapshotManager:
             base_path: Base path to stage-env directory
             mode: Snapshot mode to use
             config: Optional configuration dictionary
+            compose_manager: Optional DockerComposeManager for hybrid snapshots
         """
         self.base_path = base_path
         self.mode = mode
         self.config = config or {}
+        self.compose_manager = compose_manager
         
-        # Initialize snapshot handler based on mode
         self.snapshot: Optional[BaseSnapshot] = None
         if mode != SnapshotMode.DISABLED:
             self._initialize_handler()
@@ -64,14 +66,17 @@ class SnapshotManager:
         logger.info("snapshot_manager_initialized",
                    mode=mode.value,
                    base_path=str(base_path),
-                   config=self.config)
+                   has_compose_manager=compose_manager is not None)
     
     def _initialize_handler(self):
         """Initialize appropriate snapshot handler based on mode."""
         if self.mode == SnapshotMode.RECREATE:
             self.snapshot = RecreateSnapshot(self.base_path, self.config)
         elif self.mode == SnapshotMode.FILESYSTEM:
-            self.snapshot = FilesystemSnapshot(self.base_path, self.config)
+            self.snapshot = FilesystemSnapshot(
+                self.base_path, self.config,
+                compose_manager=self.compose_manager,
+            )
         elif self.mode == SnapshotMode.SQUASHFS:
             self.snapshot = SquashfsSnapshot(self.base_path, self.config)
         else:
