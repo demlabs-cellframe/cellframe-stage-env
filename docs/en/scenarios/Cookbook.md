@@ -343,7 +343,7 @@ test:
 
 ### Recipe 12: Python Data Processing
 
-Process CLI output with Python.
+Extract data from CLI output using native helpers.
 
 ```yaml
 name: Parse and Analyze
@@ -352,20 +352,17 @@ description: Extract data from CLI output
 test:
   - cli: "wallet list"
     save_to: wallet_list
-  
-  - python: |
-      import re
-      output = ctx.get_variable('wallet_list')
-      
-      # Extract all wallet addresses
-      addresses = re.findall(r'(Wkoj\w+)', output)
-      
-      # Save for later use
-      ctx.set_variable('wallet_addresses', addresses)
-      ctx.set_variable('wallet_count', len(addresses))
-  
+
+  - set: wallet_addresses
+    value: "find_all(wallet_list, r'(Wkoj\\w+)')"
+    eval: true
+
+  - set: wallet_count
+    value: "len(wallet_addresses)"
+    eval: true
+
   - print: "Found {{wallet_count}} wallets"
-  
+
   - for: addr
     in: "{{wallet_addresses}}"
     steps:

@@ -78,6 +78,66 @@ suite_setup:
       nodes: all
 ```
 
+## E2E Suite Descriptors
+
+E2E test suites use a lightweight descriptor format with `suite:` field.
+
+### Directory Layout
+
+Two patterns are supported:
+
+```
+# Pattern A: External descriptor
+tests/e2e/cdb/
+├── kelvpn.yml            ← descriptor next to directory
+└── kelvpn/
+    ├── test_connect.yml
+    └── test_auth.yml
+
+# Pattern B: Internal descriptor
+tests/e2e/cdb/
+└── kelvpn/
+    ├── suite.yml          ← descriptor inside directory
+    ├── test_connect.yml
+    └── test_auth.yml
+```
+
+### Descriptor Format
+
+```yaml
+suite: "KelVPN Client E2E Tests"
+description: "Tests for KelVPN client"
+tags: [e2e, kelvpn]
+
+network:
+  topology: default
+
+# Variables inherited by all scenarios (scenario vars override these)
+variables:
+  serial_count: 5
+  cdb_endpoint: "http://node9:8079"
+
+# Explicit scenario execution order (unmentioned scenarios run last)
+scenarios:
+  - test_connect.yml
+  - test_auth.yml
+
+# Suite-level includes (executed once before all scenarios)
+includes:
+  - common/cdb-plugin-setup.yml
+
+# Optional suite-level setup steps
+setup:
+  - cli: "vpn_cdb version"
+    node: node9
+```
+
+### Variable Inheritance Priority
+
+1. Topology variables (IPs, network name) — highest
+2. Scenario `variables:` section
+3. Suite descriptor `variables:` section — lowest (defaults)
+
 ## Best Practices
 
 1. Share common setup in suite
