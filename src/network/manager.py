@@ -410,7 +410,8 @@ class NetworkManager:
                 root_nodes_dict = {f"node{n.node_id}": n for n in root_nodes}
                 consensus_monitor = NetworkConsensusMonitor(
                     nodes=root_nodes_dict,
-                    node_cli_path=self.node_cli_path
+                    node_cli_path=self.node_cli_path,
+                    network_name=self.topology.network.name
                 )
                 
                 # Use YAML scenario for phase1 genesis
@@ -832,7 +833,8 @@ class NetworkManager:
             root_nodes_dict = {f"node{n.node_id}": n for n in root_nodes}
             consensus_monitor = NetworkConsensusMonitor(
                 nodes=root_nodes_dict,
-                node_cli_path=self.node_cli_path
+                node_cli_path=self.node_cli_path,
+                network_name=self.topology.network.name
             )
             
             # Wait for ROOT nodes to establish links (they should have node list from snapshot)
@@ -1224,7 +1226,8 @@ class NetworkManager:
             from ..monitoring.network_consensus import NetworkConsensusMonitor
             final_consensus_monitor = NetworkConsensusMonitor(
                 nodes=self.nodes,
-                node_cli_path=self.node_cli_path
+                node_cli_path=self.node_cli_path,
+                network_name=self.topology.network.name
             )
             
             try:

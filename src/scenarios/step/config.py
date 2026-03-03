@@ -180,6 +180,7 @@ class ConfigStepExecutor(StepExecutor):
             # 3. Merge with provided variables
             # Note: provided variables override existing file content
             full_context = {**current_context, **variables}
+            full_context.setdefault('network_name', network_name)
             
             # 4. Render
             try:

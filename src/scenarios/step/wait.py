@@ -207,7 +207,7 @@ class WaitStepExecutor(StepExecutor):
                 result = await dispatcher.execute_datum_in_mempool(
                     datum_hash=params["datum_hash"],
                     node=params["node"],
-                    network=params.get("network", "stagenet"),
+                    network=params.get("network", ctx.variables.get('network_name', 'stagenet')),
                     chain=params.get("chain", "zerochain"),
                     timeout=float(step.timeout)
                 )
@@ -215,7 +215,7 @@ class WaitStepExecutor(StepExecutor):
                 result = await dispatcher.execute_datum_finalized(
                     datum_hash=params["datum_hash"],
                     node=params["node"],
-                    network=params.get("network", "stagenet"),
+                    network=params.get("network", ctx.variables.get('network_name', 'stagenet')),
                     chain=params.get("chain", "main"),
                     timeout=float(step.timeout),
                     check_master_nodes=step.check_master if hasattr(step, 'check_master') else True

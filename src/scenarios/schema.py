@@ -306,7 +306,7 @@ class WaitForDatumStep(BaseModel):
     """Wait for datum to be processed through mempool → verification → blocks → propagation."""
     wait_for_datum: Union[str, List[str]] = Field(..., description="Datum hash(es) to monitor")
     node: str = Field("node1", description="Target node to check for datum")
-    network: str = Field("stagenet", description="Network name")
+    network: str = Field("{{network_name}}", description="Network name (Jinja2 template, resolved from context)")
     chain: str = Field("main", description="Chain name")
     check_master_nodes: bool = Field(True, description="Check master nodes for verification and blocks")
     timeout_total: int = Field(300, description="Total timeout in seconds")
@@ -322,7 +322,7 @@ class NetworkWaitStep(BaseModel):
     wait_network: str = Field(..., description="Network state to wait for: 'online', 'offline', 'links_connecting', 'links_established', 'sync_complete'")
     nodes: Union[str, List[str]] = Field(default_factory=lambda: ["root-1", "root-2", "root-3"], description="Nodes to check (can be template like '{{all_nodes}}')")
     timeout: int = Field(120, description="Timeout in seconds")
-    network: str = Field("stagenet", description="Network name")
+    network: str = Field("{{network_name}}", description="Network name (Jinja2 template, resolved from context)")
     chain: Optional[str] = Field(None, description="Chain name (optional)")
 
 

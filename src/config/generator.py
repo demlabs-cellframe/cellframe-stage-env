@@ -181,9 +181,15 @@ class ConfigGenerator:
                     node_cfg_d = node_etc_base / "cellframe-node.cfg.d"
                     node_cfg_d.mkdir(parents=True, exist_ok=True)
                     
+                    snippet_context = {'network_name': network_name}
                     for cfg_snippet in cfg_d_template_dir.glob("*.cfg"):
                         dst_snippet = node_cfg_d / cfg_snippet.name
-                        shutil.copy2(cfg_snippet, dst_snippet)
+                        snippet_content = cfg_snippet.read_text()
+                        if '{{' in snippet_content or '{%' in snippet_content:
+                            rendered = Template(snippet_content).render(**snippet_context)
+                            dst_snippet.write_text(rendered)
+                        else:
+                            shutil.copy2(cfg_snippet, dst_snippet)
                         logger.debug("config_snippet_copied",
                                    node_id=node.node_id,
                                    snippet=cfg_snippet.name)
@@ -373,10 +379,14 @@ class ConfigGenerator:
             
             # Render template with node-specific context
             network_context = {
+                'network_name': network_name,
+                'network_id': base_chain_context['network_id'] if base_chain_context else '0x0000000000001234',
+                'native_ticker': base_chain_context['native_ticker'] if base_chain_context else 'TCELL',
+                'collecting_level': base_chain_context['collecting_level'] if base_chain_context else 10.0,
                 'node_role': node_role,
-                'seed_nodes_aliases': seed_nodes_aliases,  # Required for node discovery
+                'seed_nodes_aliases': seed_nodes_aliases,
                 'seed_nodes_hosts': seed_nodes_hosts,
-                'permanent_nodes_hosts': permanent_nodes_hosts,  # Root nodes only
+                'permanent_nodes_hosts': permanent_nodes_hosts,
                 'events_sign_cert': events_sign_cert,
                 'blocks_sign_cert': blocks_sign_cert
             }

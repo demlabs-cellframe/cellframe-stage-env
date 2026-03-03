@@ -239,15 +239,27 @@ class CertGenerator:
 
         uid, gid = os.getuid(), os.getgid()
 
-        # Single script: build SDK libs (cached) → build cert-generator (cached) → generate certs
+        # Embedding build: mount SDKs at separate ro paths, create symlink overlay
+        # so cellframe-sdk's cmake sees dap-sdk as a subdirectory without nested mounts
         build_and_generate = (
             "set -e && "
+            "mkdir -p /tmp/cellframe-sdk-workspace && "
+            "cp -rs /project/cellframe-sdk/. /tmp/cellframe-sdk-workspace/ && "
+            "rm -rf /tmp/cellframe-sdk-workspace/dap-sdk && "
+            "ln -s /project/dap-sdk /tmp/cellframe-sdk-workspace/dap-sdk && "
             "cd /tmp/sdk-build && "
-            "cmake -DCMAKE_BUILD_TYPE=Release /project/cellframe-sdk >/dev/null 2>&1 && "
-            "make -j$(nproc) dap_core dap_crypto dap_chain_common dap_io 2>&1 && "
+            "cmake -DCMAKE_BUILD_TYPE=Release /tmp/cellframe-sdk-workspace >/dev/null 2>&1 && "
+            "make -j$(nproc) dap_core dap_core_unix dap_crypto dap_crypto_kyber512 dap_json-c dap_chain_common dap_io 2>&1 && "
+            "for spec in dap-sdk/core:dap_core dap-sdk/crypto:dap_crypto dap-sdk/io:dap_io modules/common:dap_chain_common; do "
+            "  d=${spec%%:*}; n=${spec##*:}; "
+            "  find /tmp/sdk-build/${d}/CMakeFiles/${n}.dir -name '*.o' 2>/dev/null | "
+            "    xargs ar rcs /tmp/sdk-build/${d}/lib${n}.a 2>/dev/null; "
+            "done && "
             "cd /tmp/cert-build && "
             "cmake -DCELLFRAME_SDK_BUILD=/tmp/sdk-build "
-            "-DCELLFRAME_SDK_SRC=/project/cellframe-sdk "
+            "-DCELLFRAME_SDK_SRC=/tmp/cellframe-sdk-workspace "
+            "-DDAP_SDK_SRC=/project/dap-sdk "
+            "-DDAP_SDK_BUILD=/tmp/sdk-build/dap-sdk "
             "/project/cert-generator >/dev/null 2>&1 && "
             "make -j$(nproc) cf-cert-generator 2>&1 && "
             f"./cf-cert-generator /output {node_count} {network_name} {network_id} {root_count} && "
@@ -257,7 +269,7 @@ class CertGenerator:
         docker_cmd = [
             "docker", "run", "--rm",
             "-v", f"{sdk_src}:/project/cellframe-sdk:ro",
-            "-v", f"{dap_src}:/project/cellframe-sdk/dap-sdk:ro",
+            "-v", f"{dap_src}:/project/dap-sdk:ro",
             "-v", f"{cert_src}:/project/cert-generator:ro",
             "-v", f"{self.certs_dir.absolute()}:/output",
             "-v", f"{_SDK_BUILD_CACHE_VOLUME}:/tmp/sdk-build",
