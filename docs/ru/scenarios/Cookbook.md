@@ -343,7 +343,7 @@ test:
 
 ### Рецепт 12: Обработка Данных в Python
 
-Обработка вывода CLI с помощью Python.
+Извлечение данных из вывода CLI нативными хелперами.
 
 ```yaml
 name: Парсинг и Анализ
@@ -352,20 +352,17 @@ description: Извлечение данных из вывода CLI
 test:
   - cli: "wallet list"
     save_to: wallet_list
-  
-  - python: |
-      import re
-      output = ctx.get_variable('wallet_list')
-      
-      # Извлечь все адреса кошельков
-      addresses = re.findall(r'(Wkoj\w+)', output)
-      
-      # Сохранить для последующего использования
-      ctx.set_variable('wallet_addresses', addresses)
-      ctx.set_variable('wallet_count', len(addresses))
-  
+
+  - set: wallet_addresses
+    value: "find_all(wallet_list, r'(Wkoj\\w+)')"
+    eval: true
+
+  - set: wallet_count
+    value: "len(wallet_addresses)"
+    eval: true
+
   - print: "Найдено {{wallet_count}} кошельков"
-  
+
   - for: addr
     in: "{{wallet_addresses}}"
     steps:

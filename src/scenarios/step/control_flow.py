@@ -17,7 +17,7 @@ class SetStepExecutor(StepExecutor):
         """Execute set step."""
         import re as regex_module
         
-        var_name = step.set
+        var_name = ctx.substitute(step.set)
         
         if step.eval:
             # Evaluate expression using context variables
@@ -34,11 +34,15 @@ class SetStepExecutor(StepExecutor):
                 return "[" + join_vars(prefix, count, separator) + "]"
             
             def regex_extract(text: str, pattern: str, group: int = 1) -> str:
-                """Extract value using regex: regex_extract(text, r'hash:\s*(\w+)', 1)"""
+                """Extract first match: regex_extract(text, r'hash:\s*(\w+)', 1)"""
                 match = regex_module.search(pattern, str(text))
                 if match:
                     return match.group(group)
                 return ""
+            
+            def find_all(text: str, pattern: str) -> list:
+                """Find all matches: find_all(text, r'[A-Z0-9]{4}-...')"""
+                return regex_module.findall(pattern, str(text))
             
             def concat(*args) -> str:
                 """Concatenate values: concat('a', '-', 'b') -> 'a-b'"""
@@ -59,6 +63,7 @@ class SetStepExecutor(StepExecutor):
                     "join_vars": join_vars,
                     "join_vars_bracket": join_vars_bracket,
                     "regex_extract": regex_extract,
+                    "find_all": find_all,
                     "concat": concat,
                     "get_var": get_var,
                     "get_var_dict": get_var_dict,

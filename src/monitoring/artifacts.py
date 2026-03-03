@@ -167,65 +167,69 @@ class ArtifactsCollector:
         output_dir: Path,
         node_id: str,
     ) -> List[ArtifactMetadata]:
-        """Collect core dumps from container."""
+        """Collect core dumps from container (running or stopped)."""
         
         logger.debug("collecting_coredumps", container=container_name)
         
         artifacts = []
-        
-        # Try to find core dumps in container
-        # Common locations: /tmp/cores, /var/crash, current dir
-        core_locations = ["/tmp/cores", "/var/crash", "/core"]
+        core_locations = ["/tmp", "/var/crash"]
         
         for location in core_locations:
             try:
-                # Check if location exists and has cores
-                exit_code, output = self._exec_in_container(
-                    container_name,
-                    ["find", location, "-name", "core*", "-type", "f"],
+                self._collect_cores_via_docker_cp(
+                    container_name, location, output_dir, node_id, artifacts
                 )
-                
-                if exit_code == 0 and output.strip():
-                    core_files = output.strip().split("\n")
-                    
-                    for core_file in core_files:
-                        if not core_file:
-                            continue
-                        
-                        # Copy core dump from container
-                        local_path = output_dir / f"coredump_{Path(core_file).name}"
-                        
-                        self._copy_from_container(
-                            container_name,
-                            core_file,
-                            local_path,
-                        )
-                        
-                        if local_path.exists():
-                            # Compress core dump
-                            compressed_path = self._compress_file(local_path)
-                            
-                            artifacts.append(ArtifactMetadata(
-                                artifact_type="coredump",
-                                node_id=node_id,
-                                timestamp=self._get_timestamp(),
-                                size_bytes=compressed_path.stat().st_size,
-                                compressed=True,
-                                source_path=core_file,
-                                description=f"Core dump from {location}",
-                            ))
-                            
-                            logger.info("coredump_collected",
-                                      node_id=node_id,
-                                      source=core_file,
-                                      size_mb=compressed_path.stat().st_size / 1024 / 1024)
-            
             except Exception as e:
-                logger.warning("coredump_collection_failed",
-                             location=location,
-                             error=str(e))
+                logger.debug("coredump_collection_skipped",
+                            location=location, error=str(e))
         
         return artifacts
+    
+    def _collect_cores_via_docker_cp(
+        self, container_name: str, location: str,
+        output_dir: Path, node_id: str, artifacts: list,
+    ):
+        """Extract core dumps using docker cp (works on stopped containers)."""
+        import io
+        import docker
+        
+        try:
+            client = docker.from_env()
+            container = client.containers.get(container_name)
+            stream, stat = container.get_archive(location + "/")
+        except Exception:
+            return
+        
+        tar_bytes = io.BytesIO()
+        for chunk in stream:
+            tar_bytes.write(chunk)
+        tar_bytes.seek(0)
+        
+        try:
+            with tarfile.open(fileobj=tar_bytes) as tar:
+                for member in tar.getmembers():
+                    if not member.isfile() or "core." not in member.name:
+                        continue
+                    local_path = output_dir / f"coredump_{Path(member.name).name}"
+                    with tar.extractfile(member) as src:
+                        local_path.write_bytes(src.read())
+                    
+                    compressed_path = self._compress_file(local_path)
+                    artifacts.append(ArtifactMetadata(
+                        artifact_type="coredump",
+                        node_id=node_id,
+                        timestamp=self._get_timestamp(),
+                        size_bytes=compressed_path.stat().st_size,
+                        compressed=True,
+                        source_path=f"{location}/{member.name}",
+                        description=f"Core dump from {location}",
+                    ))
+                    logger.info("coredump_collected",
+                               node_id=node_id,
+                               source=f"{location}/{member.name}",
+                               size_mb=compressed_path.stat().st_size / 1024 / 1024)
+        except Exception as e:
+            logger.debug("tar_extraction_failed", error=str(e))
     
     def _collect_app_logs(
         self,

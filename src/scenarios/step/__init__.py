@@ -19,6 +19,7 @@ from .docker_op import DockerOpStepExecutor
 from .snapshot import SnapshotStepExecutor
 from .control_flow import SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor
 from .config import ConfigStepExecutor
+from .dpkg import DpkgStepExecutor
 
 __all__ = [
     'StepExecutor',
@@ -40,4 +41,5 @@ __all__ = [
     'SwitchStepExecutor',
     'ForStepExecutor',
     'ConfigStepExecutor',
+    'DpkgStepExecutor',
 ]

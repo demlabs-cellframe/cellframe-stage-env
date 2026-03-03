@@ -547,6 +547,47 @@ class DockerComposeManager:
                    path=str(generated_file),
                    services=len(compose_data.get('services', {})))
     
+    def set_service_images(self, image_map: Dict[str, str]) -> None:
+        """
+        Override service images in the generated compose file.
+        
+        Replaces 'build' directive with 'image' for specified services,
+        allowing containers to start from committed snapshot images instead
+        of rebuilding from Dockerfile.
+        
+        Args:
+            image_map: {"node-9": "snapshot-cdb_ready-node-9", ...}
+        """
+        if not self.compose_file.exists():
+            logger.warning("set_service_images_no_compose_file",
+                          path=str(self.compose_file))
+            return
+        
+        with open(self.compose_file, 'r') as f:
+            compose_data = yaml.safe_load(f)
+        
+        services = compose_data.get('services', {})
+        applied = 0
+        
+        for service_name, image_tag in image_map.items():
+            if service_name not in services:
+                logger.debug("set_service_images_skip_missing",
+                           service=service_name)
+                continue
+            
+            svc = services[service_name]
+            svc.pop('build', None)
+            svc['image'] = image_tag
+            svc['pull_policy'] = 'never'
+            applied += 1
+        
+        with open(self.compose_file, 'w') as f:
+            yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
+        
+        logger.info("service_images_updated",
+                   applied=applied,
+                   total=len(image_map))
+    
     def up(
         self,
         services: Optional[List[str]] = None,
