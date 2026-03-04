@@ -16,38 +16,51 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
     """
     Provision additional cellframe nodes declared in suite.node_compose.
 
+    New nodes are registered in ``network_mgr.nodes`` (the single source of
+    truth) and receive IDs that follow the existing base-topology nodes.
+
     Args:
-        node_compose: Dict[str, NodeComposeSpec] — keys are service names (e.g. "vpn-server-1")
+        node_compose: Dict[str, NodeComposeSpec] — keys are service names
     """
     import ipaddress
-    import os
     import re
     import shutil
 
-    network_settings = config_loader.get_network_settings()
-    base_ip_str = network_settings.get('base_ip', '172.22.0.10')
-    base_ip = ipaddress.ip_address(base_ip_str)
-    base_http_port = int(network_settings.get('base_http_port', '9079'))
+    from ..network.models import NodeConfig
+
+    settings = network_mgr.topology.network_settings
+    base_ip = ipaddress.ip_address(settings.base_ip)
+
     cache_dir = Path(config_loader.get_paths_config().get('cache_dir', '../../cache'))
     if not cache_dir.is_absolute():
         cache_dir = (base_path / cache_dir).resolve()
 
-    used_ids = set(network_mgr.nodes.keys()) if network_mgr.nodes else set()
-    next_auto_id = max(used_ids, default=0) + 1
+    max_existing_id = max(
+        (cfg.node_id for cfg in network_mgr.nodes.values()), default=0
+    )
+    next_auto_id = max_existing_id + 1
 
-    compose_specs = []
+    compose_specs: list[dict] = []
     packages_to_install: dict[str, list[str]] = {}
 
     for svc_name, spec in node_compose.items():
-        if spec.id is not None:
-            node_id = spec.id
-        else:
-            node_id = next_auto_id
-            next_auto_id += 1
-        used_ids.add(node_id)
+        node_id = spec.id if spec.id is not None else next_auto_id
+        next_auto_id = max(next_auto_id, node_id) + 1
 
         ip_addr = str(base_ip + node_id - 1)
-        http_port = base_http_port + (node_id - 1)
+        http_port = settings.base_http_port + (node_id - 1)
+
+        node_cfg = NodeConfig(
+            node_id=node_id,
+            role=spec.role,
+            node_type=spec.role,
+            rpc_port=settings.base_rpc_port + (node_id - 1),
+            p2p_port=settings.base_p2p_port + (node_id - 1),
+            cf_port=settings.base_cf_port + (node_id - 1),
+            http_port=http_port,
+            ip_address=ip_addr,
+        )
+        network_mgr.nodes[svc_name] = node_cfg
 
         compose_specs.append({
             'id': node_id,
@@ -65,41 +78,31 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
             src_node = _find_donor_node(cache_dir, "configs")
             if src_node and not cfg_dir.exists():
                 shutil.copytree(cache_dir / "configs" / src_node, cfg_dir, dirs_exist_ok=True)
-                print_info(f"  [{svc_name}] configs from genesis ({src_node})")
+                print_info(f"    configs from genesis ({src_node})")
             if src_node and not data_dir.exists():
                 src_data = cache_dir / "data" / src_node
                 if src_data.exists():
                     shutil.copytree(src_data, data_dir, dirs_exist_ok=True)
-                    print_info(f"  [{svc_name}] data from genesis ({src_node})")
         elif source.startswith("node-"):
             clone_m = re.match(r'node-(\d+)', source)
             if not clone_m:
-                print_warning(f"  [{svc_name}] bad source '{source}', expected 'node-<id>'")
+                print_warning(f"  [{svc_name}] bad source '{source}'")
                 continue
             clone_id = clone_m.group(1)
             src_cfg = cache_dir / "configs" / f"node{clone_id}"
             src_data = cache_dir / "data" / f"node{clone_id}"
             if src_cfg.exists() and not cfg_dir.exists():
                 shutil.copytree(src_cfg, cfg_dir, dirs_exist_ok=True)
-                print_info(f"  [{svc_name}] cloned configs from node{clone_id}")
             if src_data.exists() and not data_dir.exists():
                 shutil.copytree(src_data, data_dir, dirs_exist_ok=True)
-                print_info(f"  [{svc_name}] cloned data from node{clone_id}")
         elif source == "fresh":
             cfg_dir.mkdir(parents=True, exist_ok=True)
             (cfg_dir / "cellframe-node.cfg.d").mkdir(exist_ok=True)
             (cfg_dir / "network").mkdir(exist_ok=True)
             data_dir.mkdir(parents=True, exist_ok=True)
-            if not (cfg_dir / "cellframe-node.cfg").exists():
-                donor_name = _find_donor_node(cache_dir, "configs")
-                if donor_name:
-                    shutil.copy2(
-                        cache_dir / "configs" / donor_name / "cellframe-node.cfg",
-                        cfg_dir / "cellframe-node.cfg",
-                    )
-                    print_info(f"  [{svc_name}] base cfg from {donor_name}")
-                else:
-                    print_warning(f"  [{svc_name}] no base cellframe-node.cfg found")
+            donor = _find_donor_node(cache_dir, "configs")
+            if donor and not (cfg_dir / "cellframe-node.cfg").exists():
+                shutil.copy2(cache_dir / "configs" / donor / "cellframe-node.cfg", cfg_dir / "cellframe-node.cfg")
         else:
             print_warning(f"  [{svc_name}] unknown source '{source}', using fresh")
             cfg_dir.mkdir(parents=True, exist_ok=True)
@@ -110,37 +113,37 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
         if spec.packages:
             packages_to_install[svc_name] = spec.packages.split()
 
-        print_info(f"  {svc_name} (id={node_id}, {spec.role}, source={source}) @ {ip_addr}:{http_port}")
+        print_info(f"  {svc_name}  id={node_id} role={spec.role} {ip_addr}:{http_port}")
 
     if not compose_specs:
         return
 
+    stage_config = config_loader.load_stage_config()
     try:
         network_mgr.compose.add_extra_node_services(
             compose_specs,
-            network_settings=network_settings,
+            network_settings=stage_config,
             cache_dir_relative=str(Path(config_loader.get_paths_config().get('cache_dir', '../../cache'))),
         )
         svc_names = [s['service_name'] for s in compose_specs]
         network_mgr.compose.up(services=svc_names, detach=True, wait=False, no_build=True)
-        print_success(f"  Nodes started: {', '.join(svc_names)}")
+        print_success(f"  Started: {', '.join(svc_names)}")
     except Exception as e:
         print_error(f"  Failed to provision node_compose: {e}")
         return
 
-    if packages_to_install:
-        for svc_name, pkgs in packages_to_install.items():
-            pkg_str = " ".join(pkgs)
-            try:
-                exit_code, output = network_mgr.compose.exec(
-                    svc_name, ["bash", "-c", f"apt-get update -qq && apt-get install -y -qq {pkg_str} && rm -rf /var/lib/apt/lists/*"]
-                )
-                if exit_code != 0:
-                    print_warning(f"  [{svc_name}] package install failed: {output[:200]}")
-                else:
-                    print_info(f"  [{svc_name}] packages installed: {pkg_str}")
-            except Exception as e:
-                print_warning(f"  [{svc_name}] package install error: {e}")
+    for svc_name, pkgs in packages_to_install.items():
+        pkg_str = " ".join(pkgs)
+        try:
+            exit_code, output = network_mgr.compose.exec(
+                svc_name, ["bash", "-c", f"apt-get update -qq && apt-get install -y -qq {pkg_str} && rm -rf /var/lib/apt/lists/*"]
+            )
+            if exit_code != 0:
+                print_warning(f"  [{svc_name}] package install failed: {output[:200]}")
+            else:
+                print_info(f"  [{svc_name}] installed: {pkg_str}")
+        except Exception as e:
+            print_warning(f"  [{svc_name}] package install error: {e}")
 
 
 def _find_donor_node(cache_dir: Path, subdir: str) -> Optional[str]:
@@ -465,10 +468,16 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             except Exception as e:
                                 print_warning(f"Failed to restore state: {e}")
 
+                    # Populate base-topology node registry so that
+                    # docker_compose and node_compose blocks can reference
+                    # existing nodes and allocate non-conflicting IDs.
+                    if network_mgr and not network_mgr.nodes:
+                        network_mgr.generate_node_configs()
+
                     # Propagate docker_compose services to network manager.
                     # Strip 'packages' field — it's our extension, not docker-compose.
+                    node_packages: list[str] = []
                     if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.docker_compose:
-                        node_packages: list[str] = []
                         clean_services: dict = {}
                         for svc_name, svc_def in suite_spec.docker_compose.items():
                             svc_copy = dict(svc_def) if isinstance(svc_def, dict) else svc_def
@@ -493,32 +502,40 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                     print_warning(f"  Package install on {svc}: {e}")
                             print_success(f"✓ Packages installed: {pkgs}")
 
-                    # Merge includes in declared order: variables, node_compose, node_compose_gen
+                    # Merge includes in declared order: variables, node_compose, node_compose_gen.
+                    # Entries can be file paths (str) or inline data blocks (dict).
                     if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.includes:
                         import yaml as _yaml
                         from ..scenarios.schema import NodeComposeSpec, NodeComposeGenSpec
-                        for inc_path in suite_spec.includes:
+
+                        def _merge_inc_data(inc_data: dict) -> None:
+                            inc_vars = inc_data.get("variables")
+                            if inc_vars and isinstance(inc_vars, dict):
+                                merged = dict(inc_vars)
+                                merged.update(suite_spec.variables)
+                                suite_spec.variables = merged
+                            nc_raw = inc_data.get("node_compose")
+                            if nc_raw and isinstance(nc_raw, dict):
+                                for k, v in nc_raw.items():
+                                    if k not in suite_spec.node_compose:
+                                        suite_spec.node_compose[k] = NodeComposeSpec(**(v if isinstance(v, dict) else {}))
+                            ncg_raw = inc_data.get("node_compose_gen")
+                            if ncg_raw and isinstance(ncg_raw, list):
+                                for entry in ncg_raw:
+                                    suite_spec.node_compose_gen.append(
+                                        NodeComposeGenSpec(**(entry if isinstance(entry, dict) else {}))
+                                    )
+
+                        for inc_entry in suite_spec.includes:
+                            if isinstance(inc_entry, dict):
+                                _merge_inc_data(inc_entry)
+                                continue
                             for search_dir in [suite_path, common_root]:
-                                inc_full = (search_dir / inc_path).resolve()
+                                inc_full = (search_dir / inc_entry).resolve()
                                 if inc_full.exists():
                                     with open(inc_full) as _f:
                                         inc_data = _yaml.safe_load(_f) or {}
-                                    inc_vars = inc_data.get("variables")
-                                    if inc_vars and isinstance(inc_vars, dict):
-                                        merged = dict(inc_vars)
-                                        merged.update(suite_spec.variables)
-                                        suite_spec.variables = merged
-                                    nc_raw = inc_data.get("node_compose")
-                                    if nc_raw and isinstance(nc_raw, dict):
-                                        for k, v in nc_raw.items():
-                                            if k not in suite_spec.node_compose:
-                                                suite_spec.node_compose[k] = NodeComposeSpec(**(v if isinstance(v, dict) else {}))
-                                    ncg_raw = inc_data.get("node_compose_gen")
-                                    if ncg_raw and isinstance(ncg_raw, list):
-                                        for entry in ncg_raw:
-                                            suite_spec.node_compose_gen.append(
-                                                NodeComposeGenSpec(**(entry if isinstance(entry, dict) else {}))
-                                            )
+                                    _merge_inc_data(inc_data)
                                     break
 
                     # Expand node_compose_gen → node_compose (resolve {{var}} in count)
@@ -557,6 +574,18 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             network_mgr, suite_spec.node_compose, base_path,
                             config_loader, print_info, print_success, print_warning, print_error,
                         )
+                        # Install docker_compose packages on node_compose nodes too
+                        if node_packages:
+                            pkgs = " ".join(sorted(set(node_packages)))
+                            nc_svc_names = list(suite_spec.node_compose.keys())
+                            install_cmd = ["bash", "-c", f"apt-get update -qq && apt-get install -y -qq {pkgs} && rm -rf /var/lib/apt/lists/*"]
+                            for svc in nc_svc_names:
+                                try:
+                                    exit_code, output = network_mgr.compose.exec(svc, install_cmd)
+                                    if exit_code != 0:
+                                        print_warning(f"  Package install on {svc} failed (exit {exit_code}): {output[:200]}")
+                                except Exception as e:
+                                    print_warning(f"  Package install on {svc}: {e}")
 
                     topology_vars = {}
                     if network_mgr:
@@ -589,7 +618,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             
                             suite_setup_scenario = suite_setup_parser.load_suite_setup(
                                 suite_includes=suite_spec.includes or [],
-                                suite_setup=suite_spec.setup.dict() if suite_spec.setup else None,
+                                suite_setup=suite_spec.setup.model_dump() if suite_spec.setup else None,
                                 suite_name=suite_name,
                                 base_dir=suite_path
                             )
@@ -675,11 +704,22 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 
                                 # Process suite includes
                                 suite_includes_data = {}
-                                for include_path in suite_spec.includes:
+                                for include_entry in suite_spec.includes:
+                                    if isinstance(include_entry, dict):
+                                        if 'defaults' in include_entry:
+                                            if not suite_includes_data.get('defaults'):
+                                                suite_includes_data['defaults'] = {}
+                                            for key, value in include_entry['defaults'].items():
+                                                if key not in suite_includes_data['defaults']:
+                                                    suite_includes_data['defaults'][key] = value
+                                                elif isinstance(value, dict) and isinstance(suite_includes_data['defaults'][key], dict):
+                                                    suite_includes_data['defaults'][key].update(value)
+                                        continue
+
                                     search_paths = [
-                                        (suite_path / include_path).resolve(),
-                                        (base_path / "tests" / include_path).resolve(),
-                                        (common_root / include_path).resolve(),
+                                        (suite_path / include_entry).resolve(),
+                                        (base_path / "tests" / include_entry).resolve(),
+                                        (common_root / include_entry).resolve(),
                                     ]
                                     
                                     include_full = None
@@ -693,11 +733,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                             import yaml
                                             include_data = yaml.safe_load(f)
                                             if include_data and isinstance(include_data, dict):
-                                                # Merge defaults
                                                 if 'defaults' in include_data:
                                                     if not suite_includes_data.get('defaults'):
                                                         suite_includes_data['defaults'] = {}
-                                                    # Deep merge defaults
                                                     for key, value in include_data['defaults'].items():
                                                         if key not in suite_includes_data['defaults']:
                                                             suite_includes_data['defaults'][key] = value

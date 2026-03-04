@@ -218,17 +218,37 @@ class NetworkManager:
         return f"{parts[0]}.{parts[1]}.{parts[2]}.{last_octet}"
     
     def _detect_genesis_version(self) -> str:
-        """Detect node major version from DEB package name or config to choose genesis scenario dir."""
-        node_source = self.config_loader.get_node_source_config()
-        local_path = node_source.get('local_path', '') or ''
-        m = re.search(r'cellframe-node[_-](\d+)\.(\d+)', str(local_path))
-        if m:
-            major = int(m.group(1))
-            version_dir = f"v{major}.x"
-            logger.info("genesis_version_detected", version_dir=version_dir, source=local_path)
-            return version_dir
-        logger.info("genesis_version_default", version_dir="v6.x", note="Could not detect from package, using default")
-        return "v6.x"
+        """Choose genesis scenario directory version.
+
+        Priority:
+          1. ``[build] genesis_version`` from stage-env config (e.g. ``v6.x``)
+          2. Auto-detect from the highest available ``vN.x`` directory
+        """
+        default_dir = "v5.x"
+        genesis_base = self.base_path / "scenarios" / "genesis"
+
+        stage_config = self.config_loader.load_stage_config()
+        configured = stage_config.get('genesis_version')
+        if configured:
+            configured = str(configured).strip()
+            if (genesis_base / configured).is_dir():
+                logger.info("genesis_version_from_config", version_dir=configured)
+                return configured
+            logger.warning("genesis_version_config_dir_missing",
+                           configured=configured, fallback=default_dir)
+
+        available = sorted(
+            d.name for d in genesis_base.iterdir()
+            if d.is_dir() and d.name.startswith("v")
+        ) if genesis_base.is_dir() else []
+
+        if available:
+            default_dir = available[-1]
+            logger.info("genesis_version_auto_selected", version_dir=default_dir, available=available)
+        else:
+            logger.warning("genesis_no_version_dirs", path=str(genesis_base))
+
+        return default_dir
 
     async def start(
         self,

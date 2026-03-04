@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class NodeRole(str, Enum):
@@ -373,6 +373,10 @@ class DockerOpStep(BaseModel):
     # Fields for 'cp' operation
     src: Optional[str] = Field(None, description="Source path for 'cp' operation (format: 'node-1:/path' or '/host/path')")
     dst: Optional[str] = Field(None, description="Destination path for 'cp' operation (format: 'node-1:/path' or '/host/path')")
+    # Fields for 'logs' operation
+    tail: int = Field(100, description="Number of log lines from end (for 'logs' operation)")
+    # Common output field
+    save: Optional[str] = Field(None, description="Variable name to save command/logs output into")
 
 
 class SnapshotStep(BaseModel):
@@ -466,8 +470,20 @@ class StepDefaults(BaseModel):
 
 
 class StepGroup(BaseModel):
-    """Group of steps with shared defaults."""
-    name: Optional[str] = Field(None, description="Group name for logging")
+    """Group of steps with shared defaults.
+
+    In YAML either ``name:`` or ``group:`` can be used for the display name::
+
+        - group: "Verify certs"
+          steps: [...]
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("name", "group"),
+        description="Group name for logging (YAML key: 'group' or 'name')",
+    )
     defaults: Optional[StepDefaults] = Field(None, description="Default parameters for this group")
     steps: List[Union["TestStep", "StepGroup"]] = Field(..., description="Steps in this group")
 
@@ -538,8 +554,14 @@ class SuiteDescriptor(BaseModel):
     # Suite-level variables inherited by all scenarios (scenario variables take priority)
     variables: Dict[str, Any] = Field(default_factory=dict, description="Variables inherited by all scenarios in suite")
 
-    # Optional includes for suite-level setup (executed once before all scenarios)
-    includes: List[str] = Field(default_factory=list, description="Common includes for all scenarios in suite")
+    # Ordered list of includes — file paths (str) or inline data blocks (dict).
+    # Inline blocks may contain ``variables``, ``node_compose``, ``node_compose_gen``
+    # and are processed in order, allowing variable overrides between file includes:
+    #   includes:
+    #     - ../common/vpn_defaults.yml
+    #     - variables: { vpn_client_count: 5 }
+    #     - ../common/vpn_nodes.yml
+    includes: List[Union[str, Dict[str, Any]]] = Field(default_factory=list, description="Includes: file paths or inline data blocks")
 
     # Optional setup steps for suite (executed once before all scenarios)
     setup: Optional[Union[List[TestStep], SectionConfig]] = Field(None, description="Suite-level setup steps")
@@ -593,8 +615,7 @@ class SuiteSetupScenario(BaseModel):
     # Network configuration (inherited from suite descriptor)
     network: Optional[NetworkConfig] = Field(None, description="Network topology")
     
-    # Includes for reusable configs
-    includes: List[str] = Field(default_factory=list, description="Paths to included YAML files")
+    includes: List[Union[str, Dict[str, Any]]] = Field(default_factory=list, description="Includes: file paths or inline data blocks")
     
     # Setup phase - this is what actually executes
     setup: Union[List[TestStep], SectionConfig] = Field(default_factory=list, description="Setup steps")
@@ -630,8 +651,7 @@ class TestScenario(BaseModel):
     tags: List[str] = Field(default_factory=list, description="Tags for categorization")
     version: str = Field("1.0", description="Version")
     
-    # Includes for reusable configs
-    includes: List[str] = Field(default_factory=list, description="Paths to included YAML files")
+    includes: List[Union[str, Dict[str, Any]]] = Field(default_factory=list, description="Includes: file paths or inline data blocks")
     
     # Network configuration (optional, defaults to 'default' topology)
     network: Optional[NetworkConfig] = Field(None, description="Network topology (default: topology='default')")

@@ -160,6 +160,10 @@ graph TB
 - `clean_test_data()` - Очистка user данных через docker exec
 - `cleanup()` - Полная очистка (volumes, containers, artifacts)
 
+**Версионирование Genesis:**
+
+Genesis-сценарии организованы по мажорной версии Cellframe Node (`v5.x`, `v6.x`) в `scenarios/genesis/`. Метод `_detect_genesis_version()` автоматически определяет версию из имени DEB-пакета (например `cellframe-node-6.1-...` → `v6.x`). По умолчанию: `v6.x`.
+
 ### Scenario Executor
 
 **Модуль:** `src/scenarios/executor.py`  
@@ -182,7 +186,7 @@ graph TB
 - `WaitStep` - Простое ожидание
 - `WaitForDatumStep` - Мониторинг lifecycle датумов
 - `ConfigStep` - Модификации конфига
-- `DockerOpStep` - Docker операции (start/stop/restart)
+- `DockerOpStep` - Docker операции (start/stop/restart/pause/unpause/logs/exec/cp)
 - `NetworkWaitStep` - Ожидание состояния сети
 - `SnapshotStep` - Операции со snapshots
 - `ForStep` - Циклы for с итерацией
@@ -190,7 +194,7 @@ graph TB
 - `WhileStep` - Циклы while с максимумом итераций
 - `SwitchStep` - Switch/case конструкции
 - `SetStep` - Присваивание переменных
-- `StepGroup` - Группировка шагов с локальными defaults
+- `StepGroup` - Группировка шагов с локальными defaults (YAML ключ: `group:` или `name:`)
 
 **Интеграция:**
 - Использует `CLICommandParser` для автодобавления CLI опций
@@ -222,6 +226,8 @@ graph TB
 - `get_service_status()` - Статус всех сервисов
 - `is_running()` - Проверка что сеть запущена
 - `cleanup_stale_resources()` - Очистка старых контейнеров/сетей
+- `add_extra_node_services()` - Добавление динамически создаваемых нод (из `node_compose`)
+- `pause()` / `unpause()` - Приостановка/возобновление контейнеров (для имитации сбоев)
 
 ### Scenario Parser
 
@@ -237,7 +243,7 @@ graph TB
 **Ключевые методы:**
 - `parse_scenario()` - Парсинг одного файла сценария
 - `parse_suite()` - Парсинг suite descriptor
-- `_process_includes()` - Deep merge includes
+- `_process_includes()` - Deep merge includes (поддерживает файловые пути и inline dict-записи)
 - `substitute_variables()` - Замена {{var}} плейсхолдеров
 
 ### Certificate Generator
@@ -475,7 +481,9 @@ def _execute_step(self, step, ctx: RuntimeContext, defaults):
 **Основные модели:**
 - `TestScenario` - Полный тестовый сценарий
 - `SuiteSetupScenario` - Легковесный suite setup
-- `SuiteDescriptor` - Метаданные suite
+- `SuiteDescriptor` - Метаданные suite (включает `node_compose`, `node_compose_gen`, `docker_compose`)
+- `NodeComposeSpec` - Динамическое определение ноды (id, role, source, packages, setup)
+- `NodeComposeGenSpec` - Параметрический генератор нод (prefix, count с поддержкой `{{var}}`)
 - `NetworkConfig` - Конфигурация сети
 - `NodeConfig` - Конфигурация ноды
 - `SectionConfig` - setup/test секции
@@ -486,7 +494,7 @@ def _execute_step(self, step, ctx: RuntimeContext, defaults):
 - `CLIStep`, `ToolStep`, `RPCStep`
 - `PythonStep`, `BashStep`
 - `WaitStep`, `WaitForDatumStep`
-- `ConfigStep`, `DockerOpStep`, `SnapshotStep`
+- `ConfigStep`, `DockerOpStep` (start/stop/restart/pause/unpause/logs/exec/cp), `SnapshotStep`
 - `NetworkWaitStep`
 - Управление потоком: `ForStep`, `IfStep`, `WhileStep`, `SwitchStep`
 

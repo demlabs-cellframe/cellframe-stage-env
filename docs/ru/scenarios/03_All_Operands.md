@@ -144,6 +144,8 @@ JSON-RPC вызов.
 ### Все Зарегистрированные Waiters
 
 Из WaitRegistry (28 штук):
+- `mempool` - Датум в mempool
+- `finalized` - Датум/транзакция финализированы в цепи
 - `network_online` - Сеть в статусе online
 - `sync_complete` - Синхронизация сети завершена
 - `dag_event` - Обработка DAG события
@@ -280,7 +282,7 @@ JSON-RPC вызов.
 
 ```yaml
 - while: "{{condition}}"
-  max_iterations: 10
+  max_loops: 10
   steps:
     - cli: "check something"
 ```
@@ -309,7 +311,7 @@ Switch-case.
 ```
 
 ### group
-Группировка шагов с defaults.
+Группировка шагов с defaults. Ключи `group:` и `name:` взаимозаменяемы.
 
 ```yaml
 - group: Group Name
@@ -324,14 +326,34 @@ Switch-case.
 ## Сетевые Операции
 
 ### docker_op
-Docker операции.
+Docker операции над контейнерами.
 
-**Операции:** start, stop, restart, down
+**Операции:** `start`, `stop`, `restart`, `pause`, `unpause`, `logs`, `exec`, `cp`
 
 ```yaml
 - docker_op: restart
   services: "{{nodes}}"
   wait_for_ip: true  # Для start/restart
+
+- docker_op: pause
+  services: "node-1"  # Заморозить контейнер (имитация потери связи)
+
+- docker_op: unpause
+  services: "node-1"  # Возобновить замороженный контейнер
+
+- docker_op: logs
+  services: "node-1"
+  tail: 50           # последние N строк (по умолчанию 100)
+  save: node1_logs   # сохранить вывод в переменную
+
+- docker_op: exec
+  services: "node-1"
+  command: "cat /opt/cellframe-node/var/log/cellframe-node.log | tail -20"
+  save: exec_output  # сохранить stdout в переменную
+
+- docker_op: cp
+  src: "node-1:/opt/cellframe-node/var/log/cellframe-node.log"
+  dst: "/tmp/node1.log"  # Копирование файла из контейнера на хост
 ```
 
 **ВАЖНО:** Используйте `stop` + `start` вместо `restart` после изменения конфигурации!
@@ -369,7 +391,7 @@ Docker операции.
 Сохранение/восстановление состояния сети.
 
 ```yaml
-- snapshot: save
+- snapshot: create
   name: snapshot_name
 
 - snapshot: restore

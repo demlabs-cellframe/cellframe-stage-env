@@ -91,12 +91,20 @@ variables:
 ```
 
 ## Groups
+
+Groups bundle related steps under a shared label and optional defaults.
+The display name can be specified with either `group:` or `name:` key:
+
 ```yaml
 - group: Token Operations
   defaults:
     chain: zerochain
   steps:
     - cli: "token_decl ..."
+
+- name: Alternative syntax
+  steps:
+    - print: "Both 'group' and 'name' are accepted"
 ```
 
 ## Defaults
