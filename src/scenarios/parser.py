@@ -194,7 +194,7 @@ class BaseScenarioParser:
     # ------------------------------------------------------------------
     _KNOWN_STEP_KEYS = frozenset({
         "cli", "rpc", "wait", "wait_for_datum", "wait_network", "python",
-        "print", "bash", "tool", "loop", "docker_op", "snapshot", "dpkg",
+        "print", "bash", "kelvpn_cli", "tool", "loop", "docker_op", "snapshot", "dpkg",
         "config", "set", "if", "while", "for", "switch", "name",
         "operand_name",
     })

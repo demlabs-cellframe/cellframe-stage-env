@@ -51,6 +51,12 @@ class OperandDefinition:
             )
         return list(self.actions[action].get("steps", []))
 
+    def get_action_defaults(self, action: str) -> Dict[str, Any]:
+        """Return default parameter values declared under ``params:`` for *action*."""
+        if action not in self.actions:
+            return {}
+        return dict(self.actions[action].get("params", {}))
+
 
 class OperandRegistry:
     """Loads and provides access to custom operand definitions."""

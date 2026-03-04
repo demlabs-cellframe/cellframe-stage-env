@@ -16,7 +16,7 @@ from src.utils.logger import get_logger
 from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
-    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
+    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, PrintStep, BashStep, KelvpnCliStep, ToolStep, LoopStep, StepGroup,
     NetworkWaitStep, DockerOpStep, SnapshotStep,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep, DpkgStep, CustomOperandStep,
@@ -161,7 +161,7 @@ class ScenarioExecutor:
         # Step executors
         from .step import (
             CLIStepExecutor, RPCStepExecutor, PythonStepExecutor, PrintStepExecutor,
-            BashStepExecutor, ToolStepExecutor, WaitStepExecutor,
+            BashStepExecutor, KelvpnCliStepExecutor, ToolStepExecutor, WaitStepExecutor,
             WaitForDatumStepExecutor, LoopStepExecutor,
             NetworkWaitStepExecutor, DockerOpStepExecutor, SnapshotStepExecutor,
             SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor,
@@ -173,6 +173,7 @@ class ScenarioExecutor:
         self.python_executor = PythonStepExecutor(self.container_manager, log_file, debug)
         self.print_executor = PrintStepExecutor(self.container_manager, log_file, debug)
         self.bash_executor = BashStepExecutor(self.container_manager, log_file, debug)
+        self.kelvpn_cli_executor = KelvpnCliStepExecutor(self.container_manager, log_file, debug)
         self.tool_executor = ToolStepExecutor(self.container_manager, log_file, debug)
         self.wait_executor = WaitStepExecutor(
             self.container_manager, log_file, debug, node_cli_path,
@@ -621,8 +622,14 @@ class ScenarioExecutor:
         except ScenarioExecutionError:
             raise
         except Exception as e:
+            import traceback as _tb
+            err_msg = str(e) or repr(e)
+            logger.error("unexpected_exception_in_executor",
+                         exc_type=type(e).__name__,
+                         exc_msg=err_msg,
+                         traceback=_tb.format_exc())
             raise ScenarioExecutionError(
-                f"Unexpected error during execution: {str(e)}",
+                f"Unexpected error during execution: {err_msg}",
                 context=ctx.get_summary()
             ) from e
         finally:
@@ -657,6 +664,8 @@ class ScenarioExecutor:
                 step_desc = f"ConfigStep ({step.config})"
             elif isinstance(step, DpkgStep):
                 step_desc = f"DpkgStep ({step.dpkg} {step.package})"
+            elif isinstance(step, KelvpnCliStep):
+                step_desc = f"KelvpnCliStep ({step.kelvpn_cli[:60]})"
             elif isinstance(step, CustomOperandStep):
                 step_desc = f"CustomOperand ({step.operand_name}.{step.operand_action})"
 
@@ -693,6 +702,8 @@ class ScenarioExecutor:
                 await self.print_executor.execute(step, ctx)
             elif isinstance(step, BashStep):
                 await self.bash_executor.execute(step, ctx)
+            elif isinstance(step, KelvpnCliStep):
+                await self.kelvpn_cli_executor.execute(step, ctx)
             elif isinstance(step, ToolStep):
                 await self.tool_executor.execute(step, ctx)
             elif isinstance(step, LoopStep):

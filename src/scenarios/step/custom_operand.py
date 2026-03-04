@@ -51,7 +51,12 @@ class CustomOperandStepExecutor(StepExecutor):
 
         saved_vars: Dict[str, Any] = {}
         try:
-            for key, value in step.operand_params.items():
+            # Merge defaults from operand definition with caller-supplied params.
+            # Caller params take precedence over operand-declared defaults.
+            action_defaults = defn.get_action_defaults(action_name)
+            effective_params = {**action_defaults, **step.operand_params}
+
+            for key, value in effective_params.items():
                 if isinstance(value, str):
                     value = ctx.substitute(value)
                 saved_vars[key] = ctx.get_variable(key) if ctx.has_variable(key) else _SENTINEL
