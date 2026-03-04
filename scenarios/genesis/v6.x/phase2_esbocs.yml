@@ -65,12 +65,8 @@ test:
     steps:
       # Wait for Global DB sync on first root (ensures GDB is ready)
       - wait: global_db_sync
-        node: "{{first_root}}"
-        timeout: 60
-      
-      # Wait for network to stabilize and ledger cache to propagate
-      # Ledger cache is synced via Global DB groups
-      - wait: "60s"
+        node: "{{_active_nodes}}"
+        timeout: 120
       
       # Verify network is online on first master
       - cli: "net get status"
@@ -99,9 +95,10 @@ test:
       - cli: "net go sync"
         node: "{{first_master}}"
       
-      # Wait for sync to complete
-      - wait: "30s"
-      
+      - wait: global_db_sync
+        nodes: "{{_active_nodes}}"
+        timeout: 60
+
       # Verify emission is now in ledger on master
       - cli: "ledger list coins"
         node: "{{first_master}}"
@@ -119,12 +116,12 @@ test:
       - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert {{network_name}}.root.pvt.0"
         save_hash: mainchain_genesis_tx
       
-      # 6.x: mempool proc_all replaces deprecated mempool proc -datum
       - cli: "mempool proc_all"
-      
-      # Wait for mempool sync via Global DB
-      - wait: "15s"
-      
+
+      - wait: global_db_sync
+        nodes: "{{_active_nodes}}"
+        timeout: 60
+
       # Debug: Show mempool status on master
       - cli: "mempool list -chain main"
         node: "{{first_master}}"
@@ -143,9 +140,12 @@ test:
       # - ROOT node has seed_mode enabled via CLI, so it will ACCEPT genesis block when synced
       
       # Wait for ESBocs consensus to create genesis block
-      # This includes: TX validation, consensus round, block signing, propagation
-      - wait: "120s"
-      
+      - wait: block_created
+        node: "{{first_master}}"
+        chain: "main"
+        min_blocks: 1
+        timeout: 180
+
       # Check if genesis block was created
       - cli: "block list"
         node: "{{first_master}}"
@@ -153,13 +153,6 @@ test:
       
       - print: "Master blocks status: {{_master_blocks_status}}"
       
-      # Additional wait if no blocks yet
-      - wait: "30s"
-      
-      # Verify block was created and synced to master node
-      - cli: "block list"
-        node: "{{first_master}}"
-        expect_output: "have blocks: [1-9]"
   
   - cli: "block list -chain main"
     node: "{{first_master}}"
