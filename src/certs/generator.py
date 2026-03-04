@@ -231,10 +231,7 @@ class CertGenerator:
             raise RuntimeError("Failed to build certificate builder Docker image")
         self.certs_dir.mkdir(parents=True, exist_ok=True)
 
-        paths_config = get_config_loader().get_paths_config()
-        project_root = (self.base_path / paths_config.get('project_root', '../..')).resolve()
-        sdk_src = (project_root / paths_config.get('cellframe_sdk_path', 'cellframe-sdk')).resolve()
-        dap_src = (project_root / paths_config.get('dap_sdk_path', 'dap-sdk')).resolve()
+        sdk_src, dap_src = self._resolve_sdk_paths()
         cert_src = (self.base_path / "src" / "certs").resolve()
 
         uid, gid = os.getuid(), os.getgid()
@@ -340,6 +337,80 @@ class CertGenerator:
         
         return result
     
+    def _resolve_sdk_paths(self) -> tuple:
+        """
+        Resolve SDK source paths.
+
+        If ``cellframe_sdk_path`` / ``dap_sdk_path`` are configured and the
+        directories exist on the host, they are used directly (bind-mounted
+        into the builder container).  Otherwise the repos are cloned from git
+        into ``cache/sdk/`` and used from there.
+
+        Returns:
+            (cellframe_sdk_path, dap_sdk_path) as resolved absolute Paths.
+        """
+        paths_config = get_config_loader().get_paths_config()
+        project_root = (self.base_path / paths_config.get('project_root', '../..')).resolve()
+
+        sdk_rel = paths_config.get('cellframe_sdk_path', '').strip()
+        dap_rel = paths_config.get('dap_sdk_path', '').strip()
+
+        sdk_src = (project_root / sdk_rel).resolve() if sdk_rel else None
+        dap_src = (project_root / dap_rel).resolve() if dap_rel else None
+
+        if sdk_src and sdk_src.is_dir() and dap_src and dap_src.is_dir():
+            logger.info("using_local_sdks", sdk=str(sdk_src), dap=str(dap_src))
+            return sdk_src, dap_src
+
+        logger.info("local_sdks_not_found_will_clone",
+                     sdk_configured=sdk_rel or "<empty>",
+                     dap_configured=dap_rel or "<empty>")
+
+        cache_dir = paths_config.get('cache_dir', 'cache')
+        sdk_cache = (self.base_path / cache_dir / "sdk").resolve()
+        sdk_cache.mkdir(parents=True, exist_ok=True)
+
+        branch = paths_config.get('sdk_git_branch', 'master')
+
+        sdk_src = self._ensure_sdk_cloned(
+            sdk_cache / "cellframe-sdk",
+            paths_config.get('cellframe_sdk_git',
+                             'https://gitlab.demlabs.net/cellframe/cellframe-sdk.git'),
+            branch,
+        )
+        dap_src = self._ensure_sdk_cloned(
+            sdk_cache / "dap-sdk",
+            paths_config.get('dap_sdk_git',
+                             'https://gitlab.demlabs.net/dap/dap-sdk.git'),
+            branch,
+        )
+
+        return sdk_src, dap_src
+
+    def _ensure_sdk_cloned(self, dest: Path, git_url: str, branch: str) -> Path:
+        """Clone or update an SDK repo at *dest*."""
+        if dest.is_dir() and (dest / ".git").is_dir():
+            logger.info("sdk_repo_exists_pulling", path=str(dest), branch=branch)
+            print_info(f"Updating {dest.name} ({branch})...")
+            subprocess.run(
+                ["git", "-C", str(dest), "fetch", "--depth", "1", "origin", branch],
+                check=True, capture_output=True, text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(dest), "checkout", f"origin/{branch}"],
+                check=True, capture_output=True, text=True,
+            )
+        else:
+            logger.info("cloning_sdk", url=git_url, branch=branch, dest=str(dest))
+            print_info(f"Cloning {dest.name} ({branch}) from {git_url}...")
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", branch,
+                 git_url, str(dest)],
+                check=True, capture_output=True, text=True,
+            )
+
+        return dest.resolve()
+
     def _normalize_cert_name(self, cert_name: str) -> str:
         """
         Normalize certificate name to standard format.

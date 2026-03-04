@@ -409,6 +409,9 @@ class ConfigLoader:
             'dap_sdk_path': 'dap-sdk',
             'tools_base_url': 'https://pub.cellframe.net',
             'node_var_subdirs': 'log, lib/ca, lib/global_db, lib/wallet, lib/network',
+            'cellframe_sdk_git': 'https://gitlab.demlabs.net/cellframe/cellframe-sdk.git',
+            'dap_sdk_git': 'https://gitlab.demlabs.net/dap/dap-sdk.git',
+            'sdk_git_branch': 'master',
         }
         
         if not config_file.exists():

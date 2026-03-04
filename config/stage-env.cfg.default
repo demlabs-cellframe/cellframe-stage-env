@@ -73,9 +73,16 @@ retain_days = 7
 project_root = ../..
 cache_dir = ../../cache
 artifacts_dir = ../../cache/artifacts
-# SDK paths (relative to project_root)
+# SDK paths (relative to project_root).
+# If set and the directories exist — mounted from host into Docker.
+# If empty or directories missing — cloned automatically from git into cache/sdk/.
 cellframe_sdk_path = lib/cellframe-sdk
 dap_sdk_path = lib/dap-sdk
+
+# Git repos for auto-cloning SDKs when local paths are unavailable
+cellframe_sdk_git = https://gitlab.demlabs.net/cellframe/cellframe-sdk.git
+dap_sdk_git = https://gitlab.demlabs.net/dap/dap-sdk.git
+sdk_git_branch = master
 
 # Base URL for downloading Cellframe tools and packages
 # Used for cellframe-tool-sign, cellframe-tool-compose, and node packages
