@@ -110,6 +110,20 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
 
         (cache_dir / "crash-artifacts" / f"node{node_id}").mkdir(parents=True, exist_ok=True)
 
+        if spec.config_overrides:
+            cfg_d = cfg_dir / "cellframe-node.cfg.d"
+            cfg_d.mkdir(parents=True, exist_ok=True)
+            lines = [f"# Auto-generated config overrides for {svc_name}"]
+            for section, values in spec.config_overrides.items():
+                lines.append(f"\n[{section}]")
+                if isinstance(values, dict):
+                    for k, v in values.items():
+                        lines.append(f"{k}={v}")
+                else:
+                    lines.append(str(values))
+            (cfg_d / "suite-overrides.cfg").write_text("\n".join(lines) + "\n")
+            print_info(f"    config_overrides: {list(spec.config_overrides.keys())}")
+
         if spec.packages:
             packages_to_install[svc_name] = spec.packages.split()
 
