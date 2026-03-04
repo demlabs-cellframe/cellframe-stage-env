@@ -181,7 +181,8 @@ The `includes` list accepts both **file paths** (strings) and **inline data bloc
 ```yaml
 includes:
   - ../common/vpn_defaults.yml       # sets vpn_client_count: 3
-  - variables: { vpn_client_count: 5 }  # override before next include
+  - variables:                        # override before next include
+      vpn_client_count: 5
   - ../common/vpn_nodes.yml          # uses vpn_client_count = 5
   - ../common/vpn_service_setup.yml
 ```
@@ -281,7 +282,8 @@ node_compose_gen:
 # stress/suite.yml
 includes:
   - ../common/vpn_defaults.yml
-  - variables: { vpn_client_count: 5 }  # override for this suite
+  - variables:                        # override for this suite
+      vpn_client_count: 5
   - ../common/vpn_nodes.yml
 ```
 
@@ -335,7 +337,9 @@ restore_snapshot: vpn_stress_state
 
 includes:
   - ../common/vpn_defaults.yml
-  # Override counts: - variables: { vpn_client_count: 5 }
+  # Override counts:
+  # - variables:
+  #     vpn_client_count: 5
   - ../common/vpn_nodes.yml
   - ../common/vpn_service_setup.yml
   - ../common/fault_injection_helpers.yml

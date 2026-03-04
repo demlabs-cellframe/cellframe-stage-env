@@ -185,7 +185,8 @@ setup:
 ```yaml
 includes:
   - ../common/vpn_defaults.yml       # устанавливает vpn_client_count: 3
-  - variables: { vpn_client_count: 5 }  # переопределение перед следующим include
+  - variables:                        # переопределение перед следующим include
+      vpn_client_count: 5
   - ../common/vpn_nodes.yml          # использует vpn_client_count = 5
   - ../common/vpn_service_setup.yml
 ```
@@ -285,7 +286,8 @@ node_compose_gen:
 # stress/suite.yml
 includes:
   - ../common/vpn_defaults.yml
-  - variables: { vpn_client_count: 5 }  # переопределение для этого сьюта
+  - variables:                        # переопределение для этого сьюта
+      vpn_client_count: 5
   - ../common/vpn_nodes.yml
 ```
 
@@ -339,7 +341,9 @@ restore_snapshot: vpn_stress_state
 
 includes:
   - ../common/vpn_defaults.yml
-  # Переопределение: - variables: { vpn_client_count: 5 }
+  # Переопределение:
+  # - variables:
+  #     vpn_client_count: 5
   - ../common/vpn_nodes.yml
   - ../common/vpn_service_setup.yml
   - ../common/fault_injection_helpers.yml
