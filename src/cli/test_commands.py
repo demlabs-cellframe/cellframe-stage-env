@@ -355,7 +355,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 debug=debug_mode,
                                 base_path=base_path
                             )
-                            
+                            executor.load_operands(common_root / "operands", common_root / "common" / "operands")
+
                             topology_vars = {}
                             if network_mgr:
                                 from ..scenarios.global_context import ScenarioGlobalContext
@@ -519,12 +520,13 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             
                             # Execute scenario
                             executor = ScenarioExecutor(
-                                node_cli_path=cli_path, 
+                                node_cli_path=cli_path,
                                 log_file=scenario_log_file,
                                 debug=debug_mode,
                                 base_path=base_path
                             )
-                            
+                            executor.load_operands(common_root / "operands", common_root / "common" / "operands")
+
                             async def _execute():
                                 return await executor.execute_scenario(
                                     scenario,

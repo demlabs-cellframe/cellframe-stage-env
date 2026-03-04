@@ -254,7 +254,11 @@ class WaitStep(BaseModel):
     
     # Block creation parameters
     min_blocks: Optional[int] = Field(None, description="Minimum number of blocks (for block_created)")
-    
+
+    # GlobalDB group sync parameters
+    group: Optional[str] = Field(None, description="GDB group name (for global_db_sync with specific group)")
+    key: Optional[str] = Field(None, description="GDB key to wait for in group (for global_db_sync)")
+
     # Advanced options
     check_master: bool = Field(True, description="Check master nodes (for finalized)")
     expected_count: Optional[int] = Field(None, description="Expected count (for specific waiters)")
@@ -372,6 +376,7 @@ class SnapshotStep(BaseModel):
 from .schema_control_flow import SetStep, IfStep, WhileStep, ForStep, SwitchStep
 from .schema_config import ConfigStep
 from .schema_dpkg import DpkgStep
+from .schema_operand import CustomOperandStep
 
 
 # ============================================================================
@@ -439,12 +444,15 @@ class StepGroup(BaseModel):
 # Update TestStep to include new step types
 # IMPORTANT: Order matters! Specific types must come before generic ones to ensure correct parsing.
 # NetworkWaitStep must come before WaitStep.
+# CustomOperandStep MUST be LAST — it is a catch-all populated by the parser's
+# pre-processing pass and will never appear in raw YAML directly.
 TestStep = Union[
     NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep, DpkgStep,
     CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
-    WaitStep 
+    WaitStep,
+    CustomOperandStep,
 ]
 
 
