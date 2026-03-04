@@ -230,16 +230,17 @@ class ConfigStepExecutor(StepExecutor):
             template_name = f"chains/{chain_file}.cfg.j2"
             is_chain = True
         elif config_name == network_name:
-            template_name = "stagenet.cfg.j2"
+            template_name = "network.cfg.j2"
             is_network = True
         else:
-            template_name = f"base/{config_name}.cfg.j2"
-            
-        template_path = generator.templates_dir / template_name
-        if not template_path.exists():
-             template_path = generator.templates_dir / f"{config_name}.cfg.j2"
-             if not template_path.exists():
-                 raise RuntimeError(f"Template not found for {config_name}: tried {template_name} and {config_name}.cfg.j2")
+            template_name = f"{config_name}.cfg.j2"
+
+        template_path = generator._resolve_template(template_name)
+        if template_path is None:
+            raise RuntimeError(
+                f"Template not found for {config_name}: tried {template_name} "
+                f"in {generator.versioned_templates_dir} and {generator.templates_dir}"
+            )
         
         env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(generator.templates_dir)))
         template = env.get_template(str(template_path.relative_to(generator.templates_dir)))
@@ -260,6 +261,9 @@ class ConfigStepExecutor(StepExecutor):
             existing_content = target_file.read_text()
             current_context = self._extract_context_from_ini(existing_content)
             full_context = {**current_context, **variables}
+            full_context['network_name'] = network_name
+            if is_network and 'id' in full_context and 'network_id' not in full_context:
+                full_context['network_id'] = full_context['id']
             
             try:
                 rendered = template.render(full_context)

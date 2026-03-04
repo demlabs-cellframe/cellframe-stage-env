@@ -47,6 +47,15 @@ suite_setup:
     shared_var: value
 ```
 
+### Predefined (ScenarioGlobalContext)
+Automatically available topology variables:
+- `{{first_root}}` — first root node
+- `{{first_master}}` — first master node
+- `{{all_nodes}}` — all nodes
+- `{{root_nodes}}` — all root nodes
+- `{{master_nodes}}` — all master nodes
+- `{{_active_nodes}}` — active nodes (root + master)
+
 ## Best Practices
 
 1. Use semantic names

@@ -289,14 +289,13 @@ class CLICommandParser:
         # Build list of options to add
         options_to_add = []
         for option, value in defaults.items():
-            # Check if command supports this option
-            if option in available_options:
-                # Check if option is not already in command (word boundary aware)
-                import re
-                pattern = rf'(^|\s)-{re.escape(option)}(\s|$)'
-                if not re.search(pattern, cli_command):
-                    options_to_add.append(f"-{option} {value}")
-                    logger.debug(f"Adding option -{option} {value} to command '{cli_command}'")
+            import re
+            pattern = rf'(^|\s)-{re.escape(option)}(\s|$)'
+            if re.search(pattern, cli_command):
+                continue
+            if not available_options or option in available_options:
+                options_to_add.append(f"-{option} {value}")
+                logger.debug(f"Adding option -{option} {value} to command '{cli_command}'")
             else:
                 logger.debug(f"Option '{option}' not in available_options {available_options} for command '{command}'")
         

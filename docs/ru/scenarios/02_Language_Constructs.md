@@ -81,7 +81,7 @@ variables:
 ### while loop
 ```yaml
 - while: "{{ctx.get_variable('count', 0) < 10}}"
-  max_iterations: 100
+  max_loops: 100
   steps:
     - cli: "check status"
       save_to: status
@@ -125,12 +125,19 @@ variables:
 
 ## Группы
 
+Группы объединяют связанные шаги под общим именем и опциональными defaults.
+Имя можно задать ключом `group:` или `name:` — оба варианта эквивалентны:
+
 ### Базовая Группа
 ```yaml
 - group: Token Operations
   steps:
     - cli: "token_decl ..."
     - cli: "token_emit ..."
+
+- name: Alternative syntax
+  steps:
+    - print: "Ключи 'group' и 'name' взаимозаменяемы"
 ```
 
 ### Группа с Defaults

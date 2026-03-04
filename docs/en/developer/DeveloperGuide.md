@@ -4,7 +4,7 @@
 
 ### Requirements
 - Docker & Docker Compose
-- Python 3.9+
+- Python 3.13+
 - Git
 
 ### Setup
@@ -35,14 +35,20 @@ cd "$(dirname "$0")"
 STAGE_ENV="stage-env/src/main.py"
 
 case "$1" in
-    "genesis")
-        python3 "$STAGE_ENV" --scenario scenarios/genesis/suite_setup.yml
+    --e2e)
+        python3 "$STAGE_ENV" --config stage-env.cfg start --wait
+        python3 "$STAGE_ENV" --config stage-env.cfg run-tests scenarios/e2e
         ;;
-    "functional")
-        python3 "$STAGE_ENV" --scenario scenarios/functional/suite_setup.yml
+    --functional)
+        python3 "$STAGE_ENV" --config stage-env.cfg start --wait
+        python3 "$STAGE_ENV" --config stage-env.cfg run-tests scenarios/functional
+        ;;
+    --regression)
+        python3 "$STAGE_ENV" --config stage-env.cfg start --wait
+        python3 "$STAGE_ENV" --config stage-env.cfg run-tests scenarios/regression
         ;;
     *)
-        echo "Usage: $0 {genesis|functional}"
+        echo "Usage: $0 {--e2e|--functional|--regression}"
         exit 1
         ;;
 esac
@@ -63,21 +69,30 @@ docker compose -p cellframe-stage down -v --remove-orphans
 ```
 
 ### 4. Create Config
-```yaml
-# tests/stage-env/config/stage-env.yml
-project:
-  name: MyProject
-  workspace: /mnt/work/myproject
+Configuration uses INI format (`stage-env.cfg`) with sections like `[network]`, `[topology]`, `[node_source]`:
 
-network:
-  subnet: 172.18.0.0/16
-  prefix: myproject
+```ini
+# tests/stage-env.cfg
+[network]
+name = stagenet
+network_id = 0x1234
 
-paths:
-  cache: ../testing/cache
-  artifacts: ../testing/artifacts
-  scenarios: ../scenarios
+[topology]
+root_nodes_count = 3
+master_nodes_count = 3
+full_nodes_count = 2
+
+[node_source]
+type = local
+local_path = ../../build/cellframe-node.deb
+
+[paths]
+project_root = ../..
+cache_dir = ../../cache
+artifacts_dir = ../../cache/artifacts
 ```
+
+Copy from `stage-env/config/stage-env.cfg.default` as template.
 
 ## Creating Scenarios
 
@@ -153,7 +168,7 @@ test:
 ### 2. Run Locally
 ```bash
 cd tests
-./run.sh
+./run.sh --e2e
 ```
 
 ### 3. Debug
@@ -181,7 +196,7 @@ test:
   script:
     - cd tests
     - git submodule update --init
-    - ./run.sh functional
+    - ./run.sh --functional
   artifacts:
     paths:
       - tests/testing/artifacts/
@@ -204,7 +219,7 @@ jobs:
       - name: Run tests
         run: |
           cd tests
-          ./run.sh functional
+          ./run.sh --functional
 ```
 
 ## Examples

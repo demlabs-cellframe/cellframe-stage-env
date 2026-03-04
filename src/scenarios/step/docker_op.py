@@ -125,14 +125,44 @@ class DockerOpStepExecutor(StepExecutor):
                 compose_manager.stop(services=services)
             elif operation == "restart":
                 compose_manager.restart(services=services)
+            elif operation == "pause":
+                compose_manager.pause(services=services)
+            elif operation == "unpause":
+                compose_manager.unpause(services=services)
             elif operation == "logs":
-                # Logs operation - would need to implement
-                logger.warning("Docker logs operation not yet implemented")
+                if not services:
+                    raise ScenarioExecutionError("services required for 'logs' operation", step=step)
+                tail = step.tail if hasattr(step, 'tail') else 100
+                all_output = []
+                for svc in services:
+                    log_output = compose_manager.logs(service=svc, tail=tail)
+                    logger.info(f"Logs for {svc} (last {tail} lines):\n{log_output}")
+                    all_output.append(log_output)
+                combined = "\n".join(all_output)
+                if step.save:
+                    ctx.set_variable(step.save, combined)
+                    logger.info(f"Saved logs output to variable '{step.save}'")
             elif operation == "exec":
                 if not step.command:
                     raise ScenarioExecutionError("Command required for 'exec' operation", step=step)
-                # Exec operation - would need to implement
-                logger.warning("Docker exec operation not yet implemented")
+                if not services:
+                    raise ScenarioExecutionError("services required for 'exec' operation", step=step)
+                command_str = ctx.substitute(step.command)
+                command_parts = ["sh", "-c", command_str]
+                all_output = []
+                for svc in services:
+                    exit_code, output = compose_manager.exec(service=svc, command=command_parts)
+                    logger.info(f"Exec on {svc}: exit_code={exit_code}, output={output[:200]}")
+                    if exit_code != 0:
+                        raise ScenarioExecutionError(
+                            f"docker_op exec failed on {svc}: exit_code={exit_code}, output={output}",
+                            step=step,
+                        )
+                    all_output.append(output)
+                combined = "\n".join(all_output)
+                if step.save:
+                    ctx.set_variable(step.save, combined)
+                    logger.info(f"Saved exec output to variable '{step.save}'")
             else:
                 raise ScenarioExecutionError(f"Unknown Docker operation: {operation}", step=step)
             

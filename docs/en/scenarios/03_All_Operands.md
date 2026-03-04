@@ -135,6 +135,8 @@ Wait for wallet balance condition.
 ### All Registered Waiters
 
 From WaitRegistry (28 total):
+- `mempool` - Datum in mempool
+- `finalized` - Datum/transaction finalized in chain
 - `network_online` - Network state online
 - `sync_complete` - Network sync complete
 - `dag_event` - DAG event processing
@@ -271,7 +273,7 @@ Loop while condition true.
 
 ```yaml
 - while: "{{condition}}"
-  max_iterations: 10
+  max_loops: 10
   steps:
     - cli: "check something"
 ```
@@ -300,7 +302,7 @@ Simple counter loop.
 ```
 
 ### group
-Group steps with defaults.
+Group steps with defaults. Both `group:` and `name:` are accepted as the display name key.
 
 ```yaml
 - group: Group Name
@@ -315,14 +317,34 @@ Group steps with defaults.
 ## Network Operations
 
 ### docker_op
-Docker operations.
+Docker operations on containers.
 
-**Operations:** start, stop, restart, down
+**Operations:** `start`, `stop`, `restart`, `pause`, `unpause`, `logs`, `exec`, `cp`
 
 ```yaml
 - docker_op: restart
   services: "{{nodes}}"
   wait_for_ip: true  # For start/restart
+
+- docker_op: pause
+  services: "node-1"  # Freeze container (simulates network loss)
+
+- docker_op: unpause
+  services: "node-1"  # Resume frozen container
+
+- docker_op: logs
+  services: "node-1"
+  tail: 50           # last N lines (default 100)
+  save: node1_logs   # save output to variable
+
+- docker_op: exec
+  services: "node-1"
+  command: "cat /opt/cellframe-node/var/log/cellframe-node.log | tail -20"
+  save: exec_output  # save stdout to variable
+
+- docker_op: cp
+  src: "node-1:/opt/cellframe-node/var/log/cellframe-node.log"
+  dst: "/tmp/node1.log"  # Copy file from container to host
 ```
 
 ### config
@@ -339,10 +361,10 @@ Modify node configuration.
 **Important:** Use `stop` + `start` after config, not `restart`!
 
 ### snapshot
-Save/restore network state.
+Create/restore network state snapshots.
 
 ```yaml
-- snapshot: save
+- snapshot: create
   name: snapshot_name
 
 - snapshot: restore
@@ -352,11 +374,10 @@ Save/restore network state.
 ## Special Steps
 
 ### StepGroup
-Group with metadata.
+Group steps under a shared label and optional defaults. Both `group:` and `name:` keys are accepted.
 
 ```yaml
-- group: Group Name
-  description: Optional description
+- group: Group Name     # 'name:' also works
   defaults:
     node: node1
   steps:

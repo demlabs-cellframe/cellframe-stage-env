@@ -408,6 +408,10 @@ class ConfigLoader:
             'cellframe_sdk_path': 'cellframe-sdk',
             'dap_sdk_path': 'dap-sdk',
             'tools_base_url': 'https://pub.cellframe.net',
+            'node_var_subdirs': 'log, lib/ca, lib/global_db, lib/wallet, lib/network',
+            'cellframe_sdk_git': 'https://gitlab.demlabs.net/cellframe/cellframe-sdk.git',
+            'dap_sdk_git': 'https://gitlab.demlabs.net/dap/dap-sdk.git',
+            'sdk_git_branch': 'master',
         }
         
         if not config_file.exists():
@@ -797,12 +801,22 @@ class ConfigLoader:
             if key.startswith('local'):
                 pkg_path = Path(value)
                 if not pkg_path.is_absolute():
-                    pkg_path = (project_root / value).resolve()
-                if not pkg_path.exists():
+                    pkg_path = project_root / value
+                resolved = pkg_path.resolve() if '*' not in str(pkg_path) else None
+                if resolved and resolved.exists():
+                    packages.append({'type': 'local', 'path': str(resolved)})
+                    logger.info("extra_package_local", key=key, path=str(resolved))
+                elif '*' in str(pkg_path):
+                    import glob as _glob
+                    matched = sorted(_glob.glob(str(pkg_path)))
+                    if matched:
+                        picked = matched[-1]
+                        packages.append({'type': 'local', 'path': picked})
+                        logger.info("extra_package_glob", key=key, pattern=str(pkg_path), resolved=picked)
+                    else:
+                        logger.warning("extra_package_glob_no_match", key=key, pattern=str(pkg_path))
+                else:
                     logger.warning("extra_package_not_found", key=key, path=str(pkg_path))
-                    continue
-                packages.append({'type': 'local', 'path': str(pkg_path)})
-                logger.info("extra_package_local", key=key, path=str(pkg_path))
             elif key.startswith('url'):
                 packages.append({'type': 'url', 'url': value})
                 logger.info("extra_package_url", key=key, url=value)

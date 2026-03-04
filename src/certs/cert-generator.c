@@ -25,6 +25,7 @@
 #include "dap_enc_base58.h"
 #include "dap_sign.h"
 #include "dap_hash.h"
+#include "dap_hash_compat.h"
 #include "dap_chain_common.h"
 
 /* === Inline Node Address Generation (from dap_stream.h - avoids heavy deps) === */
@@ -48,7 +49,8 @@ static inline dap_node_addr_t dap_node_addr_from_cert(dap_cert_t *a_cert)
     dap_node_addr_t l_ret = { .uint64 = 0 };
     if (!a_cert) return l_ret;
     dap_hash_fast_t l_hash;
-    if (!dap_cert_get_pkey_hash(a_cert, &l_hash))
+    if (!dap_cert_get_pkey_hash(a_cert, DAP_HASH_TYPE_SHA3_256,
+                                (byte_t *)&l_hash, sizeof(l_hash)))
         dap_node_addr_from_hash(&l_hash, &l_ret);
     return l_ret;
 }

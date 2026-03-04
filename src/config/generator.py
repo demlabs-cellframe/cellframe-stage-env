@@ -26,20 +26,33 @@ logger = get_logger(__name__)
 class ConfigGenerator:
     """Generate configuration files for cellframe nodes."""
     
-    def __init__(self, base_path: Path, config_path: Optional[Path] = None):
+    def __init__(self, base_path: Path, config_path: Optional[Path] = None, version_dir: Optional[str] = None):
         """
         Initialize config generator.
         
         Args:
             base_path: Base path to stage-env directory
             config_path: Optional path to stage-env.cfg
+            version_dir: Node version directory (e.g. "v5.x", "v6.x") for versioned templates.
+                         If None, read from [build] genesis_version in stage-env config, fallback "v5.x".
         """
         self.base_path = base_path
         self.config_loader = get_config_loader()
+
+        if version_dir is None:
+            stage_config = self.config_loader.load_stage_config()
+            version_dir = stage_config.get('genesis_version', 'v5.x')
+        self.version_dir = version_dir
         
         # Load paths from config
         paths_config = self.config_loader.get_paths_config()
         cache_dir_relative = paths_config.get('cache_dir', 'cache')
+        self.node_var_subdirs = [
+            s.strip() for s in paths_config.get(
+                'node_var_subdirs',
+                'log, lib/ca, lib/global_db, lib/wallet, lib/network'
+            ).split(',')
+        ]
         
         # Directories
         self.cache_dir = (base_path / cache_dir_relative).resolve()
@@ -50,10 +63,21 @@ class ConfigGenerator:
         # Initialize cert generator with correct certs path
         self.cert_generator = CertGenerator(base_path, certs_dir=self.certs_cache)
         
-        # Template directories
+        # Template directories: versioned first, then common fallback
         self.templates_dir = base_path / "config" / "templates"
+        self.versioned_templates_dir = self.templates_dir / version_dir
         
-        logger.debug("config_generator_initialized", base_path=str(base_path))
+        logger.debug("config_generator_initialized", base_path=str(base_path), version_dir=version_dir)
+    
+    def _resolve_template(self, relative_path: str) -> Optional[Path]:
+        """Find template file/dir: versioned directory first, then common fallback."""
+        versioned = self.versioned_templates_dir / relative_path
+        if versioned.exists():
+            return versioned
+        common = self.templates_dir / relative_path
+        if common.exists():
+            return common
+        return None
     
     def generate_all(
         self,
@@ -121,53 +145,22 @@ class ConfigGenerator:
         
         network_name = topology.network.name
         
-        # Generate base cellframe-node.cfg for each node first using Jinja2
-        base_cfg_template = self.templates_dir / "base" / "cellframe-node.cfg.j2"
-        if base_cfg_template.exists():
+        # Generate base cellframe-node.cfg using versioned template (v5.x/v6.x)
+        base_cfg_template = self._resolve_template("cellframe-node.cfg.j2")
+        if base_cfg_template:
             template_content = base_cfg_template.read_text()
             template = Template(template_content)
+            logger.info("using_base_template", path=str(base_cfg_template), version=self.version_dir)
             
             for node in nodes:
-                # CRITICAL: Initial seed_mode configuration for node startup
-                # ALL nodes start with seed_mode=false by default
-                # Actual seed_mode management is done EXPLICITLY via YAML scenarios
-                # 
-                # Default Configuration:
-                # - ALL nodes (ROOT, MASTER, FULL): seed_mode=false
-                #
-                # YAML Scenario Management (see scenarios/genesis/):
-                # - PHASE 1 (phase1_zerochain.yml):
-                #   * Explicitly enable_seed_mode on ROOT nodes in setup section
-                #   * Create genesis event (token_decl) in seed mode
-                #   * Explicitly disable_seed_mode on ROOT nodes with zerochain_genesis_hash
-                #   * Restart nodes
-                #   * Regular operations (emission, funding) with seed_mode=false
-                #
-                # - PHASE 2 (phase2_esbocs.yml):
-                #   * Delegate keys on zerochain (seed_mode=false)
-                #   * Explicitly enable_seed_mode on MASTER nodes
-                #   * Create genesis block (first mainchain transaction) in seed mode
-                #   * Explicitly disable_seed_mode on MASTER nodes with main_genesis_hash
-                #   * Final restart with ESBocs active
-                #
-                # This approach provides full transparency and control over seed_mode lifecycle
-                seed_mode = 'false'  # All nodes start with seed_mode=false
-                
-                # Render template with node-specific context
                 context = {
                     'node_ip': node.ip_address,
-                    'seed_mode': seed_mode
+                    'seed_mode': 'false',
                 }
                 logger.info("generating_cellframe_node_cfg", 
                            node_id=node.node_id, 
-                           node_ip=node.ip_address,
-                           context=context)
+                           node_ip=node.ip_address)
                 node_cfg_content = template.render(**context)
-                
-                logger.debug("initial_seed_mode_false_for_all_nodes", 
-                           node_id=node.node_id,
-                           role=node.role,
-                           note="seed_mode will be explicitly managed by YAML scenarios")
                 
                 node_etc_base = self.configs_cache / f"node{node.node_id}"
                 node_etc_base.mkdir(parents=True, exist_ok=True)
@@ -175,32 +168,37 @@ class ConfigGenerator:
                 base_cfg_path.write_text(node_cfg_content)
                 logger.debug("base_config_generated", node_id=node.node_id)
                 
-                # Copy config snippets from cellframe-node.cfg.d templates
-                cfg_d_template_dir = self.templates_dir / "cellframe-node.cfg.d"
+                # Copy config snippets from cellframe-node.cfg.d templates (versioned -> common)
+                cfg_d_template_dir = self.versioned_templates_dir / "cellframe-node.cfg.d"
+                if not cfg_d_template_dir.exists():
+                    cfg_d_template_dir = self.templates_dir / "cellframe-node.cfg.d"
                 if cfg_d_template_dir.exists():
                     node_cfg_d = node_etc_base / "cellframe-node.cfg.d"
                     node_cfg_d.mkdir(parents=True, exist_ok=True)
                     
+                    snippet_context = {'network_name': network_name}
                     for cfg_snippet in cfg_d_template_dir.glob("*.cfg"):
                         dst_snippet = node_cfg_d / cfg_snippet.name
-                        shutil.copy2(cfg_snippet, dst_snippet)
+                        snippet_content = cfg_snippet.read_text()
+                        if '{{' in snippet_content or '{%' in snippet_content:
+                            rendered = Template(snippet_content).render(**snippet_context)
+                            dst_snippet.write_text(rendered)
+                        else:
+                            shutil.copy2(cfg_snippet, dst_snippet)
                         logger.debug("config_snippet_copied",
                                    node_id=node.node_id,
                                    snippet=cfg_snippet.name)
                     
                     self._generate_plugins_config(node_cfg_d, node)
         
-        # Source template for network config
-        src_network_cfg = self.templates_dir / f"{network_name}.cfg"
-        
-        if not src_network_cfg.exists():
-            # Try with 'stagenet' as fallback
-            src_network_cfg = self.templates_dir / "stagenet.cfg.j2"
-            
-        if not src_network_cfg.exists():
-            logger.warning("network_config_template_not_found",
-                         network=network_name,
-                         path=str(src_network_cfg))
+        # Source template for network config (versioned -> common fallback)
+        src_network_cfg = self._resolve_template(f"{network_name}.cfg")
+        if not src_network_cfg:
+            src_network_cfg = self._resolve_template(f"{network_name}.cfg.j2")
+        if not src_network_cfg:
+            src_network_cfg = self._resolve_template("network.cfg.j2")
+        if not src_network_cfg:
+            logger.warning("network_config_template_not_found", network=network_name)
             return
         
         logger.debug("network_config_source", path=str(src_network_cfg))
@@ -244,11 +242,11 @@ class ConfigGenerator:
         
         # Prepare chain configs context (shared for all nodes)
         # Chain configs are generated per-node but share common context
-        chains_template_dir = self.templates_dir / "chains"
+        chains_template_dir = self._resolve_template("chains")
         base_chain_context = None
         chain_templates = {}
         
-        if chains_template_dir.exists():
+        if chains_template_dir:
             # Collect validator addresses (only for zerochain - mainchain uses PoS without explicit validators list)
             validator_addrs = self._collect_validator_addresses(nodes, network_name)
             root_nodes_addrs = self._collect_root_node_addresses(nodes, network_name)
@@ -373,10 +371,14 @@ class ConfigGenerator:
             
             # Render template with node-specific context
             network_context = {
+                'network_name': network_name,
+                'network_id': base_chain_context['network_id'] if base_chain_context else '0x0000000000001234',
+                'native_ticker': base_chain_context['native_ticker'] if base_chain_context else 'TCELL',
+                'collecting_level': base_chain_context['collecting_level'] if base_chain_context else 10.0,
                 'node_role': node_role,
-                'seed_nodes_aliases': seed_nodes_aliases,  # Required for node discovery
+                'seed_nodes_aliases': seed_nodes_aliases,
                 'seed_nodes_hosts': seed_nodes_hosts,
-                'permanent_nodes_hosts': permanent_nodes_hosts,  # Root nodes only
+                'permanent_nodes_hosts': permanent_nodes_hosts,
                 'events_sign_cert': events_sign_cert,
                 'blocks_sign_cert': blocks_sign_cert
             }
@@ -510,10 +512,10 @@ class ConfigGenerator:
                       fee_addr=fee_addr[:16],
                       note="fee_addr will be preserved in regenerated configs")
         
-        # Render all chain templates
-        chains_template_dir = self.templates_dir / "chains"
-        if not chains_template_dir.exists():
-            raise RuntimeError(f"Chain templates directory not found: {chains_template_dir}")
+        # Render all chain templates (versioned -> common fallback)
+        chains_template_dir = self._resolve_template("chains")
+        if not chains_template_dir:
+            raise RuntimeError(f"Chain templates directory not found in {self.versioned_templates_dir} or {self.templates_dir}")
         
         rendered_chain_configs = {}
         for chain_template in chains_template_dir.glob("*.cfg.j2"):
@@ -583,9 +585,9 @@ class ConfigGenerator:
                    nodes=len(nodes),
                    minimum_fee=minimum_fee)
         
-        chains_template_dir = self.templates_dir / "chains"
-        if not chains_template_dir.exists():
-            logger.warning("chains_template_dir_not_found", path=str(chains_template_dir))
+        chains_template_dir = self._resolve_template("chains")
+        if not chains_template_dir:
+            logger.warning("chains_template_dir_not_found")
             return
         
         # Load main.cfg.j2 template
@@ -774,10 +776,10 @@ class ConfigGenerator:
         node_network_dir = self.configs_cache / f"node{node_id}" / "network"
         node_data_dir = self.data_cache / f"node{node_id}"
         
-        # Create directories
         node_config_dir.mkdir(parents=True, exist_ok=True)
         node_network_dir.mkdir(parents=True, exist_ok=True)
-        node_data_dir.mkdir(parents=True, exist_ok=True)
+        for subdir in self.node_var_subdirs:
+            (node_data_dir / subdir).mkdir(parents=True, exist_ok=True)
         
         # Copy base config snippets (skips disable-plugins.cfg, handled separately)
         self._copy_base_configs(node_config_dir)
@@ -797,9 +799,9 @@ class ConfigGenerator:
                     config_dir=str(node_config_dir))
     
     def _copy_base_configs(self, dest_dir: Path) -> None:
-        """Copy all base configuration snippets from templates."""
-        src_dir = self.templates_dir / "cellframe-node.cfg.d"
-        if src_dir.exists():
+        """Copy all base configuration snippets from templates (versioned -> common)."""
+        src_dir = self._resolve_template("cellframe-node.cfg.d")
+        if src_dir:
             for cfg_file in src_dir.glob("*.cfg"):
                 dst = dest_dir / cfg_file.name
                 if not dst.exists():
@@ -938,7 +940,8 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
             self.cert_generator.generate_all(
                 network_name=network_name,
                 node_count=node_count,
-                root_count=root_count
+                root_count=root_count,
+                network_id=topology.network.network_id
             )
             
             # Validate generated certificates

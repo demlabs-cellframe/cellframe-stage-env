@@ -63,4 +63,3 @@ check:
   
   - cli: "node links"
     node: "{{last_master}}"
-    expect: success

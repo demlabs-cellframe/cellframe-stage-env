@@ -13,7 +13,6 @@ Comprehensive description of all YAML scenario language features. Use as referen
 5. [Defaults System](#defaults-system)
 6. [Data Extraction](#data-extraction)
 7. [Suite System](#suite-system)
-8. [Suite System](#suite-system)
 
 ---
 
@@ -292,7 +291,7 @@ Loop while condition is true.
 
 ```yaml
 - while: ctx.get_variable('retry_count') < 3
-  max_iterations: 100           # Safety limit
+  max_loops: 100                # Safety limit
   steps:
     - cli: net get status
       save: status
@@ -341,12 +340,22 @@ Wait for network state.
 ```
 
 ### DockerOpStep
-Docker operations (start/stop/restart).
+Docker operations: `start`, `stop`, `restart`, `pause`, `unpause`, `logs`, `exec`, `cp`.
 
 ```yaml
 - docker_op: restart
   services: ["node-1", "node-2"]
   detach: true
+
+- docker_op: logs
+  services: "node-1"
+  tail: 50
+  save: node_logs
+
+- docker_op: exec
+  services: "node-1"
+  command: "pgrep cellframe-node"
+  save: pid_output
 ```
 
 ### SnapshotStep
@@ -358,10 +367,10 @@ Snapshot operations.
 ```
 
 ### StepGroup
-Group steps with local defaults.
+Group steps with local defaults. The display name can be set with either `group:` or `name:` key.
 
 ```yaml
-- group: "Wallet Operations"
+- group: "Wallet Operations"  # 'name:' is also accepted
   defaults:
     node: node2
     wait: 1s
@@ -793,8 +802,6 @@ setup:
 - **[Tutorial](Tutorial.md)** - Step-by-step guide (7 lessons)
 - **[Cookbook](Cookbook.md)** - Ready recipes for common tasks
 - **Real scenarios** - Study `tests/stage-env/scenarios/genesis/` for advanced patterns
-- **[SLC Modules](../../../../../.context/modules/testing/)** - Complete technical reference
-
 ---
 
 **Version:** 2.1  
