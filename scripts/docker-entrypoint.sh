@@ -24,11 +24,10 @@ mkdir -p /opt/cellframe-node/var/lib/ca
 # Fix permissions for mounted volumes
 chmod -R 755 /opt/cellframe-node/var 2>/dev/null || true
 
-# Enable core dumps for crash analysis
+# Enable core dumps — they land in cwd (/opt/cellframe-node) which is bind-mounted via var/
 ulimit -c unlimited
-# core_pattern is set on the host (/tmp/core.%e.%p.%t)
-# Core dumps land in the container's /tmp (mount namespace isolation)
-# Use `docker cp <container>:/tmp/core.*` to extract from stopped containers
+mkdir -p /opt/cellframe-node/var/coredumps
+cd /opt/cellframe-node/var/coredumps
 
 # Start cellframe-node with maximum debug level
 echo "Starting cellframe-node..."

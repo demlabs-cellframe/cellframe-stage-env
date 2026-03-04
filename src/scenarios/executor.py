@@ -535,7 +535,7 @@ class ScenarioExecutor:
             
             # Initialize CLI parser after setup (containers should be running now)
             # This ensures CLI defaults can be applied to commands in test phase
-            if compose_manager and global_defaults and global_defaults.cli:
+            if compose_manager:
                 from src.utils.cli_parser import get_cli_parser
                 from pathlib import Path
                 

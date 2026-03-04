@@ -8,6 +8,7 @@ Provides intelligent waiting for node state transitions:
 """
 
 import asyncio
+import json
 from typing import List, Set
 from enum import Enum
 
@@ -303,29 +304,45 @@ class NodeStateManager:
                              output_preview=output_str[:300],
                              note="Network status command returned error - network may not be initialized")
             
-            # Parse state from output
-            # Format:
-            #   states:
-            #       current: NET_STATE_ONLINE
-            #       target: NET_STATE_ONLINE
-            # We need to extract the "current" state
+            # Try JSON format first (6.0+):
+            # [{"status":{"states":{"current":"NET_STATE_ONLINE","target":"NET_STATE_ONLINE"}}}]
+            try:
+                parsed = json.loads(output_str.strip())
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    item = parsed[0]
+                    current_str = None
+                    if isinstance(item, dict):
+                        status = item.get("status", item)
+                        states = status.get("states", {})
+                        current_str = states.get("current")
+                    if current_str:
+                        for state in NodeState:
+                            if state.value == current_str:
+                                logger.debug("node_state_detected",
+                                           node_id=node_id,
+                                           state=state.value,
+                                           format="json")
+                                return state
+            except (json.JSONDecodeError, TypeError, KeyError):
+                pass
+            
+            # Fall back to text format (5.x):
+            #   current: NET_STATE_ONLINE
             for line in output_str.split('\n'):
                 line_stripped = line.strip()
-                # Look for "current: NET_STATE_XXX" line
                 if line_stripped.startswith('current:'):
                     for state in NodeState:
                         if state.value in line_stripped:
                             logger.debug("node_state_detected",
                                        node_id=node_id,
-                                       state=state.value)
+                                       state=state.value,
+                                       format="text")
                             return state
             
             logger.debug("state_not_parsed",
                        node_id=node_id,
-                       output_preview=output_str[:200],
-                       full_output=output_str[:500])
+                       output_preview=output_str[:200])
             
-            # DIAGNOSTIC: If we can't parse state, log full output for debugging
             if output_str:
                 logger.warning("failed_to_parse_node_state",
                              node_id=node_id,

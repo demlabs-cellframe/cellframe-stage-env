@@ -339,15 +339,20 @@ class DockerComposeManager:
         if node_source_type == 'local' and node_source_config:
             local_path = node_source_config.get('local_path')
             if local_path:
-                # Resolve absolute path
-                local_package_path = Path(local_path)
-                if not local_package_path.is_absolute():
-                    local_package_path = self.project_dir / local_path
-                local_package_path = local_package_path.resolve()
-                
-                if not local_package_path.exists():
-                    logger.error("local_package_not_found", path=str(local_package_path))
-                    raise FileNotFoundError(f"Local package not found: {local_package_path}")
+                import glob as _glob
+                raw = Path(local_path)
+                if not raw.is_absolute():
+                    raw = self.project_dir / local_path
+                matched = sorted(_glob.glob(str(raw)))
+                if matched:
+                    local_package_path = Path(matched[-1]).resolve()
+                else:
+                    resolved = raw.resolve()
+                    if resolved.exists():
+                        local_package_path = resolved
+                    else:
+                        logger.error("local_package_not_found", path=str(resolved), pattern=local_path)
+                        raise FileNotFoundError(f"Local package not found: {resolved} (pattern: {local_path})")
                 
                 logger.info("using_local_package", path=str(local_package_path))
         
@@ -1193,15 +1198,32 @@ class DockerComposeManager:
             
             if cli_result.exit_code == 0:
                 output = cli_result.output.decode("utf-8")
-                # Parse CLI output for current state
+                # Try JSON format (6.0+)
+                try:
+                    import json
+                    parsed = json.loads(output.strip())
+                    if isinstance(parsed, list) and len(parsed) > 0:
+                        item = parsed[0]
+                        if isinstance(item, dict):
+                            status = item.get("status", item)
+                            states = status.get("states", {})
+                            state = states.get("current", "")
+                            if state:
+                                links = status.get("links", {})
+                                active = links.get("active", 0)
+                                required = links.get("required", 0)
+                                if "NET_STATE_LINKS_CONNECTING" in state:
+                                    return f"NET_STATE_LINKS_CONNECTING ({active}/{required} links)"
+                                return state
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    pass
+                # Fall back to text format (5.x)
                 for line in output.split('\n'):
                     line = line.strip()
                     if 'current:' in line and 'NET_STATE_' in line:
-                        # Extract state like "current: NET_STATE_ONLINE"
                         parts = line.split(':', 1)
                         if len(parts) == 2:
                             state = parts[1].strip()
-                            # Get link info if available
                             if "NET_STATE_LINKS_CONNECTING" in state or "NET_STATE_ONLINE" in state:
                                 for info_line in output.split('\n'):
                                     if 'active:' in info_line:
@@ -1281,24 +1303,25 @@ class DockerComposeManager:
             
             if cli_result.exit_code == 0:
                 output = cli_result.output.decode("utf-8")
-                # Check for current state
+                current_state = None
                 for line in output.split('\n'):
                     line = line.strip()
                     if 'current:' in line and 'NET_STATE_' in line:
                         parts = line.split(':', 1)
                         if len(parts) == 2:
                             current_state = parts[1].strip()
-                            logger.debug("cli_state_check", container=container.name, state=current_state)
-                            if current_state in ["NET_STATE_ONLINE", "NET_STATE_SYNC_CHAINS"]:
-                                logger.info("network_ready_via_cli",
-                                           container=container.name,
-                                           state=current_state)
-                                return True
-                            logger.debug("network_not_ready_via_cli",
-                                       container=container.name,
-                                       state=current_state)
-                            return False
-                # If we couldn't find state in CLI output, node might still be starting
+                            break
+                if current_state:
+                    logger.debug("cli_state_check", container=container.name, state=current_state)
+                    if current_state in ["NET_STATE_ONLINE", "NET_STATE_SYNC_CHAINS"]:
+                        logger.info("network_ready_via_cli",
+                                   container=container.name,
+                                   state=current_state)
+                        return True
+                    logger.debug("network_not_ready_via_cli",
+                               container=container.name,
+                               state=current_state)
+                    return False
                 logger.debug("no_state_in_cli_output", container=container.name)
                 return False
             

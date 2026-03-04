@@ -1,5 +1,69 @@
 # Changelog - Stage-Env
 
+## [2.2.0] - 2026-03-04
+
+### 🆕 New Features
+
+#### Self-Contained Cert-Generator Docker Image
+- Multi-stage Dockerfile clones SDK repos at build time
+- No host SDK mounts required at runtime — binary is baked into the image
+- Configurable via `SDK_BRANCH`, `CELLFRAME_SDK_REPO`, `DAP_SDK_REPO` build args
+
+#### Glob Patterns for Local Packages
+- `local_path` in config now supports shell glob patterns (`*.deb`, `build-*/*.deb`)
+- Picks the latest match (sorted alphabetically) for deterministic results
+- Works in both `compose.py` node source and `loader.py` extra packages
+
+#### JSON CLI Output Parsing (SDK 6.0+)
+- `NodeStateManager` and `DockerComposeManager` parse JSON status format
+- Falls back to text format (5.x) when JSON parsing fails
+- Enables compatibility with both SDK 5.x and 6.0+
+
+### 🐛 Bug Fixes
+
+#### eval() Namespace Unification (Critical)
+- **Problem:** `if`, `while`, `for`, `switch` conditions failed when referencing ctx variables
+  combined with builtins like `len()`, `range()`, `str()`
+- **Root Cause:** Variables were passed as `locals` dict, making them invisible to nested function calls
+- **Solution:** Merge builtins + variables into a single `globals` dict for `eval()`
+- **Impact:** Expressions like `len(items) == 3` and `range(max_nodes)` now work reliably
+
+#### CLI Parser Always Initialized
+- **Problem:** CLI defaults not applied when `global_defaults.cli` was absent
+- **Root Cause:** Parser initialization was gated on `global_defaults and global_defaults.cli`
+- **Solution:** Initialize parser whenever `compose_manager` is available
+- **Impact:** Default options (e.g. `-net stagenet`) now applied even without explicit CLI defaults
+
+#### CLI Defaults Applied Without Options Whitelist
+- **Problem:** Defaults silently dropped for commands with no parsed option list
+- **Root Cause:** `apply_cli_defaults` required option in `available_options`
+- **Solution:** Add default when `available_options` is empty (command not in help cache)
+- **Impact:** Defaults are applied even for commands not yet in the help cache
+
+#### Core Dumps Collected Reliably
+- Core dumps now land in `/opt/cellframe-node/var/coredumps` inside the container
+- Directory is bind-mounted via var/, accessible from host without `docker cp`
+
+### 🔧 Architecture
+
+#### Simplified SDK Linking for cert-generator
+- `CMakeLists.txt` links against `cellframe_sdk` and `dap-sdk` shared libs
+- Removed manual enumeration of 15+ static libraries and XKCP targets
+- Reduced CMake complexity by ~60 lines
+
+#### Config Path Changed
+- `run.sh` now reads config from `$PROJECT_ROOT/tests/stage-env.cfg`
+- Separates tool config from stage-env source tree
+
+### 🧪 Testing
+
+- Added `TestControlFlowEvalNamespace` — 4 tests for unified eval namespace
+- Added `TestNodeStateJSONParsing` — 4 tests for JSON/text format parsing
+- Added `test_apply_cli_defaults_adds_all_when_unparsed` for unparsed commands
+- All existing tests updated for new behavior
+
+---
+
 ## [2.1.0] - 2026-01-29
 
 ### 🆕 New Features

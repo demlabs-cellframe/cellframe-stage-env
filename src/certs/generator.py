@@ -27,12 +27,7 @@ from src.config.manager import get_config_loader
 
 logger = get_logger(__name__)
 
-# Docker image name for the builder environment (SDKs mounted, not copied)
 CERT_BUILDER_IMAGE = "cf-cert-builder:latest"
-
-# Named Docker volumes for caching SDK and cert-generator builds between runs
-_SDK_BUILD_CACHE_VOLUME = "cf-cert-sdk-cache"
-_CERT_BUILD_CACHE_VOLUME = "cf-cert-build-cache"
 
 
 class CertConfig(BaseModel):
@@ -68,8 +63,9 @@ class CertGenerator:
         """
         Build lightweight builder Docker image if needed.
 
-        The image contains only build tools (cmake, gcc, etc.).
-        SDK sources are mounted at runtime via ``docker run -v``.
+        The image is self-contained: it clones its own SDK copies and
+        pre-builds cf-cert-generator during ``docker build``.  No host
+        SDK mounts are needed at runtime.
 
         Returns:
             True if image is ready
@@ -86,7 +82,7 @@ class CertGenerator:
             pass
 
         logger.info("building_cert_builder_image")
-        print_info("Building certificate builder Docker image...")
+        print_info("Building certificate builder Docker image (self-contained, clones SDK)...")
 
         try:
             result = subprocess.run(
@@ -221,9 +217,9 @@ class CertGenerator:
                    network=network_name,
                    nodes=node_count,
                    root_count=root_count,
-                   method="docker_mount")
+                   method="docker_self_contained")
 
-        print_info(f"Generating {node_count} node certificates (Docker + mounted SDKs)...")
+        print_info(f"Generating {node_count} node certificates (self-contained Docker)...")
 
         if not self.build_docker_image():
             raise RuntimeError("Failed to build certificate builder Docker image")
@@ -231,39 +227,16 @@ class CertGenerator:
         network_id = "0x1234"
         self.certs_dir.mkdir(parents=True, exist_ok=True)
 
-        paths_config = get_config_loader().get_paths_config()
-        project_root = (self.base_path / paths_config.get('project_root', '../..')).resolve()
-        sdk_src = (project_root / paths_config.get('cellframe_sdk_path', 'cellframe-sdk')).resolve()
-        dap_src = (project_root / paths_config.get('dap_sdk_path', 'dap-sdk')).resolve()
-        cert_src = (self.base_path / "src" / "certs").resolve()
-
         uid, gid = os.getuid(), os.getgid()
-
-        # Single script: build SDK libs (cached) → build cert-generator (cached) → generate certs
-        build_and_generate = (
-            "set -e && "
-            "cd /tmp/sdk-build && "
-            "cmake -DCMAKE_BUILD_TYPE=Release /project/cellframe-sdk >/dev/null 2>&1 && "
-            "make -j$(nproc) dap_core dap_crypto dap_chain_common dap_io 2>&1 && "
-            "cd /tmp/cert-build && "
-            "cmake -DCELLFRAME_SDK_BUILD=/tmp/sdk-build "
-            "-DCELLFRAME_SDK_SRC=/project/cellframe-sdk "
-            "/project/cert-generator >/dev/null 2>&1 && "
-            "make -j$(nproc) cf-cert-generator 2>&1 && "
-            f"./cf-cert-generator /output {node_count} {network_name} {network_id} {root_count} && "
-            f"chown -R {uid}:{gid} /output"
-        )
 
         docker_cmd = [
             "docker", "run", "--rm",
-            "-v", f"{sdk_src}:/project/cellframe-sdk:ro",
-            "-v", f"{dap_src}:/project/cellframe-sdk/dap-sdk:ro",
-            "-v", f"{cert_src}:/project/cert-generator:ro",
+            "--entrypoint", "sh",
             "-v", f"{self.certs_dir.absolute()}:/output",
-            "-v", f"{_SDK_BUILD_CACHE_VOLUME}:/tmp/sdk-build",
-            "-v", f"{_CERT_BUILD_CACHE_VOLUME}:/tmp/cert-build",
             CERT_BUILDER_IMAGE,
-            "bash", "-c", build_and_generate,
+            "-c",
+            f"/usr/local/bin/cf-cert-generator /output {node_count} {network_name} {network_id} {root_count} && "
+            f"chown -R {uid}:{gid} /output",
         ]
 
         try:

@@ -33,7 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 STAGE_ENV_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_ROOT="$(cd "$STAGE_ENV_DIR/../.." && pwd)"
 STAGE_ENV_WRAPPER="$STAGE_ENV_DIR/stage-env"
-STAGE_ENV_CONFIG="$STAGE_ENV_DIR/config/stage-env.cfg"
+STAGE_ENV_CONFIG="$PROJECT_ROOT/tests/stage-env.cfg"
 CACHE_DIR="$PROJECT_ROOT/cache"
 
 # Test directories
