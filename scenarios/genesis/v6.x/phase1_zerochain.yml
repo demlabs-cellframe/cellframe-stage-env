@@ -295,7 +295,7 @@ test:
       - for: _seed_node
         in: "{{seed_nodes}}"
         steps:
-          - cli: "dag seed_mode -net {{network_name}} -chain zerochain enable"
+          - cli: "chain seed -chain zerochain on"
             node: "{{_seed_node}}"
             save_to: _seed_mode_result
           - print: "seed_mode on {{_seed_node}}: {{_seed_mode_result}}"
@@ -303,9 +303,7 @@ test:
   - wait: global_db_sync
     nodes: "{{root_nodes}}"
     timeout: 180
-
-  - wait: "15s"
-  
+ 
   # Verify network is fully connected
   - cli: "net get status"
     node: "{{first_root}}"
@@ -326,11 +324,9 @@ test:
       - cli: "token_decl -token {{native_ticker}} -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
         save_hash: token_hash
       
-      # 6.x: mempool proc_all replaces deprecated mempool proc -datum
       - cli: "mempool proc_all"
         save_to: _mempool_proc_result
       - print: "Mempool proc_all result: {{_mempool_proc_result}}"
-      - wait: "15s"
       
       - wait: global_db_sync
         nodes: "{{root_nodes}}"
@@ -355,7 +351,9 @@ test:
           - cli: "net go sync -chain zerochain"
             nodes: "{{root_nodes}}"
           
-          - wait: "3s"
+          - wait: global_db_sync
+            nodes: "{{root_nodes}}"
+            timeout: 30
           
           - set: _max_events
             value: "0"
@@ -382,7 +380,10 @@ test:
       - print: "✓ Round complete successful, events: {{_token_decl_events}}"
       
       - cli: "net go sync -chain zerochain"
-      - wait: "5s"
+
+      - wait: global_db_sync
+        nodes: "{{root_nodes}}"
+        timeout: 30
       
       - cli: "token list"
         contains: "tokens: 1"
@@ -434,7 +435,7 @@ test:
       - for: _seed_node
         in: "{{seed_nodes}}"
         steps:
-          - cli: "dag seed_mode -net {{network_name}} -chain zerochain disable"
+          - cli: "chain seed -chain zerochain off"
             node: "{{_seed_node}}"
   
   - group: Create stake orders for validators
@@ -487,7 +488,6 @@ test:
       - cli: "mempool proc_all"
         save_to: _emission_mempool_result
       - print: "Emission mempool proc_all result: {{_emission_mempool_result}}"
-      - wait: "15s"
       
       - wait: global_db_sync
         nodes: "{{root_nodes}}"
@@ -512,7 +512,9 @@ test:
           - cli: "net go sync -chain zerochain"
             nodes: "{{root_nodes}}"
           
-          - wait: "3s"
+          - wait: global_db_sync
+            nodes: "{{root_nodes}}"
+            timeout: 30
           
           - set: _max_events
             value: "1"
@@ -544,8 +546,11 @@ test:
       - print: "DAG events after emission: {{_dag_events_after_emission}}"
       
       - cli: "net go sync -chain zerochain"
-      - wait: "5s"
-      
+
+      - wait: global_db_sync
+        nodes: "{{root_nodes}}"
+        timeout: 30
+
       - cli: "dag event list -chain zerochain"
         save_to: _final_dag_check
       - set: _final_events_count
