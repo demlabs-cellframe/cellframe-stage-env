@@ -61,8 +61,8 @@ class NetworkManager:
         self.config_loader = get_config_loader()
         self.topology = self.config_loader.load_topology(topology_name)
         
-        # Config generator
-        self.config_generator = ConfigGenerator(base_path, config_path)
+        # Config generator (initialized after version detection below)
+        self.config_generator = None
         
         # Docker compose manager
         self.compose = DockerComposeManager(
@@ -143,8 +143,11 @@ class NetworkManager:
             native_ticker=getattr(self.topology.network, 'native_ticker', 'TCELL')
         )
         
-        # Detect node major version for versioned genesis scenarios
+        # Detect node major version for versioned scenarios and config templates
         self._genesis_version_dir = self._detect_genesis_version()
+        
+        # Config generator with version-specific templates
+        self.config_generator = ConfigGenerator(base_path, config_path, version_dir=self._genesis_version_dir)
         
         logger.info("network_manager_initialized",
                    topology=topology_name,
