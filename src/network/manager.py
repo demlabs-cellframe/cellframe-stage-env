@@ -143,6 +143,9 @@ class NetworkManager:
             native_ticker=getattr(self.topology.network, 'native_ticker', 'TCELL')
         )
         
+        # Detect node major version for versioned genesis scenarios
+        self._genesis_version_dir = self._detect_genesis_version()
+        
         logger.info("network_manager_initialized",
                    topology=topology_name,
                    network=self.topology.network.name,
@@ -214,6 +217,19 @@ class NetworkManager:
         last_octet = int(parts[3]) + node_id - 1
         return f"{parts[0]}.{parts[1]}.{parts[2]}.{last_octet}"
     
+    def _detect_genesis_version(self) -> str:
+        """Detect node major version from DEB package name or config to choose genesis scenario dir."""
+        node_source = self.config_loader.get_node_source_config()
+        local_path = node_source.get('local_path', '') or ''
+        m = re.search(r'cellframe-node[_-](\d+)\.(\d+)', str(local_path))
+        if m:
+            major = int(m.group(1))
+            version_dir = f"v{major}.x"
+            logger.info("genesis_version_detected", version_dir=version_dir, source=local_path)
+            return version_dir
+        logger.info("genesis_version_default", version_dir="v6.x", note="Could not detect from package, using default")
+        return "v6.x"
+
     async def start(
         self,
         rebuild: bool = False,
@@ -420,7 +436,7 @@ class NetworkManager:
                 from ..scenarios.parser import ScenarioParser
                 
                 scenario_parser = ScenarioParser(self.base_path / "scenarios")
-                phase1_scenario = scenario_parser.load_scenario("genesis/phase1_zerochain.yml")
+                phase1_scenario = scenario_parser.load_scenario(f"genesis/{self._genesis_version_dir}/phase1_zerochain.yml")
                 
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
@@ -1118,7 +1134,7 @@ class NetworkManager:
                 from ..scenarios.parser import ScenarioParser
                 
                 scenario_parser = ScenarioParser(self.base_path / "scenarios")
-                phase2_scenario = scenario_parser.load_scenario("genesis/phase2_esbocs.yml")
+                phase2_scenario = scenario_parser.load_scenario(f"genesis/{self._genesis_version_dir}/phase2_esbocs.yml")
                 
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()

@@ -567,6 +567,9 @@ class ScenarioExecutor:
                         logger.warning("failed_to_initialize_cli_parser", error=str(e),
                                      note="CLI defaults may not be applied")
             
+            # Detect node version and inject cf_version* variables
+            await self._detect_node_version(ctx)
+            
             # Test phase (only for TestScenario, not for SuiteSetupScenario)
             if hasattr(scenario, 'test') and scenario.test:
                 logger.info("Executing test phase...")
@@ -603,6 +606,49 @@ class ScenarioExecutor:
         finally:
             self._running = False
     
+    async def _detect_node_version(self, ctx: RuntimeContext) -> None:
+        """Detect cellframe-node version and inject cf_version* variables into context."""
+        try:
+            containers = self.container_manager.docker_client.containers.list(
+                filters={"name": "cellframe-stage-node-"}
+            )
+            if not containers:
+                logger.warning("no_containers_for_version_detection")
+                return
+
+            container_name = containers[0].name
+            result = await self.container_manager.exec_cli_command("version", container_name)
+            version_output = result.get("stdout", "").strip()
+
+            if not version_output:
+                logger.warning("empty_version_output")
+                return
+
+            ctx.set_variable("cf_version", version_output)
+
+            # Parse "X.Y-BUILD" or "X.Y.Z" or "X.Y-SOMETHING" patterns
+            m = re.search(r'(\d+)\.(\d+)(?:[.\-](\S+))?', version_output)
+            if m:
+                ctx.set_variable("cf_version_major", int(m.group(1)))
+                ctx.set_variable("cf_version_minor", int(m.group(2)))
+                ctx.set_variable("cf_version_build", m.group(3) or "")
+            else:
+                ctx.set_variable("cf_version_major", 0)
+                ctx.set_variable("cf_version_minor", 0)
+                ctx.set_variable("cf_version_build", "")
+
+            logger.info("node_version_detected",
+                       cf_version=version_output,
+                       major=ctx.variables.get("cf_version_major"),
+                       minor=ctx.variables.get("cf_version_minor"),
+                       build=ctx.variables.get("cf_version_build"))
+        except Exception as e:
+            logger.warning("version_detection_failed", error=str(e))
+            ctx.set_variable("cf_version", "unknown")
+            ctx.set_variable("cf_version_major", 0)
+            ctx.set_variable("cf_version_minor", 0)
+            ctx.set_variable("cf_version_build", "")
+
     async def _execute_steps(
         self,
         steps: List[TestStep],
