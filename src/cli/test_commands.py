@@ -12,7 +12,7 @@ from typing import Optional, List, Callable
 from .common import print_info, print_success, print_error, print_warning
 
 
-def _provision_node_compose(network_mgr, node_compose, base_path, config_loader, print_info, print_success, print_warning, print_error):
+def _provision_node_compose(network_mgr, node_compose, base_path, config_loader, print_info, print_success, print_warning, print_error, suite_variables=None):
     """
     Provision additional cellframe nodes declared in suite.node_compose.
 
@@ -114,11 +114,28 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
             cfg_d = cfg_dir / "cellframe-node.cfg.d"
             cfg_d.mkdir(parents=True, exist_ok=True)
             lines = [f"# Auto-generated config overrides for {svc_name}"]
+
+            def _cfg_val(v):
+                if isinstance(v, bool):
+                    return "true" if v else "false"
+                s = str(v)
+                import re as _r
+                return _r.sub(
+                    r'\{\{(\w+)\}\}',
+                    lambda m: str(override_vars.get(m.group(1), m.group(0))),
+                    s,
+                )
+
+            override_vars = {
+                'network_name': network_mgr.topology.network.name,
+                **(suite_variables or {}),
+            }
+
             for section, values in spec.config_overrides.items():
                 lines.append(f"\n[{section}]")
                 if isinstance(values, dict):
                     for k, v in values.items():
-                        lines.append(f"{k}={v}")
+                        lines.append(f"{k}={_cfg_val(v)}")
                 else:
                     lines.append(str(values))
             (cfg_d / "suite-overrides.cfg").write_text("\n".join(lines) + "\n")
@@ -587,6 +604,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         _provision_node_compose(
                             network_mgr, suite_spec.node_compose, base_path,
                             config_loader, print_info, print_success, print_warning, print_error,
+                            suite_variables=suite_spec.variables,
                         )
                         # Install docker_compose packages on node_compose nodes too
                         if node_packages:
