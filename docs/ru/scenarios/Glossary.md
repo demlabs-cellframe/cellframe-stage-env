@@ -13,7 +13,6 @@ Comprehensive описание всех возможностей YAML языка
 5. [Система defaults](#система-defaults)
 6. [Извлечение данных](#извлечение-данных)
 7. [Система suites](#система-suites)
-8. [Система suites](#система-suites)
 
 ---
 
@@ -292,7 +291,7 @@ JSON-RPC вызов к ноде.
 
 ```yaml
 - while: ctx.get_variable('retry_count') < 3
-  max_iterations: 100           # Лимит безопасности
+  max_loops: 100                # Лимит безопасности
   steps:
     - cli: net get status
       save: status
@@ -341,12 +340,22 @@ Switch/case для множественного выбора.
 ```
 
 ### DockerOpStep
-Docker операции (start/stop/restart).
+Docker операции: `start`, `stop`, `restart`, `pause`, `unpause`, `logs`, `exec`, `cp`.
 
 ```yaml
 - docker_op: restart
   services: ["node-1", "node-2"]
   detach: true
+
+- docker_op: logs
+  services: "node-1"
+  tail: 50
+  save: node_logs
+
+- docker_op: exec
+  services: "node-1"
+  command: "pgrep cellframe-node"
+  save: pid_output
 ```
 
 ### SnapshotStep
@@ -358,10 +367,10 @@ Docker операции (start/stop/restart).
 ```
 
 ### StepGroup
-Группировка шагов с локальными defaults.
+Группировка шагов с локальными defaults. Имя задаётся ключом `group:` или `name:`.
 
 ```yaml
-- group: "Операции с кошельками"
+- group: "Операции с кошельками"  # 'name:' тоже допустим
   defaults:
     node: node2
     wait: 1s
@@ -793,8 +802,6 @@ setup:
 - **[Tutorial](Tutorial.md)** - Пошаговое руководство (7 уроков)
 - **[Cookbook](Cookbook.md)** - Готовые рецепты для типовых задач
 - **Реальные сценарии** - Изучите `tests/stage-env/scenarios/genesis/` для продвинутых паттернов
-- **[СЛК модули](../../../../../.context/modules/testing/)** - Полный технический справочник
-
 ---
 
 **Версия:** 2.1  

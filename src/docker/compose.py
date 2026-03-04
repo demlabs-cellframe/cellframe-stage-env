@@ -339,22 +339,33 @@ class DockerComposeManager:
         if node_source_type == 'local' and node_source_config:
             local_path = node_source_config.get('local_path')
             if local_path:
-                # Resolve absolute path
-                local_package_path = Path(local_path)
-                if not local_package_path.is_absolute():
-                    local_package_path = self.project_dir / local_path
-                local_package_path = local_package_path.resolve()
-                
-                if not local_package_path.exists():
-                    logger.error("local_package_not_found", path=str(local_package_path))
-                    raise FileNotFoundError(f"Local package not found: {local_package_path}")
+                import glob as _glob
+                raw = Path(local_path)
+                if not raw.is_absolute():
+                    raw = self.project_dir / local_path
+                matched = sorted(_glob.glob(str(raw)))
+                if matched:
+                    local_package_path = Path(matched[-1]).resolve()
+                else:
+                    resolved = raw.resolve()
+                    if resolved.exists():
+                        local_package_path = resolved
+                    else:
+                        logger.error("local_package_not_found", path=str(resolved), pattern=local_path)
+                        raise FileNotFoundError(f"Local package not found: {resolved} (pattern: {local_path})")
                 
                 logger.info("using_local_package", path=str(local_package_path))
         
-        # Resolve TOOLS_BASE_URL from paths config (once, before node loop)
+        # Resolve paths config (once, before node loop)
         from src.config.manager import get_config_loader
         paths_config = get_config_loader().get_paths_config()
         tools_base_url = paths_config.get('tools_base_url', 'https://pub.cellframe.net')
+        node_var_subdirs = [
+            s.strip() for s in paths_config.get(
+                'node_var_subdirs',
+                'log, lib/ca, lib/global_db, lib/wallet, lib/network'
+            ).split(',')
+        ]
         
         # Generate service for each node
         for node in nodes:
@@ -379,13 +390,15 @@ class DockerComposeManager:
                 f"{node.http_port}:8079",  # Cellframe HTTP/JSON-RPC/P2P
             ]
             
-            # Set volumes with node-specific paths
+            data_prefix = f"./{cache_dir_relative}/data/node{node.node_id}"
             node_service['volumes'] = [
-                # Main config file (generated per node with HTTP settings)
                 f"./{cache_dir_relative}/configs/node{node.node_id}/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg",
                 f"./{cache_dir_relative}/configs/node{node.node_id}/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d",
                 f"./{cache_dir_relative}/configs/node{node.node_id}/network:/opt/cellframe-node/etc/network",
-                f"./{cache_dir_relative}/data/node{node.node_id}:/opt/cellframe-node/var",
+            ] + [
+                f"{data_prefix}/{subdir}:/opt/cellframe-node/var/{subdir}"
+                for subdir in node_var_subdirs
+            ] + [
                 f"./{cache_dir_relative}/configs/shared/ca:/opt/cellframe-node/share/ca:ro",
                 f"./{cache_dir_relative}/crash-artifacts/node{node.node_id}:/crash-artifacts/node-{node.node_id}",
                 f"./{cache_dir_relative}/cellframe-packages:/var/cache/cellframe-packages"
@@ -547,6 +560,118 @@ class DockerComposeManager:
                    path=str(generated_file),
                    services=len(compose_data.get('services', {})))
     
+    def add_extra_node_services(
+        self,
+        extra_nodes: List[Dict[str, Any]],
+        network_settings: Optional[Dict[str, str]] = None,
+        cache_dir_relative: str = "cache",
+    ) -> None:
+        """
+        Add extra cellframe node services to the generated compose file.
+
+        Each entry reuses the x-cf-node-template from the base compose and
+        follows the same volume/network conventions as base topology nodes.
+
+        Args:
+            extra_nodes: List of dicts with keys: id, role, ip_address, http_port
+            network_settings: subnet/gateway overrides
+            cache_dir_relative: relative cache directory
+        """
+        if not self.compose_file.exists():
+            raise FileNotFoundError(f"Generated compose file not found: {self.compose_file}")
+
+        with open(self.compose_file, 'r') as f:
+            compose_data = yaml.safe_load(f)
+
+        node_template = compose_data.get('x-cf-node-template')
+        if not node_template:
+            existing_svc = next(
+                (v for k, v in compose_data.get('services', {}).items() if k.startswith('node-')),
+                None,
+            )
+            if not existing_svc:
+                raise ValueError("Cannot determine node template from compose file")
+            node_template = existing_svc
+
+        from src.config.manager import get_config_loader
+        paths_config = get_config_loader().get_paths_config()
+        node_var_subdirs = [
+            s.strip() for s in paths_config.get(
+                'node_var_subdirs',
+                'log, lib/ca, lib/global_db, lib/wallet, lib/network'
+            ).split(',')
+        ]
+
+        for node_spec in extra_nodes:
+            node_id = node_spec['id']
+            service_name = node_spec.get('service_name', f"node-{node_id}")
+
+            if service_name in compose_data.get('services', {}):
+                logger.info("extra_node_already_exists", service=service_name)
+                continue
+
+            svc = yaml.safe_load(yaml.dump(node_template))
+            svc['container_name'] = f"{self.project_name}-{service_name}"
+            svc['hostname'] = f"{self.project_name}-{service_name}"
+
+            svc['networks'] = {
+                self.network_name: {'ipv4_address': node_spec['ip_address']}
+            }
+            svc['ports'] = [f"{node_spec['http_port']}:8079"]
+
+            data_prefix = f"./{cache_dir_relative}/data/node{node_id}"
+            svc['volumes'] = [
+                f"./{cache_dir_relative}/configs/node{node_id}/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg",
+                f"./{cache_dir_relative}/configs/node{node_id}/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d",
+                f"./{cache_dir_relative}/configs/node{node_id}/network:/opt/cellframe-node/etc/network",
+            ] + [
+                f"{data_prefix}/{subdir}:/opt/cellframe-node/var/{subdir}"
+                for subdir in node_var_subdirs
+            ] + [
+                f"./{cache_dir_relative}/configs/shared/ca:/opt/cellframe-node/share/ca:ro",
+                f"./{cache_dir_relative}/crash-artifacts/node{node_id}:/crash-artifacts/node-{node_id}",
+                f"./{cache_dir_relative}/cellframe-packages:/var/cache/cellframe-packages",
+            ]
+
+            env = {
+                'NODE_ID': str(node_id),
+                'NODE_ROLE': node_spec.get('role', 'full'),
+                'NODE_TYPE': 'node',
+                'NODE_IP': node_spec['ip_address'],
+                'NETWORK_NAME': self.network_name,
+                'DAP_DEBUG': '1',
+                'CELLFRAME_DEBUG': '1',
+            }
+            if network_settings:
+                env['DOCKER_SUBNET'] = network_settings.get('subnet', '172.20.0.0/16')
+                env['DOCKER_GATEWAY'] = network_settings.get('gateway', '172.20.0.1')
+            svc['environment'] = env
+
+            existing_image = next(
+                (v.get('image') for k, v in compose_data.get('services', {}).items()
+                 if k.startswith('node-') and v.get('image')),
+                None,
+            )
+            if existing_image:
+                svc.pop('build', None)
+                svc['image'] = existing_image
+                svc['pull_policy'] = 'never'
+            elif 'build' not in svc:
+                raise ValueError(
+                    f"Cannot determine image for extra node {service_name}: "
+                    "no existing node has 'image' and template has no 'build'"
+                )
+
+            compose_data['services'][service_name] = svc
+            logger.info("extra_node_service_added",
+                       service=service_name, role=node_spec.get('role', 'full'),
+                       ip=node_spec['ip_address'])
+
+        with open(self.compose_file, 'w') as f:
+            yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
+
+        logger.info("extra_nodes_added_to_compose", count=len(extra_nodes))
+
     def set_service_images(self, image_map: Dict[str, str]) -> None:
         """
         Override service images in the generated compose file.
@@ -1193,15 +1318,32 @@ class DockerComposeManager:
             
             if cli_result.exit_code == 0:
                 output = cli_result.output.decode("utf-8")
-                # Parse CLI output for current state
+                # Try JSON format (6.0+)
+                try:
+                    import json
+                    parsed = json.loads(output.strip())
+                    if isinstance(parsed, list) and len(parsed) > 0:
+                        item = parsed[0]
+                        if isinstance(item, dict):
+                            status = item.get("status", item)
+                            states = status.get("states", {})
+                            state = states.get("current", "")
+                            if state:
+                                links = status.get("links", {})
+                                active = links.get("active", 0)
+                                required = links.get("required", 0)
+                                if "NET_STATE_LINKS_CONNECTING" in state:
+                                    return f"NET_STATE_LINKS_CONNECTING ({active}/{required} links)"
+                                return state
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    pass
+                # Fall back to text format (5.x)
                 for line in output.split('\n'):
                     line = line.strip()
                     if 'current:' in line and 'NET_STATE_' in line:
-                        # Extract state like "current: NET_STATE_ONLINE"
                         parts = line.split(':', 1)
                         if len(parts) == 2:
                             state = parts[1].strip()
-                            # Get link info if available
                             if "NET_STATE_LINKS_CONNECTING" in state or "NET_STATE_ONLINE" in state:
                                 for info_line in output.split('\n'):
                                     if 'active:' in info_line:
@@ -1281,24 +1423,25 @@ class DockerComposeManager:
             
             if cli_result.exit_code == 0:
                 output = cli_result.output.decode("utf-8")
-                # Check for current state
+                current_state = None
                 for line in output.split('\n'):
                     line = line.strip()
                     if 'current:' in line and 'NET_STATE_' in line:
                         parts = line.split(':', 1)
                         if len(parts) == 2:
                             current_state = parts[1].strip()
-                            logger.debug("cli_state_check", container=container.name, state=current_state)
-                            if current_state in ["NET_STATE_ONLINE", "NET_STATE_SYNC_CHAINS"]:
-                                logger.info("network_ready_via_cli",
-                                           container=container.name,
-                                           state=current_state)
-                                return True
-                            logger.debug("network_not_ready_via_cli",
-                                       container=container.name,
-                                       state=current_state)
-                            return False
-                # If we couldn't find state in CLI output, node might still be starting
+                            break
+                if current_state:
+                    logger.debug("cli_state_check", container=container.name, state=current_state)
+                    if current_state in ["NET_STATE_ONLINE", "NET_STATE_SYNC_CHAINS"]:
+                        logger.info("network_ready_via_cli",
+                                   container=container.name,
+                                   state=current_state)
+                        return True
+                    logger.debug("network_not_ready_via_cli",
+                               container=container.name,
+                               state=current_state)
+                    return False
                 logger.debug("no_state_in_cli_output", container=container.name)
                 return False
             

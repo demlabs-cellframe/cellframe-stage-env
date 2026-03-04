@@ -442,3 +442,208 @@ class TestRuntimeContextAdvanced:
         result = ctx.substitute("Host: {{config.host}}, Port: {{config.port}}")
         assert "localhost" in result
         assert "8080" in result
+
+
+class TestControlFlowEvalNamespace:
+    """Tests for unified eval namespace in control flow steps.
+    
+    After the refactoring, all eval() calls use a single merged globals dict
+    (builtins + explicit functions + ctx.variables) instead of separate
+    globals/locals.  This ensures variables are accessible as first-class
+    names inside expressions like 'len(my_list)'.
+    """
+    
+    @pytest.mark.asyncio
+    async def test_if_condition_accesses_variables(self):
+        """Test that if-condition can reference ctx variables directly."""
+        from src.scenarios.step.control_flow import IfStepExecutor
+        from src.scenarios.schema import IfStep
+        
+        executed = []
+        
+        async def fake_execute_steps(steps, ctx, defaults=None):
+            executed.append("then")
+        
+        executor = IfStepExecutor(container_manager=None, execute_steps_callback=fake_execute_steps)
+        scenario = TestScenario(name="test", description="test", test=[CLIStep(cli="version")])
+        ctx = RuntimeContext(scenario)
+        ctx.set_variable("count", 5)
+        
+        step = IfStep.model_validate({"if": "count > 3", "then": [{"cli": "version"}]})
+        await executor.execute(step, ctx)
+        
+        assert "then" in executed
+    
+    @pytest.mark.asyncio
+    async def test_if_condition_uses_builtins(self):
+        """Test that if-condition has access to len(), str(), int()."""
+        from src.scenarios.step.control_flow import IfStepExecutor
+        from src.scenarios.schema import IfStep
+        
+        executed = []
+        
+        async def fake_execute_steps(steps, ctx, defaults=None):
+            executed.append("then")
+        
+        executor = IfStepExecutor(container_manager=None, execute_steps_callback=fake_execute_steps)
+        scenario = TestScenario(name="test", description="test", test=[CLIStep(cli="version")])
+        ctx = RuntimeContext(scenario)
+        ctx.set_variable("items", [1, 2, 3])
+        
+        step = IfStep.model_validate({"if": "len(items) == 3", "then": [{"cli": "version"}]})
+        await executor.execute(step, ctx)
+        
+        assert "then" in executed
+    
+    @pytest.mark.asyncio
+    async def test_for_eval_accesses_variables(self):
+        """Test that for-loop items expression can reference ctx variables."""
+        from src.scenarios.step.control_flow import ForStepExecutor
+        from src.scenarios.schema import ForStep
+        
+        collected = []
+        
+        async def fake_execute_steps(steps, ctx, defaults=None):
+            collected.append(ctx.variables.get("item"))
+        
+        executor = ForStepExecutor(container_manager=None, execute_steps_callback=fake_execute_steps)
+        scenario = TestScenario(name="test", description="test", test=[CLIStep(cli="version")])
+        ctx = RuntimeContext(scenario)
+        ctx.set_variable("max_nodes", 3)
+        
+        step = ForStep(**{"for": "item", "in": "range(max_nodes)", "steps": [CLIStep(cli="version")]})
+        await executor.execute(step, ctx)
+        
+        assert collected == [0, 1, 2]
+    
+    @pytest.mark.asyncio
+    async def test_switch_eval_accesses_variables(self):
+        """Test that switch expression can reference ctx variables."""
+        from src.scenarios.step.control_flow import SwitchStepExecutor
+        from src.scenarios.schema import SwitchStep
+        
+        executed = []
+        
+        async def fake_execute_steps(steps, ctx, defaults=None):
+            executed.append("matched")
+        
+        executor = SwitchStepExecutor(container_manager=None, execute_steps_callback=fake_execute_steps)
+        scenario = TestScenario(name="test", description="test", test=[CLIStep(cli="version")])
+        ctx = RuntimeContext(scenario)
+        ctx.set_variable("mode", "fast")
+        
+        step = SwitchStep(
+            switch="mode",
+            cases={"fast": [CLIStep(cli="version")], "slow": [CLIStep(cli="version")]},
+        )
+        await executor.execute(step, ctx)
+        
+        assert "matched" in executed
+
+
+class TestNodeStateJSONParsing:
+    """Tests for JSON format parsing in NodeStateManager (SDK 6.0+)."""
+    
+    def test_parse_json_online_state(self):
+        """Test parsing JSON format: NET_STATE_ONLINE."""
+        import json
+        output = json.dumps([{
+            "status": {
+                "states": {"current": "NET_STATE_ONLINE", "target": "NET_STATE_ONLINE"}
+            }
+        }])
+        
+        from src.network.node_states import NodeState
+        parsed = json.loads(output.strip())
+        item = parsed[0]
+        status = item.get("status", item)
+        states = status.get("states", {})
+        current_str = states.get("current")
+        
+        matched_state = None
+        for state in NodeState:
+            if state.value == current_str:
+                matched_state = state
+                break
+        
+        assert matched_state == NodeState.ONLINE
+    
+    def test_parse_json_links_connecting_state(self):
+        """Test parsing JSON format: NET_STATE_LINKS_CONNECTING."""
+        import json
+        output = json.dumps([{
+            "status": {
+                "states": {"current": "NET_STATE_LINKS_CONNECTING", "target": "NET_STATE_ONLINE"},
+                "links": {"active": 1, "required": 3}
+            }
+        }])
+        
+        from src.network.node_states import NodeState
+        parsed = json.loads(output.strip())
+        item = parsed[0]
+        status = item.get("status", item)
+        states = status.get("states", {})
+        current_str = states.get("current")
+        
+        matched_state = None
+        for state in NodeState:
+            if state.value == current_str:
+                matched_state = state
+                break
+        
+        assert matched_state == NodeState.LINKS_CONNECTING
+    
+    def test_parse_text_format_fallback(self):
+        """Test fallback to text format when JSON parsing fails."""
+        from src.network.node_states import NodeState
+        
+        output = """
+        states:
+            current: NET_STATE_ONLINE
+            target: NET_STATE_ONLINE
+        """
+        
+        import json
+        parsed_json = False
+        try:
+            json.loads(output.strip())
+            parsed_json = True
+        except json.JSONDecodeError:
+            pass
+        
+        assert not parsed_json, "Text format should not parse as JSON"
+        
+        found_state = None
+        for line in output.split('\n'):
+            line_stripped = line.strip()
+            if line_stripped.startswith('current:'):
+                for state in NodeState:
+                    if state.value in line_stripped:
+                        found_state = state
+                        break
+        
+        assert found_state == NodeState.ONLINE
+    
+    def test_parse_json_unknown_state(self):
+        """Test JSON parsing with unknown state value."""
+        import json
+        output = json.dumps([{
+            "status": {
+                "states": {"current": "NET_STATE_SOMETHING_NEW", "target": "NET_STATE_ONLINE"}
+            }
+        }])
+        
+        from src.network.node_states import NodeState
+        parsed = json.loads(output.strip())
+        item = parsed[0]
+        status = item.get("status", item)
+        states = status.get("states", {})
+        current_str = states.get("current")
+        
+        matched_state = None
+        for state in NodeState:
+            if state.value == current_str:
+                matched_state = state
+                break
+        
+        assert matched_state is None, "Unknown state should not match any NodeState"

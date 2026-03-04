@@ -320,21 +320,39 @@ class CLIStepExecutor(StepExecutor):
             logger.debug("cli_step_saved", variable=variable_name)
         
         # Check contains/not_contains assertions (case-insensitive)
+        # Supports both literal substring match and regex patterns
+        import re
         output_lower = output.lower()
         
         if step.contains:
             expected_text = ctx.substitute(step.contains)
-            if expected_text.lower() not in output_lower:
-                raise ScenarioExecutionError(
-                    f"Output does not contain expected text: '{expected_text}'",
-                    step=cmd[:100],
-                    context={"output": output[:500], "expected": expected_text}
-                )
+            expected_lower = expected_text.lower()
+            if expected_lower not in output_lower:
+                try:
+                    if not re.search(expected_lower, output_lower):
+                        raise ScenarioExecutionError(
+                            f"Output does not contain expected text: '{expected_text}'",
+                            step=cmd[:100],
+                            context={"output": output[:500], "expected": expected_text}
+                        )
+                except re.error:
+                    raise ScenarioExecutionError(
+                        f"Output does not contain expected text: '{expected_text}'",
+                        step=cmd[:100],
+                        context={"output": output[:500], "expected": expected_text}
+                    )
             logger.debug("cli_step_contains_passed", expected=expected_text)
         
         if step.not_contains:
             unexpected_text = ctx.substitute(step.not_contains)
-            if unexpected_text.lower() in output_lower:
+            unexpected_lower = unexpected_text.lower()
+            matched = unexpected_lower in output_lower
+            if not matched:
+                try:
+                    matched = bool(re.search(unexpected_lower, output_lower))
+                except re.error:
+                    pass
+            if matched:
                 raise ScenarioExecutionError(
                     f"Output contains unexpected text: '{unexpected_text}'",
                     step=cmd[:100],

@@ -32,5 +32,5 @@ setup:
 check:
   - cli: "net get status"
     node: "{{first_root}}"
-    expect_output: "NET_STATE_ONLINE"
+    contains: "NET_STATE_ONLINE"
 

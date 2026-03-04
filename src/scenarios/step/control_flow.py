@@ -74,7 +74,8 @@ class SetStepExecutor(StepExecutor):
                     "list": list,
                     "re": regex_module,
                 }
-                value = eval(expr, eval_globals, ctx.variables)
+                eval_globals.update(ctx.variables)
+                value = eval(expr, eval_globals)
             except Exception as e:
                 raise ScenarioExecutionError(f"Failed to evaluate expression '{expr}': {e}", step=step)
         else:
@@ -102,10 +103,9 @@ class IfStepExecutor(StepExecutor):
             
         condition = step.condition
         try:
-            # Evaluate condition
-            eval_ns = dict(ctx.variables)
-            eval_ns['ctx'] = ctx
-            result = eval(condition, {"__builtins__": __builtins__}, eval_ns)
+            eval_ns = {"__builtins__": __builtins__, "str": str, "int": int, "len": len, "range": range, "ctx": ctx}
+            eval_ns.update(ctx.variables)
+            result = eval(condition, eval_ns)
             logger.info(f"Condition '{condition}' evaluated to: {result}")
         except Exception as e:
             raise ScenarioExecutionError(f"Failed to evaluate condition '{condition}': {e}", step=step)
@@ -142,9 +142,9 @@ class WhileStepExecutor(StepExecutor):
         
         while loops < max_loops:
             try:
-                eval_ns = dict(ctx.variables)
-                eval_ns['ctx'] = ctx
-                result = eval(condition, {"__builtins__": __builtins__}, eval_ns)
+                eval_ns = {"__builtins__": __builtins__, "str": str, "int": int, "len": len, "range": range, "ctx": ctx}
+                eval_ns.update(ctx.variables)
+                result = eval(condition, eval_ns)
             except Exception as e:
                 raise ScenarioExecutionError(f"Failed to evaluate condition '{condition}': {e}", step=step)
 
@@ -194,13 +194,17 @@ class ForStepExecutor(StepExecutor):
                 except (ValueError, SyntaxError):
                     # Fallback to eval
                     try:
-                        items = eval(substituted, {"__builtins__": __builtins__}, ctx.variables)
+                        for_globals = {"__builtins__": __builtins__, "range": range, "len": len, "str": str, "int": int, "list": list}
+                        for_globals.update(ctx.variables)
+                        items = eval(substituted, for_globals)
                     except Exception as e:
                         raise ScenarioExecutionError(f"Failed to evaluate for items '{in_items}': {e}", step=step)
             else:
                 # Try as Python expression
                 try:
-                    items = eval(substituted, {"__builtins__": __builtins__}, ctx.variables)
+                    for_globals = {"__builtins__": __builtins__, "range": range, "len": len, "str": str, "int": int, "list": list}
+                    for_globals.update(ctx.variables)
+                    items = eval(substituted, for_globals)
                     if not hasattr(items, '__iter__'):
                         raise ValueError(f"Result is not iterable: {type(items)}")
                 except Exception as e:
@@ -233,7 +237,9 @@ class SwitchStepExecutor(StepExecutor):
         switch_expr = step.switch
         try:
             # Evaluate switch expression
-            value = eval(switch_expr, {"__builtins__": __builtins__}, ctx.variables)
+            switch_globals = {"__builtins__": __builtins__, "str": str, "int": int}
+            switch_globals.update(ctx.variables)
+            value = eval(switch_expr, switch_globals)
             # Convert to string to match keys
             match_value = str(value)
         except Exception as e:

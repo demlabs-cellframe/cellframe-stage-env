@@ -3,7 +3,7 @@
 ## Установка и Настройка
 
 ### Требования
-- Python 3.10+
+- Python 3.13+
 - Docker 20.10+
 - Docker Compose 2.0+
 - Git
@@ -50,15 +50,28 @@ git submodule update --init --recursive
 
 set -e
 
-# Переход в директорию stage-env
-cd "$(dirname "$0")/stage-env"
+cd "$(dirname "$0")"
+STAGE_ENV="stage-env/stage-env"
+CONFIG="stage-env.cfg"
 
-# Конфигурация
-export STAGE_ENV_PROJECT_ROOT="$(pwd)/../.."
-export STAGE_ENV_SCENARIOS_DIR="$(pwd)/../scenarios"
-
-# Запуск
-./stage-env start "$@"
+case "$1" in
+    --e2e)
+        ./$STAGE_ENV --config=$CONFIG start --wait
+        ./$STAGE_ENV --config=$CONFIG run-tests scenarios/e2e
+        ;;
+    --functional)
+        ./$STAGE_ENV --config=$CONFIG start --wait
+        ./$STAGE_ENV --config=$CONFIG run-tests scenarios/functional
+        ;;
+    --regression)
+        ./$STAGE_ENV --config=$CONFIG start --wait
+        ./$STAGE_ENV --config=$CONFIG run-tests scenarios/regression
+        ;;
+    *)
+        echo "Usage: $0 {--e2e|--functional|--regression}"
+        exit 1
+        ;;
+esac
 ```
 
 ```bash
@@ -87,27 +100,31 @@ echo "Cleanup complete"
 chmod +x tests/clean.sh
 ```
 
-### Конфигурация (.env)
-```bash
-# tests/stage-env/.env
+### Конфигурация (stage-env.cfg)
+Конфигурация в формате INI с секциями `[network]`, `[topology]`, `[node_source]`:
 
-# Путь к проекту
-STAGE_ENV_PROJECT_ROOT=/path/to/your-project
+```ini
+# tests/stage-env.cfg
+[network]
+name = stagenet
+network_id = 0x1234
 
-# Путь к сценариям
-STAGE_ENV_SCENARIOS_DIR=/path/to/your-project/tests/scenarios
+[topology]
+root_nodes_count = 3
+master_nodes_count = 3
+full_nodes_count = 2
 
-# Сетевая конфигурация
-STAGE_ENV_NETWORK_NAME=stagenet
-STAGE_ENV_ROOT_NODES=3
-STAGE_ENV_MASTER_NODES=3
+[node_source]
+type = local
+local_path = ../../build/cellframe-node.deb
 
-# Docker
-STAGE_ENV_COMPOSE_PROJECT=your-project-stage
-
-# Логирование
-STAGE_ENV_LOG_LEVEL=INFO
+[paths]
+project_root = ../..
+cache_dir = ../../cache
+artifacts_dir = ../../cache/artifacts
 ```
+
+Скопируйте шаблон из `stage-env/config/stage-env.cfg.default`.
 
 ## Примеры
 
@@ -208,9 +225,10 @@ ERROR: Port 8079 already in use
 # Найти процесс
 lsof -i :8079
 
-# Или изменить порты в config
-# tests/stage-env/config/network.yml
-node_base_port: 9079
+# Или изменить порты в stage-env.cfg
+# tests/stage-env.cfg, секция [network_settings]
+base_rpc_port = 9545
+base_p2p_port = 31337
 ```
 
 ### 3. Submodule Не Инициализирован
@@ -260,18 +278,17 @@ yamllint tests/scenarios/your-scenario.yml
 # Создать файл
 vim tests/scenarios/my-test.yml
 
-# Запустить
-./tests/run.sh --scenario my-test.yml
+# Запустить (например, E2E тесты)
+./tests/run.sh --e2e
 ```
 
 ### 2. Отладка
 ```bash
-# Включить DEBUG логи
-export STAGE_ENV_LOG_LEVEL=DEBUG
-./tests/run.sh --scenario my-test.yml
+# Включить DEBUG логи (в stage-env.cfg: [logging] log_level = debug)
+./tests/run.sh --e2e
 
 # Проверить артефакты
-ls -la tests/testing/artifacts/latest/
+ls -la tests/cache/artifacts/run_*/
 ```
 
 ### 3. Итерация
@@ -280,7 +297,7 @@ ls -la tests/testing/artifacts/latest/
 ./tests/clean.sh
 
 # Запустить снова
-./tests/run.sh --scenario my-test.yml
+./tests/run.sh --e2e
 ```
 
 ### 4. CI/CD Integration
@@ -291,7 +308,7 @@ stages:
 
 stage-env-tests:
   stage: test
-  image: python:3.10
+  image: python:3.13
   services:
     - docker:dind
   variables:
@@ -302,8 +319,7 @@ stage-env-tests:
     - pip install -r requirements.txt
   script:
     - cd ..
-    - ./run.sh --scenario genesis/phase1.yml
-    - ./run.sh --scenario genesis/phase2.yml
+    - ./run.sh --e2e
   artifacts:
     when: always
     paths:

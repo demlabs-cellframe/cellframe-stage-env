@@ -136,8 +136,6 @@ E2E тесты используют облегчённый формат деск
 
 ### Размещение Файлов
 
-Поддерживаются два паттерна:
-
 ```
 # Паттерн A: Внешний дескриптор
 tests/e2e/cdb/
@@ -164,25 +162,35 @@ tags: [e2e, kelvpn]
 network:
   topology: default
 
-# Переменные, наследуемые всеми сценариями (переменные сценария имеют приоритет)
 variables:
   serial_count: 5
   cdb_endpoint: "http://node9:8079"
 
-# Явный порядок выполнения сценариев (неуказанные запускаются последними)
 scenarios:
   - test_connect.yml
   - test_auth.yml
 
-# Включения уровня сьюта (выполняются один раз перед всеми сценариями)
 includes:
   - common/cdb-plugin-setup.yml
 
-# Опциональные setup-шаги уровня сьюта
 setup:
   - cli: "vpn_cdb version"
     node: node9
 ```
+
+### Includes — Файловые Пути и Inline-Блоки
+
+Список `includes` принимает как **пути к файлам** (строки), так и **inline-блоки данных** (словари). Записи обрабатываются в порядке объявления, что позволяет переопределять переменные между файловыми включениями:
+
+```yaml
+includes:
+  - ../common/vpn_defaults.yml       # устанавливает vpn_client_count: 3
+  - variables: { vpn_client_count: 5 }  # переопределение перед следующим include
+  - ../common/vpn_nodes.yml          # использует vpn_client_count = 5
+  - ../common/vpn_service_setup.yml
+```
+
+Inline-блоки могут содержать любые ключи, поддерживаемые включаемыми YAML-файлами: `variables`, `node_compose`, `node_compose_gen`, `defaults` и т.д.
 
 ### Приоритет Переменных
 
@@ -190,62 +198,185 @@ setup:
 2. Секция `variables:` сценария
 3. Секция `variables:` дескриптора сьюта — наименьший (дефолты)
 
+Includes обрабатываются по порядку. Переменные каждого include вливаются под собственные переменные сьюта (значения сьюта имеют приоритет). Ранние includes задают значения по умолчанию, которые могут быть переопределены позднее.
+
+---
+
+## Динамическое Создание Нод
+
+Сьюты могут динамически добавлять ноды Cellframe сверх базовой топологии через `node_compose` и `node_compose_gen`.
+
+### node_compose — Явное Описание Нод
+
+Определение отдельных нод в виде словаря, где ключи — имена Docker Compose сервисов:
+
+```yaml
+node_compose:
+  vpn-server-1:
+    id: 9                   # опционально — назначается автоматически
+    role: full              # root | master | full (по умолчанию: full)
+    source: genesis         # genesis | node-<id> | fresh (по умолчанию: genesis)
+    packages: "iperf3 tcpdump"  # deb-пакеты через пробел
+    config_overrides:       # опциональные переопределения конфига
+      server:
+        enabled: true
+    setup:                  # опциональные шаги настройки после запуска ноды
+      - cli: "srv_vpn enable"
+        node: vpn-server-1
+
+  vpn-client-1:
+    source: genesis
+    packages: "iperf3"
+```
+
+**Режимы source:**
+- `genesis` — восстановление из базового genesis-снэпшота сьюта (по умолчанию)
+- `node-N` — клонирование конфигов и данных существующей ноды N
+- `fresh` — пустые директории, копируется только базовый `cellframe-node.cfg`
+
+### node_compose_gen — Параметрическая Генерация
+
+Генерация нескольких нод по шаблону с префиксом и счётчиком:
+
+```yaml
+node_compose_gen:
+  - prefix: vpn-server
+    count: "{{vpn_server_count}}"   # int или ссылка на {{переменную}}
+    role: full
+    source: genesis
+    packages: "iperf3 tcpdump"
+
+  - prefix: vpn-client
+    count: "{{vpn_client_count}}"
+    role: full
+    source: genesis
+    packages: "iperf3"
+```
+
+Раскрывается в `vpn-server-1`, `vpn-server-2`, ..., `vpn-client-1`, `vpn-client-2` и т.д. ID назначаются последовательно после последней ноды базовой топологии.
+
+### Паттерн Общих Включений
+
+Определяйте значения по умолчанию и генераторы нод в переиспользуемых includes:
+
+```yaml
+# common/vpn_defaults.yml
+variables:
+  vpn_server_count: 2
+  vpn_client_count: 3
+```
+
+```yaml
+# common/vpn_nodes.yml
+node_compose_gen:
+  - prefix: vpn-server
+    count: "{{vpn_server_count}}"
+    role: full
+    source: genesis
+    packages: "iperf3 tcpdump"
+  - prefix: vpn-client
+    count: "{{vpn_client_count}}"
+    role: full
+    source: genesis
+    packages: "iperf3"
+```
+
+```yaml
+# stress/suite.yml
+includes:
+  - ../common/vpn_defaults.yml
+  - variables: { vpn_client_count: 5 }  # переопределение для этого сьюта
+  - ../common/vpn_nodes.yml
+```
+
+---
+
+## docker_compose — Дополнительные Сервисы
+
+Вливание произвольных Docker Compose сервисов в генерируемый `docker-compose.yml`:
+
+```yaml
+docker_compose:
+  iperf-server:
+    image: networkstatic/iperf3
+    command: ["-s"]
+    restart: "no"
+    networks:
+      vpntest:
+        ipv4_address: 172.22.0.100
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      vpntest:
+```
+
+Сервисы вливаются напрямую в Docker Compose файл. Имя сети должно совпадать с `[network].name` из `stage-env.cfg`.
+
+Специальное поле `packages` можно добавить к сервисам Cellframe нод — оно удаляется перед merge в Compose и указанные deb-пакеты устанавливаются на все ноды Cellframe при старте:
+
+```yaml
+docker_compose:
+  monitoring:
+    image: grafana/grafana
+    packages: "prometheus-node-exporter"  # ставится на все cf-ноды
+    networks:
+      vpntest:
+```
+
+---
+
+## Полный Пример Стресс-Сьюта
+
+```yaml
+suite: VPN Stress Tests
+description: >
+  Комплексный стресс-тест: нагрузка множества клиентов, нагрузка блокчейна,
+  мультихоп, переключение аплинков, обфускация трафика и сетевые сбои.
+tags: [stress, vpn, load, e2e]
+
+restore_snapshot: vpn_stress_state
+
+includes:
+  - ../common/vpn_defaults.yml
+  # Переопределение: - variables: { vpn_client_count: 5 }
+  - ../common/vpn_nodes.yml
+  - ../common/vpn_service_setup.yml
+  - ../common/fault_injection_helpers.yml
+
+variables:
+  iperf_duration: 120
+  iperf_parallel: 4
+
+docker_compose:
+  iperf-server:
+    image: networkstatic/iperf3
+    command: ["-s"]
+    restart: "no"
+    networks:
+      vpntest:
+        ipv4_address: 172.22.0.100
+
+scenarios:
+  - test_multi_client_load.yml
+  - test_blockchain_load.yml
+  - test_multihop.yml
+  - test_multi_uplink.yml
+  - test_obfuscation.yml
+  - test_network_faults.yml
+```
+
+---
+
 ## Лучшие Практики
 
 1. **Общий setup в сьюте** — создавайте ресурсы один раз
 2. **Используйте переменные сьюта** — для общих данных
 3. **Держите сценарии независимыми** — не полагайтесь на порядок
 4. **Семантичные имена** — `wallet_suite_alice`, не `w1`
-5. **Документируйте зависимости** — в `suite_description`
-
-## Пример Полного Сьюта
-
-```yaml
-# suite_setup.yml
-suite_name: Genesis Complete Test Suite
-suite_description: |
-  Полное тестирование genesis процесса:
-  - Phase 1: Zerochain genesis
-  - Phase 2: ESBocs mainchain genesis
-
-suite_setup:
-  variables:
-    network_name: stagenet
-    native_ticker: TCELL
-    decimals: 18
-    total_supply: "1e+27"
-    
-  network:
-    topology: full
-    root_nodes: 3
-    master_nodes: 3
-    
-  steps:
-    - group: Network Initialization
-      steps:
-        - docker_op: start
-          services: "{{all_nodes}}"
-          wait_for_ip: true
-        
-        - wait_network: online
-          nodes: "{{all_nodes}}"
-    
-    - group: Shared Wallets
-      steps:
-        - for: i
-          in: "range(3)"
-          eval: true
-          steps:
-            - cli: "wallet new -w root_wallet{{i}}"
-              node: "node-{{i+1}}"
-              save_wallet: "root_wallet{{i}}"
-
-scenarios:
-  - genesis/phase1_zerochain.yml
-  - genesis/phase2_esbocs.yml
-  - validation/block_validation.yml
-  - validation/tx_validation.yml
-```
+5. **Разделяйте defaults и генераторы** — паттерн `vpn_defaults.yml` + `vpn_nodes.yml`
+6. **Используйте inline переопределения** — для кастомизации shared includes в конкретном сьюте
+7. **Предпочитайте node_compose_gen** — для однотипных нод вместо ручного node_compose
 
 ## Отладка Сьютов
 

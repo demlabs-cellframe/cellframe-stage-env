@@ -50,8 +50,8 @@ class NetworkManager:
         # Keep containers running after tests (for debugging)
         self.keep_running = False
         
-        # Extra docker-compose services from suite descriptor
-        self.extra_services: Dict[str, Any] = {}
+        # Docker-compose services from suite descriptor
+        self.docker_compose: Dict[str, Any] = {}
         
         # CLI path for node commands
         self.node_cli_path = "cellframe-node-cli"
@@ -143,6 +143,9 @@ class NetworkManager:
             native_ticker=getattr(self.topology.network, 'native_ticker', 'TCELL')
         )
         
+        # Detect node major version for versioned genesis scenarios
+        self._genesis_version_dir = self._detect_genesis_version()
+        
         logger.info("network_manager_initialized",
                    topology=topology_name,
                    network=self.topology.network.name,
@@ -214,6 +217,39 @@ class NetworkManager:
         last_octet = int(parts[3]) + node_id - 1
         return f"{parts[0]}.{parts[1]}.{parts[2]}.{last_octet}"
     
+    def _detect_genesis_version(self) -> str:
+        """Choose genesis scenario directory version.
+
+        Priority:
+          1. ``[build] genesis_version`` from stage-env config (e.g. ``v6.x``)
+          2. Auto-detect from available ``vN.x`` directories (lowest = most stable)
+        """
+        default_dir = "v5.x"
+        genesis_base = self.base_path / "scenarios" / "genesis"
+
+        stage_config = self.config_loader.load_stage_config()
+        configured = stage_config.get('genesis_version')
+        if configured:
+            configured = str(configured).strip()
+            if (genesis_base / configured).is_dir():
+                logger.info("genesis_version_from_config", version_dir=configured)
+                return configured
+            logger.warning("genesis_version_config_dir_missing",
+                           configured=configured, fallback=default_dir)
+
+        available = sorted(
+            d.name for d in genesis_base.iterdir()
+            if d.is_dir() and d.name.startswith("v")
+        ) if genesis_base.is_dir() else []
+
+        if available:
+            default_dir = available[0]
+            logger.info("genesis_version_auto_selected", version_dir=default_dir, available=available)
+        else:
+            logger.warning("genesis_no_version_dirs", path=str(genesis_base))
+
+        return default_dir
+
     async def start(
         self,
         rebuild: bool = False,
@@ -345,7 +381,7 @@ class NetworkManager:
                 'subnet': settings.subnet,
                 'base_ip': settings.base_ip,
             },
-            extra_services=self.extra_services or None
+            extra_services=self.docker_compose or None
         )
         
         # Build images if requested
@@ -411,7 +447,8 @@ class NetworkManager:
                 root_nodes_dict = {f"node{n.node_id}": n for n in root_nodes}
                 consensus_monitor = NetworkConsensusMonitor(
                     nodes=root_nodes_dict,
-                    node_cli_path=self.node_cli_path
+                    node_cli_path=self.node_cli_path,
+                    network_name=self.topology.network.name
                 )
                 
                 # Use YAML scenario for phase1 genesis
@@ -420,7 +457,7 @@ class NetworkManager:
                 from ..scenarios.parser import ScenarioParser
                 
                 scenario_parser = ScenarioParser(self.base_path / "scenarios")
-                phase1_scenario = scenario_parser.load_scenario("genesis/phase1_zerochain.yml")
+                phase1_scenario = scenario_parser.load_scenario(f"genesis/{self._genesis_version_dir}/phase1_zerochain.yml")
                 
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
@@ -833,7 +870,8 @@ class NetworkManager:
             root_nodes_dict = {f"node{n.node_id}": n for n in root_nodes}
             consensus_monitor = NetworkConsensusMonitor(
                 nodes=root_nodes_dict,
-                node_cli_path=self.node_cli_path
+                node_cli_path=self.node_cli_path,
+                network_name=self.topology.network.name
             )
             
             # Wait for ROOT nodes to establish links (they should have node list from snapshot)
@@ -1118,7 +1156,7 @@ class NetworkManager:
                 from ..scenarios.parser import ScenarioParser
                 
                 scenario_parser = ScenarioParser(self.base_path / "scenarios")
-                phase2_scenario = scenario_parser.load_scenario("genesis/phase2_esbocs.yml")
+                phase2_scenario = scenario_parser.load_scenario(f"genesis/{self._genesis_version_dir}/phase2_esbocs.yml")
                 
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
@@ -1225,7 +1263,8 @@ class NetworkManager:
             from ..monitoring.network_consensus import NetworkConsensusMonitor
             final_consensus_monitor = NetworkConsensusMonitor(
                 nodes=self.nodes,
-                node_cli_path=self.node_cli_path
+                node_cli_path=self.node_cli_path,
+                network_name=self.topology.network.name
             )
             
             consensus_timeout = float(self.timeouts.get('startup', 600))
@@ -1389,13 +1428,20 @@ class NetworkManager:
             logger.error("failed_to_remove_node_data", error=str(e))
             raise
         
-        # Recreate empty data directory structure for each node
+        # Recreate data directory structure matching granular volume mounts
         data_dir.mkdir(parents=True, exist_ok=True)
         
+        node_var_subdirs = [
+            s.strip() for s in self.paths_config.get(
+                'node_var_subdirs',
+                'log, lib/ca, lib/global_db, lib/wallet, lib/network'
+            ).split(',')
+        ]
         for node_id in range(1, len(self.nodes) + 1):
-            node_data_path = data_dir / f"node{node_id}"
-            node_data_path.mkdir(parents=True, exist_ok=True)
-            logger.debug("recreated_node_data_dir", node_id=node_id, path=str(node_data_path))
+            for subdir in node_var_subdirs:
+                (data_dir / f"node{node_id}" / subdir).mkdir(parents=True, exist_ok=True)
+            logger.debug("recreated_node_data_dir", node_id=node_id,
+                        path=str(data_dir / f"node{node_id}"))
         
         logger.info("node_data_cleaned_and_recreated", nodes=len(self.nodes))
     
@@ -1692,7 +1738,7 @@ class NetworkManager:
                 "Run './clean.sh' to remove root-owned files and try again."
             )
         
-        # Start node services only (extra_services are started by suite setup)
+        # Start node services only (docker_compose services are started by suite setup)
         node_configs = list(self.nodes.values())
         node_services = [f"node-{n.node_id}" for n in node_configs]
         
@@ -1810,7 +1856,7 @@ class NetworkManager:
                             # Try docker-compose restart as fallback
                             service_name = f"node-{node.node_id}"
                             try:
-                                self.compose.restart_services([service_name])
+                                self.compose.restart(services=[service_name])
                                 logger.info("container_restarted_via_compose", node_id=node.node_id)
                                 all_running = False
                                 crashed_containers.append(node.node_id)

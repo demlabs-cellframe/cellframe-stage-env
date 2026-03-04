@@ -13,22 +13,15 @@ echo "Node ID: $NODE_ID"
 echo "Node Role: $NODE_ROLE"
 echo "Network: $NETWORK_NAME"
 
-# Ensure all required directories exist
-mkdir -p /opt/cellframe-node/var/log
-mkdir -p /opt/cellframe-node/var/run
-mkdir -p /opt/cellframe-node/var/lib
-mkdir -p /opt/cellframe-node/var/lib/wallet
-mkdir -p /opt/cellframe-node/var/lib/global_db
-mkdir -p /opt/cellframe-node/var/lib/ca
+# Directory structure under /opt/cellframe-node/var/ is created by the .deb
+# package at image build time. Only individual subdirectories are bind-mounted
+# from the host (log/, lib/ca/, lib/global_db/, lib/wallet/, lib/network/),
+# so directories like var/run/ and var/lib/plugins/ remain from the image.
 
-# Fix permissions for mounted volumes
-chmod -R 755 /opt/cellframe-node/var 2>/dev/null || true
-
-# Enable core dumps for crash analysis
+# Enable core dumps — they land in cwd (/opt/cellframe-node) which is bind-mounted via var/
 ulimit -c unlimited
-# core_pattern is set on the host (/tmp/core.%e.%p.%t)
-# Core dumps land in the container's /tmp (mount namespace isolation)
-# Use `docker cp <container>:/tmp/core.*` to extract from stopped containers
+mkdir -p /opt/cellframe-node/var/coredumps
+cd /opt/cellframe-node/var/coredumps
 
 # Start cellframe-node with maximum debug level
 echo "Starting cellframe-node..."

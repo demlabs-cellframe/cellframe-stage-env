@@ -160,6 +160,10 @@ graph TB
 - `clean_test_data()` - Clean user data via docker exec
 - `cleanup()` - Full cleanup (volumes, containers, artifacts)
 
+**Genesis Versioning:**
+
+Genesis scenarios are organized by Cellframe Node major version (`v5.x`, `v6.x`) under `scenarios/genesis/`. The `_detect_genesis_version()` method auto-detects the version from the DEB package filename (e.g. `cellframe-node-6.1-...` → `v6.x`). Default: `v6.x`.
+
 ### Scenario Executor
 
 **Module:** `src/scenarios/executor.py`  
@@ -182,7 +186,7 @@ graph TB
 - `WaitStep` - Simple waiting
 - `WaitForDatumStep` - Datum lifecycle monitoring
 - `ConfigStep` - Config modifications
-- `DockerOpStep` - Docker operations (start/stop/restart)
+- `DockerOpStep` - Docker operations (start/stop/restart/pause/unpause/logs/exec/cp)
 - `NetworkWaitStep` - Network state waiting
 - `SnapshotStep` - Snapshot operations
 - `ForStep` - For loops with iteration
@@ -190,7 +194,7 @@ graph TB
 - `WhileStep` - While loops with max iterations
 - `SwitchStep` - Switch/case statements
 - `SetStep` - Variable assignment
-- `StepGroup` - Group steps with local defaults
+- `StepGroup` - Group steps with local defaults (YAML keys: `group:` or `name:`)
 
 **Integration:**
 - Uses `CLICommandParser` for auto-adding CLI options
@@ -222,6 +226,8 @@ graph TB
 - `get_service_status()` - Status of all services
 - `is_running()` - Check if network is running
 - `cleanup_stale_resources()` - Clean old containers/networks
+- `add_extra_node_services()` - Add dynamically provisioned nodes (from `node_compose`)
+- `pause()` / `unpause()` - Pause/unpause containers (for fault injection)
 
 ### Scenario Parser
 
@@ -237,7 +243,7 @@ graph TB
 **Key methods:**
 - `parse_scenario()` - Parse single scenario file
 - `parse_suite()` - Parse suite descriptor
-- `_process_includes()` - Deep merge includes
+- `_process_includes()` - Deep merge includes (supports file paths and inline dict entries)
 - `substitute_variables()` - Replace {{var}} placeholders
 
 ### Certificate Generator
@@ -475,7 +481,9 @@ def _execute_step(self, step, ctx: RuntimeContext, defaults):
 **Main models:**
 - `TestScenario` - Full test scenario
 - `SuiteSetupScenario` - Lightweight suite setup
-- `SuiteDescriptor` - Suite metadata
+- `SuiteDescriptor` - Suite metadata (includes `node_compose`, `node_compose_gen`, `docker_compose`)
+- `NodeComposeSpec` - Dynamic node definition (id, role, source, packages, setup)
+- `NodeComposeGenSpec` - Parametric node generator (prefix, count with `{{var}}` support)
 - `NetworkConfig` - Network configuration
 - `NodeConfig` - Single node config
 - `SectionConfig` - setup/test sections
@@ -486,7 +494,7 @@ def _execute_step(self, step, ctx: RuntimeContext, defaults):
 - `CLIStep`, `ToolStep`, `RPCStep`
 - `PythonStep`, `BashStep`
 - `WaitStep`, `WaitForDatumStep`
-- `ConfigStep`, `DockerOpStep`, `SnapshotStep`
+- `ConfigStep`, `DockerOpStep` (start/stop/restart/pause/unpause/logs/exec/cp), `SnapshotStep`
 - `NetworkWaitStep`
 - Control flow: `ForStep`, `IfStep`, `WhileStep`, `SwitchStep`
 
@@ -607,7 +615,7 @@ services:
 
 **Benefit:** Reduces clean state restoration from 40s to 2-3s
 
-**Documentation:** `docs/snapshot_system.md`
+See Snapshot System section above for implementation details.
 
 ### Implementations
 

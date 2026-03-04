@@ -1,35 +1,62 @@
-# Dockerfile for Certificate Generator Builder
+# Self-contained certificate generator for Cellframe Node E2E testing.
 #
-# Provides build environment only — SDK sources are mounted at runtime
-# via `docker run -v`, not copied into the image.
+# Clones its own copies of cellframe-sdk and dap-sdk, builds cf-cert-generator
+# at image build time. No host SDK mounts required at runtime.
 #
-# Build image:
-#   docker build -f tools/stage-env/Dockerfile.cert-generator \
-#                -t cf-cert-builder:latest tools/stage-env
+# Build:
+#   docker build -f Dockerfile.cert-generator -t cf-cert-builder:latest \
+#       --build-arg SDK_BRANCH=release-6.0 .
 #
-# Run (SDKs mounted, build cached via named volumes):
-#   docker run --rm \
-#     -v /path/to/cellframe-sdk:/project/cellframe-sdk:ro \
-#     -v /path/to/dap-sdk:/project/cellframe-sdk/dap-sdk:ro \
-#     -v /path/to/stage-env/src/certs:/project/cert-generator:ro \
-#     -v /path/to/output:/output \
-#     -v cf-cert-sdk-cache:/tmp/sdk-build \
-#     -v cf-cert-build-cache:/tmp/cert-build \
-#     cf-cert-builder:latest \
-#     bash -c "... cmake && make && ./cf-cert-generator /output ..."
+# Run:
+#   docker run --rm -v /path/to/output:/output cf-cert-builder:latest \
+#       /usr/local/bin/cf-cert-generator /output 2 stagenet 0x1234 1
 #
-FROM debian:bookworm-slim
+# Override SDK repos/branches via build args for different SDK versions.
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    pkg-config \
-    libssl-dev \
-    python3 \
-    xsltproc \
+FROM debian:bookworm-slim AS builder
+
+ARG CELLFRAME_SDK_REPO=https://gitlab.demlabs.net/cellframe/cellframe-sdk.git
+ARG DAP_SDK_REPO=https://gitlab.demlabs.net/dap/dap-sdk.git
+ARG DAP_TPL_REPO=https://gitlab.demlabs.net/dap/dap_tpl.git
+ARG SDK_BRANCH=release-6.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake pkg-config libssl-dev python3 xsltproc git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /project
+WORKDIR /src
 
-LABEL maintainer="Cellframe Team"
-LABEL description="Build environment for cf-cert-generator (SDKs mounted at runtime)"
+ARG DAP_TPL_BRANCH=main
+
+RUN git clone --depth 1 -b ${SDK_BRANCH} ${CELLFRAME_SDK_REPO} cellframe-sdk && \
+    git clone --depth 1 -b ${SDK_BRANCH} ${DAP_SDK_REPO} cellframe-sdk/dap-sdk && \
+    git clone --depth 1 -b ${DAP_TPL_BRANCH} ${DAP_TPL_REPO} cellframe-sdk/tools/dap_tpl
+
+COPY src/certs/ /src/cert-generator/
+
+RUN mkdir -p /tmp/sdk-build && cd /tmp/sdk-build && \
+    cmake -DCMAKE_BUILD_TYPE=Release /src/cellframe-sdk >/dev/null 2>&1 && \
+    make -j$(nproc) cellframe_sdk 2>&1
+
+RUN mkdir -p /tmp/cert-build && cd /tmp/cert-build && \
+    cmake -DCELLFRAME_SDK_BUILD=/tmp/sdk-build \
+          -DCELLFRAME_SDK_SRC=/src/cellframe-sdk \
+          /src/cert-generator 2>&1 && \
+    make -j$(nproc) cf-cert-generator 2>&1
+
+# --- runtime stage ---
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /tmp/cert-build/cf-cert-generator /usr/local/bin/
+COPY --from=builder /tmp/sdk-build/libcellframe_sdk.so /usr/local/lib/
+COPY --from=builder /tmp/sdk-build/dap-sdk/libdap-sdk.so /usr/local/lib/
+
+RUN ldconfig
+
+WORKDIR /output
+
+ENTRYPOINT ["/usr/local/bin/cf-cert-generator"]

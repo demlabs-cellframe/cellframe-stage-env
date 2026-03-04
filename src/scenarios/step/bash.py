@@ -22,19 +22,17 @@ class BashStepExecutor(StepExecutor):
         script = ctx.substitute(step.bash)
         
         # If node is specified, execute in container; otherwise execute on host
+        timeout = step.timeout or 300
         if step.node:
-            # Substitute variables in node name
             node = ctx.substitute(step.node)
-            # Execute in container via container manager
             result = await self.container_manager.exec_bash_command(
                 script=script,
                 node=node,
-                timeout=step.timeout
+                timeout=timeout
             )
         else:
-            # Execute on HOST (not in container) - for docker commands etc.
             logger.info("executing_bash_on_host", script_preview=script[:100])
-            result = await self._exec_on_host(script, step.timeout)
+            result = await self._exec_on_host(script, timeout)
         
         # Save result if requested
         if step.save:

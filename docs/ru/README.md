@@ -75,7 +75,7 @@ cd tests/stage-env
 
 ### Для QA инженеров
 
-- **[Tutorial](scenarios/Tutorial.md)** - Пошаговое обучение языку сценариев (8 уроков)
+- **[Tutorial](scenarios/Tutorial.md)** - Пошаговое обучение языку сценариев (7 уроков)
 - **[Cookbook](scenarios/Cookbook.md)** - Готовые рецепты для типовых задач 
 - **[Glossary](scenarios/Glossary.md)** - Полный справочник языка (все команды и параметры)
 
@@ -453,7 +453,7 @@ cd tests/stage-env
 
 ### Для QA инженеров
 
-- **[Tutorial](scenarios/Tutorial.md)** - 8 уроков с упражнениями для изучения языка сценариев
+- **[Tutorial](scenarios/Tutorial.md)** - 7 уроков с упражнениями для изучения языка сценариев
 - **[Cookbook](scenarios/Cookbook.md)** - Готовые рецепты для типовых задач
 - **[Glossary](scenarios/Glossary.md)** - Полный справочник: все команды, параметры, примеры
 

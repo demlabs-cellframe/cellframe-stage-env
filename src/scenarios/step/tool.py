@@ -17,13 +17,12 @@ class ToolStepExecutor(StepExecutor):
     
     async def execute(self, step: ToolStep, ctx: RuntimeContext) -> Dict[str, Any]:
         """Execute cellframe-node-tool command step."""
-        # Substitute variables in tool command
         tool_cmd = ctx.substitute(step.tool)
+        node = ctx.substitute(step.node) if step.node else step.node
         
-        # Execute via container manager
         result = await self.container_manager.exec_tool_command(
             tool_cmd=tool_cmd,
-            node=step.node,
+            node=node,
             timeout=step.timeout
         )
         

@@ -21,7 +21,7 @@ class RPCStepExecutor(StepExecutor):
         """Execute RPC call step."""
         # Substitute variables
         method = ctx.substitute(step.rpc)
-        params = [ctx.substitute(p) for p in step.params] if step.params else []
+        params = [ctx.substitute(p) if isinstance(p, str) else p for p in step.params] if step.params else []
         node = ctx.substitute(step.node) if step.node else "node1"
         
         # Build RPC URL

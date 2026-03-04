@@ -2,7 +2,7 @@
 CLI check executor.
 """
 
-import subprocess
+import asyncio
 from typing import Optional
 
 from ...utils.logger import get_logger
@@ -79,7 +79,7 @@ class CLICheckExecutor(CheckExecutor):
             
             ctx.add_result("check_cli", True, {"command": cmd})
             
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             ctx.add_result("check_cli", False, {"command": cmd, "error": "timeout"})
             raise ScenarioExecutionError(f"CLI check timeout: {cmd}")
 

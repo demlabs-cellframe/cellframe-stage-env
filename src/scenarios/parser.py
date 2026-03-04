@@ -7,7 +7,7 @@ with user-friendly error messages.
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 
 import yaml
 from pydantic import ValidationError, BaseModel
@@ -124,19 +124,18 @@ class BaseScenarioParser:
         if not includes:
             return data
         
-        # Load all included files
+        # Load all included entries (file paths or inline data dicts)
         included_data: List[Dict[str, Any]] = []
-        for include_path in includes:
-            # Try multiple search paths:
-            # 1. Relative to current file directory
-            # 2. Relative to scenarios_root
-            # 3. Relative to common_root (for common includes)
-            # 4. Integration scenarios common directory (standard location)
+        for include_entry in includes:
+            if isinstance(include_entry, dict):
+                included_data.append(include_entry)
+                continue
+
             search_paths = [
-                (base_dir / include_path).resolve(),
-                (self.scenarios_root / include_path).resolve(),
-                (self.common_root / include_path).resolve(),
-                (self.common_root / "integration" / "scenarios" / include_path).resolve(),
+                (base_dir / include_entry).resolve(),
+                (self.scenarios_root / include_entry).resolve(),
+                (self.common_root / include_entry).resolve(),
+                (self.common_root / "integration" / "scenarios" / include_entry).resolve(),
             ]
             
             include_full = None
@@ -147,7 +146,7 @@ class BaseScenarioParser:
             
             if include_full is None:
                 raise ScenarioParseError(
-                    f"Included file not found: {include_path}\nSearched in:\n" +
+                    f"Included file not found: {include_entry}\nSearched in:\n" +
                     "\n".join(f"  - {p}" for p in search_paths),
                     file_path=search_paths[0]
                 )
@@ -424,7 +423,7 @@ class SuiteSetupParser(BaseScenarioParser):
     
     def load_suite_setup(
         self,
-        suite_includes: List[str],
+        suite_includes: List[Union[str, Dict[str, Any]]],
         suite_setup: Optional[Dict[str, Any]],
         suite_name: str,
         base_dir: Path

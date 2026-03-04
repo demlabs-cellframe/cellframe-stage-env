@@ -241,7 +241,7 @@ test:
   # Проверить создание блока
   - cli: "block list -chain main"
     node: "{{first_master}}"
-    expect_output: "have blocks: [1-9]"
+    contains: "have blocks: [1-9]"
   
   - print: "✓ Genesis блок создан и синхронизирован!"
 ```
@@ -389,7 +389,7 @@ test:
     save_hash: token_hash
   
   # Сохранить snapshot
-  - snapshot: save
+  - snapshot: create
     name: with_token
   
   # Провести деструктивный тест
