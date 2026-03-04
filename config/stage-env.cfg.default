@@ -81,6 +81,10 @@ dap_sdk_path = lib/dap-sdk
 # Used for cellframe-tool-sign, cellframe-tool-compose, and node packages
 tools_base_url = https://pub.cellframe.net
 
+# Subdirectories of /opt/cellframe-node/var/ that are bind-mounted from host.
+# Everything else stays from the .deb package inside the image (e.g. run/, lib/plugins/).
+node_var_subdirs = log, lib/ca, lib/global_db, lib/wallet, lib/network
+
 [artifacts]
 # Artifacts collection settings
 collect_node_logs = true

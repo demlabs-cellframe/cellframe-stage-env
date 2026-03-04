@@ -408,6 +408,7 @@ class ConfigLoader:
             'cellframe_sdk_path': 'cellframe-sdk',
             'dap_sdk_path': 'dap-sdk',
             'tools_base_url': 'https://pub.cellframe.net',
+            'node_var_subdirs': 'log, lib/ca, lib/global_db, lib/wallet, lib/network',
         }
         
         if not config_file.exists():

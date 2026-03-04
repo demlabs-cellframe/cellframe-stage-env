@@ -40,6 +40,12 @@ class ConfigGenerator:
         # Load paths from config
         paths_config = self.config_loader.get_paths_config()
         cache_dir_relative = paths_config.get('cache_dir', 'cache')
+        self.node_var_subdirs = [
+            s.strip() for s in paths_config.get(
+                'node_var_subdirs',
+                'log, lib/ca, lib/global_db, lib/wallet, lib/network'
+            ).split(',')
+        ]
         
         # Directories
         self.cache_dir = (base_path / cache_dir_relative).resolve()
@@ -784,10 +790,10 @@ class ConfigGenerator:
         node_network_dir = self.configs_cache / f"node{node_id}" / "network"
         node_data_dir = self.data_cache / f"node{node_id}"
         
-        # Create directories
         node_config_dir.mkdir(parents=True, exist_ok=True)
         node_network_dir.mkdir(parents=True, exist_ok=True)
-        node_data_dir.mkdir(parents=True, exist_ok=True)
+        for subdir in self.node_var_subdirs:
+            (node_data_dir / subdir).mkdir(parents=True, exist_ok=True)
         
         # Copy base config snippets (skips disable-plugins.cfg, handled separately)
         self._copy_base_configs(node_config_dir)

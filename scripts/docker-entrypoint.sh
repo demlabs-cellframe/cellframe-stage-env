@@ -13,17 +13,10 @@ echo "Node ID: $NODE_ID"
 echo "Node Role: $NODE_ROLE"
 echo "Network: $NETWORK_NAME"
 
-# Ensure all required directories exist
-mkdir -p /opt/cellframe-node/var/log
-mkdir -p /opt/cellframe-node/var/run
-mkdir -p /opt/cellframe-node/var/lib
-mkdir -p /opt/cellframe-node/var/lib/wallet
-mkdir -p /opt/cellframe-node/var/lib/global_db
-mkdir -p /opt/cellframe-node/var/lib/ca
-mkdir -p /opt/cellframe-node/var/lib/plugins
-
-# Fix permissions for mounted volumes
-chmod -R 755 /opt/cellframe-node/var 2>/dev/null || true
+# Directory structure under /opt/cellframe-node/var/ is created by the .deb
+# package at image build time. Only individual subdirectories are bind-mounted
+# from the host (log/, lib/ca/, lib/global_db/, lib/wallet/, lib/network/),
+# so directories like var/run/ and var/lib/plugins/ remain from the image.
 
 # Enable core dumps for crash analysis
 ulimit -c unlimited

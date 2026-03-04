@@ -1392,13 +1392,20 @@ class NetworkManager:
             logger.error("failed_to_remove_node_data", error=str(e))
             raise
         
-        # Recreate empty data directory structure for each node
+        # Recreate data directory structure matching granular volume mounts
         data_dir.mkdir(parents=True, exist_ok=True)
         
+        node_var_subdirs = [
+            s.strip() for s in self.paths_config.get(
+                'node_var_subdirs',
+                'log, lib/ca, lib/global_db, lib/wallet, lib/network'
+            ).split(',')
+        ]
         for node_id in range(1, len(self.nodes) + 1):
-            node_data_path = data_dir / f"node{node_id}"
-            node_data_path.mkdir(parents=True, exist_ok=True)
-            logger.debug("recreated_node_data_dir", node_id=node_id, path=str(node_data_path))
+            for subdir in node_var_subdirs:
+                (data_dir / f"node{node_id}" / subdir).mkdir(parents=True, exist_ok=True)
+            logger.debug("recreated_node_data_dir", node_id=node_id,
+                        path=str(data_dir / f"node{node_id}"))
         
         logger.info("node_data_cleaned_and_recreated", nodes=len(self.nodes))
     

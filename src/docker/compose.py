@@ -351,10 +351,16 @@ class DockerComposeManager:
                 
                 logger.info("using_local_package", path=str(local_package_path))
         
-        # Resolve TOOLS_BASE_URL from paths config (once, before node loop)
+        # Resolve paths config (once, before node loop)
         from src.config.manager import get_config_loader
         paths_config = get_config_loader().get_paths_config()
         tools_base_url = paths_config.get('tools_base_url', 'https://pub.cellframe.net')
+        node_var_subdirs = [
+            s.strip() for s in paths_config.get(
+                'node_var_subdirs',
+                'log, lib/ca, lib/global_db, lib/wallet, lib/network'
+            ).split(',')
+        ]
         
         # Generate service for each node
         for node in nodes:
@@ -379,13 +385,15 @@ class DockerComposeManager:
                 f"{node.http_port}:8079",  # Cellframe HTTP/JSON-RPC/P2P
             ]
             
-            # Set volumes with node-specific paths
+            data_prefix = f"./{cache_dir_relative}/data/node{node.node_id}"
             node_service['volumes'] = [
-                # Main config file (generated per node with HTTP settings)
                 f"./{cache_dir_relative}/configs/node{node.node_id}/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg",
                 f"./{cache_dir_relative}/configs/node{node.node_id}/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d",
                 f"./{cache_dir_relative}/configs/node{node.node_id}/network:/opt/cellframe-node/etc/network",
-                f"./{cache_dir_relative}/data/node{node.node_id}:/opt/cellframe-node/var",
+            ] + [
+                f"{data_prefix}/{subdir}:/opt/cellframe-node/var/{subdir}"
+                for subdir in node_var_subdirs
+            ] + [
                 f"./{cache_dir_relative}/configs/shared/ca:/opt/cellframe-node/share/ca:ro",
                 f"./{cache_dir_relative}/crash-artifacts/node{node.node_id}:/crash-artifacts/node-{node.node_id}",
                 f"./{cache_dir_relative}/cellframe-packages:/var/cache/cellframe-packages"
