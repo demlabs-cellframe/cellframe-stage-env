@@ -310,14 +310,15 @@ class WaiterDispatcher:
                     poll_interval=poll_interval
                 )
             elif waiter_type == "global_db_sync":
-                # GlobalDBNodeListSyncWaiter supports single node or multiple nodes
                 if not node_configs:
                     raise ValueError(f"global_db_sync waiter requires at least one node")
                 return waiter_class(
                     exec_cli=exec_cli,
-                    nodes=node_configs,  # Pass all nodes (supports multi-node sync check)
+                    nodes=node_configs,
                     network_name=network,
-                    poll_interval=poll_interval
+                    poll_interval=poll_interval,
+                    group=params.get("group"),
+                    key=params.get("key"),
                 )
             elif waiter_type == "block_created":
                 # BlockCreatedWaiter takes single node, chain, and min_blocks

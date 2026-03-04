@@ -688,21 +688,28 @@ class BlockCreatedWaiter(BaseWaiter):
 
 class GlobalDBNodeListSyncWaiter(BaseWaiter):
     """
-    Wait for Global DB synchronization by checking node list on multiple nodes.
+    Wait for Global DB synchronization across multiple nodes.
     
-    Monitors 'node list' command output to detect when Global DB has synchronized
-    records across the network. This is a lightweight check that indicates GDB
-    is ready for operations.
+    Two modes of operation:
     
-    Supports checking a single node or multiple nodes simultaneously.
+    1. Default (no group): checks 'node list' output — lightweight GDB readiness check.
+    2. Group mode (group specified): checks 'global_db get_keys -group <group>' — waits
+       until a specific GDB group is replicated to all target nodes. Optionally checks
+       for a specific key within the group.
     
     Usage:
-        # Single node
-        waiter = GlobalDBNodeListSyncWaiter(exec_cli_func, node_config, network_name)
+        # Node list sync (default)
+        waiter = GlobalDBNodeListSyncWaiter(exec_cli, nodes=[node1, node2], network_name="stagenet")
         await waiter.wait(timeout=60.0)
         
-        # Multiple nodes
-        waiter = GlobalDBNodeListSyncWaiter(exec_cli_func, [node1, node2, node3], network_name)
+        # Group sync — wait until group has data on all nodes
+        waiter = GlobalDBNodeListSyncWaiter(exec_cli, nodes=[node1, node2],
+                                            group="cdb.stagenet.serials")
+        await waiter.wait(timeout=60.0)
+        
+        # Group + key — wait for specific key in group on all nodes
+        waiter = GlobalDBNodeListSyncWaiter(exec_cli, nodes=[node1, node2],
+                                            group="cdb.stagenet.serials", key="ABCD-1234-EFGH-5678")
         await waiter.wait(timeout=60.0)
     """
     
@@ -713,23 +720,13 @@ class GlobalDBNodeListSyncWaiter(BaseWaiter):
         nodes: Optional[List[NodeConfig]] = None,
         network_name: str = "stagenet",
         poll_interval: float = 2.0,
-        min_output_length: int = 50
+        min_output_length: int = 50,
+        group: Optional[str] = None,
+        key: Optional[str] = None
     ):
-        """
-        Initialize Global DB node list sync waiter.
-        
-        Args:
-            exec_cli: CLI execution function (node_id, command, check_output) -> (exit_code, stdout, stderr)
-            node: Single node to check (deprecated, use nodes)
-            nodes: List of nodes to check (supports multiple nodes)
-            network_name: Network name
-            poll_interval: Seconds between checks (default: 2.0s)
-            min_output_length: Minimum output length to consider synced (default: 50 chars)
-        """
         super().__init__(poll_interval)
         self.exec_cli = exec_cli
         
-        # Support both single node and multiple nodes
         if nodes:
             self.nodes = nodes if isinstance(nodes, list) else [nodes]
         elif node:
@@ -739,35 +736,57 @@ class GlobalDBNodeListSyncWaiter(BaseWaiter):
         
         self.network_name = network_name
         self.min_output_length = min_output_length
+        self.group = group
+        self.key = key
         self._start_time = None
         self._check_count = 0
-        self._synced_nodes = set()  # Track which nodes have synced
+        self._synced_nodes = set()
+    
+    def _build_check_command(self) -> str:
+        """Build CLI command depending on mode."""
+        if self.group:
+            return f"global_db get_keys -group {self.group}"
+        return f"node list -net {self.network_name}"
+    
+    def _is_synced(self, output: str) -> bool:
+        """Evaluate whether output indicates the node is synced."""
+        if self.group:
+            if "No data" in output or "error" in output.lower():
+                return False
+            if self.key:
+                return self.key in output
+            return True
+        # Default node-list mode
+        return "No records" not in output and len(output) >= self.min_output_length
     
     async def check(self) -> bool:
         """Check if Global DB is synced on ALL nodes."""
         if self._start_time is None:
             self._start_time = time.time()
+            mode = "group" if self.group else "node_list"
+            extra = f" group={self.group}" if self.group else ""
+            if self.key:
+                extra += f" key={self.key}"
+            logger.info("global_db_sync_started",
+                       mode=mode, nodes=[n.node_id for n in self.nodes],
+                       network=self.network_name, **({} if not extra else {"detail": extra.strip()}))
         
         self._check_count += 1
         
-        # Check all nodes that haven't synced yet
         nodes_to_check = [n for n in self.nodes if n.node_id not in self._synced_nodes]
-        
         if not nodes_to_check:
-            # All nodes already synced
             return True
+        
+        cmd = self._build_check_command()
         
         for node in nodes_to_check:
             try:
-                # Execute 'node list' to check Global DB sync status
                 exit_code, stdout, stderr = self.exec_cli(
-                    node.node_id,
-                    f"node list -net {self.network_name}",
-                    check_output=False
+                    node.node_id, cmd, check_output=False
                 )
                 
                 if exit_code != 0:
-                    logger.debug("global_db_node_list_sync_check",
+                    logger.debug("global_db_sync_check",
                                status="command_failed",
                                node_id=node.node_id,
                                check_count=self._check_count,
@@ -776,23 +795,21 @@ class GlobalDBNodeListSyncWaiter(BaseWaiter):
                 
                 output = (stdout or '').strip()
                 
-                # Check if Global DB has records
-                # "No records" indicates GDB is not synced yet
-                # Valid output with nodes indicates GDB is synced
-                if "No records" in output or len(output) < self.min_output_length:
-                    logger.debug("global_db_not_synced_yet",
-                               node_id=node.node_id,
-                               check_count=self._check_count,
-                               output_length=len(output),
-                               has_no_records="No records" in output)
+                if not self._is_synced(output):
+                    if self._check_count % 5 == 0:
+                        logger.debug("global_db_not_synced_yet",
+                                   node_id=node.node_id,
+                                   check_count=self._check_count,
+                                   group=self.group,
+                                   key=self.key)
                     continue
                 
-                # This node is synced
                 self._synced_nodes.add(node.node_id)
                 elapsed = time.time() - self._start_time
                 logger.info("global_db_synced",
                            node_id=node.node_id,
                            network=self.network_name,
+                           group=self.group,
                            check_count=self._check_count,
                            synced_count=len(self._synced_nodes),
                            total_nodes=len(self.nodes),
@@ -804,13 +821,13 @@ class GlobalDBNodeListSyncWaiter(BaseWaiter):
                            check_count=self._check_count,
                            error=str(e))
         
-        # Return True only if ALL nodes are synced
         all_synced = len(self._synced_nodes) == len(self.nodes)
         if all_synced:
             elapsed = time.time() - self._start_time
             logger.info("global_db_all_nodes_synced",
                        node_ids=[n.node_id for n in self.nodes],
                        network=self.network_name,
+                       group=self.group,
                        total_nodes=len(self.nodes),
                        elapsed=f"{elapsed:.1f}s")
         return all_synced

@@ -59,6 +59,19 @@ class BaseScenarioParser:
         self._loaded_files: Dict[Path, Dict[str, Any]] = {}
         # Pattern to match {{anything}} including complex expressions like {{map['key']}} or {{array[0]}}
         self._variable_pattern = re.compile(r'\{\{([^}]+)\}\}')
+
+        from .operand_registry import OperandRegistry
+        self._operand_registry = OperandRegistry()
+        for candidate in [
+            self.common_root / "operands",
+            self.common_root / "common" / "operands",
+        ]:
+            if candidate.is_dir():
+                self._operand_registry.load_directory(candidate)
+
+    @property
+    def operand_registry(self):
+        return self._operand_registry
     
     def _load_yaml_file(self, file_path: Path) -> Dict[str, Any]:
         """
@@ -176,6 +189,45 @@ class BaseScenarioParser:
         
         return result
     
+    # ------------------------------------------------------------------
+    # Custom operand step transformation
+    # ------------------------------------------------------------------
+    _KNOWN_STEP_KEYS = frozenset({
+        "cli", "rpc", "wait", "wait_for_datum", "wait_network", "python",
+        "print", "bash", "tool", "loop", "docker_op", "snapshot", "dpkg",
+        "config", "set", "if", "while", "for", "switch", "name",
+        "operand_name",
+    })
+
+    def _transform_operand_steps(self, data: Any) -> Any:
+        """Recursively rewrite custom-operand dicts into ``CustomOperandStep`` format."""
+        if isinstance(data, dict):
+            # Is this dict a step invocation for a registered operand?
+            operand_key = self._detect_operand_key(data)
+            if operand_key is not None:
+                action = data[operand_key]
+                params = {k: v for k, v in data.items() if k not in (operand_key, "description")}
+                return {
+                    "operand_name": operand_key,
+                    "operand_action": str(action),
+                    "operand_params": params,
+                    "description": data.get("description"),
+                }
+            return {k: self._transform_operand_steps(v) for k, v in data.items()}
+        if isinstance(data, list):
+            return [self._transform_operand_steps(item) for item in data]
+        return data
+
+    def _detect_operand_key(self, step_dict: dict) -> Optional[str]:
+        """Return the operand name if *step_dict* looks like a custom-operand invocation."""
+        names = self._operand_registry.names
+        if not names:
+            return None
+        for key in step_dict:
+            if key in names and key not in self._KNOWN_STEP_KEYS:
+                return key
+        return None
+
     def _resolve_path(self, path: str) -> Path:
         """
         Resolve relative path to absolute path.
@@ -231,6 +283,10 @@ class ScenarioParser(BaseScenarioParser):
             if "includes" in raw_data:
                 raw_data = self._process_includes(raw_data, full_path.parent)
             
+            # Transform custom operand steps before Pydantic validation
+            if self._operand_registry.names:
+                raw_data = self._transform_operand_steps(raw_data)
+
             # Validate with Pydantic
             scenario = TestScenario(**raw_data)
             
@@ -400,9 +456,13 @@ class SuiteSetupParser(BaseScenarioParser):
             # Process includes to merge setup steps
             merged_data = self._process_includes(suite_setup_data, base_dir)
             
+            # Transform custom operand steps before Pydantic validation
+            if self._operand_registry.names:
+                merged_data = self._transform_operand_steps(merged_data)
+
             # Create SuiteSetupScenario from merged data
             suite_setup_scenario = SuiteSetupScenario(**merged_data)
-            
+
             logger.info(f"Loaded suite setup for '{suite_name}' with {len(suite_includes)} includes")
             return suite_setup_scenario
             

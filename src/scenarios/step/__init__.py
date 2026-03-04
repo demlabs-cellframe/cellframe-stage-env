@@ -20,6 +20,7 @@ from .snapshot import SnapshotStepExecutor
 from .control_flow import SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor
 from .config import ConfigStepExecutor
 from .dpkg import DpkgStepExecutor
+from .custom_operand import CustomOperandStepExecutor
 
 __all__ = [
     'StepExecutor',
@@ -42,4 +43,5 @@ __all__ = [
     'ForStepExecutor',
     'ConfigStepExecutor',
     'DpkgStepExecutor',
+    'CustomOperandStepExecutor',
 ]
