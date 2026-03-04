@@ -321,4 +321,10 @@ class WaitStepExecutor(StepExecutor):
         if hasattr(step, 'min_blocks') and step.min_blocks is not None:
             params["min_blocks"] = step.min_blocks
         
+        # GlobalDB group sync parameters
+        if step.group:
+            params["group"] = ctx.substitute(step.group)
+        if step.key:
+            params["key"] = ctx.substitute(step.key)
+        
         return params

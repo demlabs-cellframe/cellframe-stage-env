@@ -32,20 +32,20 @@ def mock_config_loader(tmp_path):
     with patch("src.config.generator.get_config_loader") as mock:
         loader = MagicMock()
         loader.get_paths_config.return_value = {'cache_dir': 'cache'}
+        loader.load_stage_config.return_value = {'genesis_version': 'v6.x'}
         mock.return_value = loader
         yield loader
 
 @pytest.fixture
 def config_generator(tmp_path, mock_cert_generator, mock_config_loader):
     """Create ConfigGenerator with temporary path."""
-    # Create required directories
-    (tmp_path / "config" / "templates" / "base").mkdir(parents=True)
+    # Create required directories matching the versioned template layout
     (tmp_path / "config" / "templates" / "cellframe-node.cfg.d").mkdir(parents=True)
     (tmp_path / "config" / "templates" / "chains").mkdir(parents=True)
     
-    # Create dummy templates
+    # Create dummy templates in the common templates dir (fallback location)
+    (tmp_path / "config" / "templates" / "cellframe-node.cfg.j2").write_text("[server]\nip={{ node_ip }}")
     (tmp_path / "config" / "templates" / "network.cfg.j2").write_text("[general]\nnetwork={{ network_name }}")
-    (tmp_path / "config" / "templates" / "base" / "cellframe-node.cfg.j2").write_text("[server]\nip={{ node_ip }}")
     (tmp_path / "config" / "templates" / "chains" / "main.cfg.j2").write_text("[chain]\nname=main")
     
     return ConfigGenerator(tmp_path)
