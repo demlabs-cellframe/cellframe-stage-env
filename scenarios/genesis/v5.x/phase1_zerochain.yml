@@ -391,7 +391,7 @@ test:
       - wait: "5s"
       
       - cli: "token list"
-        expect_output: "tokens: 1"
+        contains: "tokens: 1"
       
       - cli: "global_db flush"
       

@@ -29,20 +29,20 @@ test:
   # Final health checks
   - cli: "net get status"
     node: "{{first_master}}"
-    expect_output: "NET_STATE_ONLINE"
+    contains: "NET_STATE_ONLINE"
   
   - cli: "block list -chain main"
     node: "{{first_root}}"
-    expect_output: "have blocks:"
+    contains: "have blocks:"
   
   - cli: "srv_stake order list fee"
     node: "{{first_master}}"
-    expect_output: "order"
+    contains: "order"
 
 check:
   - cli: "net get status"
     node: "{{first_root}}"
-    expect_output: "NET_STATE_ONLINE"
+    contains: "NET_STATE_ONLINE"
 
 # Create base topology snapshot (used by all suites by default)
 teardown:

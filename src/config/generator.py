@@ -26,18 +26,23 @@ logger = get_logger(__name__)
 class ConfigGenerator:
     """Generate configuration files for cellframe nodes."""
     
-    def __init__(self, base_path: Path, config_path: Optional[Path] = None, version_dir: str = "v6.x"):
+    def __init__(self, base_path: Path, config_path: Optional[Path] = None, version_dir: Optional[str] = None):
         """
         Initialize config generator.
         
         Args:
             base_path: Base path to stage-env directory
             config_path: Optional path to stage-env.cfg
-            version_dir: Node version directory (e.g. "v5.x", "v6.x") for versioned templates
+            version_dir: Node version directory (e.g. "v5.x", "v6.x") for versioned templates.
+                         If None, read from [build] genesis_version in stage-env config, fallback "v5.x".
         """
         self.base_path = base_path
-        self.version_dir = version_dir
         self.config_loader = get_config_loader()
+
+        if version_dir is None:
+            stage_config = self.config_loader.load_stage_config()
+            version_dir = stage_config.get('genesis_version', 'v5.x')
+        self.version_dir = version_dir
         
         # Load paths from config
         paths_config = self.config_loader.get_paths_config()
@@ -189,7 +194,9 @@ class ConfigGenerator:
         # Source template for network config (versioned -> common fallback)
         src_network_cfg = self._resolve_template(f"{network_name}.cfg")
         if not src_network_cfg:
-            src_network_cfg = self._resolve_template("stagenet.cfg.j2")
+            src_network_cfg = self._resolve_template(f"{network_name}.cfg.j2")
+        if not src_network_cfg:
+            src_network_cfg = self._resolve_template("network.cfg.j2")
         if not src_network_cfg:
             logger.warning("network_config_template_not_found", network=network_name)
             return

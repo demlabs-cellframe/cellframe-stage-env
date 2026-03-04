@@ -159,7 +159,7 @@ test:
       # Verify block was created and synced to master node
       - cli: "block list"
         node: "{{first_master}}"
-        expect_output: "have blocks: [1-9]"
+        contains: "have blocks: [1-9]"
   
   - cli: "block list -chain main"
     node: "{{first_master}}"
@@ -203,15 +203,15 @@ test:
 check:
   - cli: "net get status"
     node: "{{first_master}}"
-    expect_output: "NET_STATE_ONLINE"
+    contains: "NET_STATE_ONLINE"
   
   - cli: "block list -chain main"
     node: "{{first_root}}"
-    expect_output: "have blocks:"
+    contains: "have blocks:"
   
   - cli: "token list"
     node: "{{first_root}}"
-    expect_output: "tokens:"
+    contains: "tokens:"
 
 # NOTE: Snapshot creation is handled by manager.py after genesis flow completes.
 # teardown with snapshot: create would be used for standalone phase execution.

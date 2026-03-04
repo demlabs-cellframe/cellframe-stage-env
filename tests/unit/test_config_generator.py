@@ -44,7 +44,7 @@ def config_generator(tmp_path, mock_cert_generator, mock_config_loader):
     (tmp_path / "config" / "templates" / "chains").mkdir(parents=True)
     
     # Create dummy templates
-    (tmp_path / "config" / "templates" / "stagenet.cfg.j2").write_text("[general]\nnetwork={{ network_name }}")
+    (tmp_path / "config" / "templates" / "network.cfg.j2").write_text("[general]\nnetwork={{ network_name }}")
     (tmp_path / "config" / "templates" / "base" / "cellframe-node.cfg.j2").write_text("[server]\nip={{ node_ip }}")
     (tmp_path / "config" / "templates" / "chains" / "main.cfg.j2").write_text("[chain]\nname=main")
     
