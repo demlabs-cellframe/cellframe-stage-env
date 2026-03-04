@@ -61,8 +61,8 @@ class NetworkManager:
         self.config_loader = get_config_loader()
         self.topology = self.config_loader.load_topology(topology_name)
         
-        # Config generator (initialized after version detection below)
-        self.config_generator = None
+        # Config generator
+        self.config_generator = ConfigGenerator(base_path, config_path)
         
         # Docker compose manager
         self.compose = DockerComposeManager(
@@ -143,11 +143,8 @@ class NetworkManager:
             native_ticker=getattr(self.topology.network, 'native_ticker', 'TCELL')
         )
         
-        # Detect node major version for versioned scenarios and config templates
+        # Detect node major version for versioned genesis scenarios
         self._genesis_version_dir = self._detect_genesis_version()
-        
-        # Config generator with version-specific templates
-        self.config_generator = ConfigGenerator(base_path, config_path, version_dir=self._genesis_version_dir)
         
         logger.info("network_manager_initialized",
                    topology=topology_name,
@@ -225,7 +222,7 @@ class NetworkManager:
 
         Priority:
           1. ``[build] genesis_version`` from stage-env config (e.g. ``v6.x``)
-          2. Auto-detect from the highest available ``vN.x`` directory
+          2. Auto-detect from available ``vN.x`` directories (lowest = most stable)
         """
         default_dir = "v5.x"
         genesis_base = self.base_path / "scenarios" / "genesis"
@@ -246,7 +243,7 @@ class NetworkManager:
         ) if genesis_base.is_dir() else []
 
         if available:
-            default_dir = available[-1]
+            default_dir = available[0]
             logger.info("genesis_version_auto_selected", version_dir=default_dir, available=available)
         else:
             logger.warning("genesis_no_version_dirs", path=str(genesis_base))

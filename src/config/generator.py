@@ -140,8 +140,8 @@ class ConfigGenerator:
         
         network_name = topology.network.name
         
-        # Generate base cellframe-node.cfg using versioned template (v5.x/v6.x -> common fallback)
-        base_cfg_template = self._resolve_template("base/cellframe-node.cfg.j2")
+        # Generate base cellframe-node.cfg using versioned template (v5.x/v6.x)
+        base_cfg_template = self._resolve_template("cellframe-node.cfg.j2")
         if base_cfg_template:
             template_content = base_cfg_template.read_text()
             template = Template(template_content)
