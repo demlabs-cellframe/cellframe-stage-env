@@ -88,12 +88,6 @@ setup:
 
 
 test:
-  # MDBX race condition workaround: wait for DB initialization to stabilize
-  # Without this, node dump immediately after restart can cause SIGSEGV
-  # when MDBX is creating DB contexts (e.g., 'stagenet.nodes.states')
-  # See: https://gitlab.demlabs.net/cellframe/cellframe-sdk/-/issues/XXXXX
-  - wait: "15s"
-  
   # Get ALL node addresses dynamically
   - group: Get node addresses
     steps:
@@ -174,14 +168,8 @@ test:
     timeout: 60
   
   # Add all nodes to nodelist dynamically
-  # CRITICAL: Execute on ALL ROOT nodes to populate local Global DB on each node
-  # This is required because balancer looks up nodes from LOCAL Global DB
-  # Without local records, balancer returns 204 and nodes can't establish links
-  # NOTE: Only ROOT nodes have write access to Global DB - master nodes will sync via GDB
-  
   - group: Add all nodes to nodelist
     steps:
-      # For each ROOT node, add ALL nodes to its local Global DB
       - for: _target_node_idx
         in: "{{root_indices}}"
         steps:
@@ -190,7 +178,6 @@ test:
             eval: true
           - print: "Adding node records to {{_target_node}}"
           
-          # Add all root nodes
           - for: node_idx
             in: "{{root_indices}}"
             steps:
@@ -207,7 +194,6 @@ test:
                 node: "{{_target_node}}"
                 contains: "successfully"
           
-          # Add all master nodes
           - for: node_idx
             in: "{{master_indices}}"
             steps:
@@ -224,7 +210,6 @@ test:
                 node: "{{_target_node}}"
                 contains: "successfully"
           
-          # Add all full nodes (if any)
           - for: node_idx
             in: "{{full_indices}}"
             steps:
@@ -241,7 +226,7 @@ test:
                 node: "{{_target_node}}"
                 contains: "successfully"
   
-  # Verify node list on all ROOT nodes (master nodes will sync later via GDB)
+  # Verify node list on all ROOT nodes
   - for: _verify_node_idx
     in: "{{root_indices}}"
     steps:
@@ -317,16 +302,10 @@ test:
     nodes: "{{_active_nodes}}"
     timeout: 60
   
-  # Wait for Global DB synchronization using intelligent waiter
-  # Monitors 'node list' to detect when Global DB has synced records
-  # CRITICAL: This must complete before genesis - all nodes need to see each other
   - wait: global_db_sync
     nodes: "{{root_nodes}}"
     timeout: 180
   
-  # CRITICAL: Wait for round.new cluster to fully connect
-  # auto_confirmation requires all root nodes to be connected to propagate events
-  # Without this wait, events may not reach other nodes for signing
   - wait: "15s"
   
   # Verify network is fully connected
@@ -336,7 +315,6 @@ test:
   - print: "Network status before genesis: {{_net_status_before_genesis}}"
   
   # Genesis Event - Token Declaration
-  # Build root_certs_str: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
   - set: root_certs_str
     value: "','.join([f'{network_name}.root.pvt.{i}' for i in range(root_count)])"
     eval: true
@@ -347,39 +325,27 @@ test:
       cli:
         chain: "zerochain"
     steps:
-      # token_decl creates datum in mempool
       - cli: "token_decl -token {{native_ticker}} -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
         save_hash: token_hash
       
-      # CRITICAL: Process datum into event in round.new
-      # mempool proc converts datum -> event with 1 signature from first_root
-      - cli: "mempool proc -datum {{token_hash}}"
+      # 6.x: mempool proc_all replaces deprecated mempool proc -datum
+      - cli: "mempool proc_all"
         save_to: _mempool_proc_result
-      - print: "Mempool proc result: {{_mempool_proc_result}}"
+      - print: "Mempool proc_all result: {{_mempool_proc_result}}"
+      - wait: "15s"
       
-      # Wait for auto_confirmation to add all required signatures
-      # auto_confirmation timer is 30 seconds, wait 35 to be sure
-      # NOTE: Manual signing via 'dag event sign' doesn't work reliably because 
-      # 'dag round find' returns empty result due to timing issues with GlobalDB
-      - print: "Waiting for auto_confirmation to collect signatures (35s)..."
-      - wait: "35s"
-      
-      # Wait for round.new to sync across all root nodes
       - wait: global_db_sync
         nodes: "{{root_nodes}}"
         timeout: 60
       
-      # Initialize retry counter
       - set: _token_decl_events
         value: "0"
       
-      # Retry loop - complete round and check for events in chain
       - while: "int(_token_decl_events) == 0"
         max_loops: 20
         steps:
           - print: "Completing round... (events in chain: {{_token_decl_events}})"
           
-          # Try to complete the round on each root node
           - for: _complete_node
             in: "{{root_nodes}}"
             steps:
@@ -388,14 +354,11 @@ test:
                 save_to: _round_result
               - print: "Round complete on {{_complete_node}}: {{_round_result}}"
           
-          # Force chain synchronization
           - cli: "net go sync -chain zerochain"
             nodes: "{{root_nodes}}"
           
-          # Wait for sync
           - wait: "3s"
           
-          # Check if event appeared in chain
           - set: _max_events
             value: "0"
           - for: _check_node
@@ -420,24 +383,19 @@ test:
       
       - print: "✓ Round complete successful, events: {{_token_decl_events}}"
       
-      # Force chain synchronization to ensure first_root has the event
       - cli: "net go sync -chain zerochain"
       - wait: "5s"
       
-      # Verify token is created (event is now in chain)
       - cli: "token list"
         expect_output: "tokens: 1"
       
-      # Flush Global DB
       - cli: "global_db flush"
       
-      # Verify event is in chain
       - cli: "dag event list"
         save_to: _dag_events
       
       - print: "DAG events after round complete: {{_dag_events}}"
       
-      # Get genesis event hash - find which node has the event
       - set: _genesis_found_node
         value: ""
       - set: genesis_event_hash
@@ -449,16 +407,13 @@ test:
           - cli: "dag event last -chain zerochain"
             node: "{{_hash_node}}"
             save_to: _event_last_output
-          # Check if this node has events
           - set: _has_event
             value: "'0x' in _event_last_output and 'empty' not in _event_last_output"
             eval: true
           - print: "Node {{_hash_node}} event last: has_event={{_has_event}}"
-          # If this node has event and we haven't found one yet, extract hash
           - set: _should_extract
             value: "_has_event and not genesis_event_hash"
             eval: true
-          # Extract hash if this is the first node with events
           - set: genesis_event_hash
             value: "_event_last_output.split('last_event_hash:')[1].split()[0].strip() if _should_extract else genesis_event_hash"
             eval: true
@@ -475,13 +430,11 @@ test:
       static_genesis_event: "{{genesis_event_hash}}"
       is_static_genesis_event: "true"
   
-  # Disable seed_mode
   - config: "cellframe-node"
     nodes: "{{seed_nodes}}"
     set:
       seed_mode: "false"
   
-  # Create stake orders for all master/validator nodes
   - group: Create stake orders for validators
     steps:
       - for: node_idx
@@ -505,13 +458,11 @@ test:
     nodes: "{{_active_nodes}}"
     timeout: 60
   
-  # Wait for Global DB synchronization after restart
   - wait: global_db_sync
     node: "{{first_root}}"
     timeout: 60
   
-  # Token Emission - ALL signatures on node-1 (has all root certs)
-  # Build all_root_certs: "stagenet.root.pvt.0,stagenet.root.pvt.1,..."
+  # Token Emission
   - set: all_root_certs
     value: "','.join([f'{network_name}.root.pvt.{i}' for i in range(root_count)])"
     eval: true
@@ -523,42 +474,31 @@ test:
         chain: "zerochain"
         token: "{{native_ticker}}"
     steps:
-      # token_emit creates datum in mempool
       - cli: "token_emit -no_base_tx -emission_value 10.0e+54 -addr {{fee_addr}} -certs {{all_root_certs}}"
         save_hash: emission_datum_hash
       
-      # Store emission_datum_hash as emission_hash for phase2 compatibility
       - set: emission_hash
         value: "emission_datum_hash"
         eval: true
       
-      # CRITICAL: Process datum into event in round.new
-      # mempool proc converts datum -> event with 1 signature from first_root
-      - cli: "mempool proc -datum {{emission_datum_hash}}"
+      # 6.x: mempool proc_all replaces deprecated mempool proc -datum
+      - cli: "mempool proc_all"
         save_to: _emission_mempool_result
-      - print: "Emission mempool proc result: {{_emission_mempool_result}}"
+      - print: "Emission mempool proc_all result: {{_emission_mempool_result}}"
+      - wait: "15s"
       
-      # Wait for auto_confirmation to add all required signatures
-      # auto_confirmation timer is 30 seconds, wait 35 to be sure
-      - print: "Waiting for auto_confirmation to collect emission signatures (35s)..."
-      - wait: "35s"
-      
-      # Wait for round.new to sync across all root nodes
       - wait: global_db_sync
         nodes: "{{root_nodes}}"
         timeout: 60
       
-      # Initialize retry counter
       - set: _emission_events
         value: "1"
       
-      # Retry loop - complete round and check for events in chain
       - while: "int(_emission_events) < 2"
         max_loops: 20
         steps:
           - print: "Completing emission round... (events in chain: {{_emission_events}})"
           
-          # Try to complete the round on each root node
           - for: _complete_node
             in: "{{root_nodes}}"
             steps:
@@ -567,14 +507,11 @@ test:
                 save_to: _round_result
               - print: "Round complete on {{_complete_node}}: {{_round_result}}"
           
-          # Force chain synchronization
           - cli: "net go sync -chain zerochain"
             nodes: "{{root_nodes}}"
           
-          # Wait for sync
           - wait: "3s"
           
-          # Check if event appeared in chain
           - set: _max_events
             value: "1"
           - for: _check_node
@@ -599,17 +536,14 @@ test:
       
       - print: "✓ Emission round complete successful, events: {{_emission_events}}"
       
-      # Verify emission event was added to DAG
       - cli: "dag event list -chain zerochain"
         save_to: _dag_events_after_emission
       
       - print: "DAG events after emission: {{_dag_events_after_emission}}"
       
-      # Force chain synchronization to propagate events to first_root
       - cli: "net go sync -chain zerochain"
       - wait: "5s"
       
-      # Verify we have at least 2 events (check after sync)
       - cli: "dag event list -chain zerochain"
         save_to: _final_dag_check
       - set: _final_events_count
@@ -617,16 +551,14 @@ test:
         eval: true
       - print: "Final events count after sync: {{_final_events_count}}"
       
-      # Wait for global_db_sync to ensure emission is propagated
       - wait: global_db_sync
         node: "{{first_root}}"
         timeout: 60
       
-      # Verify emission is accessible in ledger
       - cli: "ledger list coins"
         contains: "{{native_ticker}}"
 
-# Final verification on all root nodes
+  # Final verification on all root nodes
   - for: _verify_node
     in: "{{root_nodes}}"
     steps:
@@ -635,12 +567,7 @@ test:
         save_to: _final_events
       - print: "Final verification - {{_verify_node}}: {{_final_events}}"
 
-  # Configure fee_addr in main.cfg (required for arbitrage transactions)
-  # SDK will automatically load it from config on node startup
   - config: "{{network_name}}/main"
     nodes: "{{_active_nodes}}"
     set:
       fee_addr: "{{fee_addr}}"
-
-# NOTE: Snapshot creation is handled by manager.py after this phase completes.
-# teardown with snapshot: create would be used for standalone phase execution.

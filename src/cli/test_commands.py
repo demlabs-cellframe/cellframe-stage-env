@@ -482,7 +482,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         if node_packages:
                             pkgs = " ".join(sorted(set(node_packages)))
                             print_info(f"📦 Installing packages on nodes: {pkgs}")
-                            node_svc_names = [f"node-{n}" for n in sorted(network_mgr.nodes.keys())]
+                            node_svc_names = [f"node-{c.node_id}" for c in sorted(network_mgr.nodes.values(), key=lambda c: c.node_id)]
                             install_cmd = ["bash", "-c", f"apt-get update -qq && apt-get install -y -qq {pkgs} && rm -rf /var/lib/apt/lists/*"]
                             for svc in node_svc_names:
                                 try:
@@ -558,6 +558,20 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             config_loader, print_info, print_success, print_warning, print_error,
                         )
 
+                    topology_vars = {}
+                    if network_mgr:
+                        from ..scenarios.global_context import ScenarioGlobalContext
+                        gc = ScenarioGlobalContext(
+                            network_name=network_mgr.topology.network.name,
+                            topology_name=network_mgr.topology_name,
+                            native_ticker=getattr(network_mgr.topology.network, 'native_ticker', 'TCELL')
+                        )
+                        node_configs_for_setup = network_mgr.generate_node_configs()
+                        gc.set_static_node_info(node_configs_for_setup)
+                        gc.collect_node_ips(node_configs_for_setup, wait_for_ips=False)
+                        topology_vars = gc.to_dict()
+                        topology_vars['project_root'] = str(project_root)
+
                     # Execute suite-level setup (includes + setup steps).
                     # Includes always run — each include decides internally whether
                     # to act (e.g. by checking snapshot: verify) or skip.
@@ -586,20 +600,6 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 debug=debug_mode,
                                 base_path=base_path
                             )
-                            
-                            topology_vars = {}
-                            if network_mgr:
-                                from ..scenarios.global_context import ScenarioGlobalContext
-                                gc = ScenarioGlobalContext(
-                                    network_name=network_mgr.topology.network.name,
-                                    topology_name=network_mgr.topology_name,
-                                    native_ticker=getattr(network_mgr.topology.network, 'native_ticker', 'TCELL')
-                                )
-                                node_configs_for_setup = network_mgr.generate_node_configs()
-                                gc.set_static_node_info(node_configs_for_setup)
-                                gc.collect_node_ips(node_configs_for_setup, wait_for_ips=False)
-                                topology_vars = gc.to_dict()
-                                topology_vars['project_root'] = str(project_root)
 
                             async def _run_suite_setup():
                                 await executor.execute_scenario(

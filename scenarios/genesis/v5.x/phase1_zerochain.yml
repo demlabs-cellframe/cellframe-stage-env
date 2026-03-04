@@ -1,0 +1,578 @@
+name: PHASE 1 - Zerochain Genesis
+description: Initialize ROOT nodes, create token and emission (dynamic topology)
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: "{{network_name}}"
+
+setup:
+  # Start all nodes dynamically based on topology
+  - docker_op: start
+    services: "{{all_nodes}}"
+    detach: true
+  
+  # Verify ROOT node certificates exist
+  - group: Verify ROOT node certificates
+    steps:
+      - for: node_idx
+        in: "{{root_indices}}"
+        steps:
+          - set: _cert_idx
+            value: "node_idx - 1"
+            eval: true
+          - set: _cert_path
+            value: "/opt/cellframe-node/var/lib/ca/{{network_name}}.root.pvt.{{_cert_idx}}.dcert"
+          - set: _check_node
+            value: "node-{{node_idx}}"
+          - bash: "test -f {{_cert_path}} && echo '✓ ROOT cert found: {{_cert_path}}'"
+            node: "{{_check_node}}"
+  
+  # Verify MASTER node certificates exist
+  - group: Verify MASTER node certificates
+    steps:
+      - for: node_idx
+        in: "{{master_indices}}"
+        steps:
+          - set: _cert_idx
+            value: "node_idx - root_count - 1"
+            eval: true
+          - set: _cert_path
+            value: "/opt/cellframe-node/var/lib/ca/{{network_name}}.master.pvt.{{_cert_idx}}.dcert"
+          - set: _check_node
+            value: "node-{{node_idx}}"
+          - bash: "test -f {{_cert_path}} && echo '✓ MASTER cert found: {{_cert_path}}'"
+            node: "{{_check_node}}"
+  
+  # Copy all root private certs to first root node for multi-signature
+  - group: Copy root certs to node-1 for multi-signature
+    steps:
+      - for: cert_idx
+        in: "range(1, root_count)"
+        steps:
+          - set: _src_node_id
+            value: "cert_idx + 1"
+            eval: true
+          - set: _cert_name
+            value: "{{network_name}}.root.pvt.{{cert_idx}}.dcert"
+          - set: _cert_path
+            value: "/opt/cellframe-node/var/lib/ca/{{_cert_name}}"
+          - docker_op: cp
+            src: "node-{{_src_node_id}}:{{_cert_path}}"
+            dst: "node-1:{{_cert_path}}"
+  
+  # Configure events_sign_cert for each ROOT node
+  - for: node_idx
+    in: "{{root_indices}}"
+    steps:
+      - set: _cert_idx
+        value: "node_idx - 1"
+        eval: true
+      - set: _current_node
+        value: "node-{{node_idx}}"
+      - set: _current_cert
+        value: "{{network_name}}.root.pvt.{{_cert_idx}}"
+      - config: "{{network_name}}"
+        nodes: ["{{_current_node}}"]
+        set:
+          events_sign_cert: "{{_current_cert}}"
+  
+  - docker_op: restart
+    services: "{{all_nodes}}"
+  
+  - wait_network: online
+    nodes: "{{root_nodes}}"
+    timeout: 120
+
+
+test:
+  # MDBX race condition workaround: wait for DB initialization to stabilize
+  - wait: "15s"
+  
+  # Get ALL node addresses dynamically
+  - group: Get node addresses
+    steps:
+      - for: node_idx
+        in: "{{root_indices}}"
+        steps:
+          - set: _addr_idx
+            value: "node_idx - 1"
+            eval: true
+          - set: _node_name
+            value: "node-{{node_idx}}"
+          - set: _addr_var
+            value: "root_addr_{{_addr_idx}}"
+          - cli: "node dump"
+            node: "{{_node_name}}"
+            save_node: "{{_addr_var}}"
+      
+      - for: node_idx
+        in: "{{master_indices}}"
+        steps:
+          - set: _addr_idx
+            value: "node_idx - root_count - 1"
+            eval: true
+          - set: _node_name
+            value: "node-{{node_idx}}"
+          - set: _addr_var
+            value: "master_addr_{{_addr_idx}}"
+          - cli: "node dump"
+            node: "{{_node_name}}"
+            save_node: "{{_addr_var}}"
+      
+      - for: node_idx
+        in: "{{full_indices}}"
+        steps:
+          - set: _addr_idx
+            value: "node_idx - root_count - master_count - 1"
+            eval: true
+          - set: _node_name
+            value: "node-{{node_idx}}"
+          - set: _addr_var
+            value: "full_addr_{{_addr_idx}}"
+          - cli: "node dump"
+            node: "{{_node_name}}"
+            save_node: "{{_addr_var}}"
+  
+  # Build validators_addrs dynamically from master node addresses
+  - set: validators_addrs_str
+    value: "join_vars_bracket('master_addr_', master_count)"
+    eval: true
+  
+  # Build authorized_nodes_addrs from root node addresses
+  - set: authorized_nodes_str
+    value: "join_vars_bracket('root_addr_', root_count)"
+    eval: true
+  
+  # Set validators_addrs on ALL nodes
+  - config: "{{network_name}}/main"
+    nodes: "{{all_nodes}}"
+    set:
+      validators_addrs: "{{validators_addrs_str}}"
+  
+  # Set authorized_nodes_addrs in ZEROCHAIN config
+  - config: "{{network_name}}/zerochain"
+    nodes: "{{all_nodes}}"
+    set:
+      authorized_nodes_addrs: "{{authorized_nodes_str}}"
+  
+  # Build active nodes list (root + master)
+  - set: _active_nodes
+    value: "root_nodes + master_nodes"
+    eval: true
+  
+  - docker_op: restart
+    services: "{{_active_nodes}}"
+  
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 60
+  
+  # Add all nodes to nodelist dynamically
+  - group: Add all nodes to nodelist
+    steps:
+      - for: _target_node_idx
+        in: "{{root_indices}}"
+        steps:
+          - set: _target_node
+            value: "'node-' + str(_target_node_idx)"
+            eval: true
+          - print: "Adding node records to {{_target_node}}"
+          
+          - for: node_idx
+            in: "{{root_indices}}"
+            steps:
+              - set: _addr_idx
+                value: "node_idx - 1"
+                eval: true
+              - set: _add_addr
+                value: "get_var('root_addr_' + str(_addr_idx))"
+                eval: true
+              - set: _add_host
+                value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
+                eval: true
+              - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
+                node: "{{_target_node}}"
+                contains: "successfully"
+          
+          - for: node_idx
+            in: "{{master_indices}}"
+            steps:
+              - set: _addr_idx
+                value: "node_idx - root_count - 1"
+                eval: true
+              - set: _add_addr
+                value: "get_var('master_addr_' + str(_addr_idx))"
+                eval: true
+              - set: _add_host
+                value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
+                eval: true
+              - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
+                node: "{{_target_node}}"
+                contains: "successfully"
+          
+          - for: node_idx
+            in: "{{full_indices}}"
+            steps:
+              - set: _addr_idx
+                value: "node_idx - root_count - master_count - 1"
+                eval: true
+              - set: _add_addr
+                value: "get_var('full_addr_' + str(_addr_idx))"
+                eval: true
+              - set: _add_host
+                value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
+                eval: true
+              - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
+                node: "{{_target_node}}"
+                contains: "successfully"
+  
+  # Verify node list on all ROOT nodes
+  - for: _verify_node_idx
+    in: "{{root_indices}}"
+    steps:
+      - set: _verify_node
+        value: "'node-' + str(_verify_node_idx)"
+        eval: true
+      - cli: "node list"
+        node: "{{_verify_node}}"
+        not_contains: "No records"
+        save_to: "_node_list_{{_verify_node_idx}}"
+      - print: "Node list on {{_verify_node}} verified"
+  
+  # Create wallets dynamically for all nodes
+  - group: Create wallets
+    defaults:
+      cli:
+        sign: "sig_dil"
+    steps:
+      - for: node_idx
+        in: "{{root_indices}}"
+        steps:
+          - set: _wallet_idx
+            value: "node_idx - 1"
+            eval: true
+          - set: _wallet_node
+            value: "node-{{node_idx}}"
+          - set: _wallet_name
+            value: "{{network_name}}_root_{{_wallet_idx}}"
+          - cli: "wallet new -w {{_wallet_name}}"
+            node: "{{_wallet_node}}"
+      
+      - for: node_idx
+        in: "{{master_indices}}"
+        steps:
+          - set: _wallet_idx
+            value: "node_idx - root_count - 1"
+            eval: true
+          - set: _wallet_node
+            value: "node-{{node_idx}}"
+          - set: _wallet_name
+            value: "{{network_name}}_master_{{_wallet_idx}}"
+          - cli: "wallet new -w {{_wallet_name}}"
+            node: "{{_wallet_node}}"
+      
+      - for: node_idx
+        in: "{{full_indices}}"
+        steps:
+          - set: _wallet_idx
+            value: "node_idx - root_count - master_count - 1"
+            eval: true
+          - set: _wallet_node
+            value: "node-{{node_idx}}"
+          - set: _wallet_name
+            value: "{{network_name}}_full_{{_wallet_idx}}"
+          - cli: "wallet new -w {{_wallet_name}}"
+            node: "{{_wallet_node}}"
+  
+  # Get fee_addr from first root wallet
+  - cli: "wallet info -w {{network_name}}_root_0"
+    node: "{{first_root}}"
+    save_wallet: fee_addr
+  
+  # Enable seed_mode on seed nodes (root nodes)
+  - config: "cellframe-node"
+    nodes: "{{seed_nodes}}"
+    set:
+      seed_mode: "true"
+  
+  - docker_op: restart
+    services: "{{_active_nodes}}"
+  
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 60
+  
+  - wait: global_db_sync
+    nodes: "{{root_nodes}}"
+    timeout: 180
+  
+  - wait: "15s"
+  
+  # Verify network is fully connected
+  - cli: "net get status"
+    node: "{{first_root}}"
+    save_to: _net_status_before_genesis
+  - print: "Network status before genesis: {{_net_status_before_genesis}}"
+  
+  # Genesis Event - Token Declaration
+  - set: root_certs_str
+    value: "','.join([f'{network_name}.root.pvt.{i}' for i in range(root_count)])"
+    eval: true
+
+  - group: Genesis Event - Token Declaration
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
+    steps:
+      - cli: "token_decl -token {{native_ticker}} -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
+        save_hash: token_hash
+      
+      # 5.x: mempool proc processes individual datum into round.new event
+      - cli: "mempool proc -datum {{token_hash}}"
+        save_to: _mempool_proc_result
+      - print: "Mempool proc result: {{_mempool_proc_result}}"
+      - print: "Waiting for auto_confirmation to collect signatures (35s)..."
+      - wait: "35s"
+      
+      - wait: global_db_sync
+        nodes: "{{root_nodes}}"
+        timeout: 60
+      
+      - set: _token_decl_events
+        value: "0"
+      
+      - while: "int(_token_decl_events) == 0"
+        max_loops: 20
+        steps:
+          - print: "Completing round... (events in chain: {{_token_decl_events}})"
+          
+          - for: _complete_node
+            in: "{{root_nodes}}"
+            steps:
+              - cli: "dag round complete"
+                node: "{{_complete_node}}"
+                save_to: _round_result
+              - print: "Round complete on {{_complete_node}}: {{_round_result}}"
+          
+          - cli: "net go sync -chain zerochain"
+            nodes: "{{root_nodes}}"
+          
+          - wait: "3s"
+          
+          - set: _max_events
+            value: "0"
+          - for: _check_node
+            in: "{{root_nodes}}"
+            steps:
+              - cli: "dag event list"
+                node: "{{_check_node}}"
+                save_to: _dag_check_node
+              - set: _node_events
+                value: "_dag_check_node.split('total_events:')[1].split()[0] if 'total_events:' in _dag_check_node else '0'"
+                eval: true
+              - print: "Node {{_check_node}} events: {{_node_events}}"
+              - set: _max_events
+                value: "str(max(int(_max_events), int(_node_events)))"
+                eval: true
+          
+          - set: _token_decl_events
+            value: "_max_events"
+            eval: true
+          
+          - print: "Max events across nodes: {{_token_decl_events}}"
+      
+      - print: "✓ Round complete successful, events: {{_token_decl_events}}"
+      
+      - cli: "net go sync -chain zerochain"
+      - wait: "5s"
+      
+      - cli: "token list"
+        expect_output: "tokens: 1"
+      
+      - cli: "global_db flush"
+      
+      - cli: "dag event list"
+        save_to: _dag_events
+      
+      - print: "DAG events after round complete: {{_dag_events}}"
+      
+      - set: _genesis_found_node
+        value: ""
+      - set: genesis_event_hash
+        value: ""
+        
+      - for: _hash_node
+        in: "{{root_nodes}}"
+        steps:
+          - cli: "dag event last -chain zerochain"
+            node: "{{_hash_node}}"
+            save_to: _event_last_output
+          - set: _has_event
+            value: "'0x' in _event_last_output and 'empty' not in _event_last_output"
+            eval: true
+          - print: "Node {{_hash_node}} event last: has_event={{_has_event}}"
+          - set: _should_extract
+            value: "_has_event and not genesis_event_hash"
+            eval: true
+          - set: genesis_event_hash
+            value: "_event_last_output.split('last_event_hash:')[1].split()[0].strip() if _should_extract else genesis_event_hash"
+            eval: true
+          - set: _genesis_found_node
+            value: "_hash_node if _should_extract else _genesis_found_node"
+            eval: true
+      
+      - print: "Genesis event hash: {{genesis_event_hash}} (found on {{_genesis_found_node}})"
+  
+  # Set static genesis event on all active nodes
+  - config: "{{network_name}}/zerochain"
+    nodes: "{{_active_nodes}}"
+    set:
+      static_genesis_event: "{{genesis_event_hash}}"
+      is_static_genesis_event: "true"
+  
+  - config: "cellframe-node"
+    nodes: "{{seed_nodes}}"
+    set:
+      seed_mode: "false"
+  
+  - group: Create stake orders for validators
+    steps:
+      - for: node_idx
+        in: "{{master_indices}}"
+        steps:
+          - set: _cert_idx
+            value: "node_idx - root_count - 1"
+            eval: true
+          - set: _stake_node
+            value: "node-{{node_idx}}"
+          - set: _stake_cert
+            value: "{{network_name}}.master.pvt.{{_cert_idx}}"
+          - cli: "srv_stake order create -net {{network_name}} -value 0.05e+18 -cert {{_stake_cert}}"
+            node: "{{_stake_node}}"
+            save: stake_order_result
+  
+  - docker_op: restart
+    services: "{{_active_nodes}}"
+  
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 60
+  
+  - wait: global_db_sync
+    node: "{{first_root}}"
+    timeout: 60
+  
+  # Token Emission
+  - set: all_root_certs
+    value: "','.join([f'{network_name}.root.pvt.{i}' for i in range(root_count)])"
+    eval: true
+  
+  - group: Token Emission (Manual Round Consensus)
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "zerochain"
+        token: "{{native_ticker}}"
+    steps:
+      - cli: "token_emit -no_base_tx -emission_value 10.0e+54 -addr {{fee_addr}} -certs {{all_root_certs}}"
+        save_hash: emission_datum_hash
+      
+      - set: emission_hash
+        value: "emission_datum_hash"
+        eval: true
+      
+      # 5.x: mempool proc processes individual datum into round.new event
+      - cli: "mempool proc -datum {{emission_datum_hash}}"
+        save_to: _emission_mempool_result
+      - print: "Emission mempool proc result: {{_emission_mempool_result}}"
+      - print: "Waiting for auto_confirmation to collect emission signatures (35s)..."
+      - wait: "35s"
+      
+      - wait: global_db_sync
+        nodes: "{{root_nodes}}"
+        timeout: 60
+      
+      - set: _emission_events
+        value: "1"
+      
+      - while: "int(_emission_events) < 2"
+        max_loops: 20
+        steps:
+          - print: "Completing emission round... (events in chain: {{_emission_events}})"
+          
+          - for: _complete_node
+            in: "{{root_nodes}}"
+            steps:
+              - cli: "dag round complete"
+                node: "{{_complete_node}}"
+                save_to: _round_result
+              - print: "Round complete on {{_complete_node}}: {{_round_result}}"
+          
+          - cli: "net go sync -chain zerochain"
+            nodes: "{{root_nodes}}"
+          
+          - wait: "3s"
+          
+          - set: _max_events
+            value: "1"
+          - for: _check_node
+            in: "{{root_nodes}}"
+            steps:
+              - cli: "dag event list -chain zerochain"
+                node: "{{_check_node}}"
+                save_to: _dag_check_node
+              - set: _node_events
+                value: "_dag_check_node.split('total_events:')[1].split()[0] if 'total_events:' in _dag_check_node else '1'"
+                eval: true
+              - print: "Node {{_check_node}} events: {{_node_events}}"
+              - set: _max_events
+                value: "str(max(int(_max_events), int(_node_events)))"
+                eval: true
+          
+          - set: _emission_events
+            value: "_max_events"
+            eval: true
+          
+          - print: "Max events across nodes: {{_emission_events}}"
+      
+      - print: "✓ Emission round complete successful, events: {{_emission_events}}"
+      
+      - cli: "dag event list -chain zerochain"
+        save_to: _dag_events_after_emission
+      
+      - print: "DAG events after emission: {{_dag_events_after_emission}}"
+      
+      - cli: "net go sync -chain zerochain"
+      - wait: "5s"
+      
+      - cli: "dag event list -chain zerochain"
+        save_to: _final_dag_check
+      - set: _final_events_count
+        value: "_final_dag_check.split('total_events:')[1].split()[0] if 'total_events:' in _final_dag_check else '0'"
+        eval: true
+      - print: "Final events count after sync: {{_final_events_count}}"
+      
+      - wait: global_db_sync
+        node: "{{first_root}}"
+        timeout: 60
+      
+      - cli: "ledger list coins"
+        contains: "{{native_ticker}}"
+
+  # Final verification on all root nodes
+  - for: _verify_node
+    in: "{{root_nodes}}"
+    steps:
+      - cli: "dag event list -chain zerochain"
+        node: "{{_verify_node}}"
+        save_to: _final_events
+      - print: "Final verification - {{_verify_node}}: {{_final_events}}"
+
+  - config: "{{network_name}}/main"
+    nodes: "{{_active_nodes}}"
+    set:
+      fee_addr: "{{fee_addr}}"

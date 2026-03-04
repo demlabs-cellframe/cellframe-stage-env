@@ -23,16 +23,10 @@ from pydantic import BaseModel
 
 from src.utils.logger import get_logger
 from src.utils.cli import run_command, print_info, print_success, print_error
-from src.config.manager import get_config_loader
 
 logger = get_logger(__name__)
 
-# Docker image name for the builder environment (SDKs mounted, not copied)
 CERT_BUILDER_IMAGE = "cf-cert-builder:latest"
-
-# Named Docker volumes for caching SDK and cert-generator builds between runs
-_SDK_BUILD_CACHE_VOLUME = "cf-cert-sdk-cache"
-_CERT_BUILD_CACHE_VOLUME = "cf-cert-build-cache"
 
 
 class CertConfig(BaseModel):
@@ -68,8 +62,9 @@ class CertGenerator:
         """
         Build lightweight builder Docker image if needed.
 
-        The image contains only build tools (cmake, gcc, etc.).
-        SDK sources are mounted at runtime via ``docker run -v``.
+        The image is self-contained: it clones its own SDK copies and
+        pre-builds cf-cert-generator during ``docker build``.  No host
+        SDK mounts are needed at runtime.
 
         Returns:
             True if image is ready
@@ -86,7 +81,7 @@ class CertGenerator:
             pass
 
         logger.info("building_cert_builder_image")
-        print_info("Building certificate builder Docker image...")
+        print_info("Building certificate builder Docker image (self-contained, clones SDK)...")
 
         try:
             result = subprocess.run(
@@ -223,56 +218,24 @@ class CertGenerator:
                    network=network_name,
                    nodes=node_count,
                    root_count=root_count,
-                   method="docker_mount")
+                   method="docker_self_contained")
 
-        print_info(f"Generating {node_count} node certificates (Docker + mounted SDKs)...")
+        print_info(f"Generating {node_count} node certificates (self-contained Docker)...")
 
         if not self.build_docker_image():
             raise RuntimeError("Failed to build certificate builder Docker image")
         self.certs_dir.mkdir(parents=True, exist_ok=True)
 
-        sdk_src, dap_src = self._resolve_sdk_paths()
-        cert_src = (self.base_path / "src" / "certs").resolve()
-
         uid, gid = os.getuid(), os.getgid()
-
-        # Embedding build: mount SDKs at separate ro paths, create symlink overlay
-        # so cellframe-sdk's cmake sees dap-sdk as a subdirectory without nested mounts
-        build_and_generate = (
-            "set -e && "
-            "mkdir -p /tmp/cellframe-sdk-workspace && "
-            "cp -rs /project/cellframe-sdk/. /tmp/cellframe-sdk-workspace/ && "
-            "rm -rf /tmp/cellframe-sdk-workspace/dap-sdk && "
-            "ln -s /project/dap-sdk /tmp/cellframe-sdk-workspace/dap-sdk && "
-            "cd /tmp/sdk-build && "
-            "cmake -DCMAKE_BUILD_TYPE=Release /tmp/cellframe-sdk-workspace >/dev/null 2>&1 && "
-            "make -j$(nproc) dap_core dap_core_unix dap_crypto dap_crypto_kyber512 dap_json-c dap_chain_common dap_io 2>&1 && "
-            "for spec in dap-sdk/core:dap_core dap-sdk/crypto:dap_crypto dap-sdk/io:dap_io modules/common:dap_chain_common; do "
-            "  d=${spec%%:*}; n=${spec##*:}; "
-            "  find /tmp/sdk-build/${d}/CMakeFiles/${n}.dir -name '*.o' 2>/dev/null | "
-            "    xargs ar rcs /tmp/sdk-build/${d}/lib${n}.a 2>/dev/null; "
-            "done && "
-            "cd /tmp/cert-build && "
-            "cmake -DCELLFRAME_SDK_BUILD=/tmp/sdk-build "
-            "-DCELLFRAME_SDK_SRC=/tmp/cellframe-sdk-workspace "
-            "-DDAP_SDK_SRC=/project/dap-sdk "
-            "-DDAP_SDK_BUILD=/tmp/sdk-build/dap-sdk "
-            "/project/cert-generator >/dev/null 2>&1 && "
-            "make -j$(nproc) cf-cert-generator 2>&1 && "
-            f"./cf-cert-generator /output {node_count} {network_name} {network_id} {root_count} && "
-            f"chown -R {uid}:{gid} /output"
-        )
 
         docker_cmd = [
             "docker", "run", "--rm",
-            "-v", f"{sdk_src}:/project/cellframe-sdk:ro",
-            "-v", f"{dap_src}:/project/dap-sdk:ro",
-            "-v", f"{cert_src}:/project/cert-generator:ro",
+            "--entrypoint", "sh",
             "-v", f"{self.certs_dir.absolute()}:/output",
-            "-v", f"{_SDK_BUILD_CACHE_VOLUME}:/tmp/sdk-build",
-            "-v", f"{_CERT_BUILD_CACHE_VOLUME}:/tmp/cert-build",
             CERT_BUILDER_IMAGE,
-            "bash", "-c", build_and_generate,
+            "-c",
+            f"/usr/local/bin/cf-cert-generator /output {node_count} {network_name} {network_id} {root_count} && "
+            f"chown -R {uid}:{gid} /output",
         ]
 
         try:
@@ -337,80 +300,6 @@ class CertGenerator:
         
         return result
     
-    def _resolve_sdk_paths(self) -> tuple:
-        """
-        Resolve SDK source paths.
-
-        If ``cellframe_sdk_path`` / ``dap_sdk_path`` are configured and the
-        directories exist on the host, they are used directly (bind-mounted
-        into the builder container).  Otherwise the repos are cloned from git
-        into ``cache/sdk/`` and used from there.
-
-        Returns:
-            (cellframe_sdk_path, dap_sdk_path) as resolved absolute Paths.
-        """
-        paths_config = get_config_loader().get_paths_config()
-        project_root = (self.base_path / paths_config.get('project_root', '../..')).resolve()
-
-        sdk_rel = paths_config.get('cellframe_sdk_path', '').strip()
-        dap_rel = paths_config.get('dap_sdk_path', '').strip()
-
-        sdk_src = (project_root / sdk_rel).resolve() if sdk_rel else None
-        dap_src = (project_root / dap_rel).resolve() if dap_rel else None
-
-        if sdk_src and sdk_src.is_dir() and dap_src and dap_src.is_dir():
-            logger.info("using_local_sdks", sdk=str(sdk_src), dap=str(dap_src))
-            return sdk_src, dap_src
-
-        logger.info("local_sdks_not_found_will_clone",
-                     sdk_configured=sdk_rel or "<empty>",
-                     dap_configured=dap_rel or "<empty>")
-
-        cache_dir = paths_config.get('cache_dir', 'cache')
-        sdk_cache = (self.base_path / cache_dir / "sdk").resolve()
-        sdk_cache.mkdir(parents=True, exist_ok=True)
-
-        branch = paths_config.get('sdk_git_branch', 'master')
-
-        sdk_src = self._ensure_sdk_cloned(
-            sdk_cache / "cellframe-sdk",
-            paths_config.get('cellframe_sdk_git',
-                             'https://gitlab.demlabs.net/cellframe/cellframe-sdk.git'),
-            branch,
-        )
-        dap_src = self._ensure_sdk_cloned(
-            sdk_cache / "dap-sdk",
-            paths_config.get('dap_sdk_git',
-                             'https://gitlab.demlabs.net/dap/dap-sdk.git'),
-            branch,
-        )
-
-        return sdk_src, dap_src
-
-    def _ensure_sdk_cloned(self, dest: Path, git_url: str, branch: str) -> Path:
-        """Clone or update an SDK repo at *dest*."""
-        if dest.is_dir() and (dest / ".git").is_dir():
-            logger.info("sdk_repo_exists_pulling", path=str(dest), branch=branch)
-            print_info(f"Updating {dest.name} ({branch})...")
-            subprocess.run(
-                ["git", "-C", str(dest), "fetch", "--depth", "1", "origin", branch],
-                check=True, capture_output=True, text=True,
-            )
-            subprocess.run(
-                ["git", "-C", str(dest), "checkout", f"origin/{branch}"],
-                check=True, capture_output=True, text=True,
-            )
-        else:
-            logger.info("cloning_sdk", url=git_url, branch=branch, dest=str(dest))
-            print_info(f"Cloning {dest.name} ({branch}) from {git_url}...")
-            subprocess.run(
-                ["git", "clone", "--depth", "1", "--branch", branch,
-                 git_url, str(dest)],
-                check=True, capture_output=True, text=True,
-            )
-
-        return dest.resolve()
-
     def _normalize_cert_name(self, cert_name: str) -> str:
         """
         Normalize certificate name to standard format.
