@@ -295,7 +295,7 @@ test:
       - for: _seed_node
         in: "{{seed_nodes}}"
         steps:
-          - cli: "dag seed_mode -net {{network_name}} -chain zerochain enable"
+          - cli: "chain seed -chain zerochain on"
             node: "{{_seed_node}}"
             save_to: _seed_mode_result
           - print: "seed_mode on {{_seed_node}}: {{_seed_mode_result}}"
@@ -434,7 +434,7 @@ test:
       - for: _seed_node
         in: "{{seed_nodes}}"
         steps:
-          - cli: "dag seed_mode -net {{network_name}} -chain zerochain disable"
+          - cli: "chain seed -chain zerochain off"
             node: "{{_seed_node}}"
   
   - group: Create stake orders for validators

@@ -24,7 +24,7 @@ setup:
       - for: _node
         in: "{{_active_nodes}}"
         steps:
-          - cli: "block seed_mode -net {{network_name}} -chain main enable"
+          - cli: "chain seed -chain main on"
             node: "{{_node}}"
             save_to: _seed_mode_result
           - print: "seed_mode on {{_node}}: {{_seed_mode_result}}"
@@ -179,7 +179,7 @@ test:
       - for: _node
         in: "{{seed_nodes}}"
         steps:
-          - cli: "block seed_mode -net {{network_name}} -chain main disable"
+          - cli: "chain seed -chain main off"
             node: "{{_node}}"
 
   - docker_op: restart
