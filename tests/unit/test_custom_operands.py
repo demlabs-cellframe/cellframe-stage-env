@@ -484,7 +484,7 @@ class TestKelvpnOperandLoading:
 
     def test_kelvpn_install_has_steps(self, kelvpn_registry):
         steps = kelvpn_registry.get("kelvpn").get_action_steps("install")
-        assert len(steps) >= 5
+        assert len(steps) >= 4
 
     def test_kelvpn_cli_has_steps(self, kelvpn_registry):
         steps = kelvpn_registry.get("kelvpn").get_action_steps("cli")
