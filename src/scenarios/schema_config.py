@@ -6,24 +6,27 @@ class ConfigStep(BaseModel):
     Manage node configuration files by regenerating from templates.
     
     Usage:
-      # Regenerate base config with seed_mode
+      # Regenerate base config (template auto-resolved in stage-env)
       - config: "cellframe-node"
         nodes: [root-1, root-2, root-3]
         set:
           seed_mode: "true"
       
-      # Update chain config with genesis hash
-      - config: "stagenet/zerochain"
-        nodes: [root-1]
+      # cfg.d INI snippet (no template, direct INI write)
+      - config: "cellframe-node.cfg.d/plugins.cfg"
+        nodes: [node-9, node-10]
         set:
-          static_genesis_event: "{{token_hash}}"
-          is_static_genesis_event: "true"
+          plugins.enabled: "true"
           
-      # Update with string format
-      - config: "stagenet/main"
-        nodes: [master-1]
-        set: "fee_addr={{fee_addr}}, minimum_fee=1.0"
+      # Absolute path with external J2 template
+      - config: "/var/lib/plugins/myplugin/myplugin.cfg"
+        template: "{{project_root}}/tests/e2e/common/templates/myplugin/myplugin.cfg.j2"
+        nodes: [node-9, node-10, node-11]
+        set:
+          key1: "blablabla"
+          key2: "false"
     """
-    config: str = Field(..., description="Config name/path (e.g. 'cellframe-node', 'stagenet/zerochain')")
+    config: str = Field(..., description="Config path — relative name or absolute path with {{node_id}} placeholder")
     nodes: Union[str, List[str]] = Field(..., description="Target node(s)")
     set: Union[Dict[str, Any], str] = Field(default_factory=dict, description="Variables to inject (Dict or 'k=v, k2=v')")
+    template: Optional[str] = Field(None, description="Path to J2 template (absolute or relative to project root)")

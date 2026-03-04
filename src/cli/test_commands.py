@@ -12,6 +12,149 @@ from typing import Optional, List, Callable
 from .common import print_info, print_success, print_error, print_warning
 
 
+def _provision_node_compose(network_mgr, node_compose, base_path, config_loader, print_info, print_success, print_warning, print_error):
+    """
+    Provision additional cellframe nodes declared in suite.node_compose.
+
+    Args:
+        node_compose: Dict[str, NodeComposeSpec] — keys are service names (e.g. "vpn-server-1")
+    """
+    import ipaddress
+    import os
+    import re
+    import shutil
+
+    network_settings = config_loader.get_network_settings()
+    base_ip_str = network_settings.get('base_ip', '172.22.0.10')
+    base_ip = ipaddress.ip_address(base_ip_str)
+    base_http_port = int(network_settings.get('base_http_port', '9079'))
+    cache_dir = Path(config_loader.get_paths_config().get('cache_dir', '../../cache'))
+    if not cache_dir.is_absolute():
+        cache_dir = (base_path / cache_dir).resolve()
+
+    used_ids = set(network_mgr.nodes.keys()) if network_mgr.nodes else set()
+    next_auto_id = max(used_ids, default=0) + 1
+
+    compose_specs = []
+    packages_to_install: dict[str, list[str]] = {}
+
+    for svc_name, spec in node_compose.items():
+        if spec.id is not None:
+            node_id = spec.id
+        else:
+            node_id = next_auto_id
+            next_auto_id += 1
+        used_ids.add(node_id)
+
+        ip_addr = str(base_ip + node_id - 1)
+        http_port = base_http_port + (node_id - 1)
+
+        compose_specs.append({
+            'id': node_id,
+            'service_name': svc_name,
+            'role': spec.role,
+            'ip_address': ip_addr,
+            'http_port': http_port,
+        })
+
+        cfg_dir = cache_dir / "configs" / f"node{node_id}"
+        data_dir = cache_dir / "data" / f"node{node_id}"
+        source = spec.source.strip().lower()
+
+        if source == "genesis":
+            src_node = _find_donor_node(cache_dir, "configs")
+            if src_node and not cfg_dir.exists():
+                shutil.copytree(cache_dir / "configs" / src_node, cfg_dir, dirs_exist_ok=True)
+                print_info(f"  [{svc_name}] configs from genesis ({src_node})")
+            if src_node and not data_dir.exists():
+                src_data = cache_dir / "data" / src_node
+                if src_data.exists():
+                    shutil.copytree(src_data, data_dir, dirs_exist_ok=True)
+                    print_info(f"  [{svc_name}] data from genesis ({src_node})")
+        elif source.startswith("node-"):
+            clone_m = re.match(r'node-(\d+)', source)
+            if not clone_m:
+                print_warning(f"  [{svc_name}] bad source '{source}', expected 'node-<id>'")
+                continue
+            clone_id = clone_m.group(1)
+            src_cfg = cache_dir / "configs" / f"node{clone_id}"
+            src_data = cache_dir / "data" / f"node{clone_id}"
+            if src_cfg.exists() and not cfg_dir.exists():
+                shutil.copytree(src_cfg, cfg_dir, dirs_exist_ok=True)
+                print_info(f"  [{svc_name}] cloned configs from node{clone_id}")
+            if src_data.exists() and not data_dir.exists():
+                shutil.copytree(src_data, data_dir, dirs_exist_ok=True)
+                print_info(f"  [{svc_name}] cloned data from node{clone_id}")
+        elif source == "fresh":
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "cellframe-node.cfg.d").mkdir(exist_ok=True)
+            (cfg_dir / "network").mkdir(exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            if not (cfg_dir / "cellframe-node.cfg").exists():
+                donor_name = _find_donor_node(cache_dir, "configs")
+                if donor_name:
+                    shutil.copy2(
+                        cache_dir / "configs" / donor_name / "cellframe-node.cfg",
+                        cfg_dir / "cellframe-node.cfg",
+                    )
+                    print_info(f"  [{svc_name}] base cfg from {donor_name}")
+                else:
+                    print_warning(f"  [{svc_name}] no base cellframe-node.cfg found")
+        else:
+            print_warning(f"  [{svc_name}] unknown source '{source}', using fresh")
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+        (cache_dir / "crash-artifacts" / f"node{node_id}").mkdir(parents=True, exist_ok=True)
+
+        if spec.packages:
+            packages_to_install[svc_name] = spec.packages.split()
+
+        print_info(f"  {svc_name} (id={node_id}, {spec.role}, source={source}) @ {ip_addr}:{http_port}")
+
+    if not compose_specs:
+        return
+
+    try:
+        network_mgr.compose.add_extra_node_services(
+            compose_specs,
+            network_settings=network_settings,
+            cache_dir_relative=str(Path(config_loader.get_paths_config().get('cache_dir', '../../cache'))),
+        )
+        svc_names = [s['service_name'] for s in compose_specs]
+        network_mgr.compose.up(services=svc_names, detach=True, wait=False, no_build=True)
+        print_success(f"  Nodes started: {', '.join(svc_names)}")
+    except Exception as e:
+        print_error(f"  Failed to provision node_compose: {e}")
+        return
+
+    if packages_to_install:
+        for svc_name, pkgs in packages_to_install.items():
+            pkg_str = " ".join(pkgs)
+            try:
+                exit_code, output = network_mgr.compose.exec(
+                    svc_name, ["bash", "-c", f"apt-get update -qq && apt-get install -y -qq {pkg_str} && rm -rf /var/lib/apt/lists/*"]
+                )
+                if exit_code != 0:
+                    print_warning(f"  [{svc_name}] package install failed: {output[:200]}")
+                else:
+                    print_info(f"  [{svc_name}] packages installed: {pkg_str}")
+            except Exception as e:
+                print_warning(f"  [{svc_name}] package install error: {e}")
+
+
+def _find_donor_node(cache_dir: Path, subdir: str) -> Optional[str]:
+    """Find first existing node directory (e.g. 'node1') in cache_dir/subdir."""
+    import os
+    target = cache_dir / subdir
+    if not target.exists():
+        return None
+    for d in sorted(os.listdir(target)):
+        if d.startswith("node") and (target / d / "cellframe-node.cfg").exists():
+            return d
+    return None
+
+
 def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callable[[], Optional[Path]]):
     """Register test execution commands."""
     
@@ -108,8 +251,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             print_info("🔗 Connecting to running network...")
             config_path = get_config_path()
             network_mgr = NetworkManager(base_path, topology_name="default", config_path=config_path)
-            # Pass keep_running flag to prevent network shutdown on errors
             network_mgr.keep_running = not stop_after
+
+            # Point compose manager to generated file if it exists
+            generated = network_mgr.compose.project_dir / "docker-compose.generated.yml"
+            if generated.exists():
+                network_mgr.compose.compose_file = generated
             
             # Still need to initialize CLI parser
             print_info("📖 Initializing CLI parser from running network...")
@@ -186,7 +333,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     parent_dir = yml_file.parent
                     file_stem = yml_file.stem
                     
-                    # Check if this is a suite descriptor
+                    # Pattern A: External descriptor (parent/name.yml + parent/name/)
                     matching_dir = parent_dir / file_stem
                     if matching_dir.exists() and matching_dir.is_dir():
                         suite_key = str(matching_dir.relative_to(test_path))
@@ -198,14 +345,33 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             }
                         continue
                     
+                    # Pattern B: Internal descriptor (dir/suite.yml)
+                    if file_stem == 'suite':
+                        suite_key = str(parent_dir.relative_to(test_path))
+                        if suite_key not in suites:
+                            suites[suite_key] = {
+                                'descriptor': yml_file,
+                                'scenarios': [],
+                                'path': parent_dir
+                            }
+                        continue
+                    
                     # Check if this scenario belongs to a suite
                     suite_found = False
                     for potential_suite_dir in [parent_dir] + list(parent_dir.parents):
                         if potential_suite_dir == test_path:
                             break
                         suite_name = potential_suite_dir.name
-                        descriptor_file = potential_suite_dir.parent / f"{suite_name}.yml"
-                        if descriptor_file.exists():
+                        # Check external descriptor (parent/name.yml)
+                        external_descriptor = potential_suite_dir.parent / f"{suite_name}.yml"
+                        # Check internal descriptor (dir/suite.yml)
+                        internal_descriptor = potential_suite_dir / "suite.yml"
+                        descriptor_file = None
+                        if external_descriptor.exists():
+                            descriptor_file = external_descriptor
+                        elif internal_descriptor.exists():
+                            descriptor_file = internal_descriptor
+                        if descriptor_file:
                             suite_key = str(potential_suite_dir.relative_to(test_path))
                             if suite_key not in suites:
                                 suites[suite_key] = {
@@ -227,7 +393,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     suite_scenarios = suite_info['scenarios']
                     
                     # Parse suite descriptor to get metadata
-                    common_root = base_path / "tests"
+                    # common_root: use project's tests/e2e/ for cross-suite common includes
+                    paths_config = get_config_loader().get_paths_config()
+                    project_root = (base_path / paths_config.get('project_root', '../..')).resolve()
+                    common_root = project_root / "tests" / "e2e"
+                    if not common_root.exists():
+                        common_root = base_path / "tests"
                     parser = ScenarioParser(scenarios_root=suite_descriptor.parent, common_root=common_root)
                     
                     suite_spec = None  # Initialize to None in case of parse failure
@@ -265,26 +436,19 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     
                     # Clean test data before each suite (if network is running)
                     if network_mgr:
-                        # Determine snapshot to restore
                         restore_snapshot_name = None
                         if isinstance(suite_spec, SuiteDescriptor) and suite_spec.restore_snapshot:
-                            # Use suite-specific snapshot
                             restore_snapshot_name = suite_spec.restore_snapshot
-                            # Substitute {{topology_name}} if present
                             if "{{topology_name}}" in restore_snapshot_name:
                                 topology_name = getattr(suite_spec.network, 'topology', 'default') if suite_spec.network else 'default'
                                 restore_snapshot_name = restore_snapshot_name.replace("{{topology_name}}", topology_name)
                         
-                        # OPTIMIZATION: Skip restore for first suite if we have pristine network
                         if is_first_suite:
-                            # CRITICAL: Remove marker IMMEDIATELY before using pristine network
-                            # Even if suite fails, next run will correctly do restore
                             try:
                                 pristine_marker.unlink()
                             except FileNotFoundError:
-                                pass  # Already removed, that's fine
-                            is_first_suite = False  # Only first suite gets this benefit
-                            
+                                pass
+                            is_first_suite = False
                             print_success("🚀 Using pristine network (no restore needed)")
                         else:
                             if restore_snapshot_name:
@@ -301,9 +465,102 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             except Exception as e:
                                 print_warning(f"Failed to restore state: {e}")
 
-                    # CRITICAL: Execute suite-level setup AFTER restore for EVERY suite
-                    # This ensures certificates and other ephemeral resources are created
-                    # even after snapshot restore (which doesn't include certs)
+                    # Propagate docker_compose services to network manager.
+                    # Strip 'packages' field — it's our extension, not docker-compose.
+                    if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.docker_compose:
+                        node_packages: list[str] = []
+                        clean_services: dict = {}
+                        for svc_name, svc_def in suite_spec.docker_compose.items():
+                            svc_copy = dict(svc_def) if isinstance(svc_def, dict) else svc_def
+                            pkg_str = svc_copy.pop("packages", None)
+                            if pkg_str:
+                                node_packages.extend(pkg_str.split())
+                            clean_services[svc_name] = svc_copy
+                        network_mgr.docker_compose = clean_services
+                        print_info(f"🐳 Docker compose services: {', '.join(clean_services.keys())}")
+
+                        if node_packages:
+                            pkgs = " ".join(sorted(set(node_packages)))
+                            print_info(f"📦 Installing packages on nodes: {pkgs}")
+                            node_svc_names = [f"node-{n}" for n in sorted(network_mgr.nodes.keys())]
+                            install_cmd = ["bash", "-c", f"apt-get update -qq && apt-get install -y -qq {pkgs} && rm -rf /var/lib/apt/lists/*"]
+                            for svc in node_svc_names:
+                                try:
+                                    exit_code, output = network_mgr.compose.exec(svc, install_cmd)
+                                    if exit_code != 0:
+                                        print_warning(f"  Package install on {svc} failed (exit {exit_code}): {output[:200]}")
+                                except Exception as e:
+                                    print_warning(f"  Package install on {svc}: {e}")
+                            print_success(f"✓ Packages installed: {pkgs}")
+
+                    # Merge includes in declared order: variables, node_compose, node_compose_gen
+                    if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.includes:
+                        import yaml as _yaml
+                        from ..scenarios.schema import NodeComposeSpec, NodeComposeGenSpec
+                        for inc_path in suite_spec.includes:
+                            for search_dir in [suite_path, common_root]:
+                                inc_full = (search_dir / inc_path).resolve()
+                                if inc_full.exists():
+                                    with open(inc_full) as _f:
+                                        inc_data = _yaml.safe_load(_f) or {}
+                                    inc_vars = inc_data.get("variables")
+                                    if inc_vars and isinstance(inc_vars, dict):
+                                        merged = dict(inc_vars)
+                                        merged.update(suite_spec.variables)
+                                        suite_spec.variables = merged
+                                    nc_raw = inc_data.get("node_compose")
+                                    if nc_raw and isinstance(nc_raw, dict):
+                                        for k, v in nc_raw.items():
+                                            if k not in suite_spec.node_compose:
+                                                suite_spec.node_compose[k] = NodeComposeSpec(**(v if isinstance(v, dict) else {}))
+                                    ncg_raw = inc_data.get("node_compose_gen")
+                                    if ncg_raw and isinstance(ncg_raw, list):
+                                        for entry in ncg_raw:
+                                            suite_spec.node_compose_gen.append(
+                                                NodeComposeGenSpec(**(entry if isinstance(entry, dict) else {}))
+                                            )
+                                    break
+
+                    # Expand node_compose_gen → node_compose (resolve {{var}} in count)
+                    if isinstance(suite_spec, SuiteDescriptor) and suite_spec.node_compose_gen:
+                        import re as _re
+                        from ..scenarios.schema import NodeComposeSpec
+                        variables = suite_spec.variables or {}
+                        for gen in suite_spec.node_compose_gen:
+                            count = gen.count
+                            if isinstance(count, str):
+                                resolved = _re.sub(
+                                    r'\{\{(\w+)\}\}',
+                                    lambda m: str(variables.get(m.group(1), m.group(0))),
+                                    count,
+                                )
+                                try:
+                                    count = int(resolved)
+                                except ValueError:
+                                    print_warning(f"  node_compose_gen '{gen.prefix}': cannot resolve count '{count}'")
+                                    continue
+                            for i in range(1, count + 1):
+                                svc_name = f"{gen.prefix}-{i}"
+                                if svc_name not in suite_spec.node_compose:
+                                    suite_spec.node_compose[svc_name] = NodeComposeSpec(
+                                        role=gen.role,
+                                        source=gen.source,
+                                        packages=gen.packages,
+                                        config_overrides=gen.config_overrides,
+                                        setup=gen.setup,
+                                    )
+
+                    # Provision additional cellframe nodes from suite descriptor
+                    if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.node_compose:
+                        print_info("🖥️ Provisioning node_compose nodes...")
+                        _provision_node_compose(
+                            network_mgr, suite_spec.node_compose, base_path,
+                            config_loader, print_info, print_success, print_warning, print_error,
+                        )
+
+                    # Execute suite-level setup (includes + setup steps).
+                    # Includes always run — each include decides internally whether
+                    # to act (e.g. by checking snapshot: verify) or skip.
                     if isinstance(suite_spec, SuiteDescriptor) and (suite_spec.includes or suite_spec.setup):
                         print_info("🔧 Executing suite-level setup...")
                         
@@ -311,13 +568,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         from ..scenarios.parser import SuiteSetupParser
                         
                         try:
-                            # Use dedicated SuiteSetupParser to process includes
                             suite_setup_parser = SuiteSetupParser(
                                 scenarios_root=suite_path,
                                 common_root=common_root
                             )
                             
-                            # Load and parse suite setup with includes
                             suite_setup_scenario = suite_setup_parser.load_suite_setup(
                                 suite_includes=suite_spec.includes or [],
                                 suite_setup=suite_spec.setup.dict() if suite_spec.setup else None,
@@ -325,7 +580,6 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 base_dir=suite_path
                             )
                             
-                            # Execute setup
                             executor = ScenarioExecutor(
                                 node_cli_path="cellframe-node-cli",
                                 log_file=suite_dir / "suite-setup.log",
@@ -333,19 +587,52 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 base_path=base_path
                             )
                             
+                            topology_vars = {}
+                            if network_mgr:
+                                from ..scenarios.global_context import ScenarioGlobalContext
+                                gc = ScenarioGlobalContext(
+                                    network_name=network_mgr.topology.network.name,
+                                    topology_name=network_mgr.topology_name,
+                                    native_ticker=getattr(network_mgr.topology.network, 'native_ticker', 'TCELL')
+                                )
+                                node_configs_for_setup = network_mgr.generate_node_configs()
+                                gc.set_static_node_info(node_configs_for_setup)
+                                gc.collect_node_ips(node_configs_for_setup, wait_for_ips=False)
+                                topology_vars = gc.to_dict()
+                                topology_vars['project_root'] = str(project_root)
+
                             async def _run_suite_setup():
-                                await executor.execute_scenario(suite_setup_scenario)
+                                await executor.execute_scenario(
+                                    suite_setup_scenario,
+                                    compose_manager=network_mgr.compose if network_mgr else None,
+                                    snapshot_manager=network_mgr.snapshot_manager if network_mgr else None,
+                                    initial_variables=topology_vars or None
+                                )
                             
                             asyncio.run(_run_suite_setup())
                             print_success("✓ Suite setup completed")
                             
                         except Exception as e:
+                            all_passed = False
                             print_error(f"Suite setup failed: {e}")
                             print_error(f"❌ Skipping all scenarios in suite: {suite_name}")
-                            # Skip all scenarios in this suite
                             continue
 
 
+                    
+                    # Order scenarios according to suite descriptor if specified
+                    if isinstance(suite_spec, SuiteDescriptor) and suite_spec.scenarios:
+                        order_map = {}
+                        for idx, name in enumerate(suite_spec.scenarios):
+                            order_map[name] = idx
+                            order_map[Path(name).stem] = idx
+                        def _scenario_order_key(path: Path) -> int:
+                            if path.name in order_map:
+                                return order_map[path.name]
+                            if path.stem in order_map:
+                                return order_map[path.stem]
+                            return len(suite_spec.scenarios)
+                        suite_scenarios = sorted(suite_scenarios, key=_scenario_order_key)
                     
                     # Filter scenarios if needed
                     if filter:
@@ -433,6 +720,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                             if opt not in scenario.defaults.cli:
                                                 scenario.defaults.cli[opt] = val
                             
+                            # Merge suite-level variables into scenario (scenario vars take priority)
+                            if isinstance(suite_spec, SuiteDescriptor) and suite_spec.variables:
+                                merged_vars = dict(suite_spec.variables)
+                                merged_vars.update(scenario.variables)
+                                scenario.variables = merged_vars
+                            
                             print_info(f"  📋 Name: {scenario.name}")
                             if hasattr(scenario, 'description') and scenario.description:
                                 print_info(f"  📝 Description: {scenario.description}")
@@ -464,7 +757,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             )
                             
                             async def _execute():
-                                return await executor.execute_scenario(scenario)
+                                return await executor.execute_scenario(
+                                    scenario,
+                                    compose_manager=network_mgr.compose if network_mgr else None,
+                                    snapshot_manager=network_mgr.snapshot_manager if network_mgr else None,
+                                    initial_variables=topology_vars or None
+                                )
                             
                             print_info("  ▶️  Executing...")
                             ctx = asyncio.run(_execute())

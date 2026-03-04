@@ -12,7 +12,7 @@ Manages the lifecycle of test network:
 import asyncio
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import traceback
 
 from ..config.loader import NetworkTopology
@@ -49,6 +49,9 @@ class NetworkManager:
         
         # Keep containers running after tests (for debugging)
         self.keep_running = False
+        
+        # Docker-compose services from suite descriptor
+        self.docker_compose: Dict[str, Any] = {}
         
         # CLI path for node commands
         self.node_cli_path = "cellframe-node-cli"
@@ -120,12 +123,13 @@ class NetworkManager:
         
         # Pass full config including cache_dir
         snapshot_config = dict(suite_isolation_config)
-        snapshot_config['cache_dir'] = self.paths_config.get('cache_dir', '../testing/cache')
+        snapshot_config['cache_dir'] = self.paths_config.get('cache_dir', '../../cache')
         
         self.snapshot_manager = SnapshotManager(
             base_path,
             mode=snapshot_mode,
-            config=snapshot_config
+            config=snapshot_config,
+            compose_manager=self.compose,
         )
         
         self.suite_isolation_config = suite_isolation_config
@@ -331,12 +335,17 @@ class NetworkManager:
         # Generate dynamic docker-compose.yml for all nodes
         logger.info("generating_docker_compose")
         cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
-        # Get node_source configuration from config loader
         node_source_config = self.config_loader.get_node_source_config()
+        settings = self.topology.network_settings
         self.compose.generate_compose_for_nodes(
             node_configs, 
             cache_dir_relative=cache_dir_relative,
-            node_source_config=node_source_config
+            node_source_config=node_source_config,
+            network_settings={
+                'subnet': settings.subnet,
+                'base_ip': settings.base_ip,
+            },
+            extra_services=self.docker_compose or None
         )
         
         # Build images if requested
@@ -402,7 +411,8 @@ class NetworkManager:
                 root_nodes_dict = {f"node{n.node_id}": n for n in root_nodes}
                 consensus_monitor = NetworkConsensusMonitor(
                     nodes=root_nodes_dict,
-                    node_cli_path=self.node_cli_path
+                    node_cli_path=self.node_cli_path,
+                    network_name=self.topology.network.name
                 )
                 
                 # Use YAML scenario for phase1 genesis
@@ -824,7 +834,8 @@ class NetworkManager:
             root_nodes_dict = {f"node{n.node_id}": n for n in root_nodes}
             consensus_monitor = NetworkConsensusMonitor(
                 nodes=root_nodes_dict,
-                node_cli_path=self.node_cli_path
+                node_cli_path=self.node_cli_path,
+                network_name=self.topology.network.name
             )
             
             # Wait for ROOT nodes to establish links (they should have node list from snapshot)
@@ -1216,11 +1227,13 @@ class NetworkManager:
             from ..monitoring.network_consensus import NetworkConsensusMonitor
             final_consensus_monitor = NetworkConsensusMonitor(
                 nodes=self.nodes,
-                node_cli_path=self.node_cli_path
+                node_cli_path=self.node_cli_path,
+                network_name=self.topology.network.name
             )
             
+            consensus_timeout = float(self.timeouts.get('startup', 600))
             try:
-                await final_consensus_monitor.wait_for_network_ready(timeout=150.0)
+                await final_consensus_monitor.wait_for_network_ready(timeout=consensus_timeout)
                 logger.info("all_nodes_ready_for_snapshot")
             except TimeoutError as e:
                 logger.error("full_network_not_ready", error=str(e))
@@ -1258,7 +1271,7 @@ class NetworkManager:
         )
         
         try:
-            await consensus_monitor.wait_for_network_ready(timeout=150.0)  # 150s for 8-node topology
+            await consensus_monitor.wait_for_network_ready(timeout=float(self.timeouts.get('startup', 600)))
             logger.info("network_consensus_achieved")
         except TimeoutError as e:
             logger.error("network_consensus_timeout_critical",
@@ -1361,7 +1374,7 @@ class NetworkManager:
         Implementation: Uses temporary Docker container (Alpine) to clean files.
         This ensures proper permissions for root-owned files created by node containers.
         """
-        cache_dir = self.paths_config.get('cache_dir', '../testing/cache')
+        cache_dir = self.paths_config.get('cache_dir', '../../cache')
         cache_path = (self.base_path / cache_dir).resolve()
         data_dir = cache_path / "data"
         
@@ -1379,13 +1392,20 @@ class NetworkManager:
             logger.error("failed_to_remove_node_data", error=str(e))
             raise
         
-        # Recreate empty data directory structure for each node
+        # Recreate data directory structure matching granular volume mounts
         data_dir.mkdir(parents=True, exist_ok=True)
         
+        node_var_subdirs = [
+            s.strip() for s in self.paths_config.get(
+                'node_var_subdirs',
+                'log, lib/ca, lib/global_db, lib/wallet, lib/network'
+            ).split(',')
+        ]
         for node_id in range(1, len(self.nodes) + 1):
-            node_data_path = data_dir / f"node{node_id}"
-            node_data_path.mkdir(parents=True, exist_ok=True)
-            logger.debug("recreated_node_data_dir", node_id=node_id, path=str(node_data_path))
+            for subdir in node_var_subdirs:
+                (data_dir / f"node{node_id}" / subdir).mkdir(parents=True, exist_ok=True)
+            logger.debug("recreated_node_data_dir", node_id=node_id,
+                        path=str(data_dir / f"node{node_id}"))
         
         logger.info("node_data_cleaned_and_recreated", nodes=len(self.nodes))
     
@@ -1639,8 +1659,9 @@ class NetworkManager:
         """
         Restore environment to clean snapshot state.
         
-        This replaces the current clean_test_data() approach with snapshot restoration,
-        providing much faster suite isolation.
+        Uses lightweight compose.up() instead of full start() to preserve
+        committed Docker images set by the hybrid snapshot system. The full
+        start() would regenerate the compose file, overwriting image overrides.
         
         Args:
             name: Optional snapshot name (defaults to config snapshot_name)
@@ -1654,23 +1675,21 @@ class NetworkManager:
                    name=snapshot_name,
                    mode=self.snapshot_manager.mode.value)
         
-        # DISABLED mode - do nothing, keep current state
         if self.snapshot_manager.mode == SnapshotMode.DISABLED:
             logger.info("snapshot_mode_disabled_skipping_restore")
             return True
         
-        # Special case for 'recreate' mode - use traditional cleanup
         if self.snapshot_manager.mode == SnapshotMode.RECREATE:
             logger.info("recreate_mode_using_clean_test_data")
             await self.clean_test_data()
             return True
         
-        # For other modes, restore from snapshot
-        # CRITICAL: Stop containers before restore to avoid file conflicts
+        # Remove containers+networks so compose.up() creates fresh ones
+        # with correct bind mounts (compose.stop() would leave stale mounts
+        # after _docker_cleanup replaces host directories)
         logger.info("stopping_containers_before_snapshot_restore")
-        await self.stop(remove_volumes=False)
+        self.compose.down(volumes=False)
         
-        # Restore snapshot with containers stopped
         result = await self.snapshot_manager.restore_snapshot(snapshot_name)
         
         if not result:
@@ -1683,9 +1702,21 @@ class NetworkManager:
                 "Run './clean.sh' to remove root-owned files and try again."
             )
         
-        # Restart containers with restored data
-        logger.info("starting_containers_after_snapshot_restore")
-        await self.start(rebuild=False, wait_ready=True)
+        # Start node services only (docker_compose services are started by suite setup)
+        node_configs = list(self.nodes.values())
+        node_services = [f"node-{n.node_id}" for n in node_configs]
+        
+        logger.info("starting_containers_after_snapshot_restore",
+                   services=node_services)
+        self.compose.up(
+            services=node_services,
+            detach=True, wait=False, no_build=True,
+        )
+        
+        startup_timeout = self.timeouts.get('startup', 600)
+        await self.state_manager.wait_for_nodes_online(
+            node_configs, timeout=startup_timeout,
+        )
         
         return result
     

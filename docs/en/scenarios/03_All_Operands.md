@@ -203,12 +203,38 @@ Wait for network state.
 ## Control Flow
 
 ### set
-Set/compute variable.
+Set/compute variable. Variable name supports `{{}}` substitution.
 
 ```yaml
 - set: var_name
   value: "{{expression}}"
   eval: true  # Evaluate as Python
+```
+
+**Available helper functions** (with `eval: true`):
+
+| Function | Description |
+|----------|-------------|
+| `regex_extract(text, pattern, group=1)` | First regex match (string) |
+| `find_all(text, pattern)` | All regex matches (list) |
+| `concat(*args)` | String concatenation |
+| `join_vars(prefix, count, sep)` | Join variables by prefix |
+| `get_var(name, default)` | Get variable by dynamic name |
+| `get_var_dict(name)` | Get dict variable |
+
+```yaml
+# Extract all serial keys from CLI output
+- set: _serials
+  value: "find_all(raw_output, r'[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}')"
+  eval: true
+
+# Dynamic variable name in for-loop
+- for: _i
+  in: "range(1, len(_serials) + 1)"
+  steps:
+    - set: "serial_{{_i}}"
+      value: "_serials[_i - 1]"
+      eval: true
 ```
 
 ### if

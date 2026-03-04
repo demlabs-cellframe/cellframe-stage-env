@@ -17,7 +17,7 @@ class SetStepExecutor(StepExecutor):
         """Execute set step."""
         import re as regex_module
         
-        var_name = step.set
+        var_name = ctx.substitute(step.set)
         
         if step.eval:
             # Evaluate expression using context variables
@@ -34,11 +34,15 @@ class SetStepExecutor(StepExecutor):
                 return "[" + join_vars(prefix, count, separator) + "]"
             
             def regex_extract(text: str, pattern: str, group: int = 1) -> str:
-                """Extract value using regex: regex_extract(text, r'hash:\s*(\w+)', 1)"""
+                """Extract first match: regex_extract(text, r'hash:\s*(\w+)', 1)"""
                 match = regex_module.search(pattern, str(text))
                 if match:
                     return match.group(group)
                 return ""
+            
+            def find_all(text: str, pattern: str) -> list:
+                """Find all matches: find_all(text, r'[A-Z0-9]{4}-...')"""
+                return regex_module.findall(pattern, str(text))
             
             def concat(*args) -> str:
                 """Concatenate values: concat('a', '-', 'b') -> 'a-b'"""
@@ -59,6 +63,7 @@ class SetStepExecutor(StepExecutor):
                     "join_vars": join_vars,
                     "join_vars_bracket": join_vars_bracket,
                     "regex_extract": regex_extract,
+                    "find_all": find_all,
                     "concat": concat,
                     "get_var": get_var,
                     "get_var_dict": get_var_dict,
@@ -98,11 +103,13 @@ class IfStepExecutor(StepExecutor):
         condition = step.condition
         try:
             # Evaluate condition
-            result = eval(condition, {"__builtins__": __builtins__}, ctx.variables)
+            eval_ns = dict(ctx.variables)
+            eval_ns['ctx'] = ctx
+            result = eval(condition, {"__builtins__": __builtins__}, eval_ns)
             logger.info(f"Condition '{condition}' evaluated to: {result}")
         except Exception as e:
             raise ScenarioExecutionError(f"Failed to evaluate condition '{condition}': {e}", step=step)
-            
+
         if result:
             logger.info("Condition is TRUE, executing 'then' steps")
             await self.execute_steps_callback(step.then_steps, ctx, defaults)
@@ -135,10 +142,12 @@ class WhileStepExecutor(StepExecutor):
         
         while loops < max_loops:
             try:
-                result = eval(condition, {"__builtins__": __builtins__}, ctx.variables)
+                eval_ns = dict(ctx.variables)
+                eval_ns['ctx'] = ctx
+                result = eval(condition, {"__builtins__": __builtins__}, eval_ns)
             except Exception as e:
                 raise ScenarioExecutionError(f"Failed to evaluate condition '{condition}': {e}", step=step)
-                
+
             if not result:
                 logger.info(f"While loop ended: condition false after {loops} iterations")
                 break

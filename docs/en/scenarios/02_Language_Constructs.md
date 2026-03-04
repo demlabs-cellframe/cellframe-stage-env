@@ -24,6 +24,23 @@ variables:
   save_to: raw_output   # Save raw output
 ```
 
+### Regex Helpers
+```yaml
+# First match (string)
+- set: hash
+  value: regex_extract(output, r'hash:\s*(\w+)', 1)
+  eval: true
+
+# All matches (list)
+- set: _keys
+  value: "find_all(output, r'[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}')"
+  eval: true
+
+- set: first_key
+  value: "_keys[0]"
+  eval: true
+```
+
 ## Loops
 
 ### for loop

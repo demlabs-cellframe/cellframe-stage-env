@@ -48,6 +48,42 @@ class DatumStatus(str, Enum):
 # Network Configuration Models
 # ============================================================================
 
+class NodeComposeSpec(BaseModel):
+    """
+    Specification for dynamically provisioned cellframe node.
+
+    Used as values in SuiteDescriptor.node_compose dict, where the key
+    is the docker-compose service name (e.g. "vpn-server-1", "node-9").
+
+    The ``source`` field determines initialisation mode:
+      - "genesis"  (default) — restore from the suite's base genesis snapshot
+      - "node-N"   — clone configs+data from existing node N
+      - "fresh"    — empty dirs, only a base cellframe-node.cfg is copied
+    """
+    id: Optional[int] = Field(None, description="Internal node ID for IP/volume assignment (auto-assigned if omitted)")
+    role: str = Field("full", description="Node role: root, master, full")
+    source: str = Field("genesis", description="Init mode: 'genesis', 'node-<id>', or 'fresh'")
+    packages: Optional[str] = Field(None, description="Space-separated deb packages to install on this node")
+    config_overrides: Dict[str, Any] = Field(default_factory=dict, description="Config overrides as {section: {key: value}}")
+    setup: Optional[List[Any]] = Field(None, description="Extra setup steps executed after the node is running")
+
+
+class NodeComposeGenSpec(BaseModel):
+    """
+    Generator template for creating multiple NodeComposeSpec entries.
+
+    Expands ``prefix`` + count into entries like vpn-server-1, vpn-server-2, etc.
+    IDs are auto-assigned sequentially if not specified.
+    """
+    prefix: str = Field(..., description="Service name prefix (e.g. 'vpn-server' → vpn-server-1..N)")
+    count: Union[int, str] = Field(1, description="Number of nodes — int or '{{variable}}' resolved from suite variables")
+    role: str = Field("full", description="Node role: root, master, full")
+    source: str = Field("genesis", description="Init mode: 'genesis', 'node-<id>', or 'fresh'")
+    packages: Optional[str] = Field(None, description="Space-separated deb packages to install")
+    config_overrides: Dict[str, Any] = Field(default_factory=dict)
+    setup: Optional[List[Any]] = Field(None, description="Extra setup steps per node")
+
+
 class NodePackageSourceConfig(BaseModel):
     """Package source configuration for a node in YAML scenarios."""
     type: str = Field(..., description="Source type: url, repository, or local")
@@ -306,7 +342,7 @@ class WaitForDatumStep(BaseModel):
     """Wait for datum to be processed through mempool → verification → blocks → propagation."""
     wait_for_datum: Union[str, List[str]] = Field(..., description="Datum hash(es) to monitor")
     node: str = Field("node1", description="Target node to check for datum")
-    network: str = Field("stagenet", description="Network name")
+    network: str = Field("{{network_name}}", description="Network name (Jinja2 template, resolved from context)")
     chain: str = Field("main", description="Chain name")
     check_master_nodes: bool = Field(True, description="Check master nodes for verification and blocks")
     timeout_total: int = Field(300, description="Total timeout in seconds")
@@ -322,13 +358,13 @@ class NetworkWaitStep(BaseModel):
     wait_network: str = Field(..., description="Network state to wait for: 'online', 'offline', 'links_connecting', 'links_established', 'sync_complete'")
     nodes: Union[str, List[str]] = Field(default_factory=lambda: ["root-1", "root-2", "root-3"], description="Nodes to check (can be template like '{{all_nodes}}')")
     timeout: int = Field(120, description="Timeout in seconds")
-    network: str = Field("stagenet", description="Network name")
+    network: str = Field("{{network_name}}", description="Network name (Jinja2 template, resolved from context)")
     chain: Optional[str] = Field(None, description="Chain name (optional)")
 
 
 class DockerOpStep(BaseModel):
-    """Execute Docker operations (start, stop, restart, logs, exec, cp)."""
-    docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'logs', 'exec', 'cp'")
+    """Execute Docker operations (start, stop, restart, pause, unpause, logs, exec, cp)."""
+    docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'pause', 'unpause', 'logs', 'exec', 'cp'")
     services: Optional[Union[str, List[str]]] = Field(None, description="Docker services to operate on (can be template like '{{all_nodes}}')")
     command: Optional[str] = Field(None, description="Command for 'exec' operation")
     detach: bool = Field(True, description="Run in detached mode (for start/restart)")
@@ -349,8 +385,12 @@ class SnapshotStep(BaseModel):
       - snapshot: restore
         name: phase1
         
+      - snapshot: verify
+        name: cdb_ready
+        save: has_cdb_snapshot    # saves True/False instead of raising
+        
       - snapshot: create
-        name: "{{topology_name}}"  # Base topology snapshot after all phases
+        name: "{{topology_name}}"
         is_base: true
     """
     snapshot: str = Field(..., description="Snapshot operation: 'create', 'restore', 'verify', 'delete'")
@@ -358,6 +398,7 @@ class SnapshotStep(BaseModel):
     is_base: bool = Field(False, description="Mark as base topology snapshot (used as default for suites)")
     nodes: Optional[Union[str, List[str]]] = Field(None, description="Nodes to include (optional, defaults to all)")
     stop_containers: bool = Field(True, description="Stop containers before create (ensures consistent state)")
+    save: Optional[str] = Field(None, description="Variable name to save result (verify: True/False; restore: True/False)")
 
 
 # ============================================================================
@@ -366,6 +407,7 @@ class SnapshotStep(BaseModel):
 
 from .schema_control_flow import SetStep, IfStep, WhileStep, ForStep, SwitchStep
 from .schema_config import ConfigStep
+from .schema_dpkg import DpkgStep
 
 
 # ============================================================================
@@ -434,7 +476,7 @@ class StepGroup(BaseModel):
 # IMPORTANT: Order matters! Specific types must come before generic ones to ensure correct parsing.
 # NetworkWaitStep must come before WaitStep.
 TestStep = Union[
-    NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep,
+    NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep, DpkgStep,
     CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
@@ -493,11 +535,42 @@ class SuiteDescriptor(BaseModel):
     # Set to topology_name to restore from base topology snapshot
     restore_snapshot: Optional[str] = Field(None, description="Snapshot name to restore (supports '{{topology_name}}')")
     
+    # Suite-level variables inherited by all scenarios (scenario variables take priority)
+    variables: Dict[str, Any] = Field(default_factory=dict, description="Variables inherited by all scenarios in suite")
+
     # Optional includes for suite-level setup (executed once before all scenarios)
     includes: List[str] = Field(default_factory=list, description="Common includes for all scenarios in suite")
-    
+
     # Optional setup steps for suite (executed once before all scenarios)
-    setup: Optional[SectionConfig] = Field(None, description="Suite-level setup steps")
+    setup: Optional[Union[List[TestStep], SectionConfig]] = Field(None, description="Suite-level setup steps")
+    
+    # Generator templates — expanded into node_compose entries before provisioning.
+    node_compose_gen: List[NodeComposeGenSpec] = Field(
+        default_factory=list,
+        description="Templates to generate multiple node_compose entries"
+    )
+
+    # Additional cellframe nodes provisioned dynamically for this suite.
+    # Keys are service names (e.g. "vpn-server-1"), values are NodeComposeSpec.
+    node_compose: Dict[str, NodeComposeSpec] = Field(
+        default_factory=dict,
+        description="Additional cellframe nodes to provision (key = service name)"
+    )
+
+    # Arbitrary docker-compose services merged into the generated compose file.
+    # Each key is a service name, value is a docker-compose service definition.
+    # Special field 'packages' (str) is stripped before merge and installed on all nodes.
+    docker_compose: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Docker-compose services to add (iperf, webservers, etc.)"
+    )
+    
+    @model_validator(mode='after')
+    def normalize_setup(self) -> 'SuiteDescriptor':
+        """Normalize setup list to SectionConfig."""
+        if isinstance(self.setup, list):
+            self.setup = SectionConfig(steps=self.setup) if self.setup else None
+        return self
     
     @property
     def name(self) -> str:

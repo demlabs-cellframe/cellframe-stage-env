@@ -23,23 +23,24 @@ class BaseSnapshot(ABC):
     and implement the required methods.
     """
     
-    def __init__(self, base_path: Path, config: Dict[str, Any]):
+    def __init__(self, base_path: Path, config: Dict[str, Any], compose_manager=None):
         """
         Initialize snapshot handler.
         
         Args:
             base_path: Base path to stage-env directory
             config: Configuration dictionary
+            compose_manager: Optional DockerComposeManager for container operations
         """
         self.base_path = base_path
         self.config = config
+        self.compose_manager = compose_manager
         
         # Paths from config
-        cache_dir = config.get('cache_dir', '../testing/cache')
+        cache_dir = config.get('cache_dir', '../../cache')
         self.cache_path = (base_path / cache_dir).resolve()
         
-        # Snapshot storage directory
-        snapshots_dir = config.get('snapshots_dir', '../testing/snapshots')
+        snapshots_dir = config.get('snapshots_dir', '../../cache/snapshots')
         self.snapshots_path = (base_path / snapshots_dir).resolve()
         self.snapshots_path.mkdir(parents=True, exist_ok=True)
         

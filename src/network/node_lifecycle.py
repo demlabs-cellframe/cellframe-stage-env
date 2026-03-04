@@ -242,7 +242,7 @@ class NodeLifecycleManager:
     async def verify_gdb_files_exist(
         self,
         node_ids: List[int],
-        cache_path: str = "/home/naeper/work/cellframe-node/tests/testing/cache"
+        cache_path: str = None
     ) -> bool:
         """
         Verify GDB files exist on disk after shutdown.
@@ -255,6 +255,13 @@ class NodeLifecycleManager:
             True if all nodes have GDB files
         """
         from pathlib import Path
+        from ..config.manager import get_config_loader
+        
+        if cache_path is None:
+            config_loader = get_config_loader()
+            paths_config = config_loader.get_paths_config()
+            base_path = Path(__file__).parent.parent.parent
+            cache_path = str((base_path / paths_config.get('cache_dir', '../../cache')).resolve())
         
         logger.info("verifying_gdb_files_on_disk", nodes=len(node_ids))
         

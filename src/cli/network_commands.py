@@ -116,7 +116,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             # First suite will use this network directly without restore
             config_loader = get_config_loader()
             paths_config = config_loader.get_paths_config()
-            artifacts_dir = paths_config.get('artifacts_dir', '../testing/artifacts')
+            artifacts_dir = paths_config.get('artifacts_dir', '../../cache/artifacts')
             artifacts_path = (base_path / artifacts_dir).resolve()
             artifacts_path.mkdir(parents=True, exist_ok=True)
             pristine_marker = artifacts_path / ".pristine_network"
@@ -355,9 +355,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         config_path = get_config_path()
         config_loader = get_config_loader()
         
-        # Get build directory from config
-        base_path_parent = base_path.parent.parent  # Go to project root
-        build_dir = base_path_parent / "build"
+        paths_config = config_loader.get_paths_config()
+        project_root = (base_path / paths_config.get('project_root', '../..')).resolve()
+        build_dir = project_root / "build"
         binary_path = build_dir / "cellframe-node-cli"
         
         if not binary_path.exists():

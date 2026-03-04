@@ -23,11 +23,16 @@ from pydantic import BaseModel
 
 from src.utils.logger import get_logger
 from src.utils.cli import run_command, print_info, print_success, print_error
+from src.config.manager import get_config_loader
 
 logger = get_logger(__name__)
 
-# Docker image name for certificate generator
-CERT_GENERATOR_IMAGE = "cf-cert-generator:latest"
+# Docker image name for the builder environment (SDKs mounted, not copied)
+CERT_BUILDER_IMAGE = "cf-cert-builder:latest"
+
+# Named Docker volumes for caching SDK and cert-generator builds between runs
+_SDK_BUILD_CACHE_VOLUME = "cf-cert-sdk-cache"
+_CERT_BUILD_CACHE_VOLUME = "cf-cert-build-cache"
 
 
 class CertConfig(BaseModel):
@@ -61,59 +66,52 @@ class CertGenerator:
     
     def build_docker_image(self) -> bool:
         """
-        Build Docker image for certificate generator if needed.
-        
+        Build lightweight builder Docker image if needed.
+
+        The image contains only build tools (cmake, gcc, etc.).
+        SDK sources are mounted at runtime via ``docker run -v``.
+
         Returns:
             True if image is ready
         """
-        # Check if image exists
         try:
             result = subprocess.run(
-                ["docker", "images", "-q", CERT_GENERATOR_IMAGE],
-                capture_output=True,
-                text=True,
-                check=True
+                ["docker", "images", "-q", CERT_BUILDER_IMAGE],
+                capture_output=True, text=True, check=True,
             )
-            
             if result.stdout.strip():
-                logger.debug("cert_generator_image_exists")
+                logger.debug("cert_builder_image_exists")
                 return True
         except subprocess.CalledProcessError:
             pass
-        
-        logger.info("building_cert_generator_image")
-        print_info("Building certificate generator Docker image...")
-        
+
+        logger.info("building_cert_builder_image")
+        print_info("Building certificate builder Docker image...")
+
         try:
-            # Build Docker image from project root
-            project_root = self.base_path.parent.parent  # Go up from stage-env to project root
-            
             result = subprocess.run(
                 [
                     "docker", "build",
                     "-f", str(self.dockerfile),
-                    "-t", CERT_GENERATOR_IMAGE,
-                    str(project_root)
+                    "-t", CERT_BUILDER_IMAGE,
+                    str(self.dockerfile.parent),
                 ],
-                capture_output=True,
-                text=True,
-                cwd=project_root
+                capture_output=True, text=True,
             )
-            
+
             if result.returncode != 0:
-                logger.error("image_build_failed", 
-                           stderr=result.stderr,
-                           stdout=result.stdout)
-                print_error(f"Failed to build image: {result.stderr}")
+                logger.error("builder_image_build_failed",
+                             stderr=result.stderr, stdout=result.stdout)
+                print_error(f"Failed to build builder image: {result.stderr}")
                 return False
-            
-            print_success("Certificate generator image built")
-            logger.info("cert_generator_image_built")
+
+            print_success("Certificate builder image built")
+            logger.info("cert_builder_image_built")
             return True
-            
+
         except Exception as e:
-            logger.error("image_build_exception", error=str(e))
-            print_error(f"Exception building image: {e}")
+            logger.error("builder_image_build_exception", error=str(e))
+            print_error(f"Exception building builder image: {e}")
             return False
     
     def generate_node_cert(
@@ -207,6 +205,7 @@ class CertGenerator:
         network_name: str,
         node_count: int,
         root_count: int = 2,
+        network_id: str = "0x0000000000001234",
     ) -> dict:
         """
         Generate all certificates for network using Docker-based cf-cert-generator.
@@ -215,6 +214,7 @@ class CertGenerator:
             network_name: Network name (e.g., "stagenet")
             node_count: Total number of nodes
             root_count: Number of ROOT nodes (rest will be MASTER)
+            network_id: Network ID hex string
             
         Returns:
             Dict with generated certificate paths
@@ -223,54 +223,75 @@ class CertGenerator:
                    network=network_name,
                    nodes=node_count,
                    root_count=root_count,
-                   method="docker")
-        
-        print_info(f"Generating {node_count} node certificates using Docker...")
-        
-        # Ensure Docker image is built
+                   method="docker_mount")
+
+        print_info(f"Generating {node_count} node certificates (Docker + mounted SDKs)...")
+
         if not self.build_docker_image():
-            raise RuntimeError("Failed to build certificate generator Docker image")
-        
-        # Network ID for stagenet
-        network_id = "0x1234"
-        
-        # Prepare output directory with correct permissions
+            raise RuntimeError("Failed to build certificate builder Docker image")
         self.certs_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Run certificate generator in Docker
-        # Mount certs directory as /output in container
+
+        sdk_src, dap_src = self._resolve_sdk_paths()
+        cert_src = (self.base_path / "src" / "certs").resolve()
+
+        uid, gid = os.getuid(), os.getgid()
+
+        # Embedding build: mount SDKs at separate ro paths, create symlink overlay
+        # so cellframe-sdk's cmake sees dap-sdk as a subdirectory without nested mounts
+        build_and_generate = (
+            "set -e && "
+            "mkdir -p /tmp/cellframe-sdk-workspace && "
+            "cp -rs /project/cellframe-sdk/. /tmp/cellframe-sdk-workspace/ && "
+            "rm -rf /tmp/cellframe-sdk-workspace/dap-sdk && "
+            "ln -s /project/dap-sdk /tmp/cellframe-sdk-workspace/dap-sdk && "
+            "cd /tmp/sdk-build && "
+            "cmake -DCMAKE_BUILD_TYPE=Release /tmp/cellframe-sdk-workspace >/dev/null 2>&1 && "
+            "make -j$(nproc) dap_core dap_core_unix dap_crypto dap_crypto_kyber512 dap_json-c dap_chain_common dap_io 2>&1 && "
+            "for spec in dap-sdk/core:dap_core dap-sdk/crypto:dap_crypto dap-sdk/io:dap_io modules/common:dap_chain_common; do "
+            "  d=${spec%%:*}; n=${spec##*:}; "
+            "  find /tmp/sdk-build/${d}/CMakeFiles/${n}.dir -name '*.o' 2>/dev/null | "
+            "    xargs ar rcs /tmp/sdk-build/${d}/lib${n}.a 2>/dev/null; "
+            "done && "
+            "cd /tmp/cert-build && "
+            "cmake -DCELLFRAME_SDK_BUILD=/tmp/sdk-build "
+            "-DCELLFRAME_SDK_SRC=/tmp/cellframe-sdk-workspace "
+            "-DDAP_SDK_SRC=/project/dap-sdk "
+            "-DDAP_SDK_BUILD=/tmp/sdk-build/dap-sdk "
+            "/project/cert-generator >/dev/null 2>&1 && "
+            "make -j$(nproc) cf-cert-generator 2>&1 && "
+            f"./cf-cert-generator /output {node_count} {network_name} {network_id} {root_count} && "
+            f"chown -R {uid}:{gid} /output"
+        )
+
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "-v", f"{sdk_src}:/project/cellframe-sdk:ro",
+            "-v", f"{dap_src}:/project/dap-sdk:ro",
+            "-v", f"{cert_src}:/project/cert-generator:ro",
+            "-v", f"{self.certs_dir.absolute()}:/output",
+            "-v", f"{_SDK_BUILD_CACHE_VOLUME}:/tmp/sdk-build",
+            "-v", f"{_CERT_BUILD_CACHE_VOLUME}:/tmp/cert-build",
+            CERT_BUILDER_IMAGE,
+            "bash", "-c", build_and_generate,
+        ]
+
         try:
             logger.info("calling_docker_cert_generator",
-                       image=CERT_GENERATOR_IMAGE,
+                       image=CERT_BUILDER_IMAGE,
                        output_dir=str(self.certs_dir),
                        node_count=node_count,
                        network_name=network_name,
                        network_id=network_id)
-            
-            # Docker command: docker run --rm -v <host_path>:/output <image> /output <count> <network> <id> <root_count>
+
             result_proc = subprocess.run(
-                [
-                    "docker", "run",
-                    "--rm",  # Remove container after execution
-                    "-v", f"{self.certs_dir.absolute()}:/output",  # Mount certs directory
-                    "-u", f"{os.getuid()}:{os.getgid()}",  # Run as current user to avoid permission issues
-                    CERT_GENERATOR_IMAGE,
-                    "/output",  # output directory inside container
-                    str(node_count),  # number of nodes
-                    network_name,  # network name
-                    network_id,  # network ID
-                    str(root_count)  # number of ROOT nodes
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
+                docker_cmd,
+                capture_output=True, text=True, check=True,
             )
-            
+
             logger.info("cert_generator_docker_output", stdout=result_proc.stdout)
-            
             if result_proc.stderr:
                 logger.warning("cert_generator_docker_stderr", stderr=result_proc.stderr)
-            
+
         except subprocess.CalledProcessError as e:
             print_error(f"Certificate generation failed: {e}")
             logger.error("cert_generation_docker_failed",
@@ -316,6 +337,80 @@ class CertGenerator:
         
         return result
     
+    def _resolve_sdk_paths(self) -> tuple:
+        """
+        Resolve SDK source paths.
+
+        If ``cellframe_sdk_path`` / ``dap_sdk_path`` are configured and the
+        directories exist on the host, they are used directly (bind-mounted
+        into the builder container).  Otherwise the repos are cloned from git
+        into ``cache/sdk/`` and used from there.
+
+        Returns:
+            (cellframe_sdk_path, dap_sdk_path) as resolved absolute Paths.
+        """
+        paths_config = get_config_loader().get_paths_config()
+        project_root = (self.base_path / paths_config.get('project_root', '../..')).resolve()
+
+        sdk_rel = paths_config.get('cellframe_sdk_path', '').strip()
+        dap_rel = paths_config.get('dap_sdk_path', '').strip()
+
+        sdk_src = (project_root / sdk_rel).resolve() if sdk_rel else None
+        dap_src = (project_root / dap_rel).resolve() if dap_rel else None
+
+        if sdk_src and sdk_src.is_dir() and dap_src and dap_src.is_dir():
+            logger.info("using_local_sdks", sdk=str(sdk_src), dap=str(dap_src))
+            return sdk_src, dap_src
+
+        logger.info("local_sdks_not_found_will_clone",
+                     sdk_configured=sdk_rel or "<empty>",
+                     dap_configured=dap_rel or "<empty>")
+
+        cache_dir = paths_config.get('cache_dir', 'cache')
+        sdk_cache = (self.base_path / cache_dir / "sdk").resolve()
+        sdk_cache.mkdir(parents=True, exist_ok=True)
+
+        branch = paths_config.get('sdk_git_branch', 'master')
+
+        sdk_src = self._ensure_sdk_cloned(
+            sdk_cache / "cellframe-sdk",
+            paths_config.get('cellframe_sdk_git',
+                             'https://gitlab.demlabs.net/cellframe/cellframe-sdk.git'),
+            branch,
+        )
+        dap_src = self._ensure_sdk_cloned(
+            sdk_cache / "dap-sdk",
+            paths_config.get('dap_sdk_git',
+                             'https://gitlab.demlabs.net/dap/dap-sdk.git'),
+            branch,
+        )
+
+        return sdk_src, dap_src
+
+    def _ensure_sdk_cloned(self, dest: Path, git_url: str, branch: str) -> Path:
+        """Clone or update an SDK repo at *dest*."""
+        if dest.is_dir() and (dest / ".git").is_dir():
+            logger.info("sdk_repo_exists_pulling", path=str(dest), branch=branch)
+            print_info(f"Updating {dest.name} ({branch})...")
+            subprocess.run(
+                ["git", "-C", str(dest), "fetch", "--depth", "1", "origin", branch],
+                check=True, capture_output=True, text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(dest), "checkout", f"origin/{branch}"],
+                check=True, capture_output=True, text=True,
+            )
+        else:
+            logger.info("cloning_sdk", url=git_url, branch=branch, dest=str(dest))
+            print_info(f"Cloning {dest.name} ({branch}) from {git_url}...")
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", branch,
+                 git_url, str(dest)],
+                check=True, capture_output=True, text=True,
+            )
+
+        return dest.resolve()
+
     def _normalize_cert_name(self, cert_name: str) -> str:
         """
         Normalize certificate name to standard format.

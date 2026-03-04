@@ -238,7 +238,9 @@ cleanup_test_env() {
     docker ps -a --filter "name=cf-" -q | xargs -r docker rm -f 2>/dev/null || true
     
     # Remove test artifacts
-    rm -rf ./testing/artifacts/test_* 2>/dev/null || true
+    _helpers_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _cache_dir="$(cd "$_helpers_dir/../../.." && pwd)/cache"
+    rm -rf "$_cache_dir/artifacts/test_"* 2>/dev/null || true
     
     log_success "Cleanup complete"
 }

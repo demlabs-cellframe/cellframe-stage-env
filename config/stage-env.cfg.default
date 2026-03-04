@@ -63,15 +63,34 @@ crash_artifacts = true
 
 [logging]
 # Logging configuration
-log_dir = ../testing/logs
+log_dir = ../../cache/logs
 log_level = info
 scenario_logs = true
 retain_days = 7
 
 [paths]
 # Directory paths (relative to stage-env/)
-cache_dir = ../testing/cache
-artifacts_dir = ../testing/artifacts
+project_root = ../..
+cache_dir = ../../cache
+artifacts_dir = ../../cache/artifacts
+# SDK paths (relative to project_root).
+# If set and the directories exist — mounted from host into Docker.
+# If empty or directories missing — cloned automatically from git into cache/sdk/.
+cellframe_sdk_path = lib/cellframe-sdk
+dap_sdk_path = lib/dap-sdk
+
+# Git repos for auto-cloning SDKs when local paths are unavailable
+cellframe_sdk_git = https://gitlab.demlabs.net/cellframe/cellframe-sdk.git
+dap_sdk_git = https://gitlab.demlabs.net/dap/dap-sdk.git
+sdk_git_branch = master
+
+# Base URL for downloading Cellframe tools and packages
+# Used for cellframe-tool-sign, cellframe-tool-compose, and node packages
+tools_base_url = https://pub.cellframe.net
+
+# Subdirectories of /opt/cellframe-node/var/ that are bind-mounted from host.
+# Everything else stays from the .deb package inside the image (e.g. run/, lib/plugins/).
+node_var_subdirs = log, lib/ca, lib/global_db, lib/wallet, lib/network
 
 [artifacts]
 # Artifacts collection settings
@@ -107,8 +126,15 @@ debug = false
 # Option 1: URL - Download pre-built package from web
 # ----------------------------------------------------------------------------
 # Use this for official releases or CI artifacts
-type = url
-url = https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-master-amd64.deb
+# type = url
+# url = https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.7-21-dbg-amd64.deb
+
+# ----------------------------------------------------------------------------
+# Active: local build from project's build/ directory
+# ----------------------------------------------------------------------------
+# run-e2e.sh creates this symlink after cpack
+type = local
+local_path = ../../build/cellframe-node.deb
 
 # Optional: Verify package integrity with checksum
 # checksum = sha256:abc123def456...
@@ -162,7 +188,7 @@ url = https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-m
 
 # Cache downloaded/built packages to speed up subsequent runs
 # cache_packages = true
-# cache_dir = ../testing/cache/packages
+# cache_dir = ../../cache/packages
 
 # Verify package signature (for official releases)
 # verify_signature = true
@@ -220,6 +246,31 @@ url = https://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-5.6-m
 # Example 8: Local build with custom path
 # type = local
 # local_path = /opt/cellframe-builds/cellframe-node-custom.deb
+
+# ============================================================================
+# Extra DEB Packages (Optional)
+# ============================================================================
+# Additional DEB packages installed in the Docker image alongside cellframe-node.
+# Keys starting with 'local_' reference local .deb files (paths relative to project root).
+# Keys starting with 'url_' download .deb from a URL.
+#
+# [extra_packages]
+# local_1 = build/cellframe-node-cdb.deb
+# local_2 = build/kelvpn-client.deb
+# url_1 = https://example.com/my-plugin_1.0_amd64.deb
+
+# ============================================================================
+# Plugin Loading Configuration
+# ============================================================================
+# Controls whether cellframe-node loads plugins at startup.
+# Plugins are disabled by default to reduce overhead for tests that don't need them.
+#
+# [plugins]
+# enabled = false
+# # Enable plugins for specific node roles (comma-separated):
+# enabled_roles = root,master
+# # Or enable for specific node IDs (comma-separated):
+# enabled_nodes = 1,2,3
 
 # ============================================================================
 # Docker Image Customization (Optional)
@@ -526,4 +577,4 @@ auto_cleanup = true
 keep_snapshot_count = 5
 
 # Snapshot storage directory (relative to stage-env/)
-snapshots_dir = ../testing/snapshots
+snapshots_dir = ../../cache/snapshots

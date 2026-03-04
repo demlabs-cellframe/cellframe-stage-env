@@ -233,7 +233,9 @@ class DockerComposeManager:
         build_type: str = "debug",
         cellframe_version: str = "latest",
         cache_dir_relative: str = "cache",
-        node_source_config: Optional[Dict[str, Any]] = None
+        node_source_config: Optional[Dict[str, Any]] = None,
+        network_settings: Optional[Dict[str, str]] = None,
+        extra_services: Optional[Dict[str, Any]] = None
     ) -> None:
         """
         Generate docker-compose.yml dynamically for given nodes.
@@ -244,6 +246,8 @@ class DockerComposeManager:
             cellframe_version: Cellframe version tag
             cache_dir_relative: Relative path to cache directory
             node_source_config: Node source configuration (type, url, local_path, etc.)
+            network_settings: Dict with 'subnet' and 'base_ip' from config
+            extra_services: Additional docker-compose services to merge (from suite descriptor)
         """
         logger.info("generating_compose_file",
                    node_count=len(nodes),
@@ -266,6 +270,22 @@ class DockerComposeManager:
         if not node_template:
             raise ValueError("No x-cf-node-template found in docker-compose.yml")
         
+        # Override network config from stage-env.cfg (template has defaults)
+        if network_settings:
+            subnet = network_settings.get('subnet')
+            if subnet:
+                import ipaddress
+                net = ipaddress.ip_network(subnet, strict=False)
+                gateway = str(net.network_address + 1)
+                network_settings['gateway'] = gateway
+                compose_data.setdefault('networks', {}) \
+                    .setdefault(self.network_name, {}) \
+                    .setdefault('ipam', {})['config'] = [
+                        {'subnet': subnet, 'gateway': gateway}
+                    ]
+                logger.info("network_config_injected",
+                           subnet=subnet, gateway=gateway)
+        
         # Clear existing node services (keep monitoring/test services)
         services_to_keep = {}
         for svc_name, svc_config in compose_data.get('services', {}).items():
@@ -282,19 +302,38 @@ class DockerComposeManager:
         # Determine node source configuration
         node_source_type = node_source_config.get('type', 'url') if node_source_config else 'url'
         
-        # CRITICAL: Clear packages/ directory if using URL source to prevent using stale local packages
-        # Dockerfile COPY will copy everything from packages/, so we must ensure it's empty for URL sources
-        if node_source_type == 'url':
-            # Remove all .deb files but keep .gitkeep
-            for item in build_context_packages_dir.iterdir():
-                if item.is_file() and item.suffix == '.deb':
-                    logger.debug("removing_stale_local_package", path=str(item))
-                    item.unlink()
-            # Ensure .gitkeep exists
-            (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
-        else:
-            # For local/repository sources, just ensure .gitkeep exists
-            (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
+        # Clear stale .deb files from packages/ build context
+        for item in build_context_packages_dir.iterdir():
+            if item.is_file() and item.suffix == '.deb':
+                logger.debug("removing_stale_package", path=str(item))
+                item.unlink()
+        (build_context_packages_dir / ".gitkeep").touch(exist_ok=True)
+        
+        # Copy extra packages into build context (installed after cellframe-node)
+        from src.config.manager import get_config_loader
+        try:
+            extra_packages = get_config_loader().get_extra_packages()
+        except Exception:
+            extra_packages = []
+        
+        if extra_packages:
+            import shutil as _shutil
+            for pkg_info in extra_packages:
+                if pkg_info['type'] == 'local':
+                    src = Path(pkg_info['path'])
+                    dst = build_context_packages_dir / src.name
+                    _shutil.copy2(src, dst)
+                    logger.info("extra_package_copied", name=src.name,
+                               size_mb=round(src.stat().st_size / (1024 * 1024), 2))
+                elif pkg_info['type'] == 'url':
+                    import urllib.request
+                    url = pkg_info['url']
+                    fname = url.rsplit('/', 1)[-1]
+                    dst = build_context_packages_dir / fname
+                    logger.info("extra_package_downloading", url=url)
+                    urllib.request.urlretrieve(url, str(dst))
+                    logger.info("extra_package_downloaded", name=fname)
+        
         local_package_path = None
         
         if node_source_type == 'local' and node_source_config:
@@ -311,6 +350,17 @@ class DockerComposeManager:
                     raise FileNotFoundError(f"Local package not found: {local_package_path}")
                 
                 logger.info("using_local_package", path=str(local_package_path))
+        
+        # Resolve paths config (once, before node loop)
+        from src.config.manager import get_config_loader
+        paths_config = get_config_loader().get_paths_config()
+        tools_base_url = paths_config.get('tools_base_url', 'https://pub.cellframe.net')
+        node_var_subdirs = [
+            s.strip() for s in paths_config.get(
+                'node_var_subdirs',
+                'log, lib/ca, lib/global_db, lib/wallet, lib/network'
+            ).split(',')
+        ]
         
         # Generate service for each node
         for node in nodes:
@@ -335,13 +385,15 @@ class DockerComposeManager:
                 f"{node.http_port}:8079",  # Cellframe HTTP/JSON-RPC/P2P
             ]
             
-            # Set volumes with node-specific paths
+            data_prefix = f"./{cache_dir_relative}/data/node{node.node_id}"
             node_service['volumes'] = [
-                # Main config file (generated per node with HTTP settings)
                 f"./{cache_dir_relative}/configs/node{node.node_id}/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg",
                 f"./{cache_dir_relative}/configs/node{node.node_id}/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d",
                 f"./{cache_dir_relative}/configs/node{node.node_id}/network:/opt/cellframe-node/etc/network",
-                f"./{cache_dir_relative}/data/node{node.node_id}:/opt/cellframe-node/var",
+            ] + [
+                f"{data_prefix}/{subdir}:/opt/cellframe-node/var/{subdir}"
+                for subdir in node_var_subdirs
+            ] + [
                 f"./{cache_dir_relative}/configs/shared/ca:/opt/cellframe-node/share/ca:ro",
                 f"./{cache_dir_relative}/crash-artifacts/node{node.node_id}:/crash-artifacts/node-{node.node_id}",
                 f"./{cache_dir_relative}/cellframe-packages:/var/cache/cellframe-packages"
@@ -363,6 +415,9 @@ class DockerComposeManager:
                 node_service['build'] = {}
             if 'args' not in node_service['build']:
                 node_service['build']['args'] = {}
+            
+            # Set TOOLS_BASE_URL from paths config
+            node_service['build']['args']['TOOLS_BASE_URL'] = tools_base_url
             
             # Set build args for node source
             node_service['build']['args']['NODE_SOURCE_TYPE'] = node_source_type
@@ -421,7 +476,7 @@ class DockerComposeManager:
                            volumes=node.docker_volumes)
             
             # Set environment variables
-            node_service['environment'] = {
+            env = {
                 'NODE_ID': str(node.node_id),
                 'NODE_ROLE': node.role,
                 'NODE_TYPE': node.node_type,
@@ -430,6 +485,10 @@ class DockerComposeManager:
                 'DAP_DEBUG': '1',
                 'CELLFRAME_DEBUG': '1'
             }
+            if network_settings:
+                env['DOCKER_SUBNET'] = network_settings.get('subnet', '172.20.0.0/16')
+                env['DOCKER_GATEWAY'] = network_settings.get('gateway', '172.20.0.1')
+            node_service['environment'] = env
             
             # Add custom environment variables if specified
             if hasattr(node, 'custom_env_vars') and node.custom_env_vars:
@@ -477,6 +536,12 @@ class DockerComposeManager:
             # Add to services
             compose_data['services'][service_name] = node_service
         
+        # Merge extra services from suite descriptor
+        if extra_services:
+            for svc_name, svc_config in extra_services.items():
+                compose_data['services'][svc_name] = svc_config
+                logger.info("extra_service_added", name=svc_name)
+        
         # Write generated compose file
         generated_file = self.project_dir / "docker-compose.generated.yml"
         
@@ -488,7 +553,160 @@ class DockerComposeManager:
         
         logger.info("compose_file_generated",
                    path=str(generated_file),
-                   services=len(nodes))
+                   services=len(compose_data.get('services', {})))
+    
+    def add_extra_node_services(
+        self,
+        extra_nodes: List[Dict[str, Any]],
+        network_settings: Optional[Dict[str, str]] = None,
+        cache_dir_relative: str = "cache",
+    ) -> None:
+        """
+        Add extra cellframe node services to the generated compose file.
+
+        Each entry reuses the x-cf-node-template from the base compose and
+        follows the same volume/network conventions as base topology nodes.
+
+        Args:
+            extra_nodes: List of dicts with keys: id, role, ip_address, http_port
+            network_settings: subnet/gateway overrides
+            cache_dir_relative: relative cache directory
+        """
+        if not self.compose_file.exists():
+            raise FileNotFoundError(f"Generated compose file not found: {self.compose_file}")
+
+        with open(self.compose_file, 'r') as f:
+            compose_data = yaml.safe_load(f)
+
+        node_template = compose_data.get('x-cf-node-template')
+        if not node_template:
+            existing_svc = next(
+                (v for k, v in compose_data.get('services', {}).items() if k.startswith('node-')),
+                None,
+            )
+            if not existing_svc:
+                raise ValueError("Cannot determine node template from compose file")
+            node_template = existing_svc
+
+        from src.config.manager import get_config_loader
+        paths_config = get_config_loader().get_paths_config()
+        node_var_subdirs = [
+            s.strip() for s in paths_config.get(
+                'node_var_subdirs',
+                'log, lib/ca, lib/global_db, lib/wallet, lib/network'
+            ).split(',')
+        ]
+
+        for node_spec in extra_nodes:
+            node_id = node_spec['id']
+            service_name = node_spec.get('service_name', f"node-{node_id}")
+
+            if service_name in compose_data.get('services', {}):
+                logger.info("extra_node_already_exists", service=service_name)
+                continue
+
+            svc = yaml.safe_load(yaml.dump(node_template))
+            svc['container_name'] = f"{self.project_name}-{service_name}"
+            svc['hostname'] = f"{self.project_name}-{service_name}"
+
+            svc['networks'] = {
+                self.network_name: {'ipv4_address': node_spec['ip_address']}
+            }
+            svc['ports'] = [f"{node_spec['http_port']}:8079"]
+
+            data_prefix = f"./{cache_dir_relative}/data/node{node_id}"
+            svc['volumes'] = [
+                f"./{cache_dir_relative}/configs/node{node_id}/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg",
+                f"./{cache_dir_relative}/configs/node{node_id}/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d",
+                f"./{cache_dir_relative}/configs/node{node_id}/network:/opt/cellframe-node/etc/network",
+            ] + [
+                f"{data_prefix}/{subdir}:/opt/cellframe-node/var/{subdir}"
+                for subdir in node_var_subdirs
+            ] + [
+                f"./{cache_dir_relative}/configs/shared/ca:/opt/cellframe-node/share/ca:ro",
+                f"./{cache_dir_relative}/crash-artifacts/node{node_id}:/crash-artifacts/node-{node_id}",
+                f"./{cache_dir_relative}/cellframe-packages:/var/cache/cellframe-packages",
+            ]
+
+            env = {
+                'NODE_ID': str(node_id),
+                'NODE_ROLE': node_spec.get('role', 'full'),
+                'NODE_TYPE': 'node',
+                'NODE_IP': node_spec['ip_address'],
+                'NETWORK_NAME': self.network_name,
+                'DAP_DEBUG': '1',
+                'CELLFRAME_DEBUG': '1',
+            }
+            if network_settings:
+                env['DOCKER_SUBNET'] = network_settings.get('subnet', '172.20.0.0/16')
+                env['DOCKER_GATEWAY'] = network_settings.get('gateway', '172.20.0.1')
+            svc['environment'] = env
+
+            existing_image = next(
+                (v.get('image') for k, v in compose_data.get('services', {}).items()
+                 if k.startswith('node-') and v.get('image')),
+                None,
+            )
+            if existing_image:
+                svc.pop('build', None)
+                svc['image'] = existing_image
+                svc['pull_policy'] = 'never'
+            elif 'build' not in svc:
+                raise ValueError(
+                    f"Cannot determine image for extra node {service_name}: "
+                    "no existing node has 'image' and template has no 'build'"
+                )
+
+            compose_data['services'][service_name] = svc
+            logger.info("extra_node_service_added",
+                       service=service_name, role=node_spec.get('role', 'full'),
+                       ip=node_spec['ip_address'])
+
+        with open(self.compose_file, 'w') as f:
+            yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
+
+        logger.info("extra_nodes_added_to_compose", count=len(extra_nodes))
+
+    def set_service_images(self, image_map: Dict[str, str]) -> None:
+        """
+        Override service images in the generated compose file.
+        
+        Replaces 'build' directive with 'image' for specified services,
+        allowing containers to start from committed snapshot images instead
+        of rebuilding from Dockerfile.
+        
+        Args:
+            image_map: {"node-9": "snapshot-cdb_ready-node-9", ...}
+        """
+        if not self.compose_file.exists():
+            logger.warning("set_service_images_no_compose_file",
+                          path=str(self.compose_file))
+            return
+        
+        with open(self.compose_file, 'r') as f:
+            compose_data = yaml.safe_load(f)
+        
+        services = compose_data.get('services', {})
+        applied = 0
+        
+        for service_name, image_tag in image_map.items():
+            if service_name not in services:
+                logger.debug("set_service_images_skip_missing",
+                           service=service_name)
+                continue
+            
+            svc = services[service_name]
+            svc.pop('build', None)
+            svc['image'] = image_tag
+            svc['pull_policy'] = 'never'
+            applied += 1
+        
+        with open(self.compose_file, 'w') as f:
+            yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
+        
+        logger.info("service_images_updated",
+                   applied=applied,
+                   total=len(image_map))
     
     def up(
         self,

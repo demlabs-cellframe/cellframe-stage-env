@@ -211,7 +211,7 @@ class ScenarioGlobalContext:
         master_indices = list(range(self.root_count + 1, self.root_count + self.master_count + 1))
         full_indices = list(range(self.root_count + self.master_count + 1, self.node_count + 1))
         
-        return {
+        result = {
             # Network configuration
             'network_name': self.network_name,
             'topology_name': self.topology_name,
@@ -249,6 +249,25 @@ class ScenarioGlobalContext:
             'seed_nodes': root_nodes,
             'validator_nodes': master_nodes,
         }
+        
+        # Role-based IP shortcuts: {{node_ip_root-1}}, {{node_ip_master-2}}, etc.
+        for i in range(self.root_count):
+            node_id = i + 1
+            ip = self._node_ip_map.get(f'node{node_id}') or self._node_ip_map.get(f'node-{node_id}')
+            if ip:
+                result[f'node_ip_root-{i + 1}'] = ip
+        for i in range(self.master_count):
+            node_id = self.root_count + i + 1
+            ip = self._node_ip_map.get(f'node{node_id}') or self._node_ip_map.get(f'node-{node_id}')
+            if ip:
+                result[f'node_ip_master-{i + 1}'] = ip
+        for i in range(self.full_count):
+            node_id = self.root_count + self.master_count + i + 1
+            ip = self._node_ip_map.get(f'node{node_id}') or self._node_ip_map.get(f'node-{node_id}')
+            if ip:
+                result[f'node_ip_full-{i + 1}'] = ip
+        
+        return result
     
     def get_node_ip(self, node_id: str) -> Optional[str]:
         """

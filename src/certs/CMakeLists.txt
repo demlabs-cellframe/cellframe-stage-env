@@ -12,11 +12,18 @@ if(NOT DEFINED CELLFRAME_SDK_SRC)
     set(CELLFRAME_SDK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../cellframe-sdk")
 endif()
 
-set(DAP_SDK_SRC "${CELLFRAME_SDK_SRC}/dap-sdk")
+if(NOT DEFINED DAP_SDK_SRC)
+    set(DAP_SDK_SRC "${CELLFRAME_SDK_SRC}/dap-sdk")
+endif()
+
+if(NOT DEFINED DAP_SDK_BUILD)
+    set(DAP_SDK_BUILD "${CELLFRAME_SDK_BUILD}/dap-sdk")
+endif()
 
 message(STATUS "Cellframe SDK Build: ${CELLFRAME_SDK_BUILD}")
 message(STATUS "Cellframe SDK Source: ${CELLFRAME_SDK_SRC}")
 message(STATUS "DAP SDK Source: ${DAP_SDK_SRC}")
+message(STATUS "DAP SDK Build: ${DAP_SDK_BUILD}")
 
 # Detect target architecture
 include(${DAP_SDK_SRC}/cmake/TargetArch_Detection.cmake)
@@ -45,7 +52,7 @@ endif()
 
 # Set XKCP paths
 set(XKCP_TARGET "libdap-XKCP-${XKCP_SUFFIX}${TARGET_POSTFIX}.a")
-set(XKCP_BUILD_DIR "${CELLFRAME_SDK_BUILD}/dap-sdk/crypto/XKCP/xkcp_build_src")
+set(XKCP_BUILD_DIR "${DAP_SDK_BUILD}/crypto/XKCP/xkcp_build_src")
 set(XKCP_BUILD_INCLUDES "${XKCP_BUILD_DIR}/bin/${XKCP_TARGET}.headers")
 
 message(STATUS "Target architecture: ${TARGET_ARCH}")
@@ -57,7 +64,7 @@ include_directories(
     ${DAP_SDK_SRC}/core/include
     ${DAP_SDK_SRC}/core/src
     ${DAP_SDK_SRC}/core/src/unix
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/core
+    ${DAP_SDK_BUILD}/core
     
     # Crypto (full post-quantum support)
     ${DAP_SDK_SRC}/crypto/include
@@ -72,7 +79,7 @@ include_directories(
     
     # 3rdparty
     ${DAP_SDK_SRC}/3rdparty/uthash/src
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/core/json-c
+    ${DAP_SDK_BUILD}/core/json-c
     ${DAP_SDK_SRC}/3rdparty/json-c
     
     # I/O (for basic types)
@@ -87,11 +94,11 @@ add_definitions(-DDAP_OS_UNIX -DDAP_OS_LINUX)
 
 # Link directories - minimal
 link_directories(
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/crypto
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/core
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/core/json-c
+    ${DAP_SDK_BUILD}/crypto
+    ${DAP_SDK_BUILD}/core
+    ${DAP_SDK_BUILD}/core/json-c
     ${CELLFRAME_SDK_BUILD}/modules/common
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/io
+    ${DAP_SDK_BUILD}/io
 )
 
 # === cf-cert-generator ===
@@ -110,7 +117,7 @@ target_link_libraries(cf-cert-generator
     # XKCP (hashing)
     ${XKCP_BUILD_DIR}/bin/${XKCP_TARGET}
     # Kyber (post-quantum KEM)
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/crypto/src/Kyber/crypto_kem/kyber512/optimized/libdap_crypto_kyber512.a
+    ${DAP_SDK_BUILD}/crypto/src/Kyber/crypto_kem/kyber512/optimized/libdap_crypto_kyber512.a
     # System
     pthread
     m
@@ -125,7 +132,7 @@ target_link_libraries(dap-cert
     dap_core
     dap_json-c
     ${XKCP_BUILD_DIR}/bin/${XKCP_TARGET}
-    ${CELLFRAME_SDK_BUILD}/dap-sdk/crypto/src/Kyber/crypto_kem/kyber512/optimized/libdap_crypto_kyber512.a
+    ${DAP_SDK_BUILD}/crypto/src/Kyber/crypto_kem/kyber512/optimized/libdap_crypto_kyber512.a
     pthread
     m
 )
