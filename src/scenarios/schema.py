@@ -288,32 +288,6 @@ class BashStep(BaseModel):
         use_enum_values = True
 
 
-class KelvpnCliStep(BaseModel):
-    """Execute KelVPNCli command on a node.
-
-    Works like ``CLIStep`` but always runs ``/opt/kelvpn/bin/KelVPNCli``
-    so you never repeat the binary path.  The command never fails the step
-    (``|| true``) — use ``contains`` / ``not_contains`` for assertions.
-
-    Usage::
-
-        - kelvpn_cli: --authinfo
-          node: full-1
-          save: authinfo_result
-          timeout: 15
-
-        - kelvpn_cli: --connect 1 --serial {{serial_a}}
-          node: full-1
-          save: connect_result
-          timeout: 35
-    """
-    kelvpn_cli: str = Field(..., description="KelVPNCli arguments (e.g. '--authinfo', '--connect 1 --serial XXXX')")
-    node: str = Field("node1", description="Node to execute on")
-    save: Optional[str] = Field(None, description="Variable name to save stdout to")
-    contains: Optional[str] = Field(None, description="Expected substring in output")
-    not_contains: Optional[str] = Field(None, description="Substring that must NOT be present")
-    description: Optional[str] = Field(None, description="Step description for logs")
-    timeout: int = Field(15, description="Command timeout in seconds (default 15)")
 
 
 class ToolStep(BaseModel):
@@ -476,7 +450,7 @@ class StepGroup(BaseModel):
 # pre-processing pass and will never appear in raw YAML directly.
 TestStep = Union[
     NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep, DpkgStep,
-    CLIStep, RPCStep, PythonStep, PrintStep, BashStep, KelvpnCliStep, ToolStep, LoopStep, StepGroup,
+    CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep,
     WaitStep,

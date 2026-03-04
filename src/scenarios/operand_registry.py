@@ -15,9 +15,26 @@ File format::
           - bash: |
               echo "installing..."
             node: "{{node}}"
-      connect:
+
+Optional ``default_action`` field: when the YAML value for the operand key is
+not a recognised action name, the value is passed as the ``args`` parameter and
+the ``default_action`` is used instead.  This enables compact inline syntax::
+
+    operand: kelvpn_cli
+    default_action: run
+    actions:
+      run:
+        params:
+          timeout: 15
         steps:
-          - ...
+          - bash: timeout {{timeout}} /opt/kelvpn/bin/KelVPNCli {{args}} 2>&1 || true
+            node: "{{node}}"
+
+Scenario usage::
+
+    - kelvpn_cli: "--authinfo"   # action value ≠ "run" → args="--authinfo", action=run
+      node: full-1
+      save: result
 """
 
 from pathlib import Path
@@ -33,13 +50,15 @@ logger = get_logger(__name__)
 class OperandDefinition:
     """Parsed operand definition."""
 
-    __slots__ = ("name", "description", "actions", "source_path")
+    __slots__ = ("name", "description", "actions", "source_path", "default_action")
 
-    def __init__(self, name: str, description: str, actions: Dict[str, Any], source_path: Path):
+    def __init__(self, name: str, description: str, actions: Dict[str, Any],
+                 source_path: Path, default_action: Optional[str] = None):
         self.name = name
         self.description = description
         self.actions = actions
         self.source_path = source_path
+        self.default_action = default_action
 
     def get_action_steps(self, action: str) -> List[dict]:
         """Return raw step dicts for *action*."""
@@ -90,6 +109,7 @@ class OperandRegistry:
             description=data.get("description", ""),
             actions=actions,
             source_path=path,
+            default_action=data.get("default_action"),
         )
         self._operands[name] = defn
         logger.info("operand_registered", name=name, actions=list(actions), path=str(path))

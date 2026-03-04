@@ -10,7 +10,6 @@ from .rpc import RPCStepExecutor
 from .python import PythonStepExecutor
 from .print import PrintStepExecutor
 from .bash import BashStepExecutor
-from .kelvpn_cli import KelvpnCliStepExecutor
 from .tool import ToolStepExecutor
 from .wait import WaitStepExecutor
 from .wait_for_datum import WaitForDatumStepExecutor
@@ -30,7 +29,6 @@ __all__ = [
     'PythonStepExecutor',
     'PrintStepExecutor',
     'BashStepExecutor',
-    'KelvpnCliStepExecutor',
     'ToolStepExecutor',
     'WaitStepExecutor',
     'WaitForDatumStepExecutor',

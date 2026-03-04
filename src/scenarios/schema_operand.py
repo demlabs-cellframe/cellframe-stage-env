@@ -24,9 +24,14 @@ class CustomOperandStep(BaseModel):
         operand_action: install
         operand_params:
           nodes: ["node-7", "node-8"]
+
+    The ``node`` field mirrors the convention used by other step types so that
+    ``defaults: node:`` set on a StepGroup or section propagates automatically
+    into operand_params when the caller did not supply it explicitly.
     """
 
     operand_name: str = Field(..., description="Registered operand name (e.g. 'kelvpn')")
     operand_action: str = Field(..., description="Action to execute (e.g. 'install')")
     operand_params: Dict[str, Any] = Field(default_factory=dict, description="Parameters forwarded to the action steps")
     description: Optional[str] = Field(None, description="Step description for logs")
+    node: Optional[str] = Field(None, description="Node override (propagated from group/section defaults)")

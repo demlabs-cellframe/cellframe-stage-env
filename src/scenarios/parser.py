@@ -194,7 +194,7 @@ class BaseScenarioParser:
     # ------------------------------------------------------------------
     _KNOWN_STEP_KEYS = frozenset({
         "cli", "rpc", "wait", "wait_for_datum", "wait_network", "python",
-        "print", "bash", "kelvpn_cli", "tool", "loop", "docker_op", "snapshot", "dpkg",
+        "print", "bash", "tool", "loop", "docker_op", "snapshot", "dpkg",
         "config", "set", "if", "while", "for", "switch", "name",
         "operand_name",
     })
@@ -205,11 +205,22 @@ class BaseScenarioParser:
             # Is this dict a step invocation for a registered operand?
             operand_key = self._detect_operand_key(data)
             if operand_key is not None:
-                action = data[operand_key]
+                action_value = str(data[operand_key])
                 params = {k: v for k, v in data.items() if k not in (operand_key, "description")}
+                defn = self._operand_registry.get(operand_key)
+
+                # If the value is not a known action name and a default_action is declared,
+                # treat the value as the 'args' parameter and use the default action.
+                # This enables compact syntax:  - kelvpn_cli: "--authinfo"
+                if defn.default_action and action_value not in defn.actions:
+                    params["args"] = action_value
+                    action = defn.default_action
+                else:
+                    action = action_value
+
                 return {
                     "operand_name": operand_key,
-                    "operand_action": str(action),
+                    "operand_action": action,
                     "operand_params": params,
                     "description": data.get("description"),
                 }

@@ -56,6 +56,11 @@ class CustomOperandStepExecutor(StepExecutor):
             action_defaults = defn.get_action_defaults(action_name)
             effective_params = {**action_defaults, **step.operand_params}
 
+            # Propagate node from step.node (set by _apply_defaults from group/section
+            # defaults) into the params dict so operand steps can use {{node}}.
+            if step.node is not None and "node" not in effective_params:
+                effective_params["node"] = step.node
+
             for key, value in effective_params.items():
                 if isinstance(value, str):
                     value = ctx.substitute(value)
