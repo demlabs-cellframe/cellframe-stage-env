@@ -18,20 +18,17 @@ setup:
     value: "root_nodes + master_nodes"
     eval: true
   
-  # Enable seed_mode on ALL root and master nodes to accept genesis block
-  - config: "cellframe-node"
-    nodes: "{{_active_nodes}}"
-    set:
-      seed_mode: "true"
-  
-  - docker_op: restart
-    services: "{{_active_nodes}}"
-  
-  - wait_network: online
-    nodes: "{{_active_nodes}}"
-    timeout: 60
-  
-  # Wait for Global DB synchronization after restart
+  # Enable seed_mode on ALL root and master nodes via CLI (no restart needed)
+  - group: Enable seed_mode for main chain
+    steps:
+      - for: _node
+        in: "{{_active_nodes}}"
+        steps:
+          - cli: "block seed_mode -net {{network_name}} -chain main enable"
+            node: "{{_node}}"
+            save_to: _seed_mode_result
+          - print: "seed_mode on {{_node}}: {{_seed_mode_result}}"
+
   - wait: global_db_sync
     node: "{{first_root}}"
     timeout: 60
@@ -143,7 +140,7 @@ test:
       #   1. Verify emission exists in ledger (synced via net go sync)
       #   2. Create genesis block via ESBocs consensus
       #   3. Sync genesis block to all nodes via Global DB
-      # - ROOT node has seed_mode=true, so it will ACCEPT genesis block when synced
+      # - ROOT node has seed_mode enabled via CLI, so it will ACCEPT genesis block when synced
       
       # Wait for ESBocs consensus to create genesis block
       # This includes: TX validation, consensus round, block signing, propagation
@@ -176,19 +173,22 @@ test:
       static_genesis_block: "{{genesis_block_hash}}"
       is_static_genesis_block: "true"
   
-  - config: "cellframe-node"
-    nodes: "{{seed_nodes}}"
-    set:
-      seed_mode: "false"
-  
+  # Disable seed_mode on seed nodes via CLI
+  - group: Disable seed_mode for main chain
+    steps:
+      - for: _node
+        in: "{{seed_nodes}}"
+        steps:
+          - cli: "block seed_mode -net {{network_name}} -chain main disable"
+            node: "{{_node}}"
+
   - docker_op: restart
     services: "{{all_nodes}}"
-  
+
   - wait_network: online
     nodes: "{{_active_nodes}}"
     timeout: 60
-  
-  # Wait for Global DB synchronization after all nodes restart
+
   - wait: global_db_sync
     node: "{{first_root}}"
     timeout: 60

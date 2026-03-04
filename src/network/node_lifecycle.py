@@ -311,9 +311,9 @@ class NodeLifecycleManager:
         Hard restart: Full container restart WITH config reload (stops → starts).
         
         This is used to apply config changes that require full node restart:
-        - seed_mode changes
         - static_genesis_block/event updates
         - Network topology changes
+        Note: seed_mode in 6.x is controlled via CLI, no restart needed.
         
         Process:
         1. Graceful shutdown with GDB flush (preserves node list, GDB state)
@@ -379,9 +379,9 @@ class NodeLifecycleManager:
         are always online to provide GDB sync for node list.
         
         Critical for scenarios where:
-        - All nodes need config reload (seed_mode, static_genesis_*)
+        - All nodes need config reload (static_genesis_*)
         - Node list must be preserved via GDB
-        - Simultaneous restart would cause empty node list → MDBX crash
+        - Simultaneous restart would cause empty node list
         
         Process:
         1. Restart first group → wait online

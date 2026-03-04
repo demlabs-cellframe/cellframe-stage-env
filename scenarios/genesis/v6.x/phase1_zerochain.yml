@@ -289,23 +289,21 @@ test:
     node: "{{first_root}}"
     save_wallet: fee_addr
   
-  # Enable seed_mode on seed nodes (root nodes)
-  - config: "cellframe-node"
-    nodes: "{{seed_nodes}}"
-    set:
-      seed_mode: "true"
-  
-  - docker_op: restart
-    services: "{{_active_nodes}}"
-  
-  - wait_network: online
-    nodes: "{{_active_nodes}}"
-    timeout: 60
-  
+  # Enable seed_mode on seed nodes via CLI (no restart needed)
+  - group: Enable seed_mode on seed nodes
+    steps:
+      - for: _seed_node
+        in: "{{seed_nodes}}"
+        steps:
+          - cli: "dag seed_mode -net {{network_name}} -chain zerochain enable"
+            node: "{{_seed_node}}"
+            save_to: _seed_mode_result
+          - print: "seed_mode on {{_seed_node}}: {{_seed_mode_result}}"
+
   - wait: global_db_sync
     nodes: "{{root_nodes}}"
     timeout: 180
-  
+
   - wait: "15s"
   
   # Verify network is fully connected
@@ -430,10 +428,14 @@ test:
       static_genesis_event: "{{genesis_event_hash}}"
       is_static_genesis_event: "true"
   
-  - config: "cellframe-node"
-    nodes: "{{seed_nodes}}"
-    set:
-      seed_mode: "false"
+  # Disable seed_mode on seed nodes via CLI
+  - group: Disable seed_mode on seed nodes
+    steps:
+      - for: _seed_node
+        in: "{{seed_nodes}}"
+        steps:
+          - cli: "dag seed_mode -net {{network_name}} -chain zerochain disable"
+            node: "{{_seed_node}}"
   
   - group: Create stake orders for validators
     steps:

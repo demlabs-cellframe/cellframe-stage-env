@@ -10,9 +10,6 @@ debug_dump_stream_headers=false
 #debug_http=false
 # debug-config=false
 
-# seed mode. WARNING. Used true only when you start the new network
-seed_mode={{ seed_mode | default('false', true) }}
-
 # Auto bring up links and sync everything over them
 auto_online=true
 
@@ -206,10 +203,9 @@ ca_folders=[../var/lib/ca,../share/ca]
 path=../etc/network
 
 [global_db]
-#debug_more=true
+debug_more={{ global_db_debug_more | default('false', true) }}
 path=../var/lib/global_db
 driver=mdbx
-#debug_more=true
 # mdbx_upper_limit_of_db_size=1024
 #pgsql conninfo array
 # pg_conninfo=[dbname=postgres]
