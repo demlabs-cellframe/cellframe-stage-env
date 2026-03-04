@@ -12,6 +12,149 @@ from typing import Optional, List, Callable
 from .common import print_info, print_success, print_error, print_warning
 
 
+def _provision_node_compose(network_mgr, node_compose, base_path, config_loader, print_info, print_success, print_warning, print_error):
+    """
+    Provision additional cellframe nodes declared in suite.node_compose.
+
+    Args:
+        node_compose: Dict[str, NodeComposeSpec] — keys are service names (e.g. "vpn-server-1")
+    """
+    import ipaddress
+    import os
+    import re
+    import shutil
+
+    network_settings = config_loader.get_network_settings()
+    base_ip_str = network_settings.get('base_ip', '172.22.0.10')
+    base_ip = ipaddress.ip_address(base_ip_str)
+    base_http_port = int(network_settings.get('base_http_port', '9079'))
+    cache_dir = Path(config_loader.get_paths_config().get('cache_dir', '../../cache'))
+    if not cache_dir.is_absolute():
+        cache_dir = (base_path / cache_dir).resolve()
+
+    used_ids = set(network_mgr.nodes.keys()) if network_mgr.nodes else set()
+    next_auto_id = max(used_ids, default=0) + 1
+
+    compose_specs = []
+    packages_to_install: dict[str, list[str]] = {}
+
+    for svc_name, spec in node_compose.items():
+        if spec.id is not None:
+            node_id = spec.id
+        else:
+            node_id = next_auto_id
+            next_auto_id += 1
+        used_ids.add(node_id)
+
+        ip_addr = str(base_ip + node_id - 1)
+        http_port = base_http_port + (node_id - 1)
+
+        compose_specs.append({
+            'id': node_id,
+            'service_name': svc_name,
+            'role': spec.role,
+            'ip_address': ip_addr,
+            'http_port': http_port,
+        })
+
+        cfg_dir = cache_dir / "configs" / f"node{node_id}"
+        data_dir = cache_dir / "data" / f"node{node_id}"
+        source = spec.source.strip().lower()
+
+        if source == "genesis":
+            src_node = _find_donor_node(cache_dir, "configs")
+            if src_node and not cfg_dir.exists():
+                shutil.copytree(cache_dir / "configs" / src_node, cfg_dir, dirs_exist_ok=True)
+                print_info(f"  [{svc_name}] configs from genesis ({src_node})")
+            if src_node and not data_dir.exists():
+                src_data = cache_dir / "data" / src_node
+                if src_data.exists():
+                    shutil.copytree(src_data, data_dir, dirs_exist_ok=True)
+                    print_info(f"  [{svc_name}] data from genesis ({src_node})")
+        elif source.startswith("node-"):
+            clone_m = re.match(r'node-(\d+)', source)
+            if not clone_m:
+                print_warning(f"  [{svc_name}] bad source '{source}', expected 'node-<id>'")
+                continue
+            clone_id = clone_m.group(1)
+            src_cfg = cache_dir / "configs" / f"node{clone_id}"
+            src_data = cache_dir / "data" / f"node{clone_id}"
+            if src_cfg.exists() and not cfg_dir.exists():
+                shutil.copytree(src_cfg, cfg_dir, dirs_exist_ok=True)
+                print_info(f"  [{svc_name}] cloned configs from node{clone_id}")
+            if src_data.exists() and not data_dir.exists():
+                shutil.copytree(src_data, data_dir, dirs_exist_ok=True)
+                print_info(f"  [{svc_name}] cloned data from node{clone_id}")
+        elif source == "fresh":
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "cellframe-node.cfg.d").mkdir(exist_ok=True)
+            (cfg_dir / "network").mkdir(exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            if not (cfg_dir / "cellframe-node.cfg").exists():
+                donor_name = _find_donor_node(cache_dir, "configs")
+                if donor_name:
+                    shutil.copy2(
+                        cache_dir / "configs" / donor_name / "cellframe-node.cfg",
+                        cfg_dir / "cellframe-node.cfg",
+                    )
+                    print_info(f"  [{svc_name}] base cfg from {donor_name}")
+                else:
+                    print_warning(f"  [{svc_name}] no base cellframe-node.cfg found")
+        else:
+            print_warning(f"  [{svc_name}] unknown source '{source}', using fresh")
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+        (cache_dir / "crash-artifacts" / f"node{node_id}").mkdir(parents=True, exist_ok=True)
+
+        if spec.packages:
+            packages_to_install[svc_name] = spec.packages.split()
+
+        print_info(f"  {svc_name} (id={node_id}, {spec.role}, source={source}) @ {ip_addr}:{http_port}")
+
+    if not compose_specs:
+        return
+
+    try:
+        network_mgr.compose.add_extra_node_services(
+            compose_specs,
+            network_settings=network_settings,
+            cache_dir_relative=str(Path(config_loader.get_paths_config().get('cache_dir', '../../cache'))),
+        )
+        svc_names = [s['service_name'] for s in compose_specs]
+        network_mgr.compose.up(services=svc_names, detach=True, wait=False, no_build=True)
+        print_success(f"  Nodes started: {', '.join(svc_names)}")
+    except Exception as e:
+        print_error(f"  Failed to provision node_compose: {e}")
+        return
+
+    if packages_to_install:
+        for svc_name, pkgs in packages_to_install.items():
+            pkg_str = " ".join(pkgs)
+            try:
+                exit_code, output = network_mgr.compose.exec(
+                    svc_name, ["bash", "-c", f"apt-get update -qq && apt-get install -y -qq {pkg_str} && rm -rf /var/lib/apt/lists/*"]
+                )
+                if exit_code != 0:
+                    print_warning(f"  [{svc_name}] package install failed: {output[:200]}")
+                else:
+                    print_info(f"  [{svc_name}] packages installed: {pkg_str}")
+            except Exception as e:
+                print_warning(f"  [{svc_name}] package install error: {e}")
+
+
+def _find_donor_node(cache_dir: Path, subdir: str) -> Optional[str]:
+    """Find first existing node directory (e.g. 'node1') in cache_dir/subdir."""
+    import os
+    target = cache_dir / subdir
+    if not target.exists():
+        return None
+    for d in sorted(os.listdir(target)):
+        if d.startswith("node") and (target / d / "cellframe-node.cfg").exists():
+            return d
+    return None
+
+
 def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callable[[], Optional[Path]]):
     """Register test execution commands."""
     
@@ -322,10 +465,98 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             except Exception as e:
                                 print_warning(f"Failed to restore state: {e}")
 
-                    # Propagate extra_services from suite descriptor to network manager
-                    if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.extra_services:
-                        network_mgr.extra_services = suite_spec.extra_services
-                        print_info(f"🐳 Extra services: {', '.join(suite_spec.extra_services.keys())}")
+                    # Propagate docker_compose services to network manager.
+                    # Strip 'packages' field — it's our extension, not docker-compose.
+                    if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.docker_compose:
+                        node_packages: list[str] = []
+                        clean_services: dict = {}
+                        for svc_name, svc_def in suite_spec.docker_compose.items():
+                            svc_copy = dict(svc_def) if isinstance(svc_def, dict) else svc_def
+                            pkg_str = svc_copy.pop("packages", None)
+                            if pkg_str:
+                                node_packages.extend(pkg_str.split())
+                            clean_services[svc_name] = svc_copy
+                        network_mgr.docker_compose = clean_services
+                        print_info(f"🐳 Docker compose services: {', '.join(clean_services.keys())}")
+
+                        if node_packages:
+                            pkgs = " ".join(sorted(set(node_packages)))
+                            print_info(f"📦 Installing packages on nodes: {pkgs}")
+                            node_svc_names = [f"node-{n}" for n in sorted(network_mgr.nodes.keys())]
+                            install_cmd = ["bash", "-c", f"apt-get update -qq && apt-get install -y -qq {pkgs} && rm -rf /var/lib/apt/lists/*"]
+                            for svc in node_svc_names:
+                                try:
+                                    exit_code, output = network_mgr.compose.exec(svc, install_cmd)
+                                    if exit_code != 0:
+                                        print_warning(f"  Package install on {svc} failed (exit {exit_code}): {output[:200]}")
+                                except Exception as e:
+                                    print_warning(f"  Package install on {svc}: {e}")
+                            print_success(f"✓ Packages installed: {pkgs}")
+
+                    # Merge includes in declared order: variables, node_compose, node_compose_gen
+                    if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.includes:
+                        import yaml as _yaml
+                        from ..scenarios.schema import NodeComposeSpec, NodeComposeGenSpec
+                        for inc_path in suite_spec.includes:
+                            for search_dir in [suite_path, common_root]:
+                                inc_full = (search_dir / inc_path).resolve()
+                                if inc_full.exists():
+                                    with open(inc_full) as _f:
+                                        inc_data = _yaml.safe_load(_f) or {}
+                                    inc_vars = inc_data.get("variables")
+                                    if inc_vars and isinstance(inc_vars, dict):
+                                        merged = dict(inc_vars)
+                                        merged.update(suite_spec.variables)
+                                        suite_spec.variables = merged
+                                    nc_raw = inc_data.get("node_compose")
+                                    if nc_raw and isinstance(nc_raw, dict):
+                                        for k, v in nc_raw.items():
+                                            if k not in suite_spec.node_compose:
+                                                suite_spec.node_compose[k] = NodeComposeSpec(**(v if isinstance(v, dict) else {}))
+                                    ncg_raw = inc_data.get("node_compose_gen")
+                                    if ncg_raw and isinstance(ncg_raw, list):
+                                        for entry in ncg_raw:
+                                            suite_spec.node_compose_gen.append(
+                                                NodeComposeGenSpec(**(entry if isinstance(entry, dict) else {}))
+                                            )
+                                    break
+
+                    # Expand node_compose_gen → node_compose (resolve {{var}} in count)
+                    if isinstance(suite_spec, SuiteDescriptor) and suite_spec.node_compose_gen:
+                        import re as _re
+                        from ..scenarios.schema import NodeComposeSpec
+                        variables = suite_spec.variables or {}
+                        for gen in suite_spec.node_compose_gen:
+                            count = gen.count
+                            if isinstance(count, str):
+                                resolved = _re.sub(
+                                    r'\{\{(\w+)\}\}',
+                                    lambda m: str(variables.get(m.group(1), m.group(0))),
+                                    count,
+                                )
+                                try:
+                                    count = int(resolved)
+                                except ValueError:
+                                    print_warning(f"  node_compose_gen '{gen.prefix}': cannot resolve count '{count}'")
+                                    continue
+                            for i in range(1, count + 1):
+                                svc_name = f"{gen.prefix}-{i}"
+                                if svc_name not in suite_spec.node_compose:
+                                    suite_spec.node_compose[svc_name] = NodeComposeSpec(
+                                        role=gen.role,
+                                        source=gen.source,
+                                        packages=gen.packages,
+                                        config_overrides=gen.config_overrides,
+                                        setup=gen.setup,
+                                    )
+
+                    # Provision additional cellframe nodes from suite descriptor
+                    if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.node_compose:
+                        print_info("🖥️ Provisioning node_compose nodes...")
+                        _provision_node_compose(
+                            network_mgr, suite_spec.node_compose, base_path,
+                            config_loader, print_info, print_success, print_warning, print_error,
+                        )
 
                     # Execute suite-level setup (includes + setup steps).
                     # Includes always run — each include decides internally whether

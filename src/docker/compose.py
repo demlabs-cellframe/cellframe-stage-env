@@ -555,6 +555,118 @@ class DockerComposeManager:
                    path=str(generated_file),
                    services=len(compose_data.get('services', {})))
     
+    def add_extra_node_services(
+        self,
+        extra_nodes: List[Dict[str, Any]],
+        network_settings: Optional[Dict[str, str]] = None,
+        cache_dir_relative: str = "cache",
+    ) -> None:
+        """
+        Add extra cellframe node services to the generated compose file.
+
+        Each entry reuses the x-cf-node-template from the base compose and
+        follows the same volume/network conventions as base topology nodes.
+
+        Args:
+            extra_nodes: List of dicts with keys: id, role, ip_address, http_port
+            network_settings: subnet/gateway overrides
+            cache_dir_relative: relative cache directory
+        """
+        if not self.compose_file.exists():
+            raise FileNotFoundError(f"Generated compose file not found: {self.compose_file}")
+
+        with open(self.compose_file, 'r') as f:
+            compose_data = yaml.safe_load(f)
+
+        node_template = compose_data.get('x-cf-node-template')
+        if not node_template:
+            existing_svc = next(
+                (v for k, v in compose_data.get('services', {}).items() if k.startswith('node-')),
+                None,
+            )
+            if not existing_svc:
+                raise ValueError("Cannot determine node template from compose file")
+            node_template = existing_svc
+
+        from src.config.manager import get_config_loader
+        paths_config = get_config_loader().get_paths_config()
+        node_var_subdirs = [
+            s.strip() for s in paths_config.get(
+                'node_var_subdirs',
+                'log, lib/ca, lib/global_db, lib/wallet, lib/network'
+            ).split(',')
+        ]
+
+        for node_spec in extra_nodes:
+            node_id = node_spec['id']
+            service_name = node_spec.get('service_name', f"node-{node_id}")
+
+            if service_name in compose_data.get('services', {}):
+                logger.info("extra_node_already_exists", service=service_name)
+                continue
+
+            svc = yaml.safe_load(yaml.dump(node_template))
+            svc['container_name'] = f"{self.project_name}-{service_name}"
+            svc['hostname'] = f"{self.project_name}-{service_name}"
+
+            svc['networks'] = {
+                self.network_name: {'ipv4_address': node_spec['ip_address']}
+            }
+            svc['ports'] = [f"{node_spec['http_port']}:8079"]
+
+            data_prefix = f"./{cache_dir_relative}/data/node{node_id}"
+            svc['volumes'] = [
+                f"./{cache_dir_relative}/configs/node{node_id}/cellframe-node.cfg:/opt/cellframe-node/etc/cellframe-node.cfg",
+                f"./{cache_dir_relative}/configs/node{node_id}/cellframe-node.cfg.d:/opt/cellframe-node/etc/cellframe-node.cfg.d",
+                f"./{cache_dir_relative}/configs/node{node_id}/network:/opt/cellframe-node/etc/network",
+            ] + [
+                f"{data_prefix}/{subdir}:/opt/cellframe-node/var/{subdir}"
+                for subdir in node_var_subdirs
+            ] + [
+                f"./{cache_dir_relative}/configs/shared/ca:/opt/cellframe-node/share/ca:ro",
+                f"./{cache_dir_relative}/crash-artifacts/node{node_id}:/crash-artifacts/node-{node_id}",
+                f"./{cache_dir_relative}/cellframe-packages:/var/cache/cellframe-packages",
+            ]
+
+            env = {
+                'NODE_ID': str(node_id),
+                'NODE_ROLE': node_spec.get('role', 'full'),
+                'NODE_TYPE': 'node',
+                'NODE_IP': node_spec['ip_address'],
+                'NETWORK_NAME': self.network_name,
+                'DAP_DEBUG': '1',
+                'CELLFRAME_DEBUG': '1',
+            }
+            if network_settings:
+                env['DOCKER_SUBNET'] = network_settings.get('subnet', '172.20.0.0/16')
+                env['DOCKER_GATEWAY'] = network_settings.get('gateway', '172.20.0.1')
+            svc['environment'] = env
+
+            existing_image = next(
+                (v.get('image') for k, v in compose_data.get('services', {}).items()
+                 if k.startswith('node-') and v.get('image')),
+                None,
+            )
+            if existing_image:
+                svc.pop('build', None)
+                svc['image'] = existing_image
+                svc['pull_policy'] = 'never'
+            elif 'build' not in svc:
+                raise ValueError(
+                    f"Cannot determine image for extra node {service_name}: "
+                    "no existing node has 'image' and template has no 'build'"
+                )
+
+            compose_data['services'][service_name] = svc
+            logger.info("extra_node_service_added",
+                       service=service_name, role=node_spec.get('role', 'full'),
+                       ip=node_spec['ip_address'])
+
+        with open(self.compose_file, 'w') as f:
+            yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
+
+        logger.info("extra_nodes_added_to_compose", count=len(extra_nodes))
+
     def set_service_images(self, image_map: Dict[str, str]) -> None:
         """
         Override service images in the generated compose file.

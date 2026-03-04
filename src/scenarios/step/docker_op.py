@@ -125,13 +125,15 @@ class DockerOpStepExecutor(StepExecutor):
                 compose_manager.stop(services=services)
             elif operation == "restart":
                 compose_manager.restart(services=services)
+            elif operation == "pause":
+                compose_manager.pause(services=services)
+            elif operation == "unpause":
+                compose_manager.unpause(services=services)
             elif operation == "logs":
-                # Logs operation - would need to implement
                 logger.warning("Docker logs operation not yet implemented")
             elif operation == "exec":
                 if not step.command:
                     raise ScenarioExecutionError("Command required for 'exec' operation", step=step)
-                # Exec operation - would need to implement
                 logger.warning("Docker exec operation not yet implemented")
             else:
                 raise ScenarioExecutionError(f"Unknown Docker operation: {operation}", step=step)

@@ -50,8 +50,8 @@ class NetworkManager:
         # Keep containers running after tests (for debugging)
         self.keep_running = False
         
-        # Extra docker-compose services from suite descriptor
-        self.extra_services: Dict[str, Any] = {}
+        # Docker-compose services from suite descriptor
+        self.docker_compose: Dict[str, Any] = {}
         
         # CLI path for node commands
         self.node_cli_path = "cellframe-node-cli"
@@ -345,7 +345,7 @@ class NetworkManager:
                 'subnet': settings.subnet,
                 'base_ip': settings.base_ip,
             },
-            extra_services=self.extra_services or None
+            extra_services=self.docker_compose or None
         )
         
         # Build images if requested
@@ -1702,7 +1702,7 @@ class NetworkManager:
                 "Run './clean.sh' to remove root-owned files and try again."
             )
         
-        # Start node services only (extra_services are started by suite setup)
+        # Start node services only (docker_compose services are started by suite setup)
         node_configs = list(self.nodes.values())
         node_services = [f"node-{n.node_id}" for n in node_configs]
         
