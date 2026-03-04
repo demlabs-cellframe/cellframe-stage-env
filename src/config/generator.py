@@ -948,7 +948,8 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
             self.cert_generator.generate_all(
                 network_name=network_name,
                 node_count=node_count,
-                root_count=root_count
+                root_count=root_count,
+                network_id=topology.network.network_id
             )
             
             # Validate generated certificates

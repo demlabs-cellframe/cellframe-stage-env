@@ -260,7 +260,9 @@ class ConfigStepExecutor(StepExecutor):
             existing_content = target_file.read_text()
             current_context = self._extract_context_from_ini(existing_content)
             full_context = {**current_context, **variables}
-            full_context.setdefault('network_name', network_name)
+            full_context['network_name'] = network_name
+            if is_network and 'id' in full_context and 'network_id' not in full_context:
+                full_context['network_id'] = full_context['id']
             
             try:
                 rendered = template.render(full_context)

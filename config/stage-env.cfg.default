@@ -74,8 +74,8 @@ project_root = ../..
 cache_dir = ../../cache
 artifacts_dir = ../../cache/artifacts
 # SDK paths (relative to project_root)
-cellframe_sdk_path = cellframe-sdk
-dap_sdk_path = dap-sdk
+cellframe_sdk_path = lib/cellframe-sdk
+dap_sdk_path = lib/dap-sdk
 
 # Base URL for downloading Cellframe tools and packages
 # Used for cellframe-tool-sign, cellframe-tool-compose, and node packages

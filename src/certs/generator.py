@@ -205,6 +205,7 @@ class CertGenerator:
         network_name: str,
         node_count: int,
         root_count: int = 2,
+        network_id: str = "0x0000000000001234",
     ) -> dict:
         """
         Generate all certificates for network using Docker-based cf-cert-generator.
@@ -213,6 +214,7 @@ class CertGenerator:
             network_name: Network name (e.g., "stagenet")
             node_count: Total number of nodes
             root_count: Number of ROOT nodes (rest will be MASTER)
+            network_id: Network ID hex string
             
         Returns:
             Dict with generated certificate paths
@@ -227,8 +229,6 @@ class CertGenerator:
 
         if not self.build_docker_image():
             raise RuntimeError("Failed to build certificate builder Docker image")
-
-        network_id = "0x1234"
         self.certs_dir.mkdir(parents=True, exist_ok=True)
 
         paths_config = get_config_loader().get_paths_config()
