@@ -19,10 +19,11 @@ from .schema import (
     CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     NetworkWaitStep, DockerOpStep, SnapshotStep,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
-    ConfigStep, DpkgStep,
+    ConfigStep, DpkgStep, CustomOperandStep,
     CLICheck, RPCCheck, PythonCheck, BashCheck,
     TestScenario, SuiteSetupScenario, TestStep, CheckSpec, StepDefaults, SectionConfig, DatumStatus
 )
+from .operand_registry import OperandRegistry
 
 logger = get_logger(__name__)
 
@@ -77,6 +78,12 @@ class RuntimeContext:
         if name not in self.variables:
             raise ScenarioExecutionError(f"Undefined variable: {name}")
         return self.variables[name]
+
+    def has_variable(self, name: str) -> bool:
+        return name in self.variables
+
+    def delete_variable(self, name: str) -> None:
+        self.variables.pop(name, None)
     
     def get(self, name: str, default: Any = None) -> Any:
         """Get runtime variable with optional default (dict-like interface)."""
@@ -215,7 +222,16 @@ class ScenarioExecutor:
             resolve_node_alias_callback=self._resolve_node_alias
         )
         self.dpkg_executor = DpkgStepExecutor(self.container_manager, log_file, debug)
-        
+
+        # Custom operand support
+        self._operand_registry = OperandRegistry()
+        from .step.custom_operand import CustomOperandStepExecutor
+        self.custom_operand_executor = CustomOperandStepExecutor(
+            self.container_manager, log_file, debug,
+            registry=self._operand_registry,
+            execute_steps_callback=self._execute_steps,
+        )
+
         # Check executors
         from .check import (
             CLICheckExecutor, RPCCheckExecutor,
@@ -226,6 +242,15 @@ class ScenarioExecutor:
         self.python_check_executor = PythonCheckExecutor(self.container_manager, log_file, debug)
         self.bash_check_executor = BashCheckExecutor(self.container_manager, log_file, debug)
     
+    def load_operands(self, *dirs: Path) -> None:
+        """Load custom operand definitions from directories."""
+        for d in dirs:
+            self._operand_registry.load_directory(Path(d))
+
+    @property
+    def operand_registry(self) -> OperandRegistry:
+        return self._operand_registry
+
     def _resolve_node_alias(self, node_alias: str) -> str:
         """
         Resolve node alias to actual node ID.
@@ -632,6 +657,8 @@ class ScenarioExecutor:
                 step_desc = f"ConfigStep ({step.config})"
             elif isinstance(step, DpkgStep):
                 step_desc = f"DpkgStep ({step.dpkg} {step.package})"
+            elif isinstance(step, CustomOperandStep):
+                step_desc = f"CustomOperand ({step.operand_name}.{step.operand_action})"
 
             logger.info(f"Step {i}/{len(steps)}: {step_desc}")
             
@@ -690,6 +717,8 @@ class ScenarioExecutor:
                 await self.config_executor.execute(step, ctx)
             elif isinstance(step, DpkgStep):
                 await self.dpkg_executor.execute(step, ctx)
+            elif isinstance(step, CustomOperandStep):
+                await self.custom_operand_executor.execute(step, ctx, defaults)
             else:
                 raise ScenarioExecutionError(f"Unknown step type: {type(step)}")
     
