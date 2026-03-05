@@ -111,6 +111,13 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
 
         (cache_dir / "crash-artifacts" / f"node{node_id}").mkdir(parents=True, exist_ok=True)
 
+        # MDBX lock files copied from donor become stale in 5.x; remove to allow writes
+        _stage_cfg = config_loader.load_stage_config()
+        _gver = _stage_cfg.get('genesis_version', '')
+        if not _gver.startswith('v6'):
+            for lck in data_dir.rglob("mdbx.lck"):
+                lck.unlink(missing_ok=True)
+
         if spec.regenerate_cert:
             import glob as _glob
             ca_dir = data_dir / "lib" / "ca"
