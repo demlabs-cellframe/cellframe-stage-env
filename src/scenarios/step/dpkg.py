@@ -64,7 +64,17 @@ class DpkgStepExecutor(StepExecutor):
         return dest_path
 
     async def _install(self, host_path: str, services: List[str], ctx: RuntimeContext, fix_deps: bool = False) -> None:
-        resolved = Path(host_path).resolve()
+        import glob as _glob
+        raw = Path(host_path)
+        if not raw.is_absolute():
+            raw = Path.cwd() / raw
+        if any(c in str(raw) for c in ('*', '?', '[')):
+            matched = sorted(_glob.glob(str(raw)))
+            if not matched:
+                raise ScenarioExecutionError(f"DEB package glob matched nothing: {host_path}")
+            resolved = Path(matched[-1]).resolve()
+        else:
+            resolved = raw.resolve()
         if not resolved.exists():
             raise ScenarioExecutionError(f"DEB package not found: {resolved}")
 

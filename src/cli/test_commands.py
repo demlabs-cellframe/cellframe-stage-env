@@ -111,6 +111,14 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
 
         (cache_dir / "crash-artifacts" / f"node{node_id}").mkdir(parents=True, exist_ok=True)
 
+        if spec.regenerate_cert:
+            import glob as _glob
+            ca_dir = data_dir / "lib" / "ca"
+            if ca_dir.is_dir():
+                for cert_file in _glob.glob(str(ca_dir / "node-addr*")):
+                    Path(cert_file).unlink(missing_ok=True)
+                print_info(f"    regenerate_cert: removed node-addr certs for {svc_name}")
+
         if spec.config_overrides:
             cfg_d = cfg_dir / "cellframe-node.cfg.d"
             cfg_d.mkdir(parents=True, exist_ok=True)
@@ -434,6 +442,14 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     common_root = project_root / "tests" / "e2e"
                     if not common_root.exists():
                         common_root = base_path / "tests"
+
+                    custom_tpl_raw = paths_config.get('custom_templates_dir', '')
+                    custom_templates_dirs = []
+                    if custom_tpl_raw:
+                        resolved = (project_root / custom_tpl_raw).resolve()
+                        if resolved.is_dir():
+                            custom_templates_dirs.append(resolved)
+
                     parser = ScenarioParser(scenarios_root=suite_descriptor.parent, common_root=common_root)
                     
                     suite_spec = None  # Initialize to None in case of parse failure
@@ -597,6 +613,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                         packages=gen.packages,
                                         config_overrides=gen.config_overrides,
                                         setup=gen.setup,
+                                        regenerate_cert=gen.regenerate_cert,
                                     )
 
                     # Provision additional cellframe nodes from suite descriptor
@@ -626,7 +643,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         gc = ScenarioGlobalContext(
                             network_name=network_mgr.topology.network.name,
                             topology_name=network_mgr.topology_name,
-                            native_ticker=getattr(network_mgr.topology.network, 'native_ticker', 'TCELL')
+                            native_ticker=getattr(network_mgr.topology.network, 'native_ticker', 'TCELL'),
+                            node_port=getattr(network_mgr.topology.network_settings, 'node_port', 8079)
                         )
                         node_configs_for_setup = network_mgr.generate_node_configs()
                         gc.set_static_node_info(node_configs_for_setup)
@@ -660,9 +678,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 node_cli_path="cellframe-node-cli",
                                 log_file=suite_dir / "suite-setup.log",
                                 debug=debug_mode,
-                                base_path=base_path
+                                base_path=base_path,
+                                custom_templates_dirs=custom_templates_dirs,
                             )
-                            executor.load_operands(common_root / "operands", common_root / "common" / "operands")
+                            executor.load_operands(common_root / "operands", common_root / "common" / "operands", common_root / "scenarios" / "common" / "operands")
 
                             setup_vars = dict(topology_vars or {})
                             if isinstance(suite_spec, SuiteDescriptor) and suite_spec.variables:
@@ -829,9 +848,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 node_cli_path=cli_path,
                                 log_file=scenario_log_file,
                                 debug=debug_mode,
-                                base_path=base_path
+                                base_path=base_path,
+                                custom_templates_dirs=custom_templates_dirs,
                             )
-                            executor.load_operands(common_root / "operands", common_root / "common" / "operands")
+                            executor.load_operands(common_root / "operands", common_root / "common" / "operands", common_root / "scenarios" / "common" / "operands")
 
                             async def _execute():
                                 return await executor.execute_scenario(
@@ -865,8 +885,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             
                             passed_scenarios += 1
                             
-                            # Record success
-                            scenario_results.append({
+                            result_entry = {
                                 'name': scenario.name,
                                 'file': scenario_file.name,
                                 'suite': suite_name,
@@ -876,7 +895,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 'steps_total': summary['total_steps'],
                                 'steps_passed': summary['passed'],
                                 'log_file': str(scenario_log_file.relative_to(run_dir_base))
-                            })
+                            }
+                            if summary.get('metrics'):
+                                result_entry['metrics'] = summary['metrics']
+                            scenario_results.append(result_entry)
                             
                         except ScenarioExecutionError as e:
                             failed_scenarios += 1
@@ -1044,7 +1066,13 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     'tests_skipped': 0,
                     'scenarios': scenario_results,
                 }
-                
+
+                all_metrics = []
+                for sr in scenario_results:
+                    all_metrics.extend(sr.get('metrics', []))
+                if all_metrics:
+                    summary_data['metrics'] = all_metrics
+
                 # Save summary
                 artifacts_manager.create_run_summary(run_dir_base, summary_data)
                 

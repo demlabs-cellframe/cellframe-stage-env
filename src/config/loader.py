@@ -412,6 +412,7 @@ class ConfigLoader:
             'cellframe_sdk_git': 'https://gitlab.demlabs.net/cellframe/cellframe-sdk.git',
             'dap_sdk_git': 'https://gitlab.demlabs.net/dap/dap-sdk.git',
             'sdk_git_branch': 'master',
+            'custom_templates_dir': '',
         }
         
         if not config_file.exists():
