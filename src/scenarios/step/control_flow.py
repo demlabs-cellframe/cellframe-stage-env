@@ -2,12 +2,16 @@
 Control flow step executors (If, While, Switch, Set).
 """
 
+import re as _re
+
 from ...utils.logger import get_logger
 from .base import StepExecutor
 from ..schema import SetStep, IfStep, WhileStep, SwitchStep, ForStep
 from ..executor import ScenarioExecutionError, RuntimeContext
 
 logger = get_logger(__name__)
+
+_RE_SINGLE_VAR = _re.compile(r'^\{\{(\w+)\}\}$')
 
 
 class SetStepExecutor(StepExecutor):
@@ -186,29 +190,38 @@ class ForStepExecutor(StepExecutor):
             # First substitute any Jinja2 templates
             substituted = ctx.substitute(str(in_items))
             
-            # Try to parse as list literal first
-            if substituted.startswith('[') and substituted.endswith(']'):
-                import ast
-                try:
-                    items = ast.literal_eval(substituted)
-                except (ValueError, SyntaxError):
-                    # Fallback to eval
+            # If the variable resolved to a list directly, use it
+            var_match = _RE_SINGLE_VAR.match(str(in_items))
+            if var_match:
+                raw_val = ctx.variables.get(var_match.group(1))
+                if isinstance(raw_val, (list, tuple)):
+                    items = list(raw_val)
+                    substituted = None
+            
+            if substituted is not None:
+                # Try to parse as list literal first
+                if substituted.startswith('[') and substituted.endswith(']'):
+                    import ast
+                    try:
+                        items = ast.literal_eval(substituted)
+                    except (ValueError, SyntaxError):
+                        # Fallback to eval
+                        try:
+                            for_globals = {"__builtins__": __builtins__, "range": range, "len": len, "str": str, "int": int, "list": list}
+                            for_globals.update(ctx.variables)
+                            items = eval(substituted, for_globals)
+                        except Exception as e:
+                            raise ScenarioExecutionError(f"Failed to evaluate for items '{in_items}': {e}", step=step)
+                else:
+                    # Try as Python expression
                     try:
                         for_globals = {"__builtins__": __builtins__, "range": range, "len": len, "str": str, "int": int, "list": list}
                         for_globals.update(ctx.variables)
                         items = eval(substituted, for_globals)
+                        if not hasattr(items, '__iter__'):
+                            raise ValueError(f"Result is not iterable: {type(items)}")
                     except Exception as e:
                         raise ScenarioExecutionError(f"Failed to evaluate for items '{in_items}': {e}", step=step)
-            else:
-                # Try as Python expression
-                try:
-                    for_globals = {"__builtins__": __builtins__, "range": range, "len": len, "str": str, "int": int, "list": list}
-                    for_globals.update(ctx.variables)
-                    items = eval(substituted, for_globals)
-                    if not hasattr(items, '__iter__'):
-                        raise ValueError(f"Result is not iterable: {type(items)}")
-                except Exception as e:
-                    raise ScenarioExecutionError(f"Failed to evaluate for items '{in_items}': {e}", step=step)
                 
         # Convert to list to avoid consuming iterators or issues with changes during iteration
         items_list = list(items)

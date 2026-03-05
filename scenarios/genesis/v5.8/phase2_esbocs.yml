@@ -72,13 +72,21 @@ test:
     steps:
       - cli: "net go sync"
         node: "{{first_master}}"
+
+      - cli: "net go sync"
+        node: "{{first_root}}"
+
+      - wait: "10s"
+
+      - cli: "net go sync"
+        node: "{{first_master}}"
       
-      # v5.8: poll ledger on master with smart waiter
+      # v5.8: poll ledger on master with smart waiter (ASAN needs more time)
       - wait: cli
         cmd: "ledger list coins"
         node: "{{first_master}}"
         contains: "{{native_ticker}}"
-        timeout: 120
+        timeout: 300
         interval: 5
       
       - print: "✓ Emission synced to master node ledger"

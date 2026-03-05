@@ -278,6 +278,8 @@ class ScenarioExecutor:
             if node_num.isdigit():
                 return f"node{node_num}"
         
+        _KNOWN_ROLES = {"root", "master", "full"}
+
         # Role-based aliases (root-1, master-2, full-1)
         if "-" in node_alias:
             parts = node_alias.rsplit("-", 1)
@@ -295,31 +297,28 @@ class ScenarioExecutor:
                         if role_nodes and 1 <= index <= len(role_nodes):
                             return role_nodes[index - 1]  # 1-indexed
                     
-                    # Fallback: dynamic mapping based on topology counts (fast fail if not available)
-                    if not self._global_context:
-                        raise RuntimeError(
-                            f"Cannot resolve node alias '{node_alias}': global_context not initialized. "
-                            "Ensure topology is loaded before using role-based aliases."
-                        )
-                    
-                    root_count = getattr(self._global_context, 'root_count', None)
-                    master_count = getattr(self._global_context, 'master_count', None)
-                    
-                    if root_count is None or master_count is None:
-                        raise RuntimeError(
-                            f"Cannot resolve node alias '{node_alias}': root_count or master_count not set in global_context. "
-                            f"root_count={root_count}, master_count={master_count}"
-                        )
-                    
-                    # root-1 -> node1, root-2 -> node2, ...
-                    # master-1 -> node{root_count+1}, master-2 -> node{root_count+2}, ...
-                    # full-1 -> node{root_count+master_count+1}, ...
-                    if role == "root":
-                        return f"node{index}"
-                    elif role == "master":
-                        return f"node{index + root_count}"
-                    elif role == "full":
-                        return f"node{index + root_count + master_count}"
+                    if role in _KNOWN_ROLES:
+                        if not self._global_context:
+                            raise RuntimeError(
+                                f"Cannot resolve node alias '{node_alias}': global_context not initialized. "
+                                "Ensure topology is loaded before using role-based aliases."
+                            )
+                        
+                        root_count = getattr(self._global_context, 'root_count', None)
+                        master_count = getattr(self._global_context, 'master_count', None)
+                        
+                        if root_count is None or master_count is None:
+                            raise RuntimeError(
+                                f"Cannot resolve node alias '{node_alias}': root_count or master_count not set in global_context. "
+                                f"root_count={root_count}, master_count={master_count}"
+                            )
+                        
+                        if role == "root":
+                            return f"node{index}"
+                        elif role == "master":
+                            return f"node{index + root_count}"
+                        elif role == "full":
+                            return f"node{index + root_count + master_count}"
         
         # Fallback: return as-is (will fail later if invalid)
         return node_alias
