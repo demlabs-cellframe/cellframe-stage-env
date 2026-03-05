@@ -25,6 +25,74 @@ class ConfigStepExecutor(StepExecutor):
         self.resolve_node_alias_callback = resolve_node_alias_callback
         self.base_path = container_manager.base_path
         
+    def _lookup_node_id_from_compose(self, service_name: str):
+        """Resolve NODE_ID for a custom compose service (e.g. cdb-node-1 → 9)."""
+        try:
+            compose_file = self.base_path / "docker-compose.generated.yml"
+            if not compose_file.exists():
+                logger.debug(f"compose file not found at {compose_file}")
+                return None
+            import yaml
+            with open(compose_file) as f:
+                data = yaml.safe_load(f)
+            svc = (data or {}).get("services", {}).get(service_name)
+            if not svc:
+                logger.debug(f"service '{service_name}' not in compose file")
+                return None
+            env = svc.get("environment", {})
+            nid = env.get("NODE_ID")
+            if nid is not None:
+                logger.info(f"resolved_compose_node_id", service=service_name, node_id=int(nid))
+                return int(nid)
+        except Exception as e:
+            logger.warning(f"compose_node_id_lookup_failed", service=service_name, error=str(e))
+        return None
+
+    def _resolve_container_for_node_id(self, node_id: int) -> str:
+        """Map numeric node_id to the Docker container name via compose file."""
+        try:
+            import yaml
+            compose_file = self.base_path / "docker-compose.generated.yml"
+            if compose_file.exists():
+                with open(compose_file) as f:
+                    data = yaml.safe_load(f)
+                for name, svc in (data or {}).get("services", {}).items():
+                    env = svc.get("environment", {})
+                    if isinstance(env, dict) and str(env.get("NODE_ID")) == str(node_id):
+                        cname = svc.get("container_name", f"cellframe-stage-{name}")
+                        logger.info("resolved_container_for_node", node_id=node_id, container=cname)
+                        return cname
+            else:
+                logger.warning("compose_file_not_found_for_container_resolve", path=str(compose_file))
+        except Exception as e:
+            logger.warning("container_resolve_exception", node_id=node_id, error=str(e))
+        logger.warning("container_resolve_fallback", node_id=node_id)
+        return f"cellframe-stage-node-{node_id}"
+
+    def _sync_config_to_container(self, node_id: int, config_rel_path: str, host_file: Path):
+        """Push a rendered config file into the running container via docker cp.
+
+        Only needed for paths that are NOT bind-mounted (e.g. lib/plugins/).
+        Paths under ``configs/`` or mounted ``data/`` subdirs are already
+        visible inside the container.
+        """
+        container_dest = f"/opt/cellframe-node/var/{config_rel_path}"
+        svc_name = self._resolve_container_for_node_id(node_id)
+
+        try:
+            result = subprocess.run(
+                ["docker", "cp", str(host_file), f"{svc_name}:{container_dest}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                logger.info("config_synced_to_container",
+                            node_id=node_id, container=svc_name, path=container_dest)
+            else:
+                logger.warning("config_sync_docker_cp_failed",
+                               node_id=node_id, container=svc_name, stderr=result.stderr.strip())
+        except Exception as e:
+            logger.warning("config_sync_exception", node_id=node_id, error=str(e))
+
     def _expand_nodes_list(self, nodes, ctx) -> list:
         """Expand nodes that can be a template string or list."""
         if isinstance(nodes, str):
@@ -47,11 +115,17 @@ class ConfigStepExecutor(StepExecutor):
             resolved = ctx.substitute(node_alias)
             if self.resolve_node_alias_callback:
                 resolved = self.resolve_node_alias_callback(resolved)
-            match = re.search(r'(?:node|root|master|full)-?(\d+)', resolved)
+            # Match base-topology names: node1, node-1, root-2, master-3, full-1
+            match = re.match(r'^(?:node|root|master|full)-?(\d+)$', resolved)
             if match:
                 node_ids.append(int(match.group(1)))
             else:
-                logger.warning(f"Could not parse node ID from {resolved}")
+                # Custom compose service (cdb-node-1, kelvpn-client-3, etc.)
+                nid = self._lookup_node_id_from_compose(resolved)
+                if nid is not None:
+                    node_ids.append(nid)
+                else:
+                    logger.warning(f"Could not parse node ID from {resolved}")
 
         if not node_ids:
             raise ScenarioExecutionError(f"No valid nodes resolved from {step.nodes}", step=step)
@@ -207,6 +281,13 @@ class ConfigStepExecutor(StepExecutor):
             except PermissionError:
                 self._write_root_owned_file(target, rendered)
             logger.info("config_rendered", node_id=node_id, target=str(target), template=str(tpl_path))
+
+            # Paths under cache/data/ (e.g. lib/plugins/) are NOT bind-mounted
+            # by default — push the rendered file into the running container.
+            # Paths under cache/configs/ (cellframe-node.cfg, cfg.d/, network/)
+            # ARE bind-mounted and don't need docker cp.
+            if "/data/" in str(target):
+                self._sync_config_to_container(node_id, expanded, target)
 
     async def _regenerate_standard_config(
         self,

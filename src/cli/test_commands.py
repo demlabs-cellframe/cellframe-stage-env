@@ -12,6 +12,39 @@ from typing import Optional, List, Callable
 from .common import print_info, print_success, print_error, print_warning
 
 
+def _fixup_node_identity(cfg_dir: Path, data_dir: Path, role: str, node_id: int,
+                         network_mgr, print_info, svc_name: str) -> None:
+    """Fix identity and role for a node provisioned from genesis donor.
+
+    Genesis copy gives every node the same CA private keys and the donor's
+    role (usually root).  We must:
+      1. Wipe the entire CA directory so that cellframe-node generates its
+         own unique node-addr.dcert on first start.  The root public certs
+         needed for chain validation are baked into the Docker image.
+      2. Patch node-role in the network config to match the requested role.
+      3. Remove DAG-PoA signing cert reference for non-root nodes.
+    """
+    import re as _re
+    import shutil as _shutil
+
+    ca_dir = data_dir / "lib" / "ca"
+    if ca_dir.exists():
+        for f in ca_dir.iterdir():
+            if f.name == "node-addr.dcert" or ".pvt." in f.name:
+                f.unlink()
+        print_info(f"    [{svc_name}] removed donor private keys from var/lib/ca")
+
+    net_name = network_mgr.topology.network.name
+    net_cfg = cfg_dir / "network" / f"{net_name}.cfg"
+    if net_cfg.exists():
+        content = net_cfg.read_text()
+        content = _re.sub(r'(?m)^node-role\s*=\s*\S+', f'node-role={role}', content)
+        if role not in ("root",):
+            content = _re.sub(r'(?m)^events-sign-cert\s*=.*$', '#events-sign-cert=', content)
+        net_cfg.write_text(content)
+        print_info(f"    [{svc_name}] patched network config: role={role}")
+
+
 def _provision_node_compose(network_mgr, node_compose, base_path, config_loader, print_info, print_success, print_warning, print_error, suite_variables=None):
     """
     Provision additional cellframe nodes declared in suite.node_compose.
@@ -83,6 +116,8 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                 src_data = cache_dir / "data" / src_node
                 if src_data.exists():
                     shutil.copytree(src_data, data_dir, dirs_exist_ok=True)
+            _fixup_node_identity(cfg_dir, data_dir, spec.role, node_id,
+                                 network_mgr, print_info, svc_name)
         elif source.startswith("node-"):
             clone_m = re.match(r'node-(\d+)', source)
             if not clone_m:
@@ -149,6 +184,9 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
     if not compose_specs:
         return
 
+    _generate_unique_node_certs(cache_dir, compose_specs, base_path,
+                                print_info, print_warning)
+
     stage_config = config_loader.load_stage_config()
     try:
         network_mgr.compose.add_extra_node_services(
@@ -175,6 +213,37 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                 print_info(f"  [{svc_name}] installed: {pkg_str}")
         except Exception as e:
             print_warning(f"  [{svc_name}] package install error: {e}")
+
+
+def _generate_unique_node_certs(cache_dir: Path, compose_specs: list, base_path: Path,
+                                print_info, print_warning) -> dict:
+    """Generate unique node-addr certs for node_compose_gen nodes.
+
+    Uses ``cf-cert-generator --single`` (Docker) which outputs the node
+    address deterministically.  Certs are written to ``cache/data/nodeN/lib/ca/``.
+
+    Returns:
+        Dict mapping service_name → node address string.
+    """
+    from ..certs.generator import CertGenerator
+
+    cert_gen = CertGenerator(base_path)
+    addr_map: dict = {}
+
+    for s in compose_specs:
+        node_id = s['id']
+        svc_name = s['service_name']
+        ca_dir = cache_dir / "data" / f"node{node_id}" / "lib" / "ca"
+        ca_dir.mkdir(parents=True, exist_ok=True)
+
+        addr = cert_gen.generate_single_node_cert(ca_dir, cert_name="node-addr")
+        if addr:
+            addr_map[svc_name] = addr
+            print_info(f"    [{svc_name}] node-addr → {addr}")
+        else:
+            print_warning(f"    [{svc_name}] failed to generate unique node-addr")
+
+    return addr_map
 
 
 def _find_donor_node(cache_dir: Path, subdir: str) -> Optional[str]:
@@ -489,7 +558,15 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 print_info(f"🔄 Restoring from snapshot: {restore_snapshot_name}")
                             else:
                                 print_info("🧹 Restoring clean environment state...")
-                            
+
+                            # Reset node registry to base topology before restore.
+                            # Previous suite may have added extra nodes via
+                            # node_compose_gen; without this reset restore_clean_state
+                            # would try to start services that don't exist in compose.
+                            if network_mgr:
+                                network_mgr.nodes.clear()
+                                network_mgr.generate_node_configs()
+
                             async def _restore_state():
                                 await network_mgr.restore_clean_state(name=restore_snapshot_name)
                             
@@ -630,6 +707,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         node_configs_for_setup = network_mgr.generate_node_configs()
                         gc.set_static_node_info(node_configs_for_setup)
                         gc.collect_node_ips(node_configs_for_setup, wait_for_ips=False)
+                        if isinstance(suite_spec, SuiteDescriptor) and suite_spec.node_compose:
+                            for svc_name in suite_spec.node_compose:
+                                ncfg = network_mgr.nodes.get(svc_name)
+                                if ncfg and ncfg.ip_address:
+                                    gc.add_extra_node_ip(svc_name, ncfg.ip_address)
                         topology_vars = gc.to_dict()
                         topology_vars['project_root'] = str(project_root)
 

@@ -7,6 +7,7 @@ delegates execution to the standard ``_execute_steps`` callback.
 """
 
 import copy
+import re
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from pydantic import TypeAdapter
@@ -43,17 +44,30 @@ class CustomOperandStepExecutor(StepExecutor):
         defn = self._registry.get(operand_name)
         raw_steps = defn.get_action_steps(action_name)
 
+        action_def = defn.actions.get(action_name, {})
+        action_defaults = action_def.get("params", {})
+
         logger.info(
             f"Custom operand: {operand_name}.{action_name}",
             params=list(step.operand_params.keys()),
             inner_steps=len(raw_steps),
         )
 
+        merged_params = {**action_defaults, **step.operand_params}
+
+        if defaults and defaults.node and "node" not in merged_params:
+            merged_params["node"] = defaults.node
+
         saved_vars: Dict[str, Any] = {}
         try:
-            for key, value in step.operand_params.items():
+            for key, value in merged_params.items():
                 if isinstance(value, str):
-                    value = ctx.substitute(value)
+                    resolved = ctx.substitute(value)
+                    ref_match = _SINGLE_VAR_RE.fullmatch(value)
+                    if ref_match and ctx.has_variable(ref_match.group(1)):
+                        value = ctx.get_variable(ref_match.group(1))
+                    else:
+                        value = resolved
                 saved_vars[key] = ctx.get_variable(key) if ctx.has_variable(key) else _SENTINEL
                 ctx.set_variable(key, value)
 
@@ -71,3 +85,4 @@ class CustomOperandStepExecutor(StepExecutor):
 
 
 _SENTINEL = object()
+_SINGLE_VAR_RE = re.compile(r'^\{\{(\w+)\}\}$')

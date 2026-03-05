@@ -188,6 +188,12 @@ class ScenarioGlobalContext:
                    count=len(self._node_ips),
                    node_ip_map=self._node_ip_map)
     
+    def add_extra_node_ip(self, key: str, ip: str) -> None:
+        """Register an additional node (e.g. from node_compose_gen) in the IP map."""
+        self._node_ip_map[key] = ip
+        if ip not in self._node_ips:
+            self._node_ips.append(ip)
+
     def refresh_ips(self) -> None:
         """Refresh IP addresses from containers (useful after restart)."""
         if self._node_configs:
