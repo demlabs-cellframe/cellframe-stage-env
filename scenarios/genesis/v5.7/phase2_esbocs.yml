@@ -102,8 +102,8 @@ test:
       - cli: "net go sync"
         node: "{{first_master}}"
       
-      # Wait for sync to complete
-      - wait: "30s"
+      # Wait for sync to complete (60s for ASAN builds)
+      - wait: "60s"
       
       # Verify emission is now in ledger on master
       - cli: "ledger list coins"
@@ -125,8 +125,8 @@ test:
       # Process mainchain genesis transaction on root
       - cli: "mempool proc -datum {{mainchain_genesis_tx}}"
       
-      # Wait for mempool sync via Global DB
-      - wait: "30s"
+      # Wait for mempool sync via Global DB (60s for ASAN builds)
+      - wait: "60s"
       
       # Debug: Show mempool status on master
       - cli: "mempool list -chain main"
@@ -147,7 +147,8 @@ test:
       
       # Wait for ESBocs consensus to create genesis block
       # This includes: TX validation, consensus round, block signing, propagation
-      - wait: "120s"
+      # 180s to accommodate ASAN instrumentation overhead
+      - wait: "180s"
       
       # Check if genesis block was created
       - cli: "block list"
@@ -156,8 +157,8 @@ test:
       
       - print: "Master blocks status: {{_master_blocks_status}}"
       
-      # Additional wait if no blocks yet
-      - wait: "30s"
+      # Additional wait if no blocks yet (60s for ASAN builds)
+      - wait: "60s"
       
       # Verify block was created and synced to master node
       - cli: "block list"

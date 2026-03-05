@@ -730,6 +730,8 @@ class ScenarioExecutor:
             elif isinstance(step, WaitStep):
                 step_dump = step.model_dump() if hasattr(step, 'model_dump') else str(step)
                 logger.info(f"Executing WaitStep. Dump: {step_dump}")
+                if defaults and defaults.cli:
+                    ctx.variables["_cli_defaults"] = defaults.cli
                 await self.wait_executor.execute(step, ctx)
             elif isinstance(step, WaitForDatumStep):
                 await self.wait_for_datum_executor.execute(step, ctx)

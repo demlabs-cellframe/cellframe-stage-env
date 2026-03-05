@@ -423,6 +423,7 @@ class DockerComposeManager:
             
             # Set TOOLS_BASE_URL from paths config
             node_service['build']['args']['TOOLS_BASE_URL'] = tools_base_url
+            node_service['build']['args']['BUILD_TYPE'] = build_type
             
             # Set build args for node source
             node_service['build']['args']['NODE_SOURCE_TYPE'] = node_source_type

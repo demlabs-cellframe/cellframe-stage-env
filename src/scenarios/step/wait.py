@@ -183,6 +183,17 @@ class WaitStepExecutor(StepExecutor):
 
         logger.info(f"Waiting for condition: {wait_type}")
         
+        # Handle polling waiters directly (cli, bash, python)
+        if wait_type == "cli":
+            await self._execute_cli_poll(step, ctx)
+            return
+        if wait_type == "bash":
+            await self._execute_bash_poll(step, ctx)
+            return
+        if wait_type == "python":
+            await self._execute_python_poll(step, ctx)
+            return
+        
         # Map clean names to internal waiter types
         WAITER_TYPE_MAPPING = {
             "mempool": "datum_in_mempool",
@@ -254,6 +265,266 @@ class WaitStepExecutor(StepExecutor):
                 context=params
             )
     
+    async def _execute_cli_poll(self, step, ctx) -> None:
+        """
+        Poll a CLI command until contains/not_contains condition is satisfied.
+
+        Supports the same variable substitution and CLI-defaults mechanism as
+        regular CLIStep (``-net``, ``-chain``, etc. are injected from the
+        scenario's ``defaults.cli`` block via the global context).
+        """
+        if not step.cmd:
+            raise ScenarioExecutionError(
+                "wait: cli requires 'cmd' parameter", step=step
+            )
+
+        cmd = ctx.substitute(step.cmd)
+        node_alias = ctx.substitute(step.node) if step.node else "node1"
+        if self.resolve_node_alias_callback:
+            node = self.resolve_node_alias_callback(node_alias)
+        else:
+            node = node_alias
+
+        expected = ctx.substitute(step.contains) if step.contains else None
+        unexpected = ctx.substitute(step.not_contains) if step.not_contains else None
+        if not expected and not unexpected:
+            raise ScenarioExecutionError(
+                "wait: cli requires at least 'contains' or 'not_contains'",
+                step=step,
+            )
+
+        # Apply CLI defaults from scenario context (e.g. -net, -chain)
+        cli_defaults = ctx.variables.get("_cli_defaults")
+        if cli_defaults and isinstance(cli_defaults, dict):
+            from ...utils.cli_parser import get_cli_parser
+            cli_parser = get_cli_parser()
+            resolved = {k: ctx.substitute(v) for k, v in cli_defaults.items()}
+            patched = cli_parser.apply_cli_defaults(cmd, resolved)
+            if patched and isinstance(patched, str):
+                cmd = patched
+
+        timeout = float(step.timeout)
+        interval = float(step.interval)
+        elapsed = 0.0
+        attempt = 0
+
+        logger.info(
+            f"  wait: cli cmd='{cmd}' node={node} "
+            f"contains={expected!r} not_contains={unexpected!r} "
+            f"timeout={timeout}s interval={interval}s"
+        )
+
+        import re as _re
+
+        last_output = ""
+        while elapsed < timeout:
+            attempt += 1
+            try:
+                result = await self.container_manager.exec_cli_command(
+                    command=cmd, node=node, timeout=30
+                )
+                output = result.get("stdout", "")
+                last_output = output
+                output_lower = output.lower()
+
+                ok = True
+                if expected:
+                    exp_lower = expected.lower()
+                    if exp_lower not in output_lower:
+                        try:
+                            if not _re.search(exp_lower, output_lower):
+                                ok = False
+                        except _re.error:
+                            ok = False
+                if unexpected:
+                    unexp_lower = unexpected.lower()
+                    found = unexp_lower in output_lower
+                    if not found:
+                        try:
+                            found = bool(_re.search(unexp_lower, output_lower))
+                        except _re.error:
+                            pass
+                    if found:
+                        ok = False
+
+                if ok:
+                    logger.info(
+                        f"  ✅ wait: cli satisfied after {attempt} attempts "
+                        f"({elapsed:.0f}s)"
+                    )
+                    ctx.add_result("wait", True, {
+                        "type": "cli", "attempts": attempt, "elapsed": elapsed
+                    })
+                    return
+
+            except Exception as e:
+                logger.debug(f"  wait: cli attempt {attempt} error: {e}")
+
+            await asyncio.sleep(interval)
+            elapsed += interval
+
+        msg = (
+            f"wait: cli timeout after {timeout}s ({attempt} attempts). "
+            f"cmd='{cmd}' contains={expected!r} not_contains={unexpected!r}"
+        )
+        if getattr(step, "optional", False):
+            logger.warning(f"⚠️ {msg} (optional, continuing)")
+            ctx.add_result("wait", False, {"type": "cli", "timeout": True})
+            return
+        raise ScenarioExecutionError(
+            msg, step=step,
+            context={"last_output": last_output[:500]}
+        )
+
+    async def _execute_bash_poll(self, step, ctx) -> None:
+        """
+        Poll a bash script on a node until it exits with code 0.
+
+        Optionally checks ``contains`` / ``not_contains`` on stdout.
+        """
+        if not step.script:
+            raise ScenarioExecutionError(
+                "wait: bash requires 'script' parameter", step=step
+            )
+
+        script = ctx.substitute(step.script)
+        node_alias = ctx.substitute(step.node) if step.node else "node1"
+        if self.resolve_node_alias_callback:
+            node = self.resolve_node_alias_callback(node_alias)
+        else:
+            node = node_alias
+
+        expected = ctx.substitute(step.contains) if step.contains else None
+        unexpected = ctx.substitute(step.not_contains) if step.not_contains else None
+        timeout = float(step.timeout)
+        interval = float(step.interval)
+        elapsed = 0.0
+        attempt = 0
+
+        logger.info(
+            f"  wait: bash node={node} timeout={timeout}s interval={interval}s"
+        )
+
+        import re as _re
+        last_output = ""
+
+        while elapsed < timeout:
+            attempt += 1
+            try:
+                result = await self.container_manager.exec_command(
+                    command=["bash", "-c", script],
+                    node=node,
+                    timeout=30,
+                )
+                exit_code = result.get("returncode", -1)
+                output = result.get("stdout", "")
+                last_output = output
+
+                if exit_code == 0:
+                    ok = True
+                    output_lower = output.lower()
+                    if expected:
+                        exp_lower = expected.lower()
+                        if exp_lower not in output_lower:
+                            try:
+                                if not _re.search(exp_lower, output_lower):
+                                    ok = False
+                            except _re.error:
+                                ok = False
+                    if unexpected:
+                        unexp_lower = unexpected.lower()
+                        found = unexp_lower in output_lower
+                        if not found:
+                            try:
+                                found = bool(_re.search(unexp_lower, output_lower))
+                            except _re.error:
+                                pass
+                        if found:
+                            ok = False
+
+                    if ok:
+                        logger.info(
+                            f"  ✅ wait: bash satisfied after {attempt} attempts "
+                            f"({elapsed:.0f}s)"
+                        )
+                        ctx.add_result("wait", True, {
+                            "type": "bash", "attempts": attempt, "elapsed": elapsed
+                        })
+                        return
+
+            except Exception as e:
+                logger.debug(f"  wait: bash attempt {attempt} error: {e}")
+
+            await asyncio.sleep(interval)
+            elapsed += interval
+
+        msg = (
+            f"wait: bash timeout after {timeout}s ({attempt} attempts). "
+            f"script='{script[:80]}'"
+        )
+        if getattr(step, "optional", False):
+            logger.warning(f"⚠️ {msg} (optional, continuing)")
+            ctx.add_result("wait", False, {"type": "bash", "timeout": True})
+            return
+        raise ScenarioExecutionError(
+            msg, step=step,
+            context={"last_output": last_output[:500]}
+        )
+
+    async def _execute_python_poll(self, step, ctx) -> None:
+        """
+        Poll a Python expression until it evaluates to a truthy value.
+
+        The expression has access to ``ctx`` (RuntimeContext) and all
+        scenario variables as local names.
+        """
+        if not step.script:
+            raise ScenarioExecutionError(
+                "wait: python requires 'script' parameter", step=step
+            )
+
+        expr = ctx.substitute(step.script)
+        timeout = float(step.timeout)
+        interval = float(step.interval)
+        elapsed = 0.0
+        attempt = 0
+
+        logger.info(
+            f"  wait: python expr='{expr[:80]}' timeout={timeout}s interval={interval}s"
+        )
+
+        while elapsed < timeout:
+            attempt += 1
+            try:
+                local_vars = dict(ctx.variables)
+                local_vars["ctx"] = ctx
+                result = eval(expr, {"__builtins__": __builtins__}, local_vars)
+                if result:
+                    logger.info(
+                        f"  ✅ wait: python satisfied after {attempt} attempts "
+                        f"({elapsed:.0f}s), result={result!r}"
+                    )
+                    ctx.add_result("wait", True, {
+                        "type": "python", "attempts": attempt,
+                        "elapsed": elapsed, "result": str(result)
+                    })
+                    return
+            except Exception as e:
+                logger.debug(f"  wait: python attempt {attempt} error: {e}")
+
+            await asyncio.sleep(interval)
+            elapsed += interval
+
+        msg = (
+            f"wait: python timeout after {timeout}s ({attempt} attempts). "
+            f"expr='{expr[:80]}'"
+        )
+        if getattr(step, "optional", False):
+            logger.warning(f"⚠️ {msg} (optional, continuing)")
+            ctx.add_result("wait", False, {"type": "python", "timeout": True})
+            return
+        raise ScenarioExecutionError(msg, step=step)
+
     def _build_params(self, step: WaitStep, ctx: RuntimeContext) -> dict:
         """
         Build parameters dict from step for dispatcher.
