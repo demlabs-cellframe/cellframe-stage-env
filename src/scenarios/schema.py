@@ -272,8 +272,21 @@ class WaitStep(BaseModel):
       - wait: finalized         # Wait for datum finalization (DAG/Block/None)
       - wait: network_online    # Wait for network state
       - wait: wallet_balance    # Wait for wallet balance condition
+      - wait: cli               # Poll CLI command until contains/not_contains matched
+        cmd: "ledger list coins"
+        node: "{{first_master}}"
+        contains: "{{native_ticker}}"
+        timeout: 120
+        interval: 5
+      - wait: bash              # Poll bash script on node until exit 0
+        script: "pgrep -f cellframe-node"
+        node: "{{first_root}}"
+        timeout: 60
+      - wait: python            # Poll python expression until truthy
+        script: "int(ctx.get('_block_count', 0)) > 0"
+        timeout: 30
     """
-    wait: str = Field(..., description="Duration (e.g., '5s') or condition ('mempool', 'finalized', ...)")
+    wait: str = Field(..., description="Duration (e.g., '5s') or condition ('mempool', 'finalized', 'cli', 'bash', 'python', ...)")
     
     # Context parameters
     datum: Optional[str] = Field(None, description="Datum hash (for mempool/finalized)")
@@ -282,6 +295,15 @@ class WaitStep(BaseModel):
     network: Optional[str] = Field(None, description="Network name")
     chain: Optional[str] = Field(None, description="Chain name")
     timeout: int = Field(60, description="Timeout in seconds")
+    
+    # CLI polling parameters (for wait: cli)
+    cmd: Optional[str] = Field(None, description="CLI command to poll (for wait: cli)")
+    contains: Optional[str] = Field(None, description="Expected substring/regex in output (for wait: cli, wait: bash)")
+    not_contains: Optional[str] = Field(None, description="Unexpected substring in output (for wait: cli, wait: bash)")
+    interval: int = Field(5, ge=1, description="Seconds between polling attempts")
+    
+    # Script body (for wait: bash, wait: python)
+    script: Optional[str] = Field(None, description="Bash script or Python expression to poll")
     
     # Wallet balance parameters
     wallet: Optional[str] = Field(None, description="Wallet name (for wallet_balance)")

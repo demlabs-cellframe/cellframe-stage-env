@@ -342,6 +342,7 @@ class FilesystemSnapshot(BaseSnapshot):
             "--no-owner",
             "--no-group",
             "--delete",  # delete files in target not in source
+            "--exclude", "asan.*",
             str(source) + "/",  # trailing slash important!
             str(target) + "/",
             stdout=asyncio.subprocess.PIPE,

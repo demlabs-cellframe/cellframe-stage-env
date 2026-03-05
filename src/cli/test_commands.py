@@ -58,6 +58,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
     import ipaddress
     import re
     import shutil
+    _asan_ignore = shutil.ignore_patterns("asan.*")
 
     from ..network.models import NodeConfig
 
@@ -110,12 +111,12 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
         if source == "genesis":
             src_node = _find_donor_node(cache_dir, "configs")
             if src_node and not cfg_dir.exists():
-                shutil.copytree(cache_dir / "configs" / src_node, cfg_dir, dirs_exist_ok=True)
+                shutil.copytree(cache_dir / "configs" / src_node, cfg_dir, dirs_exist_ok=True, ignore=_asan_ignore)
                 print_info(f"    configs from genesis ({src_node})")
             if src_node and not data_dir.exists():
                 src_data = cache_dir / "data" / src_node
                 if src_data.exists():
-                    shutil.copytree(src_data, data_dir, dirs_exist_ok=True)
+                    shutil.copytree(src_data, data_dir, dirs_exist_ok=True, ignore=_asan_ignore)
             _fixup_node_identity(cfg_dir, data_dir, spec.role, node_id,
                                  network_mgr, print_info, svc_name)
         elif source.startswith("node-"):
@@ -127,9 +128,9 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
             src_cfg = cache_dir / "configs" / f"node{clone_id}"
             src_data = cache_dir / "data" / f"node{clone_id}"
             if src_cfg.exists() and not cfg_dir.exists():
-                shutil.copytree(src_cfg, cfg_dir, dirs_exist_ok=True)
+                shutil.copytree(src_cfg, cfg_dir, dirs_exist_ok=True, ignore=_asan_ignore)
             if src_data.exists() and not data_dir.exists():
-                shutil.copytree(src_data, data_dir, dirs_exist_ok=True)
+                shutil.copytree(src_data, data_dir, dirs_exist_ok=True, ignore=_asan_ignore)
         elif source == "fresh":
             cfg_dir.mkdir(parents=True, exist_ok=True)
             (cfg_dir / "cellframe-node.cfg.d").mkdir(exist_ok=True)
@@ -745,12 +746,16 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             )
                             executor.load_operands(common_root / "operands", common_root / "common" / "operands")
 
+                            setup_vars = dict(topology_vars or {})
+                            if isinstance(suite_spec, SuiteDescriptor) and suite_spec.variables:
+                                setup_vars.update(suite_spec.variables)
+
                             async def _run_suite_setup():
                                 await executor.execute_scenario(
                                     suite_setup_scenario,
                                     compose_manager=network_mgr.compose if network_mgr else None,
                                     snapshot_manager=network_mgr.snapshot_manager if network_mgr else None,
-                                    initial_variables=topology_vars or None
+                                    initial_variables=setup_vars or None
                                 )
                             
                             asyncio.run(_run_suite_setup())

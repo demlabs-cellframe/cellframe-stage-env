@@ -33,15 +33,15 @@ class ConfigGenerator:
         Args:
             base_path: Base path to stage-env directory
             config_path: Optional path to stage-env.cfg
-            version_dir: Node version directory (e.g. "v5.x", "v6.x") for versioned templates.
-                         If None, read from [build] genesis_version in stage-env config, fallback "v5.x".
+            version_dir: Node version directory (e.g. "v5.7", "v5.8", "v6.x") for versioned templates.
+                         If None, read from [build] genesis_version in stage-env config, fallback "stable".
         """
         self.base_path = base_path
         self.config_loader = get_config_loader()
 
         if version_dir is None:
             stage_config = self.config_loader.load_stage_config()
-            version_dir = stage_config.get('genesis_version', 'v5.x')
+            version_dir = stage_config.get('genesis_version', 'stable')
         self.version_dir = version_dir
         
         # Load paths from config

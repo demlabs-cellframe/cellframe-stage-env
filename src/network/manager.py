@@ -221,10 +221,11 @@ class NetworkManager:
         """Choose genesis scenario directory version.
 
         Priority:
-          1. ``[build] genesis_version`` from stage-env config (e.g. ``v6.x``)
-          2. Auto-detect from available ``vN.x`` directories (lowest = most stable)
+          1. ``[build] genesis_version`` from stage-env config (e.g. ``v5.8``)
+          2. ``stable`` symlink in scenarios/genesis/ (default)
+          3. Auto-detect from available ``vN.x`` directories (lowest first)
         """
-        default_dir = "v5.x"
+        default_dir = "stable"
         genesis_base = self.base_path / "scenarios" / "genesis"
 
         stage_config = self.config_loader.load_stage_config()
@@ -236,6 +237,10 @@ class NetworkManager:
                 return configured
             logger.warning("genesis_version_config_dir_missing",
                            configured=configured, fallback=default_dir)
+
+        if (genesis_base / "stable").exists():
+            logger.info("genesis_version_stable_symlink", version_dir="stable")
+            return "stable"
 
         available = sorted(
             d.name for d in genesis_base.iterdir()

@@ -154,8 +154,8 @@ RUN apt-get update && apt-get install -y \
     # Install libasan conditionally (version differs between systems)
     (apt-get -y install libasan8 || apt-get -y install libasan6 || apt-get -y install libasan5 || true) \
     && \
-    # Install debug tools only for debug builds
-    if [ "$BUILD_TYPE" = "debug" ]; then \
+    # Install debug tools for debug and asan builds
+    if [ "$BUILD_TYPE" = "debug" ] || [ "$BUILD_TYPE" = "asan" ]; then \
         apt-get install -y htop strace gdb valgrind vim nano; \
     fi && \
     rm -rf /var/lib/apt/lists/*

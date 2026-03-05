@@ -284,6 +284,8 @@ class ScenarioExecutor:
         if re.match(r'^[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*-\d+$', node_alias):
             return node_alias
 
+        _KNOWN_ROLES = {"root", "master", "full"}
+
         # Role-based aliases (root-1, master-2, full-1)
         if "-" in node_alias:
             parts = node_alias.rsplit("-", 1)
@@ -301,31 +303,28 @@ class ScenarioExecutor:
                         if role_nodes and 1 <= index <= len(role_nodes):
                             return role_nodes[index - 1]  # 1-indexed
                     
-                    # Fallback: dynamic mapping based on topology counts (fast fail if not available)
-                    if not self._global_context:
-                        raise RuntimeError(
-                            f"Cannot resolve node alias '{node_alias}': global_context not initialized. "
-                            "Ensure topology is loaded before using role-based aliases."
-                        )
-                    
-                    root_count = getattr(self._global_context, 'root_count', None)
-                    master_count = getattr(self._global_context, 'master_count', None)
-                    
-                    if root_count is None or master_count is None:
-                        raise RuntimeError(
-                            f"Cannot resolve node alias '{node_alias}': root_count or master_count not set in global_context. "
-                            f"root_count={root_count}, master_count={master_count}"
-                        )
-                    
-                    # root-1 -> node1, root-2 -> node2, ...
-                    # master-1 -> node{root_count+1}, master-2 -> node{root_count+2}, ...
-                    # full-1 -> node{root_count+master_count+1}, ...
-                    if role == "root":
-                        return f"node{index}"
-                    elif role == "master":
-                        return f"node{index + root_count}"
-                    elif role == "full":
-                        return f"node{index + root_count + master_count}"
+                    if role in _KNOWN_ROLES:
+                        if not self._global_context:
+                            raise RuntimeError(
+                                f"Cannot resolve node alias '{node_alias}': global_context not initialized. "
+                                "Ensure topology is loaded before using role-based aliases."
+                            )
+                        
+                        root_count = getattr(self._global_context, 'root_count', None)
+                        master_count = getattr(self._global_context, 'master_count', None)
+                        
+                        if root_count is None or master_count is None:
+                            raise RuntimeError(
+                                f"Cannot resolve node alias '{node_alias}': root_count or master_count not set in global_context. "
+                                f"root_count={root_count}, master_count={master_count}"
+                            )
+                        
+                        if role == "root":
+                            return f"node{index}"
+                        elif role == "master":
+                            return f"node{index + root_count}"
+                        elif role == "full":
+                            return f"node{index + root_count + master_count}"
         
         # Fallback: return as-is (will fail later if invalid)
         return node_alias
@@ -755,6 +754,8 @@ class ScenarioExecutor:
             elif isinstance(step, WaitStep):
                 step_dump = step.model_dump() if hasattr(step, 'model_dump') else str(step)
                 logger.info(f"Executing WaitStep. Dump: {step_dump}")
+                if defaults and defaults.cli:
+                    ctx.variables["_cli_defaults"] = defaults.cli
                 await self.wait_executor.execute(step, ctx)
             elif isinstance(step, WaitForDatumStep):
                 await self.wait_for_datum_executor.execute(step, ctx)
