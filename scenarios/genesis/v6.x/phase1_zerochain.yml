@@ -323,7 +323,13 @@ test:
     steps:
       - cli: "token_decl -token {{native_ticker}} -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
         save_hash: token_hash
-      
+        save_to: _token_decl_result
+      - print: "Token decl result: {{_token_decl_result}}"
+
+      - cli: "mempool list"
+        save_to: _mempool_before_proc
+      - print: "Mempool before proc_all: {{_mempool_before_proc}}"
+
       - cli: "mempool proc_all"
         save_to: _mempool_proc_result
       - print: "Mempool proc_all result: {{_mempool_proc_result}}"

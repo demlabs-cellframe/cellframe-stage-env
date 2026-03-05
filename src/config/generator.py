@@ -155,7 +155,6 @@ class ConfigGenerator:
             for node in nodes:
                 context = {
                     'node_ip': node.ip_address,
-                    'seed_mode': 'false',
                 }
                 logger.info("generating_cellframe_node_cfg", 
                            node_id=node.node_id, 
