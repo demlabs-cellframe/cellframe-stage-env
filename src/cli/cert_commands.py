@@ -80,7 +80,38 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         cert_gen = CertGenerator(base_path, certs_dir=certs_dir)
         cert_gen.clean()
         print_success("Cleaned certificates")
-        
+
+        # Clean snapshots (so genesis can be re-run from scratch)
+        print_info("Removing snapshots...")
+        try:
+            snapshots_config = config_loader.get_suite_isolation_config()
+            snapshots_dir_relative = snapshots_config.get("snapshots_dir", "../../cache/snapshots")
+            snapshots_dir = (base_path / snapshots_dir_relative).resolve()
+            if snapshots_dir.exists():
+                import asyncio
+                from ..snapshots.manager import SnapshotManager, SnapshotMode
+                mode_str = snapshots_config.get("mode", "filesystem").lower()
+                mode_map = {
+                    "disabled": SnapshotMode.DISABLED,
+                    "recreate": SnapshotMode.RECREATE,
+                    "filesystem": SnapshotMode.FILESYSTEM,
+                    "squashfs": SnapshotMode.SQUASHFS,
+                }
+                snapshot_mode = mode_map.get(mode_str, SnapshotMode.FILESYSTEM)
+                snapshot_manager = SnapshotManager(base_path, snapshot_mode, snapshots_config)
+
+                async def _delete_all_snapshots():
+                    snapshots = await snapshot_manager.list_snapshots()
+                    for name in snapshots:
+                        await snapshot_manager.delete_snapshot(name)
+
+                asyncio.run(_delete_all_snapshots())
+                print_success("Snapshots cleaned")
+            else:
+                print_info("No snapshots directory found")
+        except Exception as e:
+            print_warning(f"Failed to clean snapshots: {e}")
+
         if all:
             # Initialize Docker client for cleanup (no need for compose project)
             compose_mgr = None
@@ -141,55 +172,6 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 except Exception as e:
                     print_error(f"Failed to clean data: {e}")
                     sys.exit(1)
-            
-            # Clean snapshots
-            print_info("Removing snapshots...")
-            try:
-                snapshots_config = config_loader.get_suite_isolation_config()
-                snapshots_dir_relative = snapshots_config.get('snapshots_dir', '../../cache/snapshots')
-                snapshots_dir = (base_path / snapshots_dir_relative).resolve()
-                
-                if snapshots_dir.exists():
-                    # Use snapshot manager to clean
-                    import asyncio
-                    
-                    # Check if event loop is already running
-                    try:
-                        loop = asyncio.get_running_loop()
-                        print_error("Cannot run async code: event loop already running")
-                        sys.exit(1)
-                    except RuntimeError:
-                        pass
-                    
-                    # Get snapshot mode from config
-                    mode_str = snapshots_config.get('mode', 'filesystem').lower()
-                    mode_map = {
-                        'disabled': SnapshotMode.DISABLED,
-                        'recreate': SnapshotMode.RECREATE,
-                        'filesystem': SnapshotMode.FILESYSTEM,
-                        'squashfs': SnapshotMode.SQUASHFS,
-                    }
-                    snapshot_mode = mode_map.get(mode_str, SnapshotMode.FILESYSTEM)
-                    
-                    snapshot_manager = SnapshotManager(base_path, snapshot_mode, snapshots_config)
-                    
-                    # Delete all snapshots
-                    async def delete_all_snapshots():
-                        try:
-                            snapshots = await snapshot_manager.list_snapshots()
-                            for snapshot_name in snapshots:
-                                await snapshot_manager.delete_snapshot(snapshot_name)
-                        except Exception as e:
-                            print_error(f"Error deleting snapshots: {e}")
-                            raise
-                    
-                    asyncio.run(delete_all_snapshots())
-                    print_success("Snapshots cleaned")
-                else:
-                    print_info("No snapshots directory found")
-            except Exception as e:
-                print_error(f"Failed to clean snapshots: {e}")
-                sys.exit(1)
             
             # Clean Docker networks (including conflicting ones)
             print_info("Cleaning Docker networks...")

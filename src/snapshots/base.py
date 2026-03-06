@@ -50,13 +50,14 @@ class BaseSnapshot(ABC):
                     snapshots_path=str(self.snapshots_path))
     
     @abstractmethod
-    async def create(self, name: str) -> bool:
+    async def create(self, name: str, extra_metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
         Create a snapshot.
-        
+
         Args:
             name: Snapshot name
-            
+            extra_metadata: Optional dict to merge into snapshot metadata (e.g. emission_hash)
+
         Returns:
             True if successful
         """

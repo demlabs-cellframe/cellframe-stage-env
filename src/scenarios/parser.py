@@ -46,16 +46,23 @@ class BaseScenarioParser:
     Provides reusable functionality for both suite and scenario parsing.
     """
     
-    def __init__(self, scenarios_root: Path, common_root: Optional[Path] = None):
+    def __init__(
+        self,
+        scenarios_root: Path,
+        common_root: Optional[Path] = None,
+        fallback_common_root: Optional[Path] = None,
+    ):
         """
         Initialize base parser.
-        
+
         Args:
             scenarios_root: Root directory for scenario/suite files
             common_root: Optional root directory for common includes
+            fallback_common_root: Optional extra root for includes (e.g. stage-env integration scenarios)
         """
         self.scenarios_root = Path(scenarios_root)
         self.common_root = Path(common_root) if common_root else self.scenarios_root
+        self.fallback_common_root = Path(fallback_common_root) if fallback_common_root else None
         self._loaded_files: Dict[Path, Dict[str, Any]] = {}
         # Pattern to match {{anything}} including complex expressions like {{map['key']}} or {{array[0]}}
         self._variable_pattern = re.compile(r'\{\{([^}]+)\}\}')
@@ -138,17 +145,19 @@ class BaseScenarioParser:
                 (self.common_root / include_entry).resolve(),
                 (self.common_root / "integration" / "scenarios" / include_entry).resolve(),
             ]
-            
+            if self.fallback_common_root:
+                search_paths.append((self.fallback_common_root / include_entry).resolve())
+
             include_full = None
             for path in search_paths:
                 if path.exists():
                     include_full = path
                     break
-            
+
             if include_full is None:
                 raise ScenarioParseError(
-                    f"Included file not found: {include_entry}\nSearched in:\n" +
-                    "\n".join(f"  - {p}" for p in search_paths),
+                    f"Included file not found: {include_entry}\nSearched in:\n"
+                    + "\n".join(f"  - {p}" for p in search_paths),
                     file_path=search_paths[0]
                 )
             

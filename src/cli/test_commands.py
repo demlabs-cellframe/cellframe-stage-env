@@ -504,6 +504,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     common_root = project_root / "tests" / "e2e"
                     if not common_root.exists():
                         common_root = base_path / "tests"
+                    # fallback: stage-env integration scenarios (e.g. common/networks/single_node.yml)
+                    fallback_common = (base_path / "tests" / "integration" / "scenarios").resolve()
+                    if not fallback_common.exists():
+                        fallback_common = None
 
                     custom_tpl_raw = paths_config.get('custom_templates_dir', '')
                     custom_templates_dirs = []
@@ -512,8 +516,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         if resolved.is_dir():
                             custom_templates_dirs.append(resolved)
 
-                    parser = ScenarioParser(scenarios_root=suite_descriptor.parent, common_root=common_root)
-                    
+                    parser = ScenarioParser(
+                        scenarios_root=suite_descriptor.parent,
+                        common_root=common_root,
+                        fallback_common_root=fallback_common,
+                    )
+
                     suite_spec = None  # Initialize to None in case of parse failure
                     try:
                         suite_desc_rel = suite_descriptor.relative_to(suite_descriptor.parent)
@@ -815,8 +823,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     
                     # Execute suite scenarios
                     # Create fresh parser for each suite to avoid stale cache
-                    parser = ScenarioParser(scenarios_root=suite_path, common_root=common_root)
-                    
+                    parser = ScenarioParser(
+                        scenarios_root=suite_path,
+                        common_root=common_root,
+                        fallback_common_root=fallback_common,
+                    )
+
                     for scenario_file in suite_scenarios:
                         total_scenarios += 1
                         print_info(f"\n{'─' * 60}")
@@ -843,7 +855,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             if isinstance(suite_spec, SuiteDescriptor) and suite_spec.includes:
                                 # Load suite includes and extract defaults
                                 from ..scenarios.parser import ScenarioParser as SP
-                                suite_parser = SP(scenarios_root=suite_path, common_root=common_root)
+                                suite_parser = SP(
+                                    scenarios_root=suite_path,
+                                    common_root=common_root,
+                                    fallback_common_root=fallback_common,
+                                )
                                 
                                 # Process suite includes
                                 suite_includes_data = {}

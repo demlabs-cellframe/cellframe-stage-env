@@ -89,17 +89,37 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             if not Confirm.ask("This will delete all data. Continue?", default=False):
                 print_info("Cancelled")
                 return
-            
+
             print_warning("Cleaning all data...")
             config_loader = get_config_loader()
             paths_config = config_loader.get_paths_config()
-            cache_dir_relative = paths_config.get('cache_dir', 'cache')
+            cache_dir_relative = paths_config.get("cache_dir", "cache")
             cache_dir = (base_path / cache_dir_relative).resolve()
             certs_dir = cache_dir / "certs"
-            
+
             cert_gen = CertGenerator(base_path, certs_dir=certs_dir)
             cert_gen.clean()
-        
+
+            # Clean snapshots so genesis can run from scratch
+            snapshots_config = config_loader.get_suite_isolation_config()
+            snapshots_dir = (base_path / snapshots_config.get("snapshots_dir", "../../cache/snapshots")).resolve()
+            if snapshots_dir.exists():
+                from ..snapshots.manager import SnapshotManager, SnapshotMode
+                mode_str = snapshots_config.get("mode", "filesystem").lower()
+                mode_map = {
+                    "disabled": SnapshotMode.DISABLED,
+                    "recreate": SnapshotMode.RECREATE,
+                    "filesystem": SnapshotMode.FILESYSTEM,
+                    "squashfs": SnapshotMode.SQUASHFS,
+                }
+                snapshot_mode = mode_map.get(mode_str, SnapshotMode.FILESYSTEM)
+                snapshot_mgr = SnapshotManager(base_path, snapshot_mode, snapshots_config)
+                async def _clean_snapshots():
+                    for name in await snapshot_mgr.list_snapshots():
+                        await snapshot_mgr.delete_snapshot(name)
+                asyncio.run(_clean_snapshots())
+                print_info("Snapshots cleaned")
+
         # NetworkManager will use global config loader
         network_mgr = NetworkManager(base_path, topology_name=topology, config_path=get_config_path())
         network_mgr.keep_running = keep_running

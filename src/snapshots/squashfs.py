@@ -8,6 +8,7 @@ overlay filesystem for writes. Provides maximum speed with minimal overhead.
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import os
 import stat
@@ -137,16 +138,17 @@ class SquashfsSnapshot(BaseSnapshot):
         
         return False
     
-    async def create(self, name: str) -> bool:
+    async def create(self, name: str, extra_metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
         Create squashfs snapshot including data and configs.
-        
+
         CRITICAL: Includes both data (cache/data/) and configs (cache/configs/)
         to preserve static_genesis_event and other genesis configuration.
-        
+
         Args:
             name: Snapshot name
-            
+            extra_metadata: Optional dict to store in {name}.metadata (e.g. emission_hash)
+
         Returns:
             True if snapshot created successfully
         """
@@ -234,7 +236,7 @@ class SquashfsSnapshot(BaseSnapshot):
                             error=stderr.decode())
                 return False
             
-            # Create metadata
+            # Create metadata (JSON sidecar next to .sqfs; include extra_metadata e.g. emission_hash)
             metadata = {
                 "name": name,
                 "type": "squashfs",
@@ -242,9 +244,10 @@ class SquashfsSnapshot(BaseSnapshot):
                 "size_bytes": snapshot_file.stat().st_size,
                 "includes_configs": configs_path.exists(),
             }
-            
+            if extra_metadata:
+                metadata.update(extra_metadata)
             metadata_file = self.snapshots_path / f"{name}.metadata"
-            metadata_file.write_text(str(metadata))
+            metadata_file.write_text(json.dumps(metadata, indent=2))
             
             logger.info("squashfs_create_complete",
                        name=name,
@@ -522,7 +525,29 @@ class SquashfsSnapshot(BaseSnapshot):
             snapshots.append(snapshot_file.stem)
         
         return sorted(snapshots)
-    
+
+    def load_metadata(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        Load snapshot metadata from {name}.metadata (JSON sidecar next to .sqfs).
+        Used by SnapshotManager.get_snapshot_metadata for emission_hash etc.
+        """
+        metadata_file = self.snapshots_path / f"{name}.metadata"
+        if not metadata_file.exists():
+            return None
+        try:
+            text = metadata_file.read_text().strip()
+            if not text:
+                return None
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                # Backward compat: old snapshots used str(dict) / repr
+                import ast
+                return ast.literal_eval(text)
+        except Exception as e:
+            logger.debug("squashfs_load_metadata_failed", name=name, error=str(e))
+            return None
+
     def get_info(self, name: str) -> Dict[str, Any]:
         """Get squashfs snapshot information."""
         snapshot_file = self.snapshots_path / f"{name}.sqfs"
@@ -539,13 +564,10 @@ class SquashfsSnapshot(BaseSnapshot):
             info["size_bytes"] = snapshot_file.stat().st_size
             info["created"] = snapshot_file.stat().st_mtime
         
-        # Read metadata if available
-        if metadata_file.exists():
-            try:
-                metadata = eval(metadata_file.read_text())
-                info.update(metadata)
-            except Exception:
-                pass
+        # Read metadata if available (JSON or legacy repr)
+        metadata = self.load_metadata(name)
+        if metadata:
+            info.update(metadata)
         
         return info
 

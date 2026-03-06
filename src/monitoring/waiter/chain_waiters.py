@@ -12,6 +12,20 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# CLI can output "total_events: N" (v2) or "total events: N" (v1)
+DAG_TOTAL_EVENTS_PATTERN = re.compile(
+    r"total[_ ]events?\s*:\s*(\d+)",
+    re.IGNORECASE,
+)
+
+
+def _parse_dag_total_events(stdout: str) -> int:
+    """Parse total events count from dag event list output (v1 or v2 format)."""
+    if not stdout:
+        return 0
+    m = DAG_TOTAL_EVENTS_PATTERN.search(stdout)
+    return int(m.group(1)) if m else 0
+
 
 class ChainDataPropagationWaiter(BaseWaiter):
     """
@@ -65,17 +79,35 @@ class ChainDataPropagationWaiter(BaseWaiter):
                 is_dag_chain = self.chain_name.lower() in ["zerochain", "zero", "0"]
                 
                 if is_dag_chain:
-                    # For DAG: check total_events > 0
+                    # For DAG: check total_events > 0 (CLI v1: "total events", v2: "total_events")
                     exit_code_check, stdout_check, _ = self.exec_cli(
                         node.node_id,
                         f"dag event list -net {self.network_name} -chain {self.chain_name} -from events -limit 1",
                         check_output=False
                     )
-                    
-                    total_match = re.search(r'total_events:\s*(\d+)', stdout_check, re.IGNORECASE) if stdout_check else None
-                    total_events = int(total_match.group(1)) if total_match else 0
+                    total_events = _parse_dag_total_events(stdout_check or "")
                     has_data = exit_code_check == 0 and total_events > 0
-                    
+
+                    # Fallback for zerochain: after mempool proc_all, token list may be populated
+                    # before DAG events appear; treat as "has data" if any tokens exist
+                    if not has_data and self.chain_name.lower() in ["zerochain", "zero", "0"]:
+                        exit_tok, stdout_tok, _ = self.exec_cli(
+                            node.node_id,
+                            f"token list -net {self.network_name} -chain {self.chain_name}",
+                            check_output=False,
+                        )
+                        if exit_tok == 0 and stdout_tok:
+                            tokens_match = re.search(r"tokens?:\s*(\d+)", stdout_tok, re.IGNORECASE)
+                            token_count = int(tokens_match.group(1)) if tokens_match else 0
+                            if token_count > 0:
+                                has_data = True
+                                logger.debug(
+                                    "chain_data_via_token_list_fallback",
+                                    node=f"node{node.node_id}",
+                                    chain=self.chain_name,
+                                    token_count=token_count,
+                                )
+
                     # DIAGNOSTIC: Log full output for first check to debug
                     elapsed = time.time() - self._start_time
                     if elapsed < 10 and node == self.nodes[0]:
@@ -146,9 +178,18 @@ class ChainDataPropagationWaiter(BaseWaiter):
                             f"dag event list -net {self.network_name} -chain {self.chain_name} -from events -limit 1",
                             check_output=False
                         )
-                        total_match = re.search(r'total_events:\s*(\d+)', stdout_check, re.IGNORECASE) if stdout_check else None
-                        total_events = int(total_match.group(1)) if total_match else 0
+                        total_events = _parse_dag_total_events(stdout_check or "")
                         has_data = exit_code_check == 0 and total_events > 0
+                        if not has_data:
+                            exit_tok, stdout_tok, _ = self.exec_cli(
+                                node.node_id,
+                                f"token list -net {self.network_name} -chain {self.chain_name}",
+                                check_output=False,
+                            )
+                            if exit_tok == 0 and stdout_tok:
+                                tokens_match = re.search(r"tokens?:\s*(\d+)", stdout_tok, re.IGNORECASE)
+                                if tokens_match and int(tokens_match.group(1)) > 0:
+                                    has_data = True
                     else:
                         exit_code_check, stdout_check, _ = self.exec_cli(
                             node.node_id,

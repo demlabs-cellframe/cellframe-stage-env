@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from src.utils.logger import get_logger
 from .base import BaseSnapshot
@@ -40,13 +40,14 @@ class RecreateSnapshot(BaseSnapshot):
         logger.info("recreate_mode_initialized",
                    note="No snapshots stored, uses full cleanup/rebuild")
     
-    async def create(self, name: str) -> bool:
+    async def create(self, name: str, extra_metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
         Create a snapshot marker (no actual data stored).
-        
+
         Args:
             name: Snapshot name (used for logging only)
-            
+            extra_metadata: Ignored in recreate mode
+
         Returns:
             Always True (marker created)
         """

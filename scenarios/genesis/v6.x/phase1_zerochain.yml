@@ -370,7 +370,7 @@ test:
             value: "_has_event and not genesis_event_hash"
             eval: true
           - set: genesis_event_hash
-            value: "_event_last_output.split('last_event_hash:')[1].split()[0].strip() if _should_extract else genesis_event_hash"
+            value: "(_event_last_output.split('last_event_hash:')[1].split()[0].strip() if 'last_event_hash:' in _event_last_output else _event_last_output.split('Last event hash:')[1].split()[0].strip() if 'Last event hash:' in _event_last_output else '') if _should_extract else genesis_event_hash"
             eval: true
           - set: _genesis_found_node
             value: "_hash_node if _should_extract else _genesis_found_node"

@@ -82,24 +82,25 @@ class SnapshotManager:
         else:
             raise ValueError(f"Unknown snapshot mode: {self.mode}")
     
-    async def create_snapshot(self, name: str = "clean_state") -> bool:
+    async def create_snapshot(self, name: str = "clean_state", extra_metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
         Create a snapshot of current environment state.
-        
+
         Args:
             name: Name for the snapshot
-            
+            extra_metadata: Optional dict to store in snapshot (e.g. emission_hash for phase1)
+
         Returns:
             True if snapshot created successfully
         """
         if self.mode == SnapshotMode.DISABLED:
             logger.debug("snapshot_disabled_create_skipped")
             return True
-        
+
         logger.info("creating_snapshot", name=name, mode=self.mode.value)
-        
+
         try:
-            result = await self.snapshot.create(name)
+            result = await self.snapshot.create(name, extra_metadata=extra_metadata)
             if result:
                 logger.info("snapshot_created_successfully", name=name)
             else:
@@ -108,7 +109,20 @@ class SnapshotManager:
         except Exception as e:
             logger.error("snapshot_creation_error", name=name, error=str(e))
             return False
-    
+
+    def get_snapshot_metadata(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        Load snapshot metadata (e.g. emission_hash saved in phase1 snapshot).
+
+        Returns:
+            Metadata dict or None if not available / not supported by backend
+        """
+        if self.mode == SnapshotMode.DISABLED or not self.snapshot:
+            return None
+        if hasattr(self.snapshot, "load_metadata"):
+            return self.snapshot.load_metadata(name)
+        return None
+
     async def restore_snapshot(self, name: str = "clean_state") -> bool:
         """
         Restore environment to snapshot state.

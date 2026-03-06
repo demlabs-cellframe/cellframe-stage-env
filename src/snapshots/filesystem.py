@@ -83,52 +83,55 @@ class FilesystemSnapshot(BaseSnapshot):
         except subprocess.TimeoutExpired:
             return False
     
-    async def create(self, name: str) -> bool:
+    async def create(self, name: str, extra_metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
         Create hybrid snapshot: rsync data/configs + docker commit containers.
-        
+
         Args:
             name: Snapshot name
-            
+            extra_metadata: Optional dict to merge into .snapshot_metadata (e.g. emission_hash)
+
         Returns:
             True if snapshot created successfully
         """
         logger.info("filesystem_create_start", name=name)
-        
+
         snapshot_dir = self.snapshots_path / name
-        
+
         if snapshot_dir.exists():
             logger.debug("filesystem_overwriting_existing", name=name)
             await self.delete(name)
-        
+
         snapshot_dir.mkdir(parents=True, exist_ok=True)
-        
+
         data_dirs = self.get_data_dirs()
         config_dirs = self.get_config_dirs()
-        
+
         if not data_dirs:
             logger.warning("filesystem_no_data_to_snapshot")
             return False
-        
+
         try:
             data_snapshot_dir = snapshot_dir / "data"
             data_snapshot_dir.mkdir(exist_ok=True)
-            
+
             for node_dir in data_dirs:
                 target_dir = data_snapshot_dir / node_dir.name
                 await self._rsync_copy(node_dir, target_dir)
-            
+
             if config_dirs:
                 config_snapshot_dir = snapshot_dir / "configs"
                 config_snapshot_dir.mkdir(exist_ok=True)
-                
+
                 for config_dir in config_dirs:
                     target_dir = config_snapshot_dir / config_dir.name
                     await self._rsync_copy(config_dir, target_dir)
-            
+
             committed_images = await self._commit_containers(name)
-            
+
             metadata = self._create_metadata(name, data_dirs, config_dirs, committed_images)
+            if extra_metadata:
+                metadata.update(extra_metadata)
             metadata_file = snapshot_dir / ".snapshot_metadata"
             metadata_file.write_text(json.dumps(metadata, indent=2))
             
@@ -426,6 +429,10 @@ class FilesystemSnapshot(BaseSnapshot):
                 logger.debug("docker_image_remove_skipped",
                            service=service, tag=tag, error=str(e))
     
+    def load_metadata(self, name: str) -> Optional[Dict[str, Any]]:
+        """Load snapshot metadata (for use by SnapshotManager.get_snapshot_metadata)."""
+        return self._load_metadata(name)
+
     def _load_metadata(self, name: str) -> Optional[Dict[str, Any]]:
         """Load snapshot metadata from JSON file."""
         metadata_file = self.snapshots_path / name / ".snapshot_metadata"

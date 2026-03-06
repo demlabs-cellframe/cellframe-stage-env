@@ -619,7 +619,12 @@ class NetworkManager:
                                 
                                 # Create snapshot of phase1 state (with GDB data preserved)
                                 phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', 'phase1_zerochain_genesis')
-                                await self.create_clean_snapshot(name=phase1_snapshot_name)
+                                phase1_meta = {}
+                                if emission_hash:
+                                    phase1_meta["emission_hash"] = emission_hash
+                                if genesis_event_hash:
+                                    phase1_meta["genesis_event_hash"] = genesis_event_hash
+                                await self.create_clean_snapshot(name=phase1_snapshot_name, extra_metadata=phase1_meta or None)
                                 logger.info("phase1_snapshot_created", 
                                            name=phase1_snapshot_name,
                                            note="zerochain genesis and LN ready")
@@ -885,199 +890,201 @@ class NetworkManager:
             await consensus_monitor.wait_for_links_connecting_state(timeout=60.0)
             logger.info("root_nodes_links_established_after_snapshot_restore")
             
-            # CRITICAL: Get emission_hash (DATUM hash) from zerochain DAG events after snapshot restore
-            # emission_hash is needed for creating first transaction in PHASE 2
-            # IMPORTANT: Event hash != Emission datum hash!
-            # - Event hash: identifies the DAG event container
-            # - Emission hash: identifies the emission datum INSIDE the event
-            # tx_create -from_emission needs the EMISSION DATUM hash, not the event hash!
-            # We must: 1) get last event hash, 2) dump event, 3) extract emission_hash from dump
-            logger.info("getting_emission_hash_from_zerochain_dag_after_snapshot_restore")
+            # CRITICAL: Get emission_hash (DATUM hash) from zerochain after snapshot restore
+            # Prefer snapshot metadata (saved when phase1 snapshot was created); fallback to CLI retrieval
+            logger.info("getting_emission_hash_after_snapshot_restore")
             import re
             emission_hash = None
-            
-            # Method 1: Get emission_hash from dag event dump (CORRECT approach)
-            # This mirrors what phase1_zerochain.yml does
-            for root_node in root_nodes[:1]:  # Check first ROOT node
-                # Step 1: Get last event hash from zerochain
-                exit_code, stdout, _ = self.genesis._exec_cli(
-                    root_node.node_id,
-                    f"dag event last -net {self.topology.network.name} -chain zerochain",
-                    check_output=False
-                )
-                logger.info("dag_event_last_check",
-                           node_id=root_node.node_id,
-                           exit_code=exit_code,
-                           stdout_preview=stdout[:500] if stdout else "EMPTY")
-                
-                if exit_code != 0 or not stdout:
-                    logger.warning("dag_event_last_failed", exit_code=exit_code)
-                    continue
-                
-                # Extract event hash from "dag event last" output
-                # Format: "last_event_hash: 0x..." or just "0x..."
-                event_hash_match = re.search(r'(?:last_event_hash:\s*)?(0x[A-Fa-f0-9]{64})', stdout)
-                if not event_hash_match:
-                    logger.warning("event_hash_not_found_in_dag_event_last", output=stdout[:200])
-                    continue
-                    
-                last_event_hash = event_hash_match.group(1)
-                logger.info("last_event_hash_found", hash=last_event_hash[:20])
-                
-                # Step 2: Dump the event to get emission_hash
-                exit_code, dump_stdout, _ = self.genesis._exec_cli(
-                    root_node.node_id,
-                    f"dag event dump -net {self.topology.network.name} -chain zerochain -event {last_event_hash} -from events",
-                    check_output=False
-                )
-                logger.info("dag_event_dump_check",
-                           node_id=root_node.node_id,
-                           exit_code=exit_code,
-                           event_hash=last_event_hash[:20],
-                           stdout_preview=dump_stdout[:1000] if dump_stdout else "EMPTY")
-                
-                if exit_code != 0 or not dump_stdout:
-                    logger.warning("dag_event_dump_failed", event_hash=last_event_hash[:20])
-                    continue
-                
-                # Step 3: Extract emission_hash from dump output
-                # Format: "emission_hash: 0x..." (inside nested datum section)
-                emission_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump_stdout, re.IGNORECASE)
-                if emission_match:
-                    emission_hash = emission_match.group(1)
-                    logger.info("emission_hash_extracted_from_event_dump",
-                               emission_hash=emission_hash[:20],
-                               event_hash=last_event_hash[:20])
-                    break
-                else:
-                    logger.info("emission_hash_not_in_last_event_trying_previous",
-                               note="Last event might be token_decl, not emission")
-                    
-                    # Get event list to find emission event
-                    exit_code, list_stdout, _ = self.genesis._exec_cli(
+            phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', 'phase1_zerochain_genesis')
+            snapshot_meta = self.snapshot_manager.get_snapshot_metadata(phase1_snapshot_name)
+            if snapshot_meta and snapshot_meta.get('emission_hash'):
+                emission_hash = snapshot_meta['emission_hash']
+                logger.info("emission_hash_loaded_from_snapshot_metadata",
+                           emission_hash=emission_hash[:16],
+                           note="Skipping CLI retrieval")
+            if not emission_hash:
+                # Method 1: Get emission_hash from dag event dump (CORRECT approach)
+                # This mirrors what phase1_zerochain.yml does
+                for root_node in root_nodes[:1]:  # Check first ROOT node
+                    # Step 1: Get last event hash from zerochain
+                    exit_code, stdout, _ = self.genesis._exec_cli(
                         root_node.node_id,
-                        f"dag event list -net {self.topology.network.name} -chain zerochain -from events -limit 10",
+                        f"dag event last -net {self.topology.network.name} -chain zerochain",
                         check_output=False
                     )
-                    if exit_code == 0 and list_stdout:
-                        # Find all event hashes
-                        all_event_hashes = re.findall(r'event_hash:\s*(0x[A-Fa-f0-9]{64})', list_stdout)
-                        logger.info("dag_events_list_for_emission",
-                                   event_count=len(all_event_hashes),
-                                   hashes=all_event_hashes[:5])
+                    logger.info("dag_event_last_check",
+                               node_id=root_node.node_id,
+                               exit_code=exit_code,
+                               stdout_preview=stdout[:500] if stdout else "EMPTY")
+                
+                    if exit_code != 0 or not stdout:
+                        logger.warning("dag_event_last_failed", exit_code=exit_code)
+                        continue
+                
+                    # Extract event hash from "dag event last" output
+                    # Format: "last_event_hash: 0x..." or just "0x..."
+                    event_hash_match = re.search(r'(?:last_event_hash:\s*)?(0x[A-Fa-f0-9]{64})', stdout)
+                    if not event_hash_match:
+                        logger.warning("event_hash_not_found_in_dag_event_last", output=stdout[:200])
+                        continue
+                    
+                    last_event_hash = event_hash_match.group(1)
+                    logger.info("last_event_hash_found", hash=last_event_hash[:20])
+                
+                    # Step 2: Dump the event to get emission_hash
+                    exit_code, dump_stdout, _ = self.genesis._exec_cli(
+                        root_node.node_id,
+                        f"dag event dump -net {self.topology.network.name} -chain zerochain -event {last_event_hash} -from events",
+                        check_output=False
+                    )
+                    logger.info("dag_event_dump_check",
+                               node_id=root_node.node_id,
+                               exit_code=exit_code,
+                               event_hash=last_event_hash[:20],
+                               stdout_preview=dump_stdout[:1000] if dump_stdout else "EMPTY")
+                
+                    if exit_code != 0 or not dump_stdout:
+                        logger.warning("dag_event_dump_failed", event_hash=last_event_hash[:20])
+                        continue
+                
+                    # Step 3: Extract emission_hash from dump output
+                    # Format: "emission_hash: 0x..." (inside nested datum section)
+                    emission_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump_stdout, re.IGNORECASE)
+                    if emission_match:
+                        emission_hash = emission_match.group(1)
+                        logger.info("emission_hash_extracted_from_event_dump",
+                                   emission_hash=emission_hash[:20],
+                                   event_hash=last_event_hash[:20])
+                        break
+                    else:
+                        logger.info("emission_hash_not_in_last_event_trying_previous",
+                                   note="Last event might be token_decl, not emission")
+                    
+                        # Get event list to find emission event
+                        exit_code, list_stdout, _ = self.genesis._exec_cli(
+                            root_node.node_id,
+                            f"dag event list -net {self.topology.network.name} -chain zerochain -from events -limit 10",
+                            check_output=False
+                        )
+                        if exit_code == 0 and list_stdout:
+                            # Find all event hashes
+                            all_event_hashes = re.findall(r'event_hash:\s*(0x[A-Fa-f0-9]{64})', list_stdout)
+                            logger.info("dag_events_list_for_emission",
+                                       event_count=len(all_event_hashes),
+                                       hashes=all_event_hashes[:5])
                         
-                        # Try each event to find one with emission_hash
-                        for evt_hash in all_event_hashes:
-                            exit_code2, dump2, _ = self.genesis._exec_cli(
-                                root_node.node_id,
-                                f"dag event dump -net {self.topology.network.name} -chain zerochain -event {evt_hash} -from events",
-                                check_output=False
-                            )
-                            if exit_code2 == 0 and dump2:
-                                em_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump2, re.IGNORECASE)
-                                if em_match:
-                                    emission_hash = em_match.group(1)
-                                    logger.info("emission_hash_found_in_event",
-                                               emission_hash=emission_hash[:20],
-                                               event_hash=evt_hash[:20])
-                                    break
-                        if emission_hash:
-                            break
+                            # Try each event to find one with emission_hash
+                            for evt_hash in all_event_hashes:
+                                exit_code2, dump2, _ = self.genesis._exec_cli(
+                                    root_node.node_id,
+                                    f"dag event dump -net {self.topology.network.name} -chain zerochain -event {evt_hash} -from events",
+                                    check_output=False
+                                )
+                                if exit_code2 == 0 and dump2:
+                                    em_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump2, re.IGNORECASE)
+                                    if em_match:
+                                        emission_hash = em_match.group(1)
+                                        logger.info("emission_hash_found_in_event",
+                                                   emission_hash=emission_hash[:20],
+                                                   event_hash=evt_hash[:20])
+                                        break
+                            if emission_hash:
+                                break
             
-            # Method 2: Fallback - try ledger list emis (list emissions with hashes)
-            if not emission_hash:
-                logger.info("emission_hash_not_found_in_dag_trying_ledger_emis")
-                for root_node in root_nodes[:1]:
-                    # List emissions specifically
-                    exit_code, stdout, _ = self.genesis._exec_cli(
-                        root_node.node_id,
-                        f"ledger list emis -net {self.topology.network.name}",
-                        check_output=False
-                    )
-                    logger.info("ledger_list_emis_check",
-                               node_id=root_node.node_id,
-                               exit_code=exit_code,
-                               stdout_preview=stdout[:1000] if stdout else "EMPTY")
+                # Method 2: Fallback - try ledger list emis (list emissions with hashes)
+                if not emission_hash:
+                    logger.info("emission_hash_not_found_in_dag_trying_ledger_emis")
+                    for root_node in root_nodes[:1]:
+                        # List emissions specifically
+                        exit_code, stdout, _ = self.genesis._exec_cli(
+                            root_node.node_id,
+                            f"ledger list emis -net {self.topology.network.name}",
+                            check_output=False
+                        )
+                        logger.info("ledger_list_emis_check",
+                                   node_id=root_node.node_id,
+                                   exit_code=exit_code,
+                                   stdout_preview=stdout[:1000] if stdout else "EMPTY")
                     
-                    if exit_code == 0 and stdout:
-                        # Look for emission hash in output
-                        # Format: "hash: 0x..." or "emission_hash: 0x..."
-                        hash_matches = re.findall(r'(?:emission_)?hash:\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                        if hash_matches:
-                            emission_hash = hash_matches[-1]  # Use last emission hash
-                            logger.info("emission_hash_found_in_ledger_emis",
-                                       hash=emission_hash[:20],
-                                       total_emissions=len(hash_matches))
-                            break
-                        # Try any 64-char hex hashes
-                        all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout)
-                        if all_hashes:
-                            emission_hash = all_hashes[-1]
-                            logger.info("emission_hash_found_from_ledger_hashes",
-                                       hash=emission_hash[:20],
-                                       total_hashes=len(all_hashes))
-                            break
+                        if exit_code == 0 and stdout:
+                            # Look for emission hash in output
+                            # Format: "hash: 0x..." or "emission_hash: 0x..."
+                            hash_matches = re.findall(r'(?:emission_)?hash:\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                            if hash_matches:
+                                emission_hash = hash_matches[-1]  # Use last emission hash
+                                logger.info("emission_hash_found_in_ledger_emis",
+                                           hash=emission_hash[:20],
+                                           total_emissions=len(hash_matches))
+                                break
+                            # Try any 64-char hex hashes
+                            all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout)
+                            if all_hashes:
+                                emission_hash = all_hashes[-1]
+                                logger.info("emission_hash_found_from_ledger_hashes",
+                                           hash=emission_hash[:20],
+                                           total_hashes=len(all_hashes))
+                                break
             
-            # Method 3: Fallback - try token show/info to get emission datum hash
-            if not emission_hash:
-                logger.info("emission_hash_not_found_trying_token_show")
-                for root_node in root_nodes[:1]:
-                    # Try token show command
-                    exit_code, stdout, _ = self.genesis._exec_cli(
-                        root_node.node_id,
-                        f"token show -net {self.topology.network.name} -token TCELL",
-                        check_output=False
-                    )
-                    logger.info("token_show_check",
-                               node_id=root_node.node_id,
-                               exit_code=exit_code,
-                               stdout_length=len(stdout) if stdout else 0,
-                               stdout_preview=stdout[:500] if stdout else "EMPTY")
+                # Method 3: Fallback - try token show/info to get emission datum hash
+                if not emission_hash:
+                    logger.info("emission_hash_not_found_trying_token_show")
+                    for root_node in root_nodes[:1]:
+                        # Try token show command
+                        exit_code, stdout, _ = self.genesis._exec_cli(
+                            root_node.node_id,
+                            f"token show -net {self.topology.network.name} -token TCELL",
+                            check_output=False
+                        )
+                        logger.info("token_show_check",
+                                   node_id=root_node.node_id,
+                                   exit_code=exit_code,
+                                   stdout_length=len(stdout) if stdout else 0,
+                                   stdout_preview=stdout[:500] if stdout else "EMPTY")
                     
-                    if exit_code == 0 and stdout:
-                        # Look for emission datum hash in token info
-                        hash_matches = re.findall(r'(?:emission|datum)\s+(?:hash|datum):\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                        if hash_matches:
-                            emission_hash = hash_matches[0]
-                            logger.info("emission_hash_found_in_token_show",
-                                       hash=emission_hash[:16])
-                            break
-                        # Try finding any hash
-                        all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                        if all_hashes:
-                            emission_hash = all_hashes[-1]
-                            logger.info("emission_hash_found_from_token_show_hashes",
-                                       hash=emission_hash[:16],
-                                       total_hashes=len(all_hashes),
-                                       note="Using last hash from token show")
-                            break
+                        if exit_code == 0 and stdout:
+                            # Look for emission datum hash in token info
+                            hash_matches = re.findall(r'(?:emission|datum)\s+(?:hash|datum):\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                            if hash_matches:
+                                emission_hash = hash_matches[0]
+                                logger.info("emission_hash_found_in_token_show",
+                                           hash=emission_hash[:16])
+                                break
+                            # Try finding any hash
+                            all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                            if all_hashes:
+                                emission_hash = all_hashes[-1]
+                                logger.info("emission_hash_found_from_token_show_hashes",
+                                           hash=emission_hash[:16],
+                                           total_hashes=len(all_hashes),
+                                           note="Using last hash from token show")
+                                break
             
-            # Method 4: Fallback - try token list to verify emission exists
-            if not emission_hash:
-                logger.info("emission_hash_not_found_trying_token_list")
-                for root_node in root_nodes[:1]:
-                    exit_code, stdout, _ = self.genesis._exec_cli(
-                        root_node.node_id,
-                        f"token list -net {self.topology.network.name}",
-                        check_output=False
-                    )
-                    logger.info("token_list_check",
-                               node_id=root_node.node_id,
-                               exit_code=exit_code,
-                               stdout_length=len(stdout) if stdout else 0,
-                               stdout_preview=stdout[:500] if stdout else "EMPTY")
+                # Method 4: Fallback - try token list to verify emission exists
+                if not emission_hash:
+                    logger.info("emission_hash_not_found_trying_token_list")
+                    for root_node in root_nodes[:1]:
+                        exit_code, stdout, _ = self.genesis._exec_cli(
+                            root_node.node_id,
+                            f"token list -net {self.topology.network.name}",
+                            check_output=False
+                        )
+                        logger.info("token_list_check",
+                                   node_id=root_node.node_id,
+                                   exit_code=exit_code,
+                                   stdout_length=len(stdout) if stdout else 0,
+                                   stdout_preview=stdout[:500] if stdout else "EMPTY")
                     
-                    if exit_code == 0 and stdout and "TCELL" in stdout.upper():
-                        logger.info("tcell_token_found_but_emission_hash_missing",
-                                   note="Emission may have been lost - snapshot may be incomplete")
+                        if exit_code == 0 and stdout and "TCELL" in stdout.upper():
+                            logger.info("tcell_token_found_but_emission_hash_missing",
+                                       note="Emission may have been lost - snapshot may be incomplete")
             
-            if not emission_hash:
-                # Log detailed diagnostic info before failing
-                logger.error("emission_hash_retrieval_failed",
-                           note="Tried DAG events, ledger, token show, and token list - snapshot may be corrupted")
-                raise RuntimeError("Failed to retrieve emission_hash from zerochain after snapshot restore. "
-                                 "Snapshot may be corrupted or emission not found in DAG events/ledger. "
-                                 "Check logs for detailed command outputs.")
+                if not emission_hash:
+                    # Log detailed diagnostic info before failing
+                    logger.error("emission_hash_retrieval_failed",
+                               note="Tried DAG events, ledger, token show, and token list - snapshot may be corrupted")
+                    raise RuntimeError("Failed to retrieve emission_hash from zerochain after snapshot restore. "
+                                     "Snapshot may be corrupted or emission not found in DAG events/ledger. "
+                                     "Check logs for detailed command outputs.")
             
             logger.info("emission_hash_retrieved_after_snapshot_restore", hash=emission_hash[:16])
             
@@ -1661,32 +1668,37 @@ class NetworkManager:
         """Cleanup resources."""
         await self.health_checker.close()
     
-    async def create_clean_snapshot(self, name: Optional[str] = None) -> bool:
+    async def create_clean_snapshot(
+        self,
+        name: Optional[str] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """
         Create a snapshot of current clean environment state.
-        
+
         CRITICAL: This method does NOT clean data before creating snapshot.
         Snapshot system (squashfs/filesystem) automatically captures all mounted
         directories including GDB data. Cleaning data before snapshot would
         remove critical GDB data (node list, validator orders) needed for
         network operation.
-        
+
         Should be called after network is fully initialized and ready,
         before any tests are run.
-        
+
         Args:
             name: Optional snapshot name (defaults to config snapshot_name)
-            
+            extra_metadata: Optional dict to store in snapshot (e.g. emission_hash for phase1)
+
         Returns:
             True if snapshot created successfully
         """
         snapshot_name = name or self.suite_isolation_config.get('snapshot_name', 'clean_state')
-        
+
         logger.info("creating_clean_snapshot",
                    name=snapshot_name,
                    mode=self.snapshot_manager.mode.value)
-        
-        result = await self.snapshot_manager.create_snapshot(snapshot_name)
+
+        result = await self.snapshot_manager.create_snapshot(snapshot_name, extra_metadata=extra_metadata)
         
         if result and self.suite_isolation_config.get('auto_cleanup', True):
             # Cleanup old snapshots
