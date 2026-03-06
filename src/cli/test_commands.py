@@ -74,16 +74,20 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
         cfg_dir = cache_dir / "configs" / f"node{node_id}"
         data_dir = cache_dir / "data" / f"node{node_id}"
         source = spec.source.strip().lower()
+        freshly_cloned = False
 
         if source == "genesis":
             src_node = _find_donor_node(cache_dir, "configs")
-            if src_node and not cfg_dir.exists():
+            if src_node:
+                if cfg_dir.exists():
+                    shutil.rmtree(cfg_dir, ignore_errors=True)
                 shutil.copytree(cache_dir / "configs" / src_node, cfg_dir, dirs_exist_ok=True, ignore=_asan_ignore)
                 print_info(f"    configs from genesis ({src_node})")
             if src_node and not data_dir.exists():
                 src_data = cache_dir / "data" / src_node
                 if src_data.exists():
                     shutil.copytree(src_data, data_dir, dirs_exist_ok=True, ignore=_asan_ignore)
+                    freshly_cloned = True
         elif source.startswith("node-"):
             clone_m = re.match(r'node-(\d+)', source)
             if not clone_m:
@@ -92,10 +96,13 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
             clone_id = clone_m.group(1)
             src_cfg = cache_dir / "configs" / f"node{clone_id}"
             src_data = cache_dir / "data" / f"node{clone_id}"
-            if src_cfg.exists() and not cfg_dir.exists():
+            if src_cfg.exists():
+                if cfg_dir.exists():
+                    shutil.rmtree(cfg_dir, ignore_errors=True)
                 shutil.copytree(src_cfg, cfg_dir, dirs_exist_ok=True, ignore=_asan_ignore)
             if src_data.exists() and not data_dir.exists():
                 shutil.copytree(src_data, data_dir, dirs_exist_ok=True, ignore=_asan_ignore)
+                freshly_cloned = True
         elif source == "fresh":
             cfg_dir.mkdir(parents=True, exist_ok=True)
             (cfg_dir / "cellframe-node.cfg.d").mkdir(exist_ok=True)
@@ -111,16 +118,21 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
 
         (cache_dir / "crash-artifacts" / f"node{node_id}").mkdir(parents=True, exist_ok=True)
 
-        # In 5.x MDBX files copied from a live donor are corrupt; wipe and let the node re-sync
-        _stage_cfg = config_loader.load_stage_config()
-        _gver = _stage_cfg.get('genesis_version', '')
-        if not _gver.startswith('v6'):
-            gdb_dir = data_dir / "lib" / "global_db"
-            if gdb_dir.is_dir():
-                shutil.rmtree(gdb_dir)
-                gdb_dir.mkdir(parents=True)
+        if freshly_cloned:
+            # 5.x: chain MDBX copied from a live donor may be corrupt; wipe chains
+            # but keep global_db (contains node list needed for balancer bootstrap)
+            _stage_cfg = config_loader.load_stage_config()
+            _gver = _stage_cfg.get('genesis_version', '')
+            if not _gver.startswith('v6'):
+                import subprocess as _sp
+                for mdbx_subdir in ("lib/network",):
+                    mdbx_dir = data_dir / mdbx_subdir
+                    if mdbx_dir.is_dir():
+                        _sp.run(["sudo", "rm", "-rf", str(mdbx_dir)], check=True, capture_output=True)
+                        _sp.run(["sudo", "mkdir", "-p", str(mdbx_dir)], check=True, capture_output=True)
+                        print_info(f"    mdbx_wipe: {mdbx_subdir} for {svc_name}")
 
-        if spec.regenerate_cert:
+        if freshly_cloned and spec.regenerate_cert:
             import glob as _glob
             ca_dir = data_dir / "lib" / "ca"
             if ca_dir.is_dir():
@@ -158,6 +170,47 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                     lines.append(str(values))
             (cfg_d / "suite-overrides.cfg").write_text("\n".join(lines) + "\n")
             print_info(f"    config_overrides: {list(spec.config_overrides.keys())}")
+
+            if 'srv_vpn' in spec.config_overrides:
+                srv_vpn_cfg = spec.config_overrides['srv_vpn']
+                if isinstance(srv_vpn_cfg, dict) and 'wallet_addr' not in srv_vpn_cfg:
+                    net_name = override_vars.get('network_name', 'vpntest')
+                    fee_addr = None
+                    for nid in range(1, max_existing_id + 1):
+                        main_cfg_path = cache_dir / "configs" / f"node{nid}" / "network" / net_name / "main.cfg"
+                        if main_cfg_path.exists():
+                            import configparser
+                            _p = configparser.ConfigParser()
+                            _p.read(str(main_cfg_path))
+                            for _sect in ('esbocs', 'dag', 'general'):
+                                fee_addr = _p.get(_sect, 'fee_addr', fallback=None)
+                                if fee_addr:
+                                    break
+                            if fee_addr:
+                                break
+                    if fee_addr:
+                        receipt_cert = f"{net_name}.root.pvt.0"
+                        billing_lines = [
+                            f"# Auto-generated billing config for {svc_name}",
+                            f"\n[srv_vpn]",
+                            f"wallet_addr={fee_addr}",
+                            f"receipt_sign_cert={receipt_cert}",
+                        ]
+                        (cfg_d / "vpn-billing.cfg").write_text("\n".join(billing_lines) + "\n")
+                        print_info(f"    vpn-billing: wallet_addr={fee_addr[:20]}... cert={receipt_cert}")
+
+                        ca_dir = data_dir / "lib" / "ca"
+                        ca_dir.mkdir(parents=True, exist_ok=True)
+                        signing_cert = f"{receipt_cert}.dcert"
+                        if not (ca_dir / signing_cert).exists():
+                            for nid in range(1, max_existing_id + 1):
+                                src_cert = cache_dir / "data" / f"node{nid}" / "lib" / "ca" / signing_cert
+                                if src_cert.exists():
+                                    import subprocess as _sp
+                                    _sp.run(["sudo", "cp", "-a", str(src_cert), str(ca_dir / signing_cert)],
+                                            check=True, capture_output=True)
+                                    print_info(f"    signing cert: copied {signing_cert} from node{nid}")
+                                    break
 
         if spec.packages:
             packages_to_install[svc_name] = spec.packages.split()
@@ -661,9 +714,17 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         topology_vars = gc.to_dict()
                         topology_vars['project_root'] = str(project_root)
 
+                        _svc_ids = {}
+                        for _svc, _ncfg in network_mgr.nodes.items():
+                            if not _svc.startswith('node'):
+                                _svc_ids[_svc] = _ncfg.node_id
+                        if _svc_ids:
+                            topology_vars['_service_node_ids'] = _svc_ids
+
                     # Execute suite-level setup (includes + setup steps).
                     # Includes always run — each include decides internally whether
                     # to act (e.g. by checking snapshot: verify) or skip.
+                    suite_setup_variables = {}
                     if isinstance(suite_spec, SuiteDescriptor) and (suite_spec.includes or suite_spec.setup):
                         print_info("🔧 Executing suite-level setup...")
                         
@@ -697,20 +758,36 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 setup_vars.update(suite_spec.variables)
 
                             async def _run_suite_setup():
-                                await executor.execute_scenario(
+                                return await executor.execute_scenario(
                                     suite_setup_scenario,
                                     compose_manager=network_mgr.compose if network_mgr else None,
                                     snapshot_manager=network_mgr.snapshot_manager if network_mgr else None,
                                     initial_variables=setup_vars or None
                                 )
                             
-                            asyncio.run(_run_suite_setup())
+                            setup_ctx = asyncio.run(_run_suite_setup())
+                            suite_setup_variables = dict(setup_ctx.variables)
                             print_success("✓ Suite setup completed")
                             
                         except Exception as e:
                             all_passed = False
                             print_error(f"Suite setup failed: {e}")
                             print_error(f"❌ Skipping all scenarios in suite: {suite_name}")
+                            if network_mgr:
+                                try:
+                                    _client = docker.from_env()
+                                    _containers = _client.containers.list(
+                                        all=True,
+                                        filters={"label": "com.docker.compose.project=cellframe-stage"}
+                                    )
+                                    _logs_dir = suite_dir / "node-logs"
+                                    for _ctr in _containers:
+                                        _svc = _ctr.labels.get("com.docker.compose.service", "")
+                                        if _svc:
+                                            _log = _ctr.logs(tail=10000).decode('utf-8', errors='ignore')
+                                            (_logs_dir / f"{_svc}.log").write_text(_log)
+                                except Exception as log_err:
+                                    print_warning(f"  Failed to collect logs on setup failure: {log_err}")
                             continue
 
 
@@ -862,12 +939,16 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             )
                             executor.load_operands(common_root / "operands", common_root / "common" / "operands", common_root / "scenarios" / "common" / "operands")
 
+                            scenario_initial_vars = dict(topology_vars or {})
+                            if suite_setup_variables:
+                                scenario_initial_vars.update(suite_setup_variables)
+
                             async def _execute():
                                 return await executor.execute_scenario(
                                     scenario,
                                     compose_manager=network_mgr.compose if network_mgr else None,
                                     snapshot_manager=network_mgr.snapshot_manager if network_mgr else None,
-                                    initial_variables=topology_vars or None
+                                    initial_variables=scenario_initial_vars or None
                                 )
                             
                             print_info("  ▶️  Executing...")
@@ -1000,13 +1081,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             for container in containers:
                                 try:
                                     container_name = container.name
-                                    if "node-" in container_name:
-                                        node_name = container_name.split("node-", 1)[1]
-                                        node_id = f"node-{node_name}"
-                                        
-                                        # Collect logs
+                                    svc_name = container.labels.get(
+                                        "com.docker.compose.service", ""
+                                    )
+                                    if svc_name:
                                         logs = container.logs(tail=10000).decode('utf-8', errors='ignore')
-                                        log_file = node_logs_dir / f"{node_id}.log"
+                                        log_file = node_logs_dir / f"{svc_name}.log"
                                         log_file.write_text(logs)
                                         collected_logs += 1
                                 except Exception as e:

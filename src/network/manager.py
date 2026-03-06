@@ -380,6 +380,7 @@ class NetworkManager:
         settings = self.topology.network_settings
         self.compose.generate_compose_for_nodes(
             node_configs, 
+            build_type=node_source_config.get('build_type', 'debug') if node_source_config else 'debug',
             cache_dir_relative=cache_dir_relative,
             node_source_config=node_source_config,
             network_settings={

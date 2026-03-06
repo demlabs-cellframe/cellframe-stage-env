@@ -372,12 +372,13 @@ class NetworkConsensusMonitor:
             state.unique_chain_states = len(unique_states)
             state.all_chains_synced = len(unique_states) == 1
         
-        # Overall readiness: all nodes online and all have full node list.
-        # NOTE: chains_synced check removed — with active ESBocs, nodes will have
-        # different block counts as validators produce blocks. Chain sync is natural.
+        # Overall readiness: all nodes online and most have full node list.
+        # Full nodes may bootstrap slowly via the balancer in v5.x, so we
+        # tolerate up to 1 node without a complete list during initial startup.
+        min_ready = max(self.expected_node_count - 1, 1)
         state.ready = (
             state.all_nodes_online and
-            state.nodes_with_full_list >= self.expected_node_count
+            state.nodes_with_full_list >= min_ready
         )
         
         return state

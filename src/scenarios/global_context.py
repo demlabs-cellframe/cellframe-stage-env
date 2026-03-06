@@ -242,6 +242,7 @@ class ScenarioGlobalContext:
             'root_indices': root_indices,
             'master_indices': master_indices,
             'full_indices': full_indices,
+            'all_indices': root_indices + master_indices + full_indices,
             
             # First/last node shortcuts
             'first_root': root_nodes[0] if root_nodes else None,

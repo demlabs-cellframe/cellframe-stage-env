@@ -360,6 +360,9 @@ class CertGenerator:
                 
                 if self._is_private_cert(cert_name):
                     continue
+
+                if cert_name.startswith("node-addr"):
+                    continue
                 
                 normalized_name = self._normalize_cert_name(cert_name)
                 dest_file = shared_ca_dir / normalized_name
@@ -369,6 +372,10 @@ class CertGenerator:
                            cert=cert_name,
                            dest=str(dest_file))
         
+        for stale in shared_ca_dir.glob("node-addr*"):
+            stale.unlink(missing_ok=True)
+            logger.debug("removed_stale_node_addr_from_shared_ca", file=stale.name)
+
         print_success(f"Copied {copied_count} public certificates to shared CA")
         logger.info("certs_copied_to_shared_ca", count=copied_count)
     

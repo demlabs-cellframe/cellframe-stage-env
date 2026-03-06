@@ -81,6 +81,7 @@ class ConfigStepExecutor(StepExecutor):
             return
 
         nodes_list = self._expand_nodes_list(step.nodes, ctx)
+        svc_map = ctx.variables.get('_service_node_ids', {})
         node_ids = []
         for node_alias in nodes_list:
             resolved = ctx.substitute(node_alias)
@@ -89,6 +90,8 @@ class ConfigStepExecutor(StepExecutor):
             match = re.search(r'(?:node|root|master|full)-?(\d+)', resolved)
             if match:
                 node_ids.append(int(match.group(1)))
+            elif resolved in svc_map:
+                node_ids.append(int(svc_map[resolved]))
             else:
                 logger.warning(f"Could not parse node ID from {resolved}")
 

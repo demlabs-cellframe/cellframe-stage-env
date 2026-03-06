@@ -692,6 +692,8 @@ class ConfigLoader:
                 node_source['repository_branch'] = config.get('node_source', 'branch')
             if config.has_option('node_source', 'build_type'):
                 node_source['build_type'] = config.get('node_source', 'build_type')
+            elif config.has_option('build', 'build_type'):
+                node_source['build_type'] = config.get('build', 'build_type')
             if config.has_option('node_source', 'checksum'):
                 node_source['checksum'] = config.get('node_source', 'checksum')
             if config.has_option('node_source', 'headers'):
