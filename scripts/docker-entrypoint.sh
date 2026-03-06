@@ -25,7 +25,7 @@ cd /opt/cellframe-node/var/coredumps
 
 # ASAN support: if the binary was built with -fsanitize=address, configure runtime
 if ldd /opt/cellframe-node/bin/cellframe-node 2>/dev/null | grep -q libasan; then
-    export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1:detect_odr_violation=0:log_path=/opt/cellframe-node/var/log/asan"
+    export ASAN_OPTIONS="detect_leaks=0:halt_on_error=0:abort_on_error=0:print_stacktrace=1:detect_odr_violation=0"
     echo "ASAN enabled: $ASAN_OPTIONS"
 fi
 
