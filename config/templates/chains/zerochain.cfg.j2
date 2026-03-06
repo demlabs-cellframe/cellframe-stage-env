@@ -7,9 +7,11 @@ load_priority=0
 # Match tests-in-docker configuration
 datum_types=[token,emission,ca,decree]
 default_datum_types=[token,emission,ca,decree]
-# mempool_auto_types: auto-process these datum types without explicit mempool proc
-# All datum types supported by this chain are auto-processed
-mempool_auto_types=[token,emission,ca,decree]
+# mempool_auto_types disabled: test scenarios use explicit mempool proc_all
+# Having auto_types enabled on multiple root nodes with seed_mode causes
+# duplicate datum processing — each node independently processes synced datums,
+# leading to "Datum already cached in ledger" errors during round completion
+# mempool_auto_types=[token,emission,ca,decree]
 consensus=dag_poa
 # Authorized nodes have special permissions (can write to nodelist, mempool)
 # This MUST be in zerochain [chain] section for node add command to work
@@ -46,9 +48,10 @@ auth_certs_number_verify={{ auth_certs_number_verify }}
 # Events signing certificate moved to network config (stagenet.cfg)
 # SDK loads it from l_net->pub.config, not from chain config
 # Timeout for collecting confirmations from other ROOT nodes
-# Using same values as tests-in-docker for faster consensus
-confirmations_timeout=15
-wait_sync_before_complete=30
+# Short timeouts for fast auto-round-complete in test environment
+# auto_round_complete timer = 2 * confirmations_timeout for remote events
+confirmations_timeout=3
+wait_sync_before_complete=10
 auto_confirmation=true
 auto_round_complete=true
 

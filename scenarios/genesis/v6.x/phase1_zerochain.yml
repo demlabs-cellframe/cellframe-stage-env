@@ -361,8 +361,8 @@ test:
             nodes: "{{root_nodes}}"
             timeout: 30
           
-          - set: _max_events
-            value: "0"
+          - set: _min_events
+            value: "999"
           - for: _check_node
             in: "{{root_nodes}}"
             steps:
@@ -373,15 +373,15 @@ test:
                 value: "_dag_check_node.split('total_events:')[1].split()[0] if 'total_events:' in _dag_check_node else '0'"
                 eval: true
               - print: "Node {{_check_node}} events: {{_node_events}}"
-              - set: _max_events
-                value: "str(max(int(_max_events), int(_node_events)))"
+              - set: _min_events
+                value: "str(min(int(_min_events), int(_node_events)))"
                 eval: true
           
           - set: _token_decl_events
-            value: "_max_events"
+            value: "_min_events"
             eval: true
           
-          - print: "Max events across nodes: {{_token_decl_events}}"
+          - print: "Min events across all nodes: {{_token_decl_events}}"
       
       - print: "✓ Round complete successful, events: {{_token_decl_events}}"
       
@@ -522,8 +522,8 @@ test:
             nodes: "{{root_nodes}}"
             timeout: 30
           
-          - set: _max_events
-            value: "1"
+          - set: _min_events
+            value: "999"
           - for: _check_node
             in: "{{root_nodes}}"
             steps:
@@ -534,15 +534,15 @@ test:
                 value: "_dag_check_node.split('total_events:')[1].split()[0] if 'total_events:' in _dag_check_node else '1'"
                 eval: true
               - print: "Node {{_check_node}} events: {{_node_events}}"
-              - set: _max_events
-                value: "str(max(int(_max_events), int(_node_events)))"
+              - set: _min_events
+                value: "str(min(int(_min_events), int(_node_events)))"
                 eval: true
           
           - set: _emission_events
-            value: "_max_events"
+            value: "_min_events"
             eval: true
           
-          - print: "Max events across nodes: {{_emission_events}}"
+          - print: "Min events across all nodes: {{_emission_events}}"
       
       - print: "✓ Emission round complete successful, events: {{_emission_events}}"
       
