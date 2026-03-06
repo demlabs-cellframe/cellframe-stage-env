@@ -110,9 +110,9 @@ class ChainSyncManager(BaseGenesisManager):
                 )
                 
                 if exit_code_events == 0 and stdout_events:
-                    # Check for "total events: N" where N > 0
+                    # Check for "total_events: N" where N > 0
                     import re
-                    events_match = re.search(r'total events:\s*(\d+)', stdout_events, re.IGNORECASE)
+                    events_match = re.search(r'total_events:\s*(\d+)', stdout_events, re.IGNORECASE)
                     if events_match:
                         events_count = int(events_match.group(1))
                         if events_count > 0:

@@ -58,7 +58,7 @@ class GenesisConfigManager(BaseGenesisManager):
                 return None
             
             # Parse event hash from output
-            hash_match = re.search(r'event\s+hash:\s*(0x[A-Fa-f0-9]{64})', stdout_str, re.IGNORECASE)
+            hash_match = re.search(r'event_hash:\s*(0x[A-Fa-f0-9]{64})', stdout_str, re.IGNORECASE)
             if hash_match:
                 genesis_hash = hash_match.group(1)
                 logger.info("genesis_event_found", chain=chain_name, hash=genesis_hash[:16])

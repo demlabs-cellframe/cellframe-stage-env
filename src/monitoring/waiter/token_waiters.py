@@ -122,7 +122,7 @@ class TokenInMempoolWaiter(BaseWaiter):
             )
             
             if exit_code_dag == 0 and stdout_dag:
-                total_match = re.search(r'total events:\s*(\d+)', stdout_dag, re.IGNORECASE)
+                total_match = re.search(r'total_events:\s*(\d+)', stdout_dag, re.IGNORECASE)
                 total_events = int(total_match.group(1)) if total_match else 0
                 if total_events > 0:
                     logger.debug("zerochain_has_dag_events",
