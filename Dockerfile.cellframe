@@ -157,6 +157,7 @@ RUN apt-get update && apt-get install -y \
     debconf-utils \
     libpq-dev \
     faketime \
+    iperf3 \
     && \
     # Install version-specific packages with fallbacks
     (apt-get -y install libjson-c5 || apt-get -y install libjson-c6 || apt-get -y install libjson-c-dev || true) && \
