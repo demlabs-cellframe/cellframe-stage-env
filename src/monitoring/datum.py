@@ -175,20 +175,27 @@ class DatumMonitor:
             timeout_verification = max(60.0, timeout_total * 0.5)
         if timeout_in_blocks is None:
             timeout_in_blocks = max(60.0, timeout_total * 0.5)
-        # Validate datum hash format
+        # Normalize: if value is not a strict 0x hash, try to extract first 0x<64 hex> from it
+        # (e.g. "result: Datum 0xABC... with token X" or variable saved via save: instead of save_hash:)
         hash_pattern = r'^0x[0-9a-fA-F]{64,}$'
         if not re.match(hash_pattern, datum_hash):
-            error_msg = f"Invalid datum hash format: {datum_hash[:200]}"
-            self._log(f"❌ {error_msg}")
-            self._log(f"  Expected: 0x[hex] format (64+ hex chars)")
-            self._log(f"  This likely means the CLI command failed and returned error output instead of a hash")
-            
-            return DatumMonitorResult(
-                status=DatumStatus.REJECTED,
-                datum_hash=datum_hash[:100],
-                elapsed_time=0.0,
-                error_message=error_msg
-            )
+            extracted = re.search(r'(0x[0-9a-fA-F]{64})', datum_hash)
+            if extracted:
+                original = datum_hash[:80] + ("..." if len(datum_hash) > 80 else "")
+                datum_hash = extracted.group(1)
+                self._log(f"  ℹ️  Extracted datum hash from variable/output: {datum_hash[:16]}... (value contained extra text)")
+                logger.debug("datum_hash_extracted_from_string", original_preview=original, extracted=datum_hash[:16])
+            else:
+                error_msg = f"Invalid datum hash format: {datum_hash[:200]}"
+                self._log(f"❌ {error_msg}")
+                self._log(f"  Expected: 0x[hex] format (64 hex chars) or text containing such hash")
+                self._log(f"  This likely means the CLI command failed and returned error output instead of a hash")
+                return DatumMonitorResult(
+                    status=DatumStatus.REJECTED,
+                    datum_hash=datum_hash[:100],
+                    elapsed_time=0.0,
+                    error_message=error_msg
+                )
         
         self._log(f"📝 Monitoring datum: {datum_hash[:16]}... (node={node}, timeouts: {timeout_total}s total)")
         
