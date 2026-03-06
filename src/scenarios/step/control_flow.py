@@ -24,8 +24,8 @@ class SetStepExecutor(StepExecutor):
         var_name = ctx.substitute(step.set)
         
         if step.eval:
-            # Evaluate expression using context variables
-            expr = str(step.value)
+            # Substitute {{vars}} first, then evaluate expression
+            expr = ctx.substitute(str(step.value))
             
             # Built-in helper functions available in eval
             def join_vars(prefix: str, count: int, separator: str = ",") -> str:

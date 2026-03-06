@@ -173,6 +173,42 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     print_error(f"Failed to clean data: {e}")
                     sys.exit(1)
             
+            # Clean snapshots
+            print_info("Removing snapshots...")
+            try:
+                snapshots_config = config_loader.get_suite_isolation_config()
+                snapshots_dir_relative = snapshots_config.get('snapshots_dir', '../../cache/snapshots')
+                snapshots_dir = (base_path / snapshots_dir_relative).resolve()
+                
+                if snapshots_dir.exists():
+                    import asyncio
+                    
+                    try:
+                        loop = asyncio.get_running_loop()
+                        print_error("Cannot run async code: event loop already running")
+                        sys.exit(1)
+                    except RuntimeError:
+                        pass
+                    
+                    snapshot_manager = SnapshotManager(base_path, config=snapshots_config)
+                    
+                    async def delete_all_snapshots():
+                        try:
+                            snapshots = await snapshot_manager.list_snapshots()
+                            for snapshot_name in snapshots:
+                                await snapshot_manager.delete_snapshot(snapshot_name)
+                        except Exception as e:
+                            print_error(f"Error deleting snapshots: {e}")
+                            raise
+                    
+                    asyncio.run(delete_all_snapshots())
+                    print_success("Snapshots cleaned")
+                else:
+                    print_info("No snapshots directory found")
+            except Exception as e:
+                print_error(f"Failed to clean snapshots: {e}")
+                sys.exit(1)
+            
             # Clean Docker networks (including conflicting ones)
             print_info("Cleaning Docker networks...")
             try:

@@ -213,7 +213,9 @@ class ScenarioExecutor:
             wait_executor=self.wait_executor
         )
         self.snapshot_executor = SnapshotStepExecutor(
-            self.container_manager, log_file, debug, compose_manager=None
+            self.container_manager, log_file, debug, compose_manager=None,
+            base_path=self.base_path if hasattr(self, 'base_path') else None,
+            config_loader=self.config_loader if hasattr(self, 'config_loader') else None,
         )
         self.set_executor = SetStepExecutor(self.container_manager, log_file, debug)
         self.if_executor = IfStepExecutor(
@@ -297,7 +299,13 @@ class ScenarioExecutor:
             node_num = node_alias[5:]
             if node_num.isdigit():
                 return f"node{node_num}"
-        
+
+        # Custom service names added via node_compose_gen (e.g. cdb-node-1,
+        # kelvpn-client-3).  These are direct docker-compose service names —
+        # return as-is so that container_manager can map them.
+        if re.match(r'^[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*-\d+$', node_alias):
+            return node_alias
+
         _KNOWN_ROLES = {"root", "master", "full"}
 
         # Role-based aliases (root-1, master-2, full-1)
@@ -343,6 +351,25 @@ class ScenarioExecutor:
         # Fallback: return as-is (will fail later if invalid)
         return node_alias
     
+    def _lookup_compose_node_id(self, service_name: str):
+        """Resolve NODE_ID from docker-compose.generated.yml for custom services."""
+        try:
+            compose_file = self.base_path / "docker-compose.generated.yml"
+            if not compose_file.exists():
+                return None
+            import yaml
+            with open(compose_file) as f:
+                data = yaml.safe_load(f)
+            svc = (data or {}).get("services", {}).get(service_name)
+            if not svc:
+                return None
+            nid = svc.get("environment", {}).get("NODE_ID")
+            if nid is not None:
+                return int(nid)
+        except Exception:
+            pass
+        return None
+
     def _resolve_node_to_container(self, node: str) -> str:
         """Convert node ID/alias to Docker container name (delegates to container manager)."""
         # First resolve alias to node ID, then convert to container name
@@ -798,6 +825,32 @@ class ScenarioExecutor:
                 raise ScenarioExecutionError(f"Unknown step type: {type(step)}")
     
     
+    def _node_id_to_service(self, node_id: int) -> str:
+        """Map numeric node_id to docker-compose service name."""
+        svc = self._lookup_compose_node_id_reverse(node_id)
+        if svc:
+            return svc
+        logger.debug("node_id_to_service_fallback", node_id=node_id, base_path=str(self.base_path))
+        return f"node{node_id}"
+
+    def _lookup_compose_node_id_reverse(self, node_id: int):
+        """Reverse lookup: numeric NODE_ID → service name from compose file."""
+        try:
+            import yaml
+            compose_file = self.base_path / "docker-compose.generated.yml"
+            if not compose_file.exists():
+                logger.warning("compose_not_found_reverse", path=str(compose_file))
+                return None
+            with open(compose_file) as f:
+                data = yaml.safe_load(f)
+            for name, svc in (data or {}).get("services", {}).items():
+                env = svc.get("environment", {})
+                if isinstance(env, dict) and str(env.get("NODE_ID")) == str(node_id):
+                    return name
+        except Exception as e:
+            logger.warning("compose_reverse_lookup_failed", node_id=node_id, error=str(e))
+        return None
+
     def _create_exec_cli_for_waiter(self):
         """Create synchronous exec_cli function for waiters with retry support."""
         # Waiters expect sync function, but we have async _run_cli_command
@@ -819,20 +872,22 @@ class ScenarioExecutor:
                 # If loop is running, we need to use a different approach
                 # Create a new task and wait for it
                 import concurrent.futures
+                svc = self._node_id_to_service(node_id)
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(
                         asyncio.run,
                         self._run_cli_command(
-                            command, f"node{node_id}", 30,
-                            retry_on_init_failure=True  # Enable retry for waiters
+                            command, svc, 30,
+                            retry_on_init_failure=True
                         )
                     )
-                    result = future.result(timeout=40)  # Increased for retries
+                    result = future.result(timeout=40)
             else:
+                svc = self._node_id_to_service(node_id)
                 result = loop.run_until_complete(
                     self._run_cli_command(
-                        command, f"node{node_id}", 30,
-                        retry_on_init_failure=True  # Enable retry for waiters
+                        command, svc, 30,
+                        retry_on_init_failure=True
                     )
                 )
             
@@ -863,7 +918,12 @@ class ScenarioExecutor:
             master_idx = int(node_id.split("-")[1])
             node_num = master_idx + 3  # master-1 -> 4, master-2 -> 5, etc.
         else:
-            raise ValueError(f"Unknown node_id format: {node_id}")
+            # Custom compose service — look up NODE_ID from generated compose
+            nid = self._lookup_compose_node_id(resolved)
+            if nid is not None:
+                node_num = nid
+            else:
+                raise ValueError(f"Unknown node_id format: {node_id}")
         
         # Create minimal NodeConfig-like object
         from types import SimpleNamespace

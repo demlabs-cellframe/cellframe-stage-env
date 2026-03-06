@@ -63,20 +63,27 @@ class DpkgStepExecutor(StepExecutor):
         container.put_archive(container_dir, buf)
         return dest_path
 
-    async def _install(self, host_path: str, services: List[str], ctx: RuntimeContext, fix_deps: bool = False) -> None:
+    @staticmethod
+    def _resolve_deb_path(host_path: str) -> Path:
+        """Resolve a .deb path, supporting glob patterns (e.g. cellframe-node-cdb*.deb)."""
+        p = Path(host_path)
+        resolved = p.resolve()
+        if resolved.exists():
+            return resolved
         import glob as _glob
-        raw = Path(host_path)
-        if not raw.is_absolute():
-            raw = Path.cwd() / raw
-        if any(c in str(raw) for c in ('*', '?', '[')):
-            matched = sorted(_glob.glob(str(raw)))
-            if not matched:
-                raise ScenarioExecutionError(f"DEB package glob matched nothing: {host_path}")
-            resolved = Path(matched[-1]).resolve()
-        else:
-            resolved = raw.resolve()
-        if not resolved.exists():
-            raise ScenarioExecutionError(f"DEB package not found: {resolved}")
+        candidates = sorted(_glob.glob(host_path), key=lambda f: Path(f).stat().st_mtime, reverse=True)
+        if not candidates:
+            parent = p.resolve().parent
+            stem = p.stem
+            candidates = sorted(parent.glob(f"{stem}*.deb"), key=lambda f: f.stat().st_mtime, reverse=True)
+        if candidates:
+            found = Path(candidates[0]).resolve()
+            logger.info("dpkg_glob_resolved", original=host_path, resolved=str(found))
+            return found
+        raise ScenarioExecutionError(f"DEB package not found: {resolved} (glob also found nothing)")
+
+    async def _install(self, host_path: str, services: List[str], ctx: RuntimeContext, fix_deps: bool = False) -> None:
+        resolved = self._resolve_deb_path(host_path)
 
         deb_name = resolved.name
 

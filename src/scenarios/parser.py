@@ -212,14 +212,17 @@ class BaseScenarioParser:
     def _transform_operand_steps(self, data: Any) -> Any:
         """Recursively rewrite custom-operand dicts into ``CustomOperandStep`` format."""
         if isinstance(data, dict):
-            # Is this dict a step invocation for a registered operand?
             operand_key = self._detect_operand_key(data)
             if operand_key is not None:
-                action = data[operand_key]
+                action_raw = str(data[operand_key])
                 params = {k: v for k, v in data.items() if k not in (operand_key, "description")}
+                defn = self._operand_registry.get(operand_key)
+                resolved_action, extra_args = defn.resolve_action(action_raw)
+                if extra_args is not None:
+                    params.setdefault("args", extra_args)
                 return {
                     "operand_name": operand_key,
-                    "operand_action": str(action),
+                    "operand_action": resolved_action,
                     "operand_params": params,
                     "description": data.get("description"),
                 }

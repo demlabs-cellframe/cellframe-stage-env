@@ -536,6 +536,46 @@ class CertGenerator:
         
         return missing
     
+    def generate_single_node_cert(self, output_dir: Path, cert_name: str = "node-addr") -> Optional[str]:
+        """Generate a single node-addr certificate and return the node address.
+
+        Uses ``cf-cert-generator --single`` which prints ``ADDR:<hex>`` to stdout.
+
+        Returns:
+            Node address string (e.g. "A1B2::C3D4::E5F6::7890") or None on failure.
+        """
+        if not self.build_docker_image():
+            logger.error("cert_builder_image_not_available")
+            return None
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        uid, gid = os.getuid(), os.getgid()
+
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "--entrypoint", "sh",
+            "-v", f"{output_dir.absolute()}:/output",
+            CERT_BUILDER_IMAGE,
+            "-c",
+            f"/usr/local/bin/cf-cert-generator --single /output {cert_name}"
+            f" && chown -R {uid}:{gid} /output",
+        ]
+
+        try:
+            result = subprocess.run(docker_cmd, capture_output=True, text=True, check=True)
+            for line in result.stdout.splitlines():
+                if line.startswith("ADDR:"):
+                    addr = line[5:].strip()
+                    logger.info("single_cert_generated", cert_name=cert_name, addr=addr,
+                                output_dir=str(output_dir))
+                    return addr
+            logger.warning("single_cert_no_addr_in_output", stdout=result.stdout[:300])
+            return None
+        except subprocess.CalledProcessError as e:
+            logger.error("single_cert_generation_failed", rc=e.returncode,
+                         stderr=e.stderr[:300])
+            return None
+
     def clean(self) -> None:
         """Remove all generated certificates."""
         logger.info("cleaning_certificates")
