@@ -7,11 +7,7 @@ load_priority=0
 # Match tests-in-docker configuration
 datum_types=[token,emission,ca,decree]
 default_datum_types=[token,emission,ca,decree]
-# mempool_auto_types disabled: test scenarios use explicit mempool proc_all
-# Having auto_types enabled on multiple root nodes with seed_mode causes
-# duplicate datum processing — each node independently processes synced datums,
-# leading to "Datum already cached in ledger" errors during round completion
-# mempool_auto_types=[token,emission,ca,decree]
+mempool_auto_types=[token,emission,ca,decree]
 consensus=dag_poa
 # Authorized nodes have special permissions (can write to nodelist, mempool)
 # This MUST be in zerochain [chain] section for node add command to work
