@@ -38,7 +38,9 @@ class BashStepExecutor(StepExecutor):
         if step.save:
             var_name = ctx.substitute(step.save)
             ctx.set_variable(var_name, result["stdout"])
-            logger.debug("bash_step_saved", variable=var_name)
+            logger.info("bash_step_saved", variable=var_name,
+                        save_template=step.save,
+                        stdout_len=len(result["stdout"]))
         
         # Check expectation
         if step.expect == "success" and result["returncode"] != 0:

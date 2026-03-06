@@ -108,28 +108,18 @@ class NetworkManager:
         artifacts_config = self.config_loader.get_artifacts_config()
         self.artifacts_manager = ArtifactsManager(base_path, artifacts_config)
         
-        # Initialize snapshot manager for suite isolation
         suite_isolation_config = self.config_loader.get_suite_isolation_config()
-        snapshot_mode_str = suite_isolation_config.get('mode', 'filesystem')
-        
-        # Convert mode string to enum
-        try:
-            snapshot_mode = SnapshotMode(snapshot_mode_str)
-        except ValueError:
-            logger.warning("invalid_snapshot_mode",
-                          mode=snapshot_mode_str,
-                          fallback="filesystem")
-            snapshot_mode = SnapshotMode.FILESYSTEM
-        
-        # Pass full config including cache_dir
+
         snapshot_config = dict(suite_isolation_config)
         snapshot_config['cache_dir'] = self.paths_config.get('cache_dir', '../../cache')
-        
+
+        disabled = suite_isolation_config.get('mode', '').lower() == 'disabled'
+
         self.snapshot_manager = SnapshotManager(
             base_path,
-            mode=snapshot_mode,
             config=snapshot_config,
             compose_manager=self.compose,
+            mode=SnapshotMode.DISABLED if disabled else None,
         )
         
         self.suite_isolation_config = suite_isolation_config
@@ -151,7 +141,7 @@ class NetworkManager:
                    network=self.topology.network.name,
                    timeouts=self.timeouts,
                    cache_dir=self.paths_config.get('cache_dir'),
-                   snapshot_mode=snapshot_mode.value)
+                   snapshot_mode=self.snapshot_manager.mode.value)
     
     def generate_node_configs(self) -> List[NodeConfig]:
         """
@@ -296,18 +286,10 @@ class NetworkManager:
         phase1_snapshot_exists = False
         
         if self.snapshot_manager.mode != SnapshotMode.DISABLED:
-            # Helper to check if snapshot exists
-            def _snapshot_exists(name: str) -> bool:
-                if self.snapshot_manager.mode == SnapshotMode.SQUASHFS:
-                    return (self.snapshot_manager.snapshot.snapshots_path / f"{name}.sqfs").exists()
-                elif self.snapshot_manager.mode == SnapshotMode.FILESYSTEM:
-                    return (self.snapshot_manager.snapshot.snapshots_path / name).exists()
-                elif self.snapshot_manager.mode == SnapshotMode.RECREATE:
-                    return (self.snapshot_manager.snapshot.snapshots_path / f"{name}.marker").exists()
-                return False
-            
+            _snap = self.snapshot_manager.snapshot
+
             # PRIORITY 1: Check for clean_state snapshot (full genesis)
-            if _snapshot_exists(clean_state_name):
+            if _snap.exists(clean_state_name):
                 logger.info("clean_state_snapshot_found",
                            name=clean_state_name,
                            note="Full genesis snapshot exists - restoring")
@@ -322,7 +304,7 @@ class NetworkManager:
                                   name=clean_state_name)
             
             # PRIORITY 2: Check for phase1 snapshot (only if clean_state not restored)
-            if not clean_state_restored and _snapshot_exists(phase1_snapshot_name):
+            if not clean_state_restored and _snap.exists(phase1_snapshot_name):
                 logger.info("phase1_snapshot_found_restoring",
                            name=phase1_snapshot_name,
                            mode=self.snapshot_manager.mode.value)

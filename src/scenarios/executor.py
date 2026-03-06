@@ -198,7 +198,9 @@ class ScenarioExecutor:
             wait_executor=self.wait_executor
         )
         self.snapshot_executor = SnapshotStepExecutor(
-            self.container_manager, log_file, debug, compose_manager=None
+            self.container_manager, log_file, debug, compose_manager=None,
+            base_path=self.base_path if hasattr(self, 'base_path') else None,
+            config_loader=self.config_loader if hasattr(self, 'config_loader') else None,
         )
         self.set_executor = SetStepExecutor(self.container_manager, log_file, debug)
         self.if_executor = IfStepExecutor(

@@ -71,17 +71,26 @@ class CustomOperandStepExecutor(StepExecutor):
                 saved_vars[key] = ctx.get_variable(key) if ctx.has_variable(key) else _SENTINEL
                 ctx.set_variable(key, value)
 
+            logger.info("operand_vars_before_execute",
+                        saved_keys=list(saved_vars.keys()),
+                        ctx_vars=list(ctx.variables.keys()))
+
             from ..schema import TestStep
             adapter = TypeAdapter(List[TestStep])
             parsed_steps = adapter.validate_python(copy.deepcopy(raw_steps))
 
             await self._execute_steps(parsed_steps, ctx, defaults)
+
+            logger.info("operand_vars_after_execute",
+                        ctx_vars=list(ctx.variables.keys()))
         finally:
             for key, prev in saved_vars.items():
                 if prev is _SENTINEL:
                     ctx.delete_variable(key)
                 else:
                     ctx.set_variable(key, prev)
+            logger.info("operand_vars_after_cleanup",
+                        ctx_vars=list(ctx.variables.keys()))
 
 
 _SENTINEL = object()

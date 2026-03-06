@@ -40,7 +40,7 @@ class RecreateSnapshot(BaseSnapshot):
         logger.info("recreate_mode_initialized",
                    note="No snapshots stored, uses full cleanup/rebuild")
     
-    async def create(self, name: str) -> bool:
+    async def create(self, name: str, clone_images: dict | None = None) -> bool:
         """
         Create a snapshot marker (no actual data stored).
         
@@ -122,6 +122,9 @@ class RecreateSnapshot(BaseSnapshot):
         
         return sorted(markers)
     
+    def exists(self, name: str) -> bool:
+        return (self.snapshots_path / f"{name}.marker").exists()
+
     def get_info(self, name: str) -> Dict[str, Any]:
         """
         Get marker information.

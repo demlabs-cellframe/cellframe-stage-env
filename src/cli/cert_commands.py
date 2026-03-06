@@ -161,17 +161,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     except RuntimeError:
                         pass
                     
-                    # Get snapshot mode from config
-                    mode_str = snapshots_config.get('mode', 'filesystem').lower()
-                    mode_map = {
-                        'disabled': SnapshotMode.DISABLED,
-                        'recreate': SnapshotMode.RECREATE,
-                        'filesystem': SnapshotMode.FILESYSTEM,
-                        'squashfs': SnapshotMode.SQUASHFS,
-                    }
-                    snapshot_mode = mode_map.get(mode_str, SnapshotMode.FILESYSTEM)
-                    
-                    snapshot_manager = SnapshotManager(base_path, snapshot_mode, snapshots_config)
+                    snapshot_manager = SnapshotManager(base_path, config=snapshots_config)
                     
                     # Delete all snapshots
                     async def delete_all_snapshots():

@@ -16,7 +16,7 @@ from typing import Dict, Any, Optional, List
 import subprocess
 
 from src.utils.logger import get_logger
-from .base import BaseSnapshot
+from .base import BaseSnapshot, SNAPSHOT_EXCLUDE_PATTERNS
 
 logger = get_logger(__name__)
 
@@ -137,7 +137,7 @@ class SquashfsSnapshot(BaseSnapshot):
         
         return False
     
-    async def create(self, name: str) -> bool:
+    async def create(self, name: str, clone_images: dict | None = None) -> bool:
         """
         Create squashfs snapshot including data and configs.
         
@@ -181,11 +181,7 @@ class SquashfsSnapshot(BaseSnapshot):
             # Write exclude patterns to file
             # Exclude run/ directories (contain Unix sockets, symlinks and PID files that are runtime-specific)
             # CRITICAL: Must exclude entire run/ directory to prevent Unix socket files from being included
-            exclude_patterns = [
-                "*/run/",  # Exclude entire run/ directory first (most specific)
-                "*/run/node_cli",  # Explicitly exclude Unix socket files
-                "*/run/*.pid",  # Exclude PID files
-            ]
+            exclude_patterns = list(SNAPSHOT_EXCLUDE_PATTERNS)
             exclude_file.write_text('\n'.join(exclude_patterns))
             
             # Build mksquashfs command - pass source directories directly
@@ -523,6 +519,9 @@ class SquashfsSnapshot(BaseSnapshot):
         
         return sorted(snapshots)
     
+    def exists(self, name: str) -> bool:
+        return (self.snapshots_path / f"{name}.sqfs").exists()
+
     def get_info(self, name: str) -> Dict[str, Any]:
         """Get squashfs snapshot information."""
         snapshot_file = self.snapshots_path / f"{name}.sqfs"

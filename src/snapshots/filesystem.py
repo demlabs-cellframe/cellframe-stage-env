@@ -22,7 +22,7 @@ from typing import Dict, Any, List, Optional
 import subprocess
 
 from src.utils.logger import get_logger
-from .base import BaseSnapshot
+from .base import BaseSnapshot, SNAPSHOT_EXCLUDE_PATTERNS
 
 logger = get_logger(__name__)
 
@@ -83,12 +83,15 @@ class FilesystemSnapshot(BaseSnapshot):
         except subprocess.TimeoutExpired:
             return False
     
-    async def create(self, name: str) -> bool:
+    async def create(self, name: str, clone_images: dict | None = None) -> bool:
         """
         Create hybrid snapshot: rsync data/configs + docker commit containers.
         
         Args:
             name: Snapshot name
+            clone_images: Optional mapping {source_service: [target_services]}.
+                          The prototype's committed image is reused for all
+                          target services, avoiding redundant package installs.
             
         Returns:
             True if snapshot created successfully
@@ -127,7 +130,12 @@ class FilesystemSnapshot(BaseSnapshot):
                     await self._rsync_copy(config_dir, target_dir)
             
             committed_images = await self._commit_containers(name)
-            
+
+            if clone_images:
+                committed_images = self._apply_clone_images(
+                    committed_images, clone_images,
+                )
+
             metadata = self._create_metadata(name, data_dirs, config_dirs, committed_images)
             metadata_file = snapshot_dir / ".snapshot_metadata"
             metadata_file.write_text(json.dumps(metadata, indent=2))
@@ -341,8 +349,10 @@ class FilesystemSnapshot(BaseSnapshot):
             "-rlptD",  # archive mode WITHOUT owner/group
             "--no-owner",
             "--no-group",
-            "--delete",  # delete files in target not in source
+            "--delete",
             "--exclude", "asan.*",
+            *[arg for pat in SNAPSHOT_EXCLUDE_PATTERNS
+              for arg in ("--exclude", pat)],
             str(source) + "/",  # trailing slash important!
             str(target) + "/",
             stdout=asyncio.subprocess.PIPE,
@@ -354,6 +364,38 @@ class FilesystemSnapshot(BaseSnapshot):
         if proc.returncode != 0:
             raise RuntimeError(f"rsync failed: {stderr.decode()}")
     
+    def _apply_clone_images(
+        self,
+        committed: Dict[str, str],
+        clone_images: dict,
+    ) -> Dict[str, str]:
+        """Replicate a prototype's committed image tag to target services.
+
+        Args:
+            committed: Current {service: image_tag} from docker commit.
+            clone_images: {source_service: [target1, target2, ...]}.
+
+        Returns:
+            Extended committed dict with cloned entries.
+        """
+        result = dict(committed)
+        for source, targets in clone_images.items():
+            src_tag = committed.get(source)
+            if not src_tag:
+                logger.warning("clone_images_source_not_committed",
+                               source=source,
+                               available=list(committed.keys()))
+                continue
+            if isinstance(targets, str):
+                targets = [targets]
+            for target in targets:
+                if target != source:
+                    result[target] = src_tag
+            logger.info("clone_images_applied",
+                        source=source,
+                        cloned_to=len([t for t in targets if t != source]))
+        return result
+
     async def _commit_containers(self, name: str) -> Dict[str, str]:
         """
         Docker-commit each project container, capturing writable layer
@@ -472,6 +514,9 @@ class FilesystemSnapshot(BaseSnapshot):
             pass
         return total
     
+    def exists(self, name: str) -> bool:
+        return (self.snapshots_path / name).is_dir()
+
     def get_info(self, name: str) -> Dict[str, Any]:
         """Get snapshot information."""
         snapshot_dir = self.snapshots_path / name
