@@ -38,6 +38,15 @@ ARG BUILD_TYPE=debug
 ARG REPOSITORY_URL=
 ARG REPOSITORY_BRANCH=master
 ARG BUILD_JOBS=0
+ARG DEBIAN_MIRROR=
+
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+        sed -i '/debian-security/!s|http://deb.debian.org/debian|'"$DEBIAN_MIRROR"'|g' \
+            /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+        sed -i '/debian-security/!s|http://deb.debian.org/debian|'"$DEBIAN_MIRROR"'|g' \
+            /etc/apt/sources.list 2>/dev/null || true; \
+        echo "Builder: using Debian mirror $DEBIAN_MIRROR"; \
+    fi
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -107,10 +116,13 @@ ARG REPOSITORY_BRANCH=master
 ARG DEBIAN_MIRROR=
 ARG TOOLS_BASE_URL=https://pub.cellframe.net
 
-# Note: Debian Trixie (testing) is not available on most mirrors yet
-# Skip mirror substitution for Trixie - use official repos only
-# The DEBIAN_MIRROR argument is accepted but ignored for Trixie compatibility
-RUN echo "Using official Debian Trixie repositories (mirrors not supported yet)"
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+        sed -i '/debian-security/!s|http://deb.debian.org/debian|'"$DEBIAN_MIRROR"'|g' \
+            /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+        sed -i '/debian-security/!s|http://deb.debian.org/debian|'"$DEBIAN_MIRROR"'|g' \
+            /etc/apt/sources.list 2>/dev/null || true; \
+        echo "Runtime: using Debian mirror $DEBIAN_MIRROR"; \
+    fi
 
 # Install required packages (matching tests-in-docker for compatibility)
 # Runtime dependencies for cellframe-node

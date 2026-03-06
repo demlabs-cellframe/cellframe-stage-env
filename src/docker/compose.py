@@ -425,6 +425,8 @@ class DockerComposeManager:
             node_service['build']['args']['TOOLS_BASE_URL'] = tools_base_url
             node_service['build']['args']['BUILD_TYPE'] = build_type
             
+            node_service['image'] = f"cf-node:{build_type}-{cellframe_version}"
+            
             # Set build args for node source
             node_service['build']['args']['NODE_SOURCE_TYPE'] = node_source_type
             if node_source_type == 'local' and local_package_path:

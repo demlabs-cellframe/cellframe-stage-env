@@ -323,68 +323,24 @@ test:
     steps:
       - cli: "token_decl -token {{native_ticker}} -total_supply 0 -decimals 18 -signs_emission {{root_count}} -signs_total {{root_count}} -type CF20 -certs {{root_certs_str}}"
         save_hash: token_hash
-      
+        save_to: _token_decl_result
+      - print: "Token decl result: {{_token_decl_result}}"
+
+      - cli: "mempool list"
+        save_to: _mempool_before_proc
+      - print: "Mempool before proc_all: {{_mempool_before_proc}}"
+
       - cli: "mempool proc_all"
         save_to: _mempool_proc_result
       - print: "Mempool proc_all result: {{_mempool_proc_result}}"
-      
-      - wait: global_db_sync
-        nodes: "{{root_nodes}}"
-        timeout: 60
-      
-      - set: _token_decl_events
-        value: "0"
-      
-      - while: "int(_token_decl_events) == 0"
-        max_loops: 20
-        steps:
-          - print: "Completing round... (events in chain: {{_token_decl_events}})"
-          
-          - for: _complete_node
-            in: "{{root_nodes}}"
-            steps:
-              - cli: "dag round complete"
-                node: "{{_complete_node}}"
-                save_to: _round_result
-              - print: "Round complete on {{_complete_node}}: {{_round_result}}"
-          
-          - cli: "net go sync -chain zerochain"
-            nodes: "{{root_nodes}}"
-          
-          - wait: global_db_sync
-            nodes: "{{root_nodes}}"
-            timeout: 30
-          
-          - set: _max_events
-            value: "0"
-          - for: _check_node
-            in: "{{root_nodes}}"
-            steps:
-              - cli: "dag event list"
-                node: "{{_check_node}}"
-                save_to: _dag_check_node
-              - set: _node_events
-                value: "_dag_check_node.split('total_events:')[1].split()[0] if 'total_events:' in _dag_check_node else '0'"
-                eval: true
-              - print: "Node {{_check_node}} events: {{_node_events}}"
-              - set: _max_events
-                value: "str(max(int(_max_events), int(_node_events)))"
-                eval: true
-          
-          - set: _token_decl_events
-            value: "_max_events"
-            eval: true
-          
-          - print: "Max events across nodes: {{_token_decl_events}}"
-      
-      - print: "✓ Round complete successful, events: {{_token_decl_events}}"
-      
-      - cli: "net go sync -chain zerochain"
 
-      - wait: global_db_sync
+      - wait: chain_data_propagation
         nodes: "{{root_nodes}}"
-        timeout: 30
-      
+        chain: zerochain
+        timeout: 120
+
+      - print: "✓ Token declaration event propagated to all root nodes"
+
       - cli: "token list"
         contains: "tokens: 1"
       
@@ -488,79 +444,22 @@ test:
       - cli: "mempool proc_all"
         save_to: _emission_mempool_result
       - print: "Emission mempool proc_all result: {{_emission_mempool_result}}"
-      
-      - wait: global_db_sync
-        nodes: "{{root_nodes}}"
-        timeout: 60
-      
-      - set: _emission_events
-        value: "1"
-      
-      - while: "int(_emission_events) < 2"
-        max_loops: 20
+
+      - for: _sync_node
+        in: "{{root_nodes}}"
         steps:
-          - print: "Completing emission round... (events in chain: {{_emission_events}})"
-          
-          - for: _complete_node
-            in: "{{root_nodes}}"
-            steps:
-              - cli: "dag round complete"
-                node: "{{_complete_node}}"
-                save_to: _round_result
-              - print: "Round complete on {{_complete_node}}: {{_round_result}}"
-          
-          - cli: "net go sync -chain zerochain"
-            nodes: "{{root_nodes}}"
-          
-          - wait: global_db_sync
-            nodes: "{{root_nodes}}"
-            timeout: 30
-          
-          - set: _max_events
-            value: "1"
-          - for: _check_node
-            in: "{{root_nodes}}"
-            steps:
-              - cli: "dag event list -chain zerochain"
-                node: "{{_check_node}}"
-                save_to: _dag_check_node
-              - set: _node_events
-                value: "_dag_check_node.split('total_events:')[1].split()[0] if 'total_events:' in _dag_check_node else '1'"
-                eval: true
-              - print: "Node {{_check_node}} events: {{_node_events}}"
-              - set: _max_events
-                value: "str(max(int(_max_events), int(_node_events)))"
-                eval: true
-          
-          - set: _emission_events
-            value: "_max_events"
-            eval: true
-          
-          - print: "Max events across nodes: {{_emission_events}}"
-      
-      - print: "✓ Emission round complete successful, events: {{_emission_events}}"
-      
+          - wait: cli
+            cmd: "dag event list -chain zerochain"
+            node: "{{_sync_node}}"
+            contains: "total_events: 2"
+            timeout: 120
+            interval: 3
+
+      - print: "✓ Emission event propagated to all root nodes"
+
       - cli: "dag event list -chain zerochain"
         save_to: _dag_events_after_emission
-      
       - print: "DAG events after emission: {{_dag_events_after_emission}}"
-      
-      - cli: "net go sync -chain zerochain"
-
-      - wait: global_db_sync
-        nodes: "{{root_nodes}}"
-        timeout: 30
-
-      - cli: "dag event list -chain zerochain"
-        save_to: _final_dag_check
-      - set: _final_events_count
-        value: "_final_dag_check.split('total_events:')[1].split()[0] if 'total_events:' in _final_dag_check else '0'"
-        eval: true
-      - print: "Final events count after sync: {{_final_events_count}}"
-      
-      - wait: global_db_sync
-        node: "{{first_root}}"
-        timeout: 60
       
       - cli: "ledger list coins"
         contains: "{{native_ticker}}"

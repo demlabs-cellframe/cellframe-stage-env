@@ -19,11 +19,13 @@ class ConfigStepExecutor(StepExecutor):
         container_manager, 
         log_file=None, 
         debug=False,
-        resolve_node_alias_callback=None
+        resolve_node_alias_callback=None,
+        custom_templates_dirs=None,
     ):
         super().__init__(container_manager, log_file, debug)
         self.resolve_node_alias_callback = resolve_node_alias_callback
         self.base_path = container_manager.base_path
+        self.custom_templates_dirs: List[Path] = [Path(d) for d in (custom_templates_dirs or [])]
         
     def _lookup_node_id_from_compose(self, service_name: str):
         """Resolve NODE_ID for a custom compose service (e.g. cdb-node-1 → 9)."""
@@ -107,9 +109,47 @@ class ConfigStepExecutor(StepExecutor):
                 return [s.strip() for s in expanded.split(',') if s.strip()]
         return list(nodes)
     
+    def _resolve_template_path(self, template_str: str) -> Path:
+        """
+        Resolve template path by searching custom_templates_dirs, then base_path.
+        Bare names (no directory separators) are looked up in custom dirs first.
+        """
+        tpl_path = Path(template_str)
+        if tpl_path.is_absolute() and tpl_path.exists():
+            return tpl_path
+
+        if '/' not in template_str and '\\' not in template_str:
+            for d in self.custom_templates_dirs:
+                candidate = d / template_str
+                if candidate.exists():
+                    return candidate.resolve()
+
+        resolved = (self.base_path / tpl_path).resolve()
+        if resolved.exists():
+            return resolved
+
+        raise ScenarioExecutionError(
+            f"Template not found: {template_str} "
+            f"(searched: {[str(d) for d in self.custom_templates_dirs]} + {self.base_path})"
+        )
+
     async def execute(self, step: ConfigStep, ctx: RuntimeContext) -> None:
         """Execute config regeneration step."""
+        if isinstance(step.set, dict):
+            variables = {k: ctx.substitute(str(v)) for k, v in step.set.items()}
+        else:
+            variables = self._parse_set_string(ctx.substitute(step.set))
+
+        config_path = ctx.substitute(step.config)
+        template_path = ctx.substitute(step.template) if step.template else None
+        deploy_mode = ctx.substitute(step.deploy) if step.deploy else None
+
+        if deploy_mode == "container":
+            await self._deploy_to_containers(step, ctx, config_path, template_path, variables)
+            return
+
         nodes_list = self._expand_nodes_list(step.nodes, ctx)
+        svc_map = ctx.variables.get('_service_node_ids', {})
         node_ids = []
         for node_alias in nodes_list:
             resolved = ctx.substitute(node_alias)
@@ -119,6 +159,8 @@ class ConfigStepExecutor(StepExecutor):
             match = re.match(r'^(?:node|root|master|full)-?(\d+)$', resolved)
             if match:
                 node_ids.append(int(match.group(1)))
+            elif resolved in svc_map:
+                node_ids.append(int(svc_map[resolved]))
             else:
                 # Custom compose service (cdb-node-1, kelvpn-client-3, etc.)
                 nid = self._lookup_node_id_from_compose(resolved)
@@ -130,14 +172,6 @@ class ConfigStepExecutor(StepExecutor):
         if not node_ids:
             raise ScenarioExecutionError(f"No valid nodes resolved from {step.nodes}", step=step)
 
-        if isinstance(step.set, dict):
-            variables = {k: ctx.substitute(str(v)) for k, v in step.set.items()}
-        else:
-            variables = self._parse_set_string(ctx.substitute(step.set))
-            
-        config_path = ctx.substitute(step.config)
-        template_path = ctx.substitute(step.template) if step.template else None
-
         logger.info(f"Config: regenerating '{config_path}' for nodes {node_ids} with vars {list(variables.keys())}")
         
         network_name = ctx.variables.get('network_name', 'stagenet')
@@ -145,6 +179,44 @@ class ConfigStepExecutor(StepExecutor):
         await self._regenerate_config(node_ids, config_path, variables, network_name, template_path)
         
         ctx.add_result("config", True, {"name": step.config, "nodes": node_ids})
+
+    async def _deploy_to_containers(
+        self, step: ConfigStep, ctx: RuntimeContext,
+        config_path: str, template_path: str, variables: Dict[str, Any],
+    ) -> None:
+        """Render a J2 template and deploy the result into running containers via docker exec."""
+        import jinja2
+
+        if not template_path:
+            raise ScenarioExecutionError("deploy: container requires a 'template' field", step=step)
+
+        tpl_path = self._resolve_template_path(template_path)
+        env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(tpl_path.parent)))
+        template = env.get_template(tpl_path.name)
+
+        nodes_list = self._expand_nodes_list(step.nodes, ctx)
+        deployed = []
+        for node_alias in nodes_list:
+            node = ctx.substitute(node_alias)
+            full_context = {**variables, "node": node}
+            rendered = template.render(full_context)
+            escaped = rendered.replace("'", "'\\''")
+
+            target = config_path.replace("{{node}}", node)
+            result = await self.container_manager.exec_bash_command(
+                f"mkdir -p $(dirname '{target}') && printf '%s' '{escaped}' > '{target}'",
+                node=node,
+                timeout=30,
+            )
+            if result["returncode"] != 0:
+                raise ScenarioExecutionError(
+                    f"Failed to deploy config to {node}:{target}: {result['stderr'] or result['stdout']}",
+                    step=step,
+                )
+            deployed.append(node)
+            logger.info("config_deployed_to_container", node=node, target=target, template=str(tpl_path))
+
+        ctx.add_result("config", True, {"name": config_path, "deploy": "container", "nodes": deployed})
 
     def _parse_set_string(self, set_str: str) -> Dict[str, Any]:
         """Parse 'key=value, key2="value 2"' string."""
@@ -245,11 +317,7 @@ class ConfigStepExecutor(StepExecutor):
         """
         import jinja2
 
-        tpl_path = Path(template_path_str)
-        if not tpl_path.is_absolute():
-            tpl_path = (self.base_path / tpl_path).resolve()
-        if not tpl_path.exists():
-            raise ScenarioExecutionError(f"Template not found: {tpl_path}")
+        tpl_path = self._resolve_template_path(template_path_str)
 
         env = jinja2.Environment(
             loader=jinja2.FileSystemLoader(str(tpl_path.parent))

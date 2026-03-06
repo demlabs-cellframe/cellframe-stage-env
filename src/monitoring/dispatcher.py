@@ -41,6 +41,8 @@ class WaiterConfig:
         "global_db_sync": 2.0,
         "cli_ready": 0.5,
         "block_created": 3.0,
+        "network_sync": 5.0,
+        "chain_data_propagation": 5.0,
         "default": 2.0,
     }
     
@@ -284,7 +286,7 @@ class WaiterDispatcher:
         # Handle waiters that need node configs
         if waiter_type in ["delegations_synced", "stake_service_ready", "cli_ready", 
                           "gdb_sync_complete", "global_db_sync", "first_block", "esbocs_consensus_active",
-                          "block_created"]:
+                          "block_created", "network_sync", "chain_data_propagation"]:
             node_configs = self._get_node_configs(nodes)
             
             if waiter_type == "delegations_synced":
@@ -357,6 +359,22 @@ class WaiterDispatcher:
                     network_name=network,
                     poll_interval=poll_interval,
                     stake_service_waiter_factory=create_stake_waiter
+                )
+            elif waiter_type == "network_sync":
+                return waiter_class(
+                    exec_cli=exec_cli,
+                    docker_client=self.docker_client,
+                    nodes=node_configs,
+                    network_name=network,
+                    poll_interval=poll_interval
+                )
+            elif waiter_type == "chain_data_propagation":
+                return waiter_class(
+                    exec_cli=exec_cli,
+                    nodes=node_configs,
+                    network_name=network,
+                    chain_name=params.get("chain", "zerochain"),
+                    poll_interval=poll_interval
                 )
         
         # Handle waiters that need docker client

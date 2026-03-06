@@ -20,6 +20,7 @@ from .schema import (
     NetworkWaitStep, DockerOpStep, SnapshotStep,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep, DpkgStep, CustomOperandStep,
+    MetricStep, MetricsTableStep,
     CLICheck, RPCCheck, PythonCheck, BashCheck,
     TestScenario, SuiteSetupScenario, TestStep, CheckSpec, StepDefaults, SectionConfig, DatumStatus
 )
@@ -65,6 +66,7 @@ class RuntimeContext:
             logger.warning(f"scenario has no 'network' attribute or it's None")
         
         self.step_results: List[Dict[str, Any]] = []
+        self._metrics: List[Dict[str, Any]] = []
         self.start_time = time.time()
         self.parser = ScenarioParser(Path.cwd())
     
@@ -109,7 +111,15 @@ class RuntimeContext:
             **details
         }
         self.step_results.append(result)
-    
+
+    def add_metric(self, entry: Dict[str, Any]):
+        """Record a metric entry (from ``metric:`` step)."""
+        self._metrics.append(entry)
+
+    def get_metrics(self) -> List[Dict[str, Any]]:
+        """Return all collected metrics."""
+        return list(self._metrics)
+
     def get_summary(self) -> Dict[str, Any]:
         """Get execution summary."""
         total = len(self.step_results)
@@ -117,20 +127,23 @@ class RuntimeContext:
         failed = total - passed
         duration = time.time() - self.start_time
         
-        return {
+        summary = {
             "scenario": self.scenario.name,
             "total_steps": total,
             "passed": passed,
             "failed": failed,
             "duration_seconds": round(duration, 2),
-            "success_rate": round(passed / total * 100, 1) if total > 0 else 0
+            "success_rate": round(passed / total * 100, 1) if total > 0 else 0,
         }
+        if self._metrics:
+            summary["metrics"] = self._metrics
+        return summary
 
 
 class ScenarioExecutor:
     """Execute test scenarios with full lifecycle management."""
     
-    def __init__(self, node_cli_path: str = "cellframe-node-cli", log_file: Optional[Path] = None, debug: bool = False, base_path: Optional[Path] = None):
+    def __init__(self, node_cli_path: str = "cellframe-node-cli", log_file: Optional[Path] = None, debug: bool = False, base_path: Optional[Path] = None, custom_templates_dirs=None):
         """
         Initialize executor.
         
@@ -139,10 +152,12 @@ class ScenarioExecutor:
             log_file: Optional path to detailed log file
             debug: Enable debug logging
             base_path: Base path to stage-env directory (for artifacts collection)
+            custom_templates_dirs: List of paths to search for J2 config templates
         """
         self.node_cli_path = node_cli_path
         self.log_file = log_file
         self.debug = debug
+        self._custom_templates_dirs = custom_templates_dirs or []
         self._running = False
         # Monitoring manager будет получен через синглтон при старте сценария
         # Node role to ID mapping cache (populated from topology)
@@ -221,9 +236,14 @@ class ScenarioExecutor:
         )
         self.config_executor = ConfigStepExecutor(
             self.container_manager, log_file, debug,
-            resolve_node_alias_callback=self._resolve_node_alias
+            resolve_node_alias_callback=self._resolve_node_alias,
+            custom_templates_dirs=self._custom_templates_dirs,
         )
         self.dpkg_executor = DpkgStepExecutor(self.container_manager, log_file, debug)
+
+        from .step.metrics import MetricStepExecutor, MetricsTableStepExecutor
+        self.metric_executor = MetricStepExecutor(self.container_manager, log_file, debug)
+        self.metrics_table_executor = MetricsTableStepExecutor(self.container_manager, log_file, debug)
 
         # Custom operand support
         self._operand_registry = OperandRegistry()
@@ -729,6 +749,10 @@ class ScenarioExecutor:
                 step_desc = f"ConfigStep ({step.config})"
             elif isinstance(step, DpkgStep):
                 step_desc = f"DpkgStep ({step.dpkg} {step.package})"
+            elif isinstance(step, MetricStep):
+                step_desc = f"MetricStep ({step.metric}={step.value})"
+            elif isinstance(step, MetricsTableStep):
+                step_desc = f"MetricsTableStep ({step.metrics_table})"
             elif isinstance(step, CustomOperandStep):
                 step_desc = f"CustomOperand ({step.operand_name}.{step.operand_action})"
 
@@ -791,6 +815,10 @@ class ScenarioExecutor:
                 await self.config_executor.execute(step, ctx)
             elif isinstance(step, DpkgStep):
                 await self.dpkg_executor.execute(step, ctx)
+            elif isinstance(step, MetricStep):
+                await self.metric_executor.execute(step, ctx)
+            elif isinstance(step, MetricsTableStep):
+                await self.metrics_table_executor.execute(step, ctx)
             elif isinstance(step, CustomOperandStep):
                 await self.custom_operand_executor.execute(step, ctx, defaults)
             else:

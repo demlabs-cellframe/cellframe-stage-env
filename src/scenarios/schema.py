@@ -67,6 +67,7 @@ class NodeComposeSpec(BaseModel):
     cap_add: List[str] = Field(default_factory=list, description="Linux capabilities (e.g. NET_ADMIN, SYS_PTRACE)")
     config_overrides: Dict[str, Any] = Field(default_factory=dict, description="Config overrides as {section: {key: value}}")
     setup: Optional[List[Any]] = Field(None, description="Extra setup steps executed after the node is running")
+    regenerate_cert: bool = Field(False, description="Delete node-addr cert after cloning so the node gets a unique address on restart")
 
 
 class NodeComposeGenSpec(BaseModel):
@@ -84,6 +85,7 @@ class NodeComposeGenSpec(BaseModel):
     cap_add: List[str] = Field(default_factory=list, description="Linux capabilities (e.g. NET_ADMIN, SYS_PTRACE)")
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
     setup: Optional[List[Any]] = Field(None, description="Extra setup steps per node")
+    regenerate_cert: bool = Field(False, description="Delete node-addr cert after cloning so each node gets a unique address")
 
 
 class DockerComposeGenSpec(BaseModel):
@@ -472,6 +474,7 @@ from .schema_control_flow import SetStep, IfStep, WhileStep, ForStep, SwitchStep
 from .schema_config import ConfigStep
 from .schema_dpkg import DpkgStep
 from .schema_operand import CustomOperandStep
+from .schema_metrics import MetricStep, MetricsTableStep
 
 
 # ============================================================================
@@ -557,7 +560,7 @@ TestStep = Union[
     NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep, DpkgStep,
     CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
-    ConfigStep,
+    ConfigStep, MetricStep, MetricsTableStep,
     WaitStep,
     CustomOperandStep,
 ]

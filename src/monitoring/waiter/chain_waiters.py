@@ -17,7 +17,7 @@ class ChainDataPropagationWaiter(BaseWaiter):
     """
     Wait for chain data to propagate to all nodes.
     
-    For DAG chains: checks if total events > 0
+    For DAG chains: checks if total_events > 0
     For blockchain chains: checks if any blocks exist
     
     Usage:
@@ -65,15 +65,14 @@ class ChainDataPropagationWaiter(BaseWaiter):
                 is_dag_chain = self.chain_name.lower() in ["zerochain", "zero", "0"]
                 
                 if is_dag_chain:
-                    # For DAG: check total events > 0
+                    # For DAG: check total_events > 0
                     exit_code_check, stdout_check, _ = self.exec_cli(
                         node.node_id,
                         f"dag event list -net {self.network_name} -chain {self.chain_name} -from events -limit 1",
                         check_output=False
                     )
                     
-                    # Parse "total events: N"
-                    total_match = re.search(r'total events:\s*(\d+)', stdout_check, re.IGNORECASE) if stdout_check else None
+                    total_match = re.search(r'total_events:\s*(\d+)', stdout_check, re.IGNORECASE) if stdout_check else None
                     total_events = int(total_match.group(1)) if total_match else 0
                     has_data = exit_code_check == 0 and total_events > 0
                     
@@ -93,8 +92,7 @@ class ChainDataPropagationWaiter(BaseWaiter):
                         check_output=False
                     )
                     
-                    # Look for "block #" in output
-                    has_data = exit_code_check == 0 and "block #" in stdout_check.lower()
+                    has_data = exit_code_check == 0 and "block_num" in stdout_check.lower()
                 
                 if has_data:
                     synced_count += 1
@@ -148,7 +146,7 @@ class ChainDataPropagationWaiter(BaseWaiter):
                             f"dag event list -net {self.network_name} -chain {self.chain_name} -from events -limit 1",
                             check_output=False
                         )
-                        total_match = re.search(r'total events:\s*(\d+)', stdout_check, re.IGNORECASE) if stdout_check else None
+                        total_match = re.search(r'total_events:\s*(\d+)', stdout_check, re.IGNORECASE) if stdout_check else None
                         total_events = int(total_match.group(1)) if total_match else 0
                         has_data = exit_code_check == 0 and total_events > 0
                     else:
@@ -157,7 +155,7 @@ class ChainDataPropagationWaiter(BaseWaiter):
                             f"block list -net {self.network_name} -chain {self.chain_name} -last 1",
                             check_output=False
                         )
-                        has_data = exit_code_check == 0 and "block #" in stdout_check.lower()
+                        has_data = exit_code_check == 0 and "block_num" in stdout_check.lower()
                     
                     if has_data:
                         synced_count += 1

@@ -362,6 +362,7 @@ class NetworkManager:
         settings = self.topology.network_settings
         self.compose.generate_compose_for_nodes(
             node_configs, 
+            build_type=node_source_config.get('build_type', 'debug') if node_source_config else 'debug',
             cache_dir_relative=cache_dir_relative,
             node_source_config=node_source_config,
             network_settings={
@@ -922,7 +923,7 @@ class NetworkManager:
                     continue
                 
                 # Step 3: Extract emission_hash from dump output
-                # Format: "emission_hash: 0x..." (plain text format)
+                # Format: "emission_hash: 0x..." (inside nested datum section)
                 emission_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump_stdout, re.IGNORECASE)
                 if emission_match:
                     emission_hash = emission_match.group(1)
@@ -931,8 +932,6 @@ class NetworkManager:
                                event_hash=last_event_hash[:20])
                     break
                 else:
-                    # If emission_hash not found, event might not be an emission event
-                    # Try previous event (emission is usually second-to-last after token_decl)
                     logger.info("emission_hash_not_in_last_event_trying_previous",
                                note="Last event might be token_decl, not emission")
                     

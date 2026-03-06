@@ -209,23 +209,30 @@ class FilesystemSnapshot(BaseSnapshot):
             
             config_snapshot_dir = snapshot_dir / "configs"
             if config_snapshot_dir.exists():
+                snapshot_config_names = {
+                    d.name for d in config_snapshot_dir.iterdir()
+                    if d.is_dir() and not d.name.startswith('.')
+                }
+
                 if configs_path.exists():
-                    config_dirs = [d for d in config_snapshot_dir.iterdir() 
-                                  if d.is_dir() and not d.name.startswith('.')]
-                    for config_dir in config_dirs:
-                        target_config_dir = configs_path / config_dir.name
-                        if target_config_dir.exists():
-                            await asyncio.to_thread(shutil.rmtree, target_config_dir, ignore_errors=True)
+                    removed_extra = 0
+                    for existing_dir in list(configs_path.iterdir()):
+                        if existing_dir.is_dir() and not existing_dir.name.startswith('.'):
+                            if existing_dir.name not in snapshot_config_names and existing_dir.name != "shared":
+                                await asyncio.to_thread(shutil.rmtree, existing_dir, ignore_errors=True)
+                                removed_extra += 1
+                    if removed_extra:
+                        logger.info("filesystem_removed_extra_configs", count=removed_extra)
                 else:
                     configs_path.mkdir(parents=True, exist_ok=True)
-                
-                config_dirs = [d for d in config_snapshot_dir.iterdir() 
+
+                config_dirs = [d for d in config_snapshot_dir.iterdir()
                               if d.is_dir() and not d.name.startswith('.')]
-                
+
                 for config_dir in config_dirs:
                     target_dir = configs_path / config_dir.name
                     await self._rsync_copy(config_dir, target_dir)
-                
+
                 logger.info("filesystem_configs_restored", nodes=len(config_dirs))
             
             metadata = self._load_metadata(name)

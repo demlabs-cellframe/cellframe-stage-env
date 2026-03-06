@@ -239,7 +239,7 @@ elif $SKIP_BUILD; then
     # --skip-build flag: use existing local package or config
     info "Skipping build (--skip-build specified)"
     if $IN_CELLFRAME_REPO; then
-        DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f 2>/dev/null | head -n 1)
+        DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 2 -name "cellframe-node-[0-9]*.deb" -type f 2>/dev/null | head -n 1)
         if [ -n "$DEB_PACKAGE" ]; then
             success "Using existing package: $(basename "$DEB_PACKAGE")"
         else
@@ -250,10 +250,9 @@ elif $IN_CELLFRAME_REPO; then
     # In cellframe-node repo with type=local or no type
     # Check if package already exists and is up to date
     info "Checking for existing package in $TEST_BUILD_DIR..."
-    DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f 2>/dev/null | head -n 1)
+    DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 2 -name "cellframe-node-[0-9]*.deb" -type f 2>/dev/null | head -n 1)
     
     if [ -n "$DEB_PACKAGE" ]; then
-        # Package exists - check if we need to rebuild
         info "Found existing package: $(basename "$DEB_PACKAGE")"
         
         # TODO: Add hash check here to detect if package changed
@@ -291,7 +290,7 @@ if $SHOULD_BUILD; then
         exit 1
     }
     
-    DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f | head -n 1)
+    DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 2 -name "cellframe-node-[0-9]*.deb" -type f | head -n 1)
     
     if [ -z "$DEB_PACKAGE" ]; then
         error "No .deb package found after build"

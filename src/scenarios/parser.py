@@ -65,6 +65,7 @@ class BaseScenarioParser:
         for candidate in [
             self.common_root / "operands",
             self.common_root / "common" / "operands",
+            self.common_root / "scenarios" / "common" / "operands",
         ]:
             if candidate.is_dir():
                 self._operand_registry.load_directory(candidate)
@@ -195,7 +196,8 @@ class BaseScenarioParser:
         "cli", "rpc", "wait", "wait_for_datum", "wait_network", "python",
         "print", "bash", "tool", "loop", "docker_op", "snapshot", "dpkg",
         "config", "set", "if", "while", "for", "switch", "name",
-        "operand_name",
+        "metric", "metrics_table",
+        "operand_name", "deploy",
     })
 
     def _transform_operand_steps(self, data: Any) -> Any:
@@ -418,7 +420,13 @@ class ScenarioParser(BaseScenarioParser):
                 raise ScenarioParseError(f"Undefined variable: {full_expr}")
             return str(variables[full_expr])
         
-        return self._variable_pattern.sub(replace_var, text)
+        result = self._variable_pattern.sub(replace_var, text)
+        MAX_DEPTH = 10
+        for _ in range(MAX_DEPTH):
+            if '{{' not in result:
+                break
+            result = self._variable_pattern.sub(replace_var, result)
+        return result
 
 
 class SuiteSetupParser(BaseScenarioParser):
