@@ -638,12 +638,12 @@ class DatumMonitor:
             
             stdout_str = stdout.decode('utf-8') if stdout else ""
             
-            # For DAG, we check if total events > 0 (datum creates event)
+            # For DAG, we check if total_events > 0 (datum creates event)
             # Note: CLI doesn't show datum hash inside event, only event hash
-            total_match = re.search(r'total events:\s*(\d+)', stdout_str, re.IGNORECASE)
+            total_match = re.search(r'total_events:\s*(\d+)', stdout_str, re.IGNORECASE)
             if total_match and int(total_match.group(1)) > 0:
                 # Extract first event hash as reference
-                hash_match = re.search(r'event\s+hash:\s*([0-9a-fA-Fx]+)', stdout_str, re.IGNORECASE)
+                hash_match = re.search(r'event_hash:\s*([0-9a-fA-Fx]+)', stdout_str, re.IGNORECASE)
                 event_hash = hash_match.group(1) if hash_match else "latest"
                 event_count = int(total_match.group(1))
                 
@@ -684,17 +684,15 @@ class DatumMonitor:
             stdout_str = stdout.decode('utf-8') if stdout else ""
             
             # Parse block list output for our datum hash
-            # Format: block #N hash:... datums:...
+            # v2 format: block_num: N, block_hash: ..., datums: ...
             lines = stdout_str.split('\n')
             for line in lines:
                 if datum_hash.lower() in line.lower():
-                    # Extract block number from line
-                    match = re.search(r'block\s+#(\d+)', line, re.IGNORECASE)
-                    if match:
-                        block_num = int(match.group(1))
+                    num_match = re.search(r'block_num:\s*(\d+)', line, re.IGNORECASE)
+                    if num_match:
+                        block_num = int(num_match.group(1))
                         
-                        # Extract block hash
-                        hash_match = re.search(r'hash:\s*([0-9a-fA-Fx]+)', line, re.IGNORECASE)
+                        hash_match = re.search(r'block_hash:\s*([0-9a-fA-Fx]+)', line, re.IGNORECASE)
                         block_hash = hash_match.group(1) if hash_match else "unknown"
                         
                         return (block_num, block_hash)
