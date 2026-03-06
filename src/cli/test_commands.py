@@ -1043,7 +1043,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         try:
                             suite_setup_parser = SuiteSetupParser(
                                 scenarios_root=suite_path,
-                                common_root=common_root
+                                common_root=common_root,
+                                fallback_common_root=fallback_common,
                             )
                             
                             suite_setup_scenario = suite_setup_parser.load_suite_setup(
@@ -1181,6 +1182,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                         (base_path / "tests" / include_entry).resolve(),
                                         (common_root / include_entry).resolve(),
                                     ]
+                                    if fallback_common:
+                                        search_paths.append((fallback_common / include_entry).resolve())
                                     
                                     include_full = None
                                     for path in search_paths:
