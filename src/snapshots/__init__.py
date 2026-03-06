@@ -1,14 +1,12 @@
 """
 Snapshot system for fast environment restoration.
 
-This module provides three snapshot modes for test isolation:
-1. recreate - Full cleanup and rebuild (baseline, ~40s)
-2. filesystem - Directory copy/restore (~3s)
-3. squashfs - Read-only image with overlay (~2s)
+Backend is auto-detected at startup based on available system tools:
+  squashfs  > filesystem (rsync) > recreate (baseline)
 """
 
-from .manager import SnapshotManager, SnapshotMode
-from .base import BaseSnapshot
+from .manager import SnapshotManager, SnapshotMode, detect_best_mode
+from .base import BaseSnapshot, SNAPSHOT_EXCLUDE_PATTERNS
 from .recreate import RecreateSnapshot
 from .filesystem import FilesystemSnapshot
 from .squashfs import SquashfsSnapshot
@@ -16,9 +14,10 @@ from .squashfs import SquashfsSnapshot
 __all__ = [
     'SnapshotManager',
     'SnapshotMode',
+    'detect_best_mode',
     'BaseSnapshot',
+    'SNAPSHOT_EXCLUDE_PATTERNS',
     'RecreateSnapshot',
     'FilesystemSnapshot',
     'SquashfsSnapshot',
 ]
-

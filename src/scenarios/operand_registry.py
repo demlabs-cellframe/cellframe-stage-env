@@ -33,23 +33,37 @@ logger = get_logger(__name__)
 class OperandDefinition:
     """Parsed operand definition."""
 
-    __slots__ = ("name", "description", "actions", "source_path")
+    __slots__ = ("name", "description", "actions", "default_action", "source_path")
 
-    def __init__(self, name: str, description: str, actions: Dict[str, Any], source_path: Path):
+    def __init__(self, name: str, description: str, actions: Dict[str, Any],
+                 source_path: Path, default_action: Optional[str] = None):
         self.name = name
         self.description = description
         self.actions = actions
+        self.default_action = default_action
         self.source_path = source_path
+
+    def resolve_action(self, action: str) -> tuple:
+        """Resolve *action*, falling back to *default_action* if defined.
+
+        Returns ``(resolved_action, extra_args)`` where *extra_args* is the
+        original value to pass as ``args`` when the default action is used,
+        or ``None`` when the action matched directly.
+        """
+        if action in self.actions:
+            return action, None
+        if self.default_action and self.default_action in self.actions:
+            return self.default_action, action
+        available = ", ".join(sorted(self.actions))
+        raise KeyError(
+            f"Operand '{self.name}' has no action '{action}'. "
+            f"Available: {available}"
+        )
 
     def get_action_steps(self, action: str) -> List[dict]:
         """Return raw step dicts for *action*."""
-        if action not in self.actions:
-            available = ", ".join(sorted(self.actions))
-            raise KeyError(
-                f"Operand '{self.name}' has no action '{action}'. "
-                f"Available: {available}"
-            )
-        return list(self.actions[action].get("steps", []))
+        resolved, _ = self.resolve_action(action)
+        return list(self.actions[resolved].get("steps", []))
 
 
 class OperandRegistry:
@@ -79,11 +93,13 @@ class OperandRegistry:
             return
         name = data["operand"]
         actions = data.get("actions", {})
+        default_action = data.get("default_action")
         defn = OperandDefinition(
             name=name,
             description=data.get("description", ""),
             actions=actions,
             source_path=path,
+            default_action=default_action,
         )
         self._operands[name] = defn
         logger.info("operand_registered", name=name, actions=list(actions), path=str(path))
