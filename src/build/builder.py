@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from src.utils.logger import get_logger
 from src.utils.cli import run_command, print_info, print_success, print_error
 from src.config.manager import get_config_loader
+from src.utils.i18n import _
 
 logger = get_logger(__name__)
 
@@ -84,13 +85,13 @@ class BuildManager:
                    clean=clean,
                    parallel=parallel)
         
-        print_info(f"Building cellframe-node ({build_type} mode)")
+        print_info(_("Building cellframe-node ({} mode)").format(build_type))
         
         try:
             # Clean if requested
             if clean and self.build_dir.exists():
                 logger.info("cleaning_build_dir")
-                print_info("Cleaning build directory...")
+                print_info(_("Cleaning build directory..."))
                 import shutil
                 shutil.rmtree(self.build_dir)
             
@@ -100,7 +101,7 @@ class BuildManager:
             # Configure with CMake
             cmake_build_type = "Debug" if build_type == "debug" else "Release"
             
-            print_info("Configuring with CMake...")
+            print_info(_("Configuring with CMake..."))
             run_command(
                 ["cmake", 
                  f"-DCMAKE_BUILD_TYPE={cmake_build_type}",
@@ -111,7 +112,7 @@ class BuildManager:
             # Build
             jobs = parallel if parallel > 0 else self._get_cpu_count()
             
-            print_info(f"Building with {jobs} parallel jobs...")
+            print_info(_("Building with {} parallel jobs...").format(jobs))
             run_command(
                 ["cmake", "--build", ".", "--", f"-j{jobs}"],
                 cwd=self.build_dir,
@@ -122,7 +123,7 @@ class BuildManager:
             
             duration = time.time() - start_time
             
-            print_success(f"Build completed in {duration:.1f}s")
+            print_success(_("Build completed in {}s").format(f"{duration:.1f}"))
             logger.info("build_completed",
                        duration_s=duration,
                        artifacts_count=len(artifacts))
@@ -137,7 +138,7 @@ class BuildManager:
         except Exception as e:
             duration = time.time() - start_time
             
-            print_error(f"Build failed: {e}")
+            print_error(_("Build failed: {}").format(e))
             logger.error("build_failed",
                         error=str(e),
                         duration_s=duration)
@@ -252,14 +253,14 @@ class BuildManager:
         import shutil
         
         if self.build_dir.exists():
-            print_info("Removing build directory...")
+            print_info(_("Removing build directory..."))
             shutil.rmtree(self.build_dir)
         
         if self.cache_dir.exists():
-            print_info("Removing build cache...")
+            print_info(_("Removing build cache..."))
             shutil.rmtree(self.cache_dir)
         
-        print_success("Build artifacts cleaned")
+        print_success(_("Build artifacts cleaned"))
         logger.info("build_cleaned")
     
     def get_build_info(self) -> dict:
@@ -310,7 +311,7 @@ class BuildManager:
         source_type = self.node_source_config.get("type", "url")
         
         logger.info("getting_node_package", source_type=source_type)
-        print_info(f"Getting cellframe-node package (source: {source_type})")
+        print_info(_("Getting cellframe-node package (source: {})").format(source_type))
         
         try:
             if source_type == "url":
@@ -320,11 +321,11 @@ class BuildManager:
             elif source_type == "local":
                 return self._get_package_from_local()
             else:
-                print_error(f"Unknown node_source type: {source_type}")
+                print_error(_("Unknown node_source type: {}").format(source_type))
                 logger.error("unknown_source_type", type=source_type)
                 return None
         except Exception as e:
-            print_error(f"Failed to get node package: {e}")
+            print_error(_("Failed to get node package: {}").format(e))
             logger.error("get_node_package_failed", error=str(e))
             return None
     
@@ -337,10 +338,10 @@ class BuildManager:
         """
         url = self.node_source_config.get("url")
         if not url:
-            print_error("No URL specified in node_source config")
+            print_error(_("No URL specified in node_source config"))
             return None
         
-        print_info(f"Downloading from: {url}")
+        print_info(_("Downloading from: {}").format(url))
         logger.info("downloading_from_url", url=url)
         
         # Download to cache
@@ -349,10 +350,10 @@ class BuildManager:
         
         try:
             run_command(["wget", "-O", str(package_path), url])
-            print_success(f"Downloaded: {package_name}")
+            print_success(_("Downloaded: {}").format(package_name))
             return package_path
         except Exception as e:
-            print_error(f"Download failed: {e}")
+            print_error(_("Download failed: {}").format(e))
             return None
     
     def _get_package_from_repository(self) -> Optional[Path]:
@@ -367,10 +368,10 @@ class BuildManager:
         build_type = self.node_source_config.get("build_type", "debug")
         
         if not repo_url:
-            print_error("No repository_url specified in node_source config")
+            print_error(_("No repository_url specified in node_source config"))
             return None
         
-        print_info(f"Cloning repository: {repo_url} (branch: {branch})")
+        print_info(_("Cloning repository: {} (branch: {})").format(repo_url, branch))
         logger.info("cloning_repository", url=repo_url, branch=branch)
         
         # Clone directory
@@ -378,7 +379,7 @@ class BuildManager:
         
         # Remove if exists
         if clone_dir.exists():
-            print_info("Removing existing clone...")
+            print_info(_("Removing existing clone..."))
             shutil.rmtree(clone_dir)
         
         try:
@@ -391,24 +392,24 @@ class BuildManager:
             
             cmake_build_type = "Debug" if build_type == "debug" else "Release"
             
-            print_info("Configuring with CMake...")
+            print_info(_("Configuring with CMake..."))
             run_command(
                 ["cmake", f"-DCMAKE_BUILD_TYPE={cmake_build_type}", ".."],
                 cwd=build_dir
             )
             
             jobs = self._get_cpu_count()
-            print_info(f"Building with {jobs} parallel jobs...")
+            print_info(_("Building with {} parallel jobs...").format(jobs))
             run_command(["cmake", "--build", ".", "--", f"-j{jobs}"], cwd=build_dir)
             
             # Package
-            print_info("Creating .deb package...")
+            print_info(_("Creating .deb package..."))
             run_command(["cpack", "-G", "DEB"], cwd=build_dir)
             
             # Find .deb package
             deb_files = list(build_dir.glob("*.deb"))
             if not deb_files:
-                print_error("No .deb package found after build")
+                print_error(_("No .deb package found after build"))
                 return None
             
             package_path = deb_files[0]
@@ -417,11 +418,11 @@ class BuildManager:
             cached_package = self.cache_dir / package_path.name
             shutil.copy2(package_path, cached_package)
             
-            print_success(f"Package created: {cached_package.name}")
+            print_success(_("Package created: {}").format(cached_package.name))
             return cached_package
             
         except Exception as e:
-            print_error(f"Repository build failed: {e}")
+            print_error(_("Repository build failed: {}").format(e))
             logger.error("repository_build_failed", error=str(e))
             return None
     
@@ -436,11 +437,11 @@ class BuildManager:
         if not local_path:
             # Try to auto-detect if we're in cellframe-node repository
             if self._is_cellframe_node_repo():
-                print_info("No local_path specified, but detected cellframe-node repository")
-                print_info("Attempting to build package automatically...")
+                print_info(_("No local_path specified, but detected cellframe-node repository"))
+                print_info(_("Attempting to build package automatically..."))
                 return self._build_and_get_local_package()
             else:
-                print_error("No local_path specified in node_source config")
+                print_error(_("No local_path specified in node_source config"))
                 return None
         
         # Resolve path (can be relative to stage-env dir or absolute)
@@ -453,8 +454,8 @@ class BuildManager:
         # If package doesn't exist and we're in cellframe-node repo, try to build it
         if not package_path.exists():
             if self._is_cellframe_node_repo() and self.build_dir in package_path.parents:
-                print_info(f"Package not found at {package_path}")
-                print_info("Detected cellframe-node repository - building package...")
+                print_info(_("Package not found at {}").format(package_path))
+                print_info(_("Detected cellframe-node repository - building package..."))
                 built_package = self._build_and_get_local_package()
                 if built_package:
                     # Update local_path to point to built package
@@ -463,15 +464,15 @@ class BuildManager:
                               built=str(built_package))
                     return built_package
             else:
-                print_error(f"Local package not found: {package_path}")
+                print_error(_("Local package not found: {}").format(package_path))
                 logger.error("local_package_not_found", path=str(package_path))
                 return None
         
         if not package_path.suffix == ".deb":
-            print_error(f"Local file is not a .deb package: {package_path}")
+            print_error(_("Local file is not a .deb package: {}").format(package_path))
             return None
         
-        print_success(f"Using local package: {package_path.name}")
+        print_success(_("Using local package: {}").format(package_path.name))
         logger.info("using_local_package", path=str(package_path))
         
         return package_path
@@ -497,46 +498,46 @@ class BuildManager:
             Path to built .deb package or None if build failed
         """
         if not self._is_cellframe_node_repo():
-            print_error("Not in cellframe-node repository - cannot build package")
+            print_error(_("Not in cellframe-node repository - cannot build package"))
             return None
         
         # Check if package already exists
         existing_packages = list(self.build_dir.glob("cellframe-node*.deb"))
         if existing_packages:
             package_path = existing_packages[0]
-            print_info(f"Using existing package: {package_path.name}")
+            print_info(_("Using existing package: {}").format(package_path.name))
             logger.info("using_existing_built_package", path=str(package_path))
             return package_path
         
         # Build package
-        print_info("Building cellframe-node package...")
+        print_info(_("Building cellframe-node package..."))
         logger.info("auto_building_package", build_dir=str(self.build_dir))
         
         try:
             build_result = self.build(build_type="debug", clean=False, parallel=0)
             if not build_result.success:
-                print_error("Package build failed")
+                print_error(_("Package build failed"))
                 return None
             
             # Package with cpack
-            print_info("Creating .deb package...")
+            print_info(_("Creating .deb package..."))
             run_command(["cpack", "-G", "DEB"], cwd=self.build_dir)
             
             # Find the built package
             deb_files = list(self.build_dir.glob("cellframe-node*.deb"))
             if not deb_files:
-                print_error("No .deb package found after build")
+                print_error(_("No .deb package found after build"))
                 logger.error("no_package_after_build", build_dir=str(self.build_dir))
                 return None
             
             package_path = deb_files[0]
-            print_success(f"Package built: {package_path.name}")
+            print_success(_("Package built: {}").format(package_path.name))
             logger.info("package_built_successfully", path=str(package_path))
             
             return package_path
             
         except Exception as e:
-            print_error(f"Failed to build package: {e}")
+            print_error(_("Failed to build package: {}").format(e))
             logger.error("package_build_failed", error=str(e))
             return None
 

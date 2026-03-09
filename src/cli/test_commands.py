@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Optional, List, Callable
 
 from .common import print_info, print_success, print_error, print_warning
+from src.utils.i18n import _
 
 
 def _fixup_node_identity(cfg_dir: Path, data_dir: Path, role: str, node_id: int,
@@ -32,7 +33,7 @@ def _fixup_node_identity(cfg_dir: Path, data_dir: Path, role: str, node_id: int,
         for f in ca_dir.iterdir():
             if f.name == "node-addr.dcert" or ".pvt." in f.name:
                 f.unlink()
-        print_info(f"    [{svc_name}] removed donor private keys from var/lib/ca")
+        print_info(_("    [{}] removed donor private keys from var/lib/ca").format(svc_name))
 
     net_name = network_mgr.topology.network.name
     net_cfg = cfg_dir / "network" / f"{net_name}.cfg"
@@ -42,7 +43,7 @@ def _fixup_node_identity(cfg_dir: Path, data_dir: Path, role: str, node_id: int,
         if role not in ("root",):
             content = _re.sub(r'(?m)^events-sign-cert\s*=.*$', '#events-sign-cert=', content)
         net_cfg.write_text(content)
-        print_info(f"    [{svc_name}] patched network config: role={role}")
+        print_info(_("    [{}] patched network config: role={}").format(svc_name, role))
 
 
 def _provision_docker_compose(compose_mgr, docker_compose, print_info, print_success, print_warning, print_error):
@@ -85,9 +86,9 @@ def _provision_docker_compose(compose_mgr, docker_compose, print_info, print_suc
     start_first = [s for s in svc_names if s not in deferred_svcs]
     try:
         compose_mgr.up(services=start_first, detach=True, wait=False, no_build=True)
-        print_success(f"  Started: {', '.join(start_first)}")
+        print_success(_("  Started: {}").format(', '.join(start_first)))
     except Exception as e:
-        print_error(f"  Failed to start docker_compose services: {e}")
+        print_error(_("  Failed to start docker_compose services: {}").format(e))
         return clean_services
 
     for svc, pkgs in dc_packages.items():
@@ -101,11 +102,11 @@ def _provision_docker_compose(compose_mgr, docker_compose, print_info, print_suc
                       f"&& rm -rf /var/lib/apt/lists/*"]
             )
             if exit_code != 0:
-                print_warning(f"  [{svc}] package install failed: {output[:200]}")
+                print_warning(_("  [{}] package install failed: {}").format(svc, output[:200]))
             else:
-                print_info(f"  [{svc}] installed: {pkg_str}")
+                print_info(_("  [{}] installed: {}").format(svc, pkg_str))
         except Exception as e:
-            print_warning(f"  [{svc}] package install error: {e}")
+            print_warning(_("  [{}] package install error: {}").format(svc, e))
 
     if clone_map:
         _commit_and_clone_prototypes(compose_mgr, clone_map, print_info, print_warning)
@@ -114,9 +115,9 @@ def _provision_docker_compose(compose_mgr, docker_compose, print_info, print_suc
                 services=list(deferred_svcs), detach=True,
                 wait=False, no_build=True,
             )
-            print_success(f"  Started from prototype: {', '.join(sorted(deferred_svcs))}")
+            print_success(_("  Started from prototype: {}").format(', '.join(sorted(deferred_svcs))))
         except Exception as e:
-            print_error(f"  Failed to start cloned docker_compose services: {e}")
+            print_error(_("  Failed to start cloned docker_compose services: {}").format(e))
 
     return clean_services
 
@@ -131,7 +132,7 @@ def _commit_and_clone_prototypes(compose_mgr, clone_map, print_info, print_warni
     try:
         containers = compose_mgr.ps()
     except Exception as e:
-        print_warning(f"  prototype commit: cannot list containers: {e}")
+        print_warning(_("  prototype commit: cannot list containers: {}").format(e))
         return
 
     svc_to_container = {}
@@ -145,7 +146,7 @@ def _commit_and_clone_prototypes(compose_mgr, clone_map, print_info, print_warni
     for prototype, siblings in clone_map.items():
         container = svc_to_container.get(prototype)
         if not container:
-            print_warning(f"  prototype commit: container for '{prototype}' not found")
+            print_warning(_("  prototype commit: container for '{}' not found").format(prototype))
             continue
 
         container.reload()
@@ -153,13 +154,13 @@ def _commit_and_clone_prototypes(compose_mgr, clone_map, print_info, print_warni
         try:
             container.commit(repository=tag)
         except Exception as e:
-            print_warning(f"  prototype commit failed for '{prototype}': {e}")
+            print_warning(_("  prototype commit failed for '{}': {}").format(prototype, e))
             continue
 
         image_map[prototype] = tag
         for svc in siblings:
             image_map[svc] = tag
-        print_info(f"  [{prototype}] committed → cloned to {len(siblings)} sibling(s)")
+        print_info(_("  [{}] committed → cloned to {} sibling(s)").format(prototype, len(siblings)))
 
     if image_map:
         compose_mgr.set_service_images(image_map)
@@ -238,7 +239,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                 if cfg_dir.exists():
                     shutil.rmtree(cfg_dir, ignore_errors=True)
                 shutil.copytree(cache_dir / "configs" / src_node, cfg_dir, dirs_exist_ok=True, ignore=_asan_ignore)
-                print_info(f"    configs from genesis ({src_node})")
+                print_info(_("    configs from genesis ({})").format(src_node))
             if src_node and not data_dir.exists():
                 src_data = cache_dir / "data" / src_node
                 if src_data.exists():
@@ -249,7 +250,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
         elif source.startswith("node-"):
             clone_m = re.match(r'node-(\d+)', source)
             if not clone_m:
-                print_warning(f"  [{svc_name}] bad source '{source}'")
+                print_warning(_("  [{}] bad source '{}'").format(svc_name, source))
                 continue
             clone_id = clone_m.group(1)
             src_cfg = cache_dir / "configs" / f"node{clone_id}"
@@ -272,7 +273,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
             if donor and not (cfg_dir / "cellframe-node.cfg").exists():
                 shutil.copy2(cache_dir / "configs" / donor / "cellframe-node.cfg", cfg_dir / "cellframe-node.cfg")
         else:
-            print_warning(f"  [{svc_name}] unknown source '{source}', using fresh")
+            print_warning(_("  [{}] unknown source '{}', using fresh").format(svc_name, source))
             cfg_dir.mkdir(parents=True, exist_ok=True)
             data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -290,7 +291,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                     if mdbx_dir.is_dir():
                         _sp.run(["sudo", "rm", "-rf", str(mdbx_dir)], check=True, capture_output=True)
                         _sp.run(["sudo", "mkdir", "-p", str(mdbx_dir)], check=True, capture_output=True)
-                        print_info(f"    mdbx_wipe: {mdbx_subdir} for {svc_name}")
+                        print_info(_("    mdbx_wipe: {} for {}").format(mdbx_subdir, svc_name))
 
         if freshly_cloned and spec.regenerate_cert:
             import glob as _glob
@@ -298,7 +299,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
             if ca_dir.is_dir():
                 for cert_file in _glob.glob(str(ca_dir / "node-addr*")):
                     Path(cert_file).unlink(missing_ok=True)
-                print_info(f"    regenerate_cert: removed node-addr certs for {svc_name}")
+                print_info(_("    regenerate_cert: removed node-addr certs for {}").format(svc_name))
 
         if spec.config_overrides:
             cfg_d = cfg_dir / "cellframe-node.cfg.d"
@@ -329,7 +330,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                 else:
                     lines.append(str(values))
             (cfg_d / "suite-overrides.cfg").write_text("\n".join(lines) + "\n")
-            print_info(f"    config_overrides: {list(spec.config_overrides.keys())}")
+            print_info(_("    config_overrides: {}").format(list(spec.config_overrides.keys())))
 
             if 'srv_vpn' in spec.config_overrides:
                 srv_vpn_cfg = spec.config_overrides['srv_vpn']
@@ -357,7 +358,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                             f"receipt_sign_cert={receipt_cert}",
                         ]
                         (cfg_d / "vpn-billing.cfg").write_text("\n".join(billing_lines) + "\n")
-                        print_info(f"    vpn-billing: wallet_addr={fee_addr[:20]}... cert={receipt_cert}")
+                        print_info(_("    vpn-billing: wallet_addr={}... cert={}").format(fee_addr[:20], receipt_cert))
 
                         ca_dir = data_dir / "lib" / "ca"
                         ca_dir.mkdir(parents=True, exist_ok=True)
@@ -369,13 +370,13 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                                     import subprocess as _sp
                                     _sp.run(["sudo", "cp", "-a", str(src_cert), str(ca_dir / signing_cert)],
                                             check=True, capture_output=True)
-                                    print_info(f"    signing cert: copied {signing_cert} from node{nid}")
+                                    print_info(_("    signing cert: copied {} from node{}").format(signing_cert, nid))
                                     break
 
         if spec.packages:
             packages_to_install[svc_name] = spec.packages.split()
 
-        print_info(f"  {svc_name}  id={node_id} role={spec.role} {ip_addr}:{http_port}")
+        print_info(_("  {}  id={} role={} {}:{}").format(svc_name, node_id, spec.role, ip_addr, http_port))
 
     if not compose_specs:
         return
@@ -391,7 +392,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
             cache_dir_relative=str(Path(config_loader.get_paths_config().get('cache_dir', '../../cache'))),
         )
     except Exception as e:
-        print_error(f"  Failed to provision node_compose: {e}")
+        print_error(_("  Failed to provision node_compose: {}").format(e))
         return
 
     svc_names = [s['service_name'] for s in compose_specs]
@@ -419,9 +420,9 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
     start_first = [s for s in svc_names if s not in deferred_svcs]
     try:
         network_mgr.compose.up(services=start_first, detach=True, wait=False, no_build=True)
-        print_success(f"  Started: {', '.join(start_first)}")
+        print_success(_("  Started: {}").format(', '.join(start_first)))
     except Exception as e:
-        print_error(f"  Failed to start services: {e}")
+        print_error(_("  Failed to start services: {}").format(e))
         return
 
     for svc_name, pkgs in packages_to_install.items():
@@ -433,11 +434,11 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                 svc_name, ["bash", "-c", f"apt-get update -qq && apt-get install -y -qq {pkg_str} && rm -rf /var/lib/apt/lists/*"]
             )
             if exit_code != 0:
-                print_warning(f"  [{svc_name}] package install failed: {output[:200]}")
+                print_warning(_("  [{}] package install failed: {}").format(svc_name, output[:200]))
             else:
-                print_info(f"  [{svc_name}] installed: {pkg_str}")
+                print_info(_("  [{}] installed: {}").format(svc_name, pkg_str))
         except Exception as e:
-            print_warning(f"  [{svc_name}] package install error: {e}")
+            print_warning(_("  [{}] package install error: {}").format(svc_name, e))
 
     if clone_map:
         _commit_and_clone_prototypes(
@@ -449,9 +450,9 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                 services=list(deferred_svcs), detach=True,
                 wait=False, no_build=True,
             )
-            print_success(f"  Started from prototype image: {', '.join(sorted(deferred_svcs))}")
+            print_success(_("  Started from prototype image: {}").format(', '.join(sorted(deferred_svcs))))
         except Exception as e:
-            print_error(f"  Failed to start cloned services: {e}")
+            print_error(_("  Failed to start cloned services: {}").format(e))
 
 
 def regenerate_node_certs(cache_dir: Path, nodes: dict, base_path: Path,
@@ -543,9 +544,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         import docker
         from src.utils.logger import logger
         
-        print_info(f"Running tests from {len(test_dirs)} director{'y' if len(test_dirs) == 1 else 'ies'}:")
+        _dir_suffix = _("y") if len(test_dirs) == 1 else _("ies")
+        print_info(_("Running tests from {} director{}:").format(len(test_dirs), _dir_suffix))
         for test_dir in test_dirs:
-            print_info(f"  • {test_dir}")
+            print_info(_("  • {}").format(test_dir))
         
         # Load configuration
         config_loader = get_config_loader()
@@ -558,7 +560,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         set_debug_mode(debug_mode)
         
         if debug_mode:
-            print_info("🐛 Debug mode enabled for scenario extraction")
+            print_info(_("🐛 Debug mode enabled for scenario extraction"))
         
         # Create run ID - one timestamp for entire test session
         timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -568,12 +570,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         run_dir_base = artifacts_manager.artifacts_root / f"run_{run_id}"
         run_dir_base.mkdir(parents=True, exist_ok=True)
         
-        print_info(f"📁 Created run directory: run_{run_id}/")
+        print_info(_("📁 Created run directory: run_{}/").format(run_id))
         
         # Start network if requested
         network_mgr = None
         if start_network:
-            print_info("\n🚀 Starting test network...")
+            print_info(_("\n🚀 Starting test network..."))
             config_path = get_config_path()
             network_mgr = NetworkManager(base_path, topology_name="default", config_path=config_path)
             # Pass keep_running flag to prevent network shutdown on errors
@@ -584,10 +586,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             
             try:
                 asyncio.run(_start_network())
-                print_success("Network started successfully")
+                print_success(_("Network started successfully"))
                 
                 # Initialize CLI parser with help data from node
-                print_info("📖 Parsing CLI commands...")
+                print_info(_("📖 Parsing CLI commands..."))
                 from src.utils.cli_parser import get_cli_parser
                 
                 cache_file = base_path / "cache" / "cli_commands.json"
@@ -603,15 +605,15 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 parser_success = asyncio.run(_init_cli_parser())
                 if parser_success:
                     stats = cli_parser.get_stats()
-                    print_success(f"✓ CLI parser initialized: {stats['total_commands']} commands")
+                    print_success(_("✓ CLI parser initialized: {} commands").format(stats['total_commands']))
                 else:
-                    print_warning("⚠️  CLI parser initialization failed - defaults will not be applied")
+                    print_warning(_("⚠️  CLI parser initialization failed - defaults will not be applied"))
             except Exception as e:
-                print_error(f"Failed to start network: {e}")
+                print_error(_("Failed to start network: {}").format(e))
                 raise typer.Exit(1)
         else:
             # Network already running - connect to it
-            print_info("🔗 Connecting to running network...")
+            print_info(_("🔗 Connecting to running network..."))
             config_path = get_config_path()
             network_mgr = NetworkManager(base_path, topology_name="default", config_path=config_path)
             network_mgr.keep_running = not stop_after
@@ -622,7 +624,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 network_mgr.compose.compose_file = generated
             
             # Still need to initialize CLI parser
-            print_info("📖 Initializing CLI parser from running network...")
+            print_info(_("📖 Initializing CLI parser from running network..."))
             from src.utils.cli_parser import get_cli_parser
             
             cache_file = base_path / "cache" / "cli_commands.json"
@@ -637,11 +639,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 parser_success = asyncio.run(_init_cli_parser())
                 if parser_success:
                     stats = cli_parser.get_stats()
-                    print_success(f"✓ CLI parser initialized: {stats['total_commands']} commands")
+                    print_success(_("✓ CLI parser initialized: {} commands").format(stats['total_commands']))
                 else:
-                    print_warning("⚠️  CLI parser initialization failed - defaults will not be applied")
+                    print_warning(_("⚠️  CLI parser initialization failed - defaults will not be applied"))
             except Exception as e:
-                print_warning(f"CLI parser init failed: {e}")
+                print_warning(_("CLI parser init failed: {}").format(e))
         
         all_passed = True
         total_scenarios = 0
@@ -656,7 +658,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         is_first_suite = pristine_marker.exists()
         
         if is_first_suite:
-            print_info("🎯 Detected pristine network - first suite will use it directly!")
+            print_info(_("🎯 Detected pristine network - first suite will use it directly!"))
         
         # Track if this is the first suite (to optimize snapshot creation)
         first_suite_executed = False
@@ -668,9 +670,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 node_cli_path=cli_path,
                 log_file=run_dir_base
             )
-            print_info("🔍 Monitoring services initialized")
+            print_info(_("🔍 Monitoring services initialized"))
         except Exception as e:
-            print_warning(f"Failed to initialize monitoring: {e}")
+            print_warning(_("Failed to initialize monitoring: {}").format(e))
         
         # Main test execution loop
         try:
@@ -678,14 +680,14 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 test_path = Path(test_dir).resolve()
                 
                 if not test_path.exists():
-                    print_warning(f"Directory not found: {test_path}")
+                    print_warning(_("Directory not found: {}").format(test_path))
                     continue
                 
                 # Find all YAML scenario files
                 yml_files = list(test_path.glob("**/*.yml")) + list(test_path.glob("**/*.yaml"))
                 
                 if not yml_files:
-                    print_warning(f"No YAML scenario files found in {test_path.name}")
+                    print_info(_("No YAML scenario files found in {}").format(test_path.name))
                     continue
                 
                 # Group files by suite
@@ -806,7 +808,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     except Exception as e:
                         suite_name = suite_path.name
                         suite_description = None
-                        print_warning(f"Failed to parse suite descriptor {suite_descriptor.name}: {e}")
+                        print_warning(_("Failed to parse suite descriptor {}: {}").format(suite_descriptor.name, e))
                     
                     # Create suite-specific directory
                     test_type = test_path.name
@@ -819,11 +821,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         (suite_dir / subdir).mkdir(exist_ok=True)
                     
                     print_info(f"\n{'═' * 60}")
-                    print_info(f"📦 Suite: {suite_name}")
+                    print_info(_("📦 Suite: {}").format(suite_name))
                     if suite_description:
                         print_info(f"   {suite_description}")
-                    print_info(f"   Path: {suite_relative_path}")
-                    print_info(f"   Scenarios: {len(suite_scenarios)}")
+                    print_info(_("   Path: {}").format(suite_relative_path))
+                    print_info(_("   Scenarios: {}").format(len(suite_scenarios)))
                     print_info(f"{'═' * 60}")
                     
                     # Clean test data before each suite (if network is running)
@@ -841,12 +843,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             except FileNotFoundError:
                                 pass
                             is_first_suite = False
-                            print_success("🚀 Using pristine network (no restore needed)")
+                            print_success(_("🚀 Using pristine network (no restore needed)"))
                         else:
                             if restore_snapshot_name:
-                                print_info(f"🔄 Restoring from snapshot: {restore_snapshot_name}")
+                                print_info(_("🔄 Restoring from snapshot: {}").format(restore_snapshot_name))
                             else:
-                                print_info("🧹 Restoring clean environment state...")
+                                print_info(_("🧹 Restoring clean environment state..."))
 
                             # Reset node registry to base topology before restore.
                             # Previous suite may have added extra nodes via
@@ -861,9 +863,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             
                             try:
                                 asyncio.run(_restore_state())
-                                print_success(f"✓ Environment restored from snapshot{': ' + restore_snapshot_name if restore_snapshot_name else ''}")
+                                print_success(_("✓ Environment restored from snapshot{}").format(': ' + restore_snapshot_name if restore_snapshot_name else ''))
                             except Exception as e:
-                                print_warning(f"Failed to restore state: {e}")
+                                print_warning(_("Failed to restore state: {}").format(e))
 
                     # Populate base-topology node registry so that
                     # docker_compose and node_compose blocks can reference
@@ -933,7 +935,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 try:
                                     c = int(c)
                                 except ValueError:
-                                    print_warning(f"  {label}: cannot resolve count '{raw_count}'")
+                                    print_warning(_("  {}: cannot resolve count '{}'").format(label, raw_count))
                                     return None
                             return int(c)
 
@@ -987,7 +989,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     # Docker IPAM may hand out addresses that collide with the
                     # static assignments, causing "Address already in use".
                     if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.node_compose:
-                        print_info("🖥️ Provisioning node_compose nodes...")
+                        print_info(_("🖥️ Provisioning node_compose nodes..."))
                         _provision_node_compose(
                             network_mgr, suite_spec.node_compose, base_path,
                             config_loader, print_info, print_success, print_warning, print_error,
@@ -996,7 +998,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
 
                     # --- Provision docker_compose services ---------------------
                     if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.docker_compose:
-                        print_info(f"🐳 Provisioning docker_compose services...")
+                        print_info(_("🐳 Provisioning docker_compose services..."))
                         clean_dc = _provision_docker_compose(
                             network_mgr.compose, suite_spec.docker_compose,
                             print_info, print_success, print_warning, print_error,
@@ -1035,7 +1037,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     # to act (e.g. by checking snapshot: verify) or skip.
                     suite_setup_variables = {}
                     if isinstance(suite_spec, SuiteDescriptor) and (suite_spec.includes or suite_spec.setup):
-                        print_info("🔧 Executing suite-level setup...")
+                        print_info(_("🔧 Executing suite-level setup..."))
                         
                         from ..scenarios.executor import ScenarioExecutor
                         from ..scenarios.parser import SuiteSetupParser
@@ -1077,12 +1079,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             
                             setup_ctx = asyncio.run(_run_suite_setup())
                             suite_setup_variables = dict(setup_ctx.variables)
-                            print_success("✓ Suite setup completed")
+                            print_success(_("✓ Suite setup completed"))
                             
                         except Exception as e:
                             all_passed = False
-                            print_error(f"Suite setup failed: {e}")
-                            print_error(f"❌ Skipping all scenarios in suite: {suite_name}")
+                            print_error(_("Suite setup failed: {}").format(e))
+                            print_error(_("❌ Skipping all scenarios in suite: {}").format(suite_name))
                             if network_mgr:
                                 try:
                                     _client = docker.from_env()
@@ -1097,7 +1099,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                             _log = _ctr.logs(tail=10000).decode('utf-8', errors='ignore')
                                             (_logs_dir / f"{_svc}.log").write_text(_log)
                                 except Exception as log_err:
-                                    print_warning(f"  Failed to collect logs on setup failure: {log_err}")
+                                    print_warning(_("  Failed to collect logs on setup failure: {}").format(log_err))
                             continue
 
 
@@ -1120,7 +1122,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     if filter:
                         suite_scenarios = [f for f in suite_scenarios if filter.lower() in f.name.lower()]
                         if not suite_scenarios:
-                            print_warning(f"No scenarios match filter '{filter}' in suite {suite_name}")
+                            print_warning(_("No scenarios match filter '{}' in suite {}").format(filter, suite_name))
                             continue
                     
                     # Execute suite scenarios
@@ -1134,7 +1136,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     for scenario_file in suite_scenarios:
                         total_scenarios += 1
                         print_info(f"\n{'─' * 60}")
-                        print_info(f"▶ Running scenario: {scenario_file.name}")
+                        print_info(_("▶ Running scenario: {}").format(scenario_file.name))
                         
                         # Create scenario log file
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1227,18 +1229,18 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 merged_vars.update(scenario.variables)
                                 scenario.variables = merged_vars
                             
-                            print_info(f"  📋 Name: {scenario.name}")
+                            print_info(_("  📋 Name: {}").format(scenario.name))
                             if hasattr(scenario, 'description') and scenario.description:
-                                print_info(f"  📝 Description: {scenario.description}")
+                                print_info(_("  📝 Description: {}").format(scenario.description))
                             if hasattr(scenario, 'tags') and scenario.tags:
-                                print_info(f"  🏷️  Tags: {', '.join(scenario.tags)}")
+                                print_info(_("  🏷️  Tags: {}").format(', '.join(scenario.tags)))
                             
                             # Get step counts
                             setup_count = len(scenario.setup.steps) if hasattr(scenario.setup, 'steps') else len(scenario.setup or [])
                             test_count = len(scenario.test.steps) if hasattr(scenario.test, 'steps') else len(scenario.test or [])
                             check_count = len(scenario.check.steps) if hasattr(scenario.check, 'steps') else len(scenario.check or [])
-                            print_info(f"  📊 Steps: setup={setup_count}, test={test_count}, check={check_count}")
-                            print_info(f"  📄 Log: {scenario_log_file.name}")
+                            print_info(_("  📊 Steps: setup={}, test={}, check={}").format(setup_count, test_count, check_count))
+                            print_info(_("  📄 Log: {}").format(scenario_log_file.name))
                             
                             # Setup scenario logging
                             with open(scenario_log_file, 'w', encoding='utf-8') as log_f:
@@ -1271,7 +1273,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                     initial_variables=scenario_initial_vars or None
                                 )
                             
-                            print_info("  ▶️  Executing...")
+                            print_info(_("  ▶️  Executing..."))
                             ctx = asyncio.run(_execute())
                             
                             # Get summary
@@ -1288,10 +1290,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                     for var_name, var_value in summary.get('variables', {}).items():
                                         log_f.write(f"  {var_name} = {var_value}\n")
                             
-                            print_success(f"  ✅ Scenario passed!")
-                            print_info(f"     Steps: {summary['passed']}/{summary['total_steps']} passed")
+                            print_success(_("  ✅ Scenario passed!"))
+                            print_info(_("     Steps: {}/{} passed").format(summary['passed'], summary['total_steps']))
                             if summary.get('variables'):
-                                print_info(f"     Variables: {len(summary['variables'])} saved")
+                                print_info(_("     Variables: {} saved").format(len(summary['variables'])))
                             
                             passed_scenarios += 1
                             
@@ -1321,7 +1323,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 log_f.write(f"Status: FAILED\n")
                                 log_f.write(f"Error: {str(e)}\n")
                             
-                            print_error(f"  ❌ Scenario failed: {str(e)}")
+                            print_error(_("  ❌ Scenario failed: {}").format(str(e)))
                             logger.error("scenario_execution_failed", scenario=str(scenario_file), error=str(e))
                             
                             # Extract last 30 lines of log
@@ -1358,7 +1360,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 log_f.write(f"Exception: {str(e)}\n")
                                 log_f.write(f"Traceback:\n{traceback.format_exc()}\n")
                             
-                            print_error(f"  ❌ Unexpected error: {str(e)}")
+                            print_error(_("  ❌ Unexpected error: {}").format(str(e)))
                             logger.exception("scenario_unexpected_error", scenario=str(scenario_file))
                             
                             # Extract last 30 lines of log
@@ -1385,7 +1387,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     
                     # Collect artifacts for this suite
                     if network_mgr:
-                        print_info(f"\n📦 Collecting suite artifacts for {suite_relative_path}...")
+                        print_info(_("\n📦 Collecting suite artifacts for {}...").format(suite_relative_path))
                         try:
                             client = docker.from_env()
                             project_name = "cellframe-stage"
@@ -1415,29 +1417,32 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                                     error=str(e))
                             
                             if collected_logs > 0:
-                                print_success(f"  Collected {collected_logs} node logs")
+                                print_success(_("  Collected {} node logs").format(collected_logs))
                             
                             # Collect health logs
                             artifacts_manager.collect_health_logs(suite_dir)
-                            print_success(f"  Health logs collected")
+                            print_success(_("  Health logs collected"))
                             
                         except Exception as e:
-                            print_warning(f"  Failed to collect suite artifacts: {e}")
+                            print_warning(_("  Failed to collect suite artifacts: {}").format(e))
             
                 # Print summary
                 print_info(f"\n{'═' * 60}")
-                print_info(f"📊 Scenario Test Summary")
+                print_info(_("📊 Scenario Test Summary"))
                 print_info(f"{'═' * 60}")
-                print_info(f"Total scenarios: {total_scenarios}")
+                print_info(_("Total scenarios: {}").format(total_scenarios))
                 if passed_scenarios > 0:
-                    print_success(f"✅ Passed: {passed_scenarios}")
+                    print_success(_("✅ Passed: {}").format(passed_scenarios))
                 if failed_scenarios > 0:
-                    print_error(f"❌ Failed: {failed_scenarios}")
+                    print_error(_("❌ Failed: {}").format(failed_scenarios))
                 print_info(f"{'═' * 60}")
                 
+        except KeyboardInterrupt:
+            print_info(_("\n⚠️ Interrupted by user (Ctrl-C). Summary below."))
         finally:
             # Collect final artifacts
-            print_info("\n📦 Finalizing artifacts...")
+            print_info(_("\n📦 Finalizing artifacts..."))
+            main_stage_env_log_path = None
             
             try:
                 # Collect stage-env log
@@ -1448,13 +1453,15 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 stage_env_logs_dir = run_dir_base / "stage-env-logs"
                 stage_env_logs_dir.mkdir(exist_ok=True)
                 
+                main_stage_env_log_path = None
                 if log_dir.exists():
                     log_files = sorted(log_dir.glob("stage-env_*.log"), 
                                     key=lambda p: p.stat().st_mtime, 
                                     reverse=True)
                     if log_files:
                         artifacts_manager.collect_stage_env_log(run_dir_base, log_files[0])
-                        print_success(f"Collected stage-env log")
+                        main_stage_env_log_path = (run_dir_base / "stage-env-logs" / log_files[0].name).resolve()
+                        print_success(_("Collected stage-env log"))
                 
                 # Generate summary and reports
                 summary_data = {
@@ -1486,41 +1493,93 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 artifacts_manager.create_run_summary(run_dir_base, summary_data)
                 
                 # Generate reports
-                print_info("Generating test reports...")
+                print_info(_("Generating test reports..."))
                 report_gen = ReportGenerator(run_dir_base)
                 try:
                     reports = report_gen.generate_full_report(summary_data)
                     for report_type, report_path in reports.items():
-                        print_success(f"Generated {report_type}: {report_path.name}")
+                        print_success(_("Generated {}: {}").format(report_type, report_path.name))
+                    if "pdf" not in reports:
+                        print_info(_("PDF report skipped (install pandoc or weasyprint to generate PDF)"))
                 except Exception as e:
-                    print_warning(f"Failed to generate some reports: {e}")
+                    print_warning(_("Failed to generate some reports: {}").format(e))
                 
-                print_success(f"✅ All artifacts saved to: run_{run_id}/")
+                print_success(_("✅ All artifacts saved to: run_{}/").format(run_id))
                 
             except Exception as e:
-                print_warning(f"Failed to collect some artifacts: {e}")
+                print_warning(_("Failed to collect some artifacts: {}").format(e))
             
             # Stop monitoring services
-            print_info("\n🔍 Stopping monitoring services...")
+            print_info(_("\n🔍 Stopping monitoring services..."))
             try:
                 # MonitoringManager is a singleton, reset it for cleanup
                 MonitoringManager.reset_instance()
-                print_success("Monitoring services stopped")
+                print_success(_("Monitoring services stopped"))
             except Exception as e:
-                print_warning(f"Failed to stop monitoring: {e}")
+                print_warning(_("Failed to stop monitoring: {}").format(e))
             
             # Stop network if requested
             if stop_after and network_mgr:
-                print_info("\n🛑 Stopping test network...")
+                print_info(_("\n🛑 Stopping test network..."))
                 
                 async def _stop_network():
                     await network_mgr.stop(remove_volumes=False)
                 
                 try:
                     asyncio.run(_stop_network())
-                    print_success("Network stopped")
+                    print_success(_("Network stopped"))
                 except Exception as e:
-                    print_warning(f"Failed to stop network cleanly: {e}")
+                    print_warning(_("Failed to stop network cleanly: {}").format(e))
+            
+            # Write final summary to file so run.sh can print it after "Stage environment stopped"
+            try:
+                logging_cfg = config_loader.get_logging_config()
+                log_dir_rel = logging_cfg.get('log_dir', 'logs')
+                log_dir_path = (base_path / log_dir_rel).resolve()
+                lines = [
+                    "",
+                    "═" * 60,
+                    _("📋 Summary: passed and failed scenarios"),
+                    "═" * 60,
+                ]
+                passed_list = [r for r in scenario_results if r.get("status") == "passed"]
+                failed_list = [r for r in scenario_results if r.get("status") in ("failed", "error")]
+                if passed_list:
+                    lines.append(_("\n✅ Passed ({}):").format(len(passed_list)))
+                    for r in passed_list:
+                        path = r.get("path", r.get("file", "?"))
+                        lines.append(_("   • {}  [{}]").format(r.get('name', path), path))
+                if failed_list:
+                    lines.append(_("\n❌ Failed ({}):").format(len(failed_list)))
+                    for r in failed_list:
+                        path = r.get("path", r.get("file", "?"))
+                        err = r.get("error", "—")
+                        log_rel = r.get("log_file", "")
+                        log_full = (run_dir_base / log_rel).resolve() if log_rel else None
+                        lines.append(_("   • {}  [{}]").format(r.get('name', path), path))
+                        lines.append(_("     Error: {}").format(err[:200] + ('…' if len(err) > 200 else '')))
+                        if log_full:
+                            lines.append(_("     Log (error at end of file): {}").format(str(log_full)))
+                        if r.get("error_log"):
+                            excerpt = (r["error_log"].strip().split("\n") or [])[-8:]
+                            if excerpt:
+                                lines.append(_("     Fragment (end of log):"))
+                                for line in excerpt:
+                                    lines.append(f"       {line[:100]}")
+                lines.extend([
+                    "",
+                    "═" * 60,
+                    _("📁 Full path to artifacts and logs directory:"),
+                    f"   {run_dir_base.resolve()}",
+                ])
+                if main_stage_env_log_path and main_stage_env_log_path.exists():
+                    lines.append(_("   Main stage-env log: {}").format(str(main_stage_env_log_path)))
+                lines.extend(["═" * 60, ""])
+                summary_file = log_dir_path / "last_final_summary.txt"
+                log_dir_path.mkdir(parents=True, exist_ok=True)
+                summary_file.write_text("\n".join(lines), encoding="utf-8")
+            except Exception as e:
+                print_warning(_("Failed to write final summary file: {}").format(e))
         
         if not all_passed:
             raise typer.Exit(1)

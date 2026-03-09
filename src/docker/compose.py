@@ -87,19 +87,20 @@ class DockerComposeManager:
             try:
                 from src.utils.mirror_tester import select_fastest_mirrors
                 from ..cli.common import print_info, print_success, print_warning
+                from src.utils.i18n import _
                 
-                print_info("Testing mirror speeds...")
+                print_info(_("Testing mirror speeds..."))
                 mirror_results = select_fastest_mirrors(timeout=5)
                 debian_mirror = mirror_results['debian_mirror']
                 debian_time = mirror_results['debian_time']
                 
-                print_success(f"Fastest Debian mirror: {debian_mirror} ({debian_time:.2f}s)")
+                print_success(_("Fastest Debian mirror: {} ({}s)").format(debian_mirror, f"{debian_time:.2f}"))
                 logger.info("fastest_mirror_selected", 
                            debian_mirror=debian_mirror,
                            debian_time=debian_time)
             except Exception as e:
                 logger.warning("mirror_test_failed", error=str(e))
-                print_warning(f"Mirror testing failed: {e}, using default mirrors")
+                print_warning(_("Mirror testing failed: {}, using default mirrors").format(e))
         
         # Use docker compose CLI via subprocess for build
         # (docker SDK doesn't have direct compose build API yet)
@@ -125,14 +126,15 @@ class DockerComposeManager:
         
         # Print informative messages before starting Docker build
         from ..cli.common import print_info, print_success
-        print_info("Starting Docker build...")
-        print_info(f"Docker Compose file: {self.compose_file.name}")
-        print_info(f"Project name: {self.project_name}")
+        from src.utils.i18n import _
+        print_info(_("Starting Docker build..."))
+        print_info(_("Docker Compose file: {}").format(self.compose_file.name))
+        print_info(_("Project name: {}").format(self.project_name))
         if debian_mirror:
-            print_info(f"Using Debian mirror: {debian_mirror}")
+            print_info(_("Using Debian mirror: {}").format(debian_mirror))
         if no_cache:
-            print_info("Build mode: --no-cache (clean build)")
-        print_info("Docker Compose is building images (this may take a while)...")
+            print_info(_("Build mode: --no-cache (clean build)"))
+        print_info(_("Docker Compose is building images (this may take a while)..."))
         
         logger.info("starting_docker_build", 
                    compose_file=str(self.compose_file),
@@ -144,11 +146,11 @@ class DockerComposeManager:
             # Run command with real-time output (not captured)
             run_command(cmd, cwd=self.project_dir, env=env, capture_output=False)
             
-            print_success("Docker build completed successfully")
+            print_success(_("Docker build completed successfully"))
             logger.info("build_completed")
         except KeyboardInterrupt:
             from ..cli.common import print_warning
-            print_warning("\nDocker build interrupted by user (Ctrl+C)")
+            print_warning(_("\nDocker build interrupted by user (Ctrl+C)"))
             logger.warning("docker_build_interrupted")
             raise
     
