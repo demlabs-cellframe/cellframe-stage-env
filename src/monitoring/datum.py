@@ -627,10 +627,48 @@ class DatumMonitor:
         """
         # Auto-detect DAG vs blockchain
         if self._is_dag_chain(chain):
-            return await self._check_in_dag_events(node, network, chain, datum_hash)
+            # First check final events; then round.new (datum accepted into consensus round)
+            block_info = await self._check_in_dag_events(node, network, chain, datum_hash)
+            if block_info:
+                return block_info
+            return await self._check_in_dag_round(node, network, chain, datum_hash)
         else:
             return await self._check_in_blockchain_blocks(node, network, chain, datum_hash)
     
+    async def _check_in_dag_round(self, node: str, network: str, chain: str, datum_hash: str) -> Optional[Tuple[int, str]]:
+        """
+        Check if datum is in a DAG round (round.new) - not yet in events but accepted for consensus.
+        CLI: dag round find -datum <hash>. Returns (events_count, event_hash) if found.
+        """
+        try:
+            container_name = self._node_to_container(node)
+            container = self.docker_client.containers.get(container_name)
+            hash_for_cli = datum_hash if _STRICT_HASH_PATTERN.match(datum_hash) else (
+                _EXTRACT_HASH_PATTERN.search(datum_hash).group(1) if _EXTRACT_HASH_PATTERN.search(datum_hash) else datum_hash
+            )
+            cmd = [
+                self.node_cli_path, "dag", "round", "find",
+                "-net", network, "-chain", chain, "-datum", hash_for_cli
+            ]
+            result = container.exec_run(cmd, demux=True)
+            if result.exit_code != 0:
+                return None
+            stdout_str = (result.output[0] or b"").decode("utf-8")
+            # "events count": N or "events_count": N, "event hash": "0x..." or "event_hash": "0x..."
+            count_match = re.search(r'["\']?(?:events_count|events count)["\']?\s*:\s*(\d+)', stdout_str, re.IGNORECASE)
+            count = int(count_match.group(1)) if count_match else 0
+            if count > 0:
+                event_hash_match = re.search(r'["\']?(?:event_hash|event hash)["\']?\s*:\s*["\']?([0-9a-fA-Fx]+)', stdout_str, re.IGNORECASE)
+                event_hash = event_hash_match.group(1) if event_hash_match else "0x0"
+                self._log(f"  ✅ Datum {datum_hash[:16]}... found in DAG round (round find events_count: {count})")
+                return (count, event_hash)
+            # Not in round: log for diagnostics (CLI format may differ)
+            logger.debug("dag_round_find_no_match", datum=datum_hash[:16], stdout_preview=stdout_str[:500])
+            return None
+        except Exception as e:
+            self._log(f"  ⚠️ Failed to check DAG round: {e}")
+            return None
+
     async def _check_in_dag_events(self, node: str, network: str, chain: str, datum_hash: str) -> Optional[Tuple[int, str]]:
         """
         Check if datum is in a DAG event (for DAG-PoA chains like zerochain).
