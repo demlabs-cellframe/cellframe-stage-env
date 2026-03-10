@@ -101,6 +101,20 @@ class RuntimeContext:
     def substitute(self, text: str) -> str:
         """Substitute variables in text."""
         return self.parser.substitute_variables(text, self.variables)
+
+    def substitute_raw(self, text: str):
+        """Substitute and return the raw Python object for bare {{var}} placeholders.
+        
+        Falls back to string substitution when the text contains surrounding
+        content or the variable is a scalar.
+        """
+        if isinstance(text, str):
+            stripped = text.strip()
+            if stripped.startswith('{{') and stripped.endswith('}}') and stripped.count('{{') == 1:
+                var_name = stripped[2:-2].strip()
+                if var_name in self.variables:
+                    return self.variables[var_name]
+        return self.parser.substitute_variables(text, self.variables)
     
     def add_result(self, step_type: str, success: bool, details: Dict[str, Any]):
         """Record step execution result."""
