@@ -412,6 +412,7 @@ class ConfigLoader:
             'cellframe_sdk_git': 'https://gitlab.demlabs.net/cellframe/cellframe-sdk.git',
             'dap_sdk_git': 'https://gitlab.demlabs.net/dap/dap-sdk.git',
             'sdk_git_branch': 'master',
+            'custom_templates_dir': '',
         }
         
         if not config_file.exists():
@@ -691,6 +692,8 @@ class ConfigLoader:
                 node_source['repository_branch'] = config.get('node_source', 'branch')
             if config.has_option('node_source', 'build_type'):
                 node_source['build_type'] = config.get('node_source', 'build_type')
+            elif config.has_option('build', 'build_type'):
+                node_source['build_type'] = config.get('build', 'build_type')
             if config.has_option('node_source', 'checksum'):
                 node_source['checksum'] = config.get('node_source', 'checksum')
             if config.has_option('node_source', 'headers'):

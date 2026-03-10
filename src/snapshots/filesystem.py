@@ -22,7 +22,7 @@ from typing import Dict, Any, List, Optional
 import subprocess
 
 from src.utils.logger import get_logger
-from .base import BaseSnapshot
+from .base import BaseSnapshot, SNAPSHOT_EXCLUDE_PATTERNS
 
 logger = get_logger(__name__)
 
@@ -83,52 +83,63 @@ class FilesystemSnapshot(BaseSnapshot):
         except subprocess.TimeoutExpired:
             return False
     
-    async def create(self, name: str) -> bool:
+    async def create(self, name: str, extra_metadata: Optional[Dict[str, Any]] = None, clone_images: dict | None = None) -> bool:
         """
         Create hybrid snapshot: rsync data/configs + docker commit containers.
-        
+
         Args:
             name: Snapshot name
-            
+            extra_metadata: Optional dict to merge into .snapshot_metadata (e.g. emission_hash)
+            clone_images: Optional mapping {source_service: [target_services]}.
+
+
         Returns:
             True if snapshot created successfully
         """
         logger.info("filesystem_create_start", name=name)
-        
+
         snapshot_dir = self.snapshots_path / name
-        
+
         if snapshot_dir.exists():
             logger.debug("filesystem_overwriting_existing", name=name)
             await self.delete(name)
-        
+
         snapshot_dir.mkdir(parents=True, exist_ok=True)
-        
+
         data_dirs = self.get_data_dirs()
         config_dirs = self.get_config_dirs()
-        
+
         if not data_dirs:
             logger.warning("filesystem_no_data_to_snapshot")
             return False
-        
+
         try:
             data_snapshot_dir = snapshot_dir / "data"
             data_snapshot_dir.mkdir(exist_ok=True)
-            
+
             for node_dir in data_dirs:
                 target_dir = data_snapshot_dir / node_dir.name
                 await self._rsync_copy(node_dir, target_dir)
-            
+
             if config_dirs:
                 config_snapshot_dir = snapshot_dir / "configs"
                 config_snapshot_dir.mkdir(exist_ok=True)
-                
+
                 for config_dir in config_dirs:
                     target_dir = config_snapshot_dir / config_dir.name
                     await self._rsync_copy(config_dir, target_dir)
-            
+
             committed_images = await self._commit_containers(name)
-            
+
+            if clone_images:
+                committed_images = self._apply_clone_images(
+                    committed_images, clone_images,
+                )
+
+
             metadata = self._create_metadata(name, data_dirs, config_dirs, committed_images)
+            if extra_metadata:
+                metadata.update(extra_metadata)
             metadata_file = snapshot_dir / ".snapshot_metadata"
             metadata_file.write_text(json.dumps(metadata, indent=2))
             
@@ -201,23 +212,30 @@ class FilesystemSnapshot(BaseSnapshot):
             
             config_snapshot_dir = snapshot_dir / "configs"
             if config_snapshot_dir.exists():
+                snapshot_config_names = {
+                    d.name for d in config_snapshot_dir.iterdir()
+                    if d.is_dir() and not d.name.startswith('.')
+                }
+
                 if configs_path.exists():
-                    config_dirs = [d for d in config_snapshot_dir.iterdir() 
-                                  if d.is_dir() and not d.name.startswith('.')]
-                    for config_dir in config_dirs:
-                        target_config_dir = configs_path / config_dir.name
-                        if target_config_dir.exists():
-                            await asyncio.to_thread(shutil.rmtree, target_config_dir, ignore_errors=True)
+                    removed_extra = 0
+                    for existing_dir in list(configs_path.iterdir()):
+                        if existing_dir.is_dir() and not existing_dir.name.startswith('.'):
+                            if existing_dir.name not in snapshot_config_names and existing_dir.name != "shared":
+                                await asyncio.to_thread(shutil.rmtree, existing_dir, ignore_errors=True)
+                                removed_extra += 1
+                    if removed_extra:
+                        logger.info("filesystem_removed_extra_configs", count=removed_extra)
                 else:
                     configs_path.mkdir(parents=True, exist_ok=True)
-                
-                config_dirs = [d for d in config_snapshot_dir.iterdir() 
+
+                config_dirs = [d for d in config_snapshot_dir.iterdir()
                               if d.is_dir() and not d.name.startswith('.')]
-                
+
                 for config_dir in config_dirs:
                     target_dir = configs_path / config_dir.name
                     await self._rsync_copy(config_dir, target_dir)
-                
+
                 logger.info("filesystem_configs_restored", nodes=len(config_dirs))
             
             metadata = self._load_metadata(name)
@@ -341,7 +359,10 @@ class FilesystemSnapshot(BaseSnapshot):
             "-rlptD",  # archive mode WITHOUT owner/group
             "--no-owner",
             "--no-group",
-            "--delete",  # delete files in target not in source
+            "--delete",
+            "--exclude", "asan.*",
+            *[arg for pat in SNAPSHOT_EXCLUDE_PATTERNS
+              for arg in ("--exclude", pat)],
             str(source) + "/",  # trailing slash important!
             str(target) + "/",
             stdout=asyncio.subprocess.PIPE,
@@ -353,6 +374,38 @@ class FilesystemSnapshot(BaseSnapshot):
         if proc.returncode != 0:
             raise RuntimeError(f"rsync failed: {stderr.decode()}")
     
+    def _apply_clone_images(
+        self,
+        committed: Dict[str, str],
+        clone_images: dict,
+    ) -> Dict[str, str]:
+        """Replicate a prototype's committed image tag to target services.
+
+        Args:
+            committed: Current {service: image_tag} from docker commit.
+            clone_images: {source_service: [target1, target2, ...]}.
+
+        Returns:
+            Extended committed dict with cloned entries.
+        """
+        result = dict(committed)
+        for source, targets in clone_images.items():
+            src_tag = committed.get(source)
+            if not src_tag:
+                logger.warning("clone_images_source_not_committed",
+                               source=source,
+                               available=list(committed.keys()))
+                continue
+            if isinstance(targets, str):
+                targets = [targets]
+            for target in targets:
+                if target != source:
+                    result[target] = src_tag
+            logger.info("clone_images_applied",
+                        source=source,
+                        cloned_to=len([t for t in targets if t != source]))
+        return result
+
     async def _commit_containers(self, name: str) -> Dict[str, str]:
         """
         Docker-commit each project container, capturing writable layer
@@ -418,6 +471,10 @@ class FilesystemSnapshot(BaseSnapshot):
                 logger.debug("docker_image_remove_skipped",
                            service=service, tag=tag, error=str(e))
     
+    def load_metadata(self, name: str) -> Optional[Dict[str, Any]]:
+        """Load snapshot metadata (for use by SnapshotManager.get_snapshot_metadata)."""
+        return self._load_metadata(name)
+
     def _load_metadata(self, name: str) -> Optional[Dict[str, Any]]:
         """Load snapshot metadata from JSON file."""
         metadata_file = self.snapshots_path / name / ".snapshot_metadata"
@@ -471,6 +528,9 @@ class FilesystemSnapshot(BaseSnapshot):
             pass
         return total
     
+    def exists(self, name: str) -> bool:
+        return (self.snapshots_path / name).is_dir()
+
     def get_info(self, name: str) -> Dict[str, Any]:
         """Get snapshot information."""
         snapshot_dir = self.snapshots_path / name

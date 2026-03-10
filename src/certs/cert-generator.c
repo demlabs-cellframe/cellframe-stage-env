@@ -591,6 +591,52 @@ static int s_pki_config_generate(const dap_cert_generator_node_t *nodes, int nod
 /**
  * @brief Main entry point
  */
+/**
+ * Single-cert mode: generate one node-addr certificate and print its address.
+ *
+ * Usage: cf-cert-generator --single <output_dir> [cert_name]
+ *
+ * Generates ``<output_dir>/<cert_name>.dcert`` (default cert_name = "node-addr")
+ * and prints exactly one line to stdout:  ``ADDR:<hex node address>``
+ * so the caller can parse it deterministically.
+ */
+static int s_single_cert_mode(const char *output_dir, const char *cert_name) {
+    if (s_create_directory(output_dir) != DAP_CERT_GEN_RET_SUCCESS)
+        return DAP_CERT_GEN_RET_ERROR;
+
+    dap_cert_t *cert = dap_cert_generate_mem(cert_name, DAP_ENC_KEY_TYPE_SIG_FALCON);
+    if (!cert) {
+        log_it(L_ERROR, "Failed to generate certificate '%s'", cert_name);
+        return DAP_CERT_GEN_RET_ERROR;
+    }
+
+    char cert_path[DAP_CERT_GEN_MAX_PATH_LEN];
+    snprintf(cert_path, sizeof(cert_path), "%s/%s.dcert", output_dir, cert_name);
+    if (dap_cert_file_save(cert, cert_path) != 0) {
+        log_it(L_ERROR, "Failed to save certificate to %s", cert_path);
+        dap_cert_delete(cert);
+        return DAP_CERT_GEN_RET_ERROR;
+    }
+
+    dap_node_addr_t addr = dap_node_addr_from_cert(cert);
+    char *addr_str = dap_node_addr_to_str(addr);
+    /* Print to stdout so the caller can capture it */
+    printf("ADDR:%s\n", addr_str ? addr_str : "0000::0000::0000::0000");
+    fflush(stdout);
+    DAP_DELETE(addr_str);
+
+    /* Also save to node_addr.txt for convenience */
+    char addr_path[DAP_CERT_GEN_MAX_PATH_LEN];
+    snprintf(addr_path, sizeof(addr_path), "%s/node_addr.txt", output_dir);
+    addr_str = dap_node_addr_to_str(addr);
+    s_save_to_file(addr_path, addr_str ? addr_str : "");
+    DAP_DELETE(addr_str);
+
+    dap_cert_delete(cert);
+    log_it(L_NOTICE, "Single cert '%s' generated: %s", cert_name, cert_path);
+    return DAP_CERT_GEN_RET_SUCCESS;
+}
+
 int main(int argc, char *argv[]) {
     const char *output_dir = "/certs";
     const char *network_name = "stagenet";  /* Default network name */
@@ -605,12 +651,22 @@ int main(int argc, char *argv[]) {
     dap_enc_key_init();
     
     debug_if(s_debug_more, L_NOTICE, "=== Initializing DAP Certificate Generator ===");
-    
+
+    /* --single mode: generate one cert and print address */
+    if (argc >= 3 && strcmp(argv[1], "--single") == 0) {
+        const char *s_out = argv[2];
+        const char *s_name = (argc >= 4) ? argv[3] : "node-addr";
+        ret = s_single_cert_mode(s_out, s_name);
+        dap_enc_key_deinit();
+        return ret;
+    }
+
     /* Parse command line arguments */
     if (argc < 4) {
         log_it(L_ERROR, "Usage: %s <output_dir> <node_count> <network_name> [network_id] [root_count]", argv[0]);
+        log_it(L_ERROR, "       %s --single <output_dir> [cert_name]  # generate one cert, print address", argv[0]);
         log_it(L_ERROR, "Example: %s /certs 6 stagenet 0x1234 2  # 6 nodes, 2 ROOT, 4 MASTER", argv[0]);
-        log_it(L_ERROR, "Example: %s /certs 3 testnet 0x5678 1  # 3 nodes, 1 ROOT, 2 MASTER", argv[0]);
+        log_it(L_ERROR, "Example: %s --single /tmp/mynode node-addr  # single cert → ADDR:XXXX::YYYY::...", argv[0]);
         dap_enc_key_deinit();
         return DAP_CERT_GEN_RET_ERROR;
     }

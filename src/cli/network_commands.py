@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .common import print_info, print_success, print_error, print_warning
+from src.utils.i18n import _
 
 
 def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callable[[], Optional[Path]]):
@@ -21,7 +22,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         """🔨 Build cellframe-node artifacts."""
         from ..build.manager import BuildManager
         
-        print_info("Building cellframe-node...")
+        print_info(_("Building cellframe-node..."))
         builder = BuildManager(base_path)
         build_type = "release" if release else "debug"
         result = builder.build(build_type=build_type, clean=clean, parallel=jobs)
@@ -38,10 +39,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 secs = int(duration % 60)
                 duration_str = f"{minutes}m {secs}s"
             
-            print_success(f"Build completed in {duration_str}")
-            print_info(f"Artifacts: {', '.join(result.artifacts)}")
+            print_success(_("Build completed in {}").format(duration_str))
+            print_info(_("Artifacts: {}").format(', '.join(result.artifacts)))
         else:
-            print_error("Build failed!")
+            print_error(_("Build failed!"))
             raise typer.Exit(1)
     
     @app.command()
@@ -63,8 +64,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         # Check for docker
         if not shutil.which("docker"):
-            print_error("Missing required tool: docker")
-            print_info("Please install Docker")
+            print_error(_("Missing required tool: docker"))
+            print_info(_("Please install Docker"))
             raise typer.Exit(1)
         
         # Check for docker compose (V2) or docker-compose (V1)
@@ -80,26 +81,46 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 has_compose = True
         
         if not has_compose:
-            print_error("Missing Docker Compose")
-            print_info("Please install Docker Compose (either V1 or V2)")
+            print_error(_("Missing Docker Compose"))
+            print_info(_("Please install Docker Compose (either V1 or V2)"))
             raise typer.Exit(1)
         
         if clean:
             from rich.prompt import Confirm
-            if not Confirm.ask("This will delete all data. Continue?", default=False):
-                print_info("Cancelled")
+            if not Confirm.ask(_("This will delete all data. Continue?"), default=False):
+                print_info(_("Cancelled"))
                 return
-            
-            print_warning("Cleaning all data...")
+
+            print_warning(_("Cleaning all data..."))
             config_loader = get_config_loader()
             paths_config = config_loader.get_paths_config()
-            cache_dir_relative = paths_config.get('cache_dir', 'cache')
+            cache_dir_relative = paths_config.get("cache_dir", "cache")
             cache_dir = (base_path / cache_dir_relative).resolve()
             certs_dir = cache_dir / "certs"
-            
+
             cert_gen = CertGenerator(base_path, certs_dir=certs_dir)
             cert_gen.clean()
-        
+
+            # Clean snapshots so genesis can run from scratch
+            snapshots_config = config_loader.get_suite_isolation_config()
+            snapshots_dir = (base_path / snapshots_config.get("snapshots_dir", "../../cache/snapshots")).resolve()
+            if snapshots_dir.exists():
+                from ..snapshots.manager import SnapshotManager, SnapshotMode
+                mode_str = snapshots_config.get("mode", "filesystem").lower()
+                mode_map = {
+                    "disabled": SnapshotMode.DISABLED,
+                    "recreate": SnapshotMode.RECREATE,
+                    "filesystem": SnapshotMode.FILESYSTEM,
+                    "squashfs": SnapshotMode.SQUASHFS,
+                }
+                snapshot_mode = mode_map.get(mode_str, SnapshotMode.FILESYSTEM)
+                snapshot_mgr = SnapshotManager(base_path, snapshot_mode, snapshots_config)
+                async def _clean_snapshots():
+                    for name in await snapshot_mgr.list_snapshots():
+                        await snapshot_mgr.delete_snapshot(name)
+                asyncio.run(_clean_snapshots())
+                print_info(_("Snapshots cleaned"))
+
         # NetworkManager will use global config loader
         network_mgr = NetworkManager(base_path, topology_name=topology, config_path=get_config_path())
         network_mgr.keep_running = keep_running
@@ -109,7 +130,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         try:
             asyncio.run(_start())
-            print_success("Network started successfully!")
+            print_success(_("Network started successfully!"))
             _show_status(network_mgr)
             
             # Create pristine network marker for test optimization
@@ -121,9 +142,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             artifacts_path.mkdir(parents=True, exist_ok=True)
             pristine_marker = artifacts_path / ".pristine_network"
             pristine_marker.touch()
-            print_info("🎯 Pristine network marker created - first suite will use it directly")
+            print_info(_("🎯 Pristine network marker created - first suite will use it directly"))
         except Exception as e:
-            print_error(f"Failed to start network: {e}")
+            print_error(_("Failed to start network: {}").format(e))
             raise typer.Exit(1)
     
     @app.command()
@@ -141,9 +162,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         try:
             asyncio.run(_stop())
-            print_success("Network stopped")
+            print_success(_("Network stopped"))
         except Exception as e:
-            print_error(f"Failed to stop network: {e}")
+            print_error(_("Failed to stop network: {}").format(e))
             raise typer.Exit(1)
     
     @app.command()
@@ -159,13 +180,13 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         try:
             network_mgr.compose.kill(timeout=timeout)
-            print_success(f"Network killed (timeout: {timeout}s)")
+            print_success(_("Network killed (timeout: {}s)").format(timeout))
             
             # Remove PID file after successful kill
             pid_mgr = PIDManager(base_path)
             pid_mgr.remove()
         except Exception as e:
-            print_error(f"Failed to kill network: {e}")
+            print_error(_("Failed to kill network: {}").format(e))
             raise typer.Exit(1)
     
     @app.command()
@@ -179,13 +200,13 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         try:
             network_mgr.compose.terminate()
-            print_success("Network terminated")
+            print_success(_("Network terminated"))
             
             # Remove PID file after successful terminate
             pid_mgr = PIDManager(base_path)
             pid_mgr.remove()
         except Exception as e:
-            print_error(f"Failed to terminate network: {e}")
+            print_error(_("Failed to terminate network: {}").format(e))
             raise typer.Exit(1)
     
     @app.command()
@@ -203,10 +224,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         try:
             asyncio.run(_restart())
-            print_success("Network restarted")
+            print_success(_("Network restarted"))
             _show_status(network_mgr)
         except Exception as e:
-            print_error(f"Failed to restart network: {e}")
+            print_error(_("Failed to restart network: {}").format(e))
             raise typer.Exit(1)
     
     @app.command()
@@ -223,7 +244,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         try:
             status_data = asyncio.run(_get_status())
         except Exception as e:
-            print_warning(f"Could not get full status: {e}")
+            print_warning(_("Could not get full status: {}").format(e))
             return
         
         _print_status_table(status_data)
@@ -248,7 +269,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         except KeyboardInterrupt:
             pass
         except Exception as e:
-            print_error(f"Failed to get logs: {e}")
+            print_error(_("Failed to get logs: {}").format(e))
             raise typer.Exit(1)
     
     @app.command()
@@ -265,7 +286,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         try:
             subprocess.run(cmd)
         except Exception as e:
-            print_error(f"Failed to execute command: {e}")
+            print_error(_("Failed to execute command: {}").format(e))
             raise typer.Exit(1)
     
     @app.command()
@@ -275,10 +296,10 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         from ..config.manager import get_config_loader
         from ..certs.generator import CertGenerator
         
-        print_info("Starting full environment rebuild...")
+        print_info(_("Starting full environment rebuild..."))
         
         # Stop network
-        print_info("\n🛑 Stopping network...")
+        print_info(_("\n🛑 Stopping network..."))
         config_path = get_config_path()
         network_mgr = NetworkManager(base_path, config_path=config_path)
         
@@ -287,12 +308,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         try:
             asyncio.run(_stop())
-            print_success("Network stopped")
+            print_success(_("Network stopped"))
         except Exception as e:
-            print_warning(f"Network was not running: {e}")
+            print_warning(_("Network was not running: {}").format(e))
         
         # Rebuild cert-generator
-        print_info("\n🔨 Rebuilding cert-generator image...")
+        print_info(_("\n🔨 Rebuilding cert-generator image..."))
         import subprocess
         cert_gen_dir = base_path / "cellframe-sdk" / "dap-sdk" / "crypto" / "tools" / "cert-generator"
         if cert_gen_dir.exists():
@@ -302,12 +323,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 capture_output=True
             )
             if result.returncode == 0:
-                print_success("Cert-generator rebuilt")
+                print_success(_("Cert-generator rebuilt"))
             else:
-                print_warning("Failed to rebuild cert-generator")
+                print_warning(_("Failed to rebuild cert-generator"))
         
         # Clean and regenerate certs
-        print_info("\n🔐 Regenerating certificates...")
+        print_info(_("\n🔐 Regenerating certificates..."))
         config_loader = get_config_loader()
         paths_config = config_loader.get_paths_config()
         cache_dir_relative = paths_config.get('cache_dir', 'cache')
@@ -319,29 +340,29 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         try:
             cert_gen.generate_all()
-            print_success("Certificates regenerated")
+            print_success(_("Certificates regenerated"))
         except Exception as e:
-            print_error(f"Failed to regenerate certificates: {e}")
+            print_error(_("Failed to regenerate certificates: {}").format(e))
             raise typer.Exit(1)
         
         # Rebuild cellframe images
-        print_info("\n🔨 Rebuilding cellframe-node images...")
+        print_info(_("\n🔨 Rebuilding cellframe-node images..."))
         
         async def _start():
             await network_mgr.start(rebuild=True, wait_ready=True)
         
         try:
             asyncio.run(_start())
-            print_success("Network rebuilt and started")
+            print_success(_("Network rebuilt and started"))
         except Exception as e:
-            print_error(f"Failed to rebuild network: {e}")
+            print_error(_("Failed to rebuild network: {}").format(e))
             raise typer.Exit(1)
         
         # Show status
-        print_info("\n📊 Network Status:")
+        print_info(_("\n📊 Network Status:"))
         _show_status(network_mgr)
         
-        print_success("\n✅ Full rebuild completed!")
+        print_success(_("\n✅ Full rebuild completed!"))
     
     @app.command()
     def pkgs_update():
@@ -361,11 +382,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         binary_path = build_dir / "cellframe-node-cli"
         
         if not binary_path.exists():
-            print_error(f"Binary not found: {binary_path}")
-            print_info("Please build cellframe-node first: ./stage-env build")
+            print_error(_("Binary not found: {}").format(binary_path))
+            print_info(_("Please build cellframe-node first: ./stage-env build"))
             raise typer.Exit(1)
         
-        print_info(f"Found binary: {binary_path}")
+        print_info(_("Found binary: {}").format(binary_path))
         
         # Initialize network manager to get containers
         network_mgr = NetworkManager(base_path, config_path=config_path)
@@ -374,8 +395,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         all_containers = network_mgr.compose.ps()
         
         if not all_containers:
-            print_warning("No containers found for this project")
-            print_info("Starting containers (without genesis)...")
+            print_warning(_("No containers found for this project"))
+            print_info(_("Starting containers (without genesis)..."))
             # Start containers directly using compose.up() (without genesis scenario)
             try:
                 network_mgr.compose.up(detach=True, wait=False)
@@ -384,46 +405,46 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 time.sleep(5)
                 all_containers = network_mgr.compose.ps()
                 if not all_containers:
-                    print_error("Failed to start containers")
+                    print_error(_("Failed to start containers"))
                     raise typer.Exit(1)
-                print_success(f"Started {len(all_containers)} container(s)")
+                print_success(_("Started {} container(s)").format(len(all_containers)))
             except Exception as e:
-                print_error(f"Failed to start containers: {e}")
+                print_error(_("Failed to start containers: {}").format(e))
                 raise typer.Exit(1)
         
         # Separate running and stopped containers
         running_containers = [c for c in all_containers if c.status == "running"]
         stopped_containers = [c for c in all_containers if c.status != "running"]
         
-        print_info(f"Found {len(all_containers)} container(s): {len(running_containers)} running, {len(stopped_containers)} stopped")
+        print_info(_("Found {} container(s): {} running, {} stopped").format(len(all_containers), len(running_containers), len(stopped_containers)))
         
         # Start stopped containers if needed
         if stopped_containers:
-            print_info(f"Starting {len(stopped_containers)} stopped container(s)...")
+            print_info(_("Starting {} stopped container(s)...").format(len(stopped_containers)))
             for container in stopped_containers:
                 try:
-                    print_info(f"  → Starting {container.name}")
+                    print_info(_("  → Starting {}").format(container.name))
                     container.start()
                     # Wait a bit for container to be ready
                     import time
                     time.sleep(2)
-                    print_success(f"  ✓ {container.name} started")
+                    print_success(_("  ✓ {} started").format(container.name))
                 except Exception as e:
-                    print_error(f"  ✗ Failed to start {container.name}: {e}")
+                    print_error(_("  ✗ Failed to start {}: {}").format(container.name, e))
             
             # Refresh container list after starting
             all_containers = network_mgr.compose.ps()
             running_containers = [c for c in all_containers if c.status == "running"]
         
         if not running_containers:
-            print_error("No running containers available for update")
+            print_error(_("No running containers available for update"))
             raise typer.Exit(1)
         
         # Copy binary to each container
-        print_info(f"Copying binary to {len(running_containers)} container(s)...")
+        print_info(_("Copying binary to {} container(s)...").format(len(running_containers)))
         for container in running_containers:
             try:
-                print_info(f"  → {container.name}")
+                print_info(_("  → {}").format(container.name))
                 
                 # Create tar archive with binary
                 tar_stream = io.BytesIO()
@@ -440,15 +461,15 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     user="root"
                 )
                 
-                print_success(f"  ✓ Binary updated in {container.name}")
+                print_success(_("  ✓ Binary updated in {}").format(container.name))
             except Exception as e:
-                print_error(f"  ✗ Failed to update binary in {container.name}: {e}")
+                print_error(_("  ✗ Failed to update binary in {}: {}").format(container.name, e))
         
         # Update packages in containers
-        print_info(f"Updating packages in {len(running_containers)} container(s)...")
+        print_info(_("Updating packages in {} container(s)...").format(len(running_containers)))
         for container in running_containers:
             try:
-                print_info(f"  → {container.name}")
+                print_info(_("  → {}").format(container.name))
                 
                 # apt update
                 result = container.exec_run(
@@ -456,7 +477,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     user="root"
                 )
                 if result.exit_code != 0:
-                    print_warning(f"  ⚠ apt-get update failed in {container.name}")
+                    print_warning(_("  ⚠ apt-get update failed in {}").format(container.name))
                 
                 # apt upgrade (non-interactive)
                 result = container.exec_run(
@@ -464,13 +485,13 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     user="root"
                 )
                 if result.exit_code != 0:
-                    print_warning(f"  ⚠ apt-get upgrade failed in {container.name}")
+                    print_warning(_("  ⚠ apt-get upgrade failed in {}").format(container.name))
                 else:
-                    print_success(f"  ✓ Packages updated in {container.name}")
+                    print_success(_("  ✓ Packages updated in {}").format(container.name))
             except Exception as e:
-                print_error(f"  ✗ Failed to update packages in {container.name}: {e}")
+                print_error(_("  ✗ Failed to update packages in {}: {}").format(container.name, e))
         
-        print_success("Package update completed")
+        print_success(_("Package update completed"))
 
 
 def _show_status(network_mgr):
@@ -482,7 +503,7 @@ def _show_status(network_mgr):
         status_data = asyncio.run(_get_status())
         _print_status_table(status_data)
     except Exception as e:
-        print_warning(f"Could not get status: {e}")
+        print_warning(_("Could not get status: {}").format(e))
 
 
 def _print_status_table(status_data):
@@ -495,30 +516,36 @@ def _print_status_table(status_data):
     
     # Check if status_data has required fields
     if not isinstance(status_data, dict):
-        print_warning(f"Invalid status data: expected dict, got {type(status_data)}")
+        print_warning(_("Invalid status data: expected dict, got {}").format(type(status_data)))
         return
     
     # Print basic info
+    network_name = status_data.get('network_name', 'N/A')
+    topology = status_data.get('topology', 'N/A')
+    total_nodes = status_data.get('total_nodes', 0)
+    content = "\n".join([
+        _("Network: {}").format(network_name),
+        _("Topology: {}").format(topology),
+        _("Total Nodes: {}").format(total_nodes),
+    ])
     print_panel(
-        title="📊 Network Status",
-        content=f"Network: {status_data.get('network_name', 'N/A')}\n"
-                f"Topology: {status_data.get('topology', 'N/A')}\n"
-                f"Total Nodes: {status_data.get('total_nodes', 0)}",
+        title=_("📊 Network Status"),
+        content=content,
         style="cyan"
     )
     
     # Check if nodes data is available
     nodes = status_data.get('nodes', [])
     if not nodes:
-        print_warning("No node status information available")
+        print_warning(_("No node status information available"))
         return
     
-    table = Table(title="🖥️  Nodes")
-    table.add_column("Node", style="cyan", no_wrap=True)
-    table.add_column("Role", style="yellow")
-    table.add_column("Container", style="magenta")
-    table.add_column("Health", style="green")
-    table.add_column("Ports", style="blue")
+    table = Table(title=_("🖥️  Nodes"))
+    table.add_column(_("Node"), style="cyan", no_wrap=True)
+    table.add_column(_("Role"), style="yellow")
+    table.add_column(_("Container"), style="magenta")
+    table.add_column(_("Health"), style="green")
+    table.add_column(_("Ports"), style="blue")
     
     for node in nodes:
         # Determine status emoji and text
@@ -528,7 +555,7 @@ def _print_status_table(status_data):
         
         if healthy and health_status == "NET_STATE_ONLINE":
             status_emoji = "🟢"
-            status_text = "Online"
+            status_text = _("Online")
         elif container_status == "running":
             status_emoji = "🟡"
             status_text = health_status

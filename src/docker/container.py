@@ -345,8 +345,21 @@ class DockerContainerManager:
                 "returncode": 1
             }
         
+        if status_info["status"] == "paused":
+            logger.warning("container_paused_attempting_unpause",
+                         container=container_name, node=node)
+            try:
+                status_info["container"].unpause()
+                import time
+                time.sleep(0.5)
+                status_info = self.check_container_status(container_name)
+                logger.info("container_unpaused_successfully",
+                          container=container_name, status=status_info["status"])
+            except Exception as e:
+                logger.error("container_unpause_failed",
+                           container=container_name, error=str(e))
+        
         if status_info["status"] != "running":
-            # FAIL-FAST: Container crashed - collect artifacts and fail immediately
             exit_code = status_info["exit_code"]
             container = status_info["container"]
             

@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from src.utils.logger import get_logger
 from src.utils.cli import run_command, print_info, print_success, print_error
+from src.utils.i18n import _
 
 logger = get_logger(__name__)
 
@@ -81,7 +82,7 @@ class CertGenerator:
             pass
 
         logger.info("building_cert_builder_image")
-        print_info("Building certificate builder Docker image (self-contained, clones SDK)...")
+        print_info(_("Building certificate builder Docker image (self-contained, clones SDK)..."))
 
         try:
             result = subprocess.run(
@@ -97,16 +98,16 @@ class CertGenerator:
             if result.returncode != 0:
                 logger.error("builder_image_build_failed",
                              stderr=result.stderr, stdout=result.stdout)
-                print_error(f"Failed to build builder image: {result.stderr}")
+                print_error(_("Failed to build builder image: {}").format(result.stderr))
                 return False
 
-            print_success("Certificate builder image built")
+            print_success(_("Certificate builder image built"))
             logger.info("cert_builder_image_built")
             return True
 
         except Exception as e:
             logger.error("builder_image_build_exception", error=str(e))
-            print_error(f"Exception building builder image: {e}")
+            print_error(_("Exception building builder image: {}").format(e))
             return False
     
     def generate_node_cert(
@@ -220,7 +221,7 @@ class CertGenerator:
                    root_count=root_count,
                    method="docker_self_contained")
 
-        print_info(f"Generating {node_count} node certificates (self-contained Docker)...")
+        print_info(_("Generating {} node certificates (self-contained Docker)...").format(node_count))
 
         if not self.build_docker_image():
             raise RuntimeError("Failed to build certificate builder Docker image")
@@ -256,7 +257,7 @@ class CertGenerator:
                 logger.warning("cert_generator_docker_stderr", stderr=result_proc.stderr)
 
         except subprocess.CalledProcessError as e:
-            print_error(f"Certificate generation failed: {e}")
+            print_error(_("Certificate generation failed: {}").format(e))
             logger.error("cert_generation_docker_failed",
                         returncode=e.returncode,
                         stdout=e.stdout,
@@ -293,7 +294,7 @@ class CertGenerator:
         with open(pki_config_file, "w") as f:
             json.dump(pki_config, f, indent=2)
         
-        print_success(f"Generated {len(result['nodes'])} node + {len(result['validators'])} validator certificates")
+        print_success(_("Generated {} node + {} validator certificates").format(len(result['nodes']), len(result['validators'])))
         logger.info("all_certificates_generated",
                    nodes=len(result["nodes"]),
                    validators=len(result["validators"]))
@@ -360,6 +361,9 @@ class CertGenerator:
                 
                 if self._is_private_cert(cert_name):
                     continue
+
+                if cert_name.startswith("node-addr"):
+                    continue
                 
                 normalized_name = self._normalize_cert_name(cert_name)
                 dest_file = shared_ca_dir / normalized_name
@@ -369,7 +373,11 @@ class CertGenerator:
                            cert=cert_name,
                            dest=str(dest_file))
         
-        print_success(f"Copied {copied_count} public certificates to shared CA")
+        for stale in shared_ca_dir.glob("node-addr*"):
+            stale.unlink(missing_ok=True)
+            logger.debug("removed_stale_node_addr_from_shared_ca", file=stale.name)
+
+        print_success(_("Copied {} public certificates to shared CA").format(copied_count))
         logger.info("certs_copied_to_shared_ca", count=copied_count)
     
     def copy_private_certs_to_node_data(
@@ -412,7 +420,7 @@ class CertGenerator:
                            cert=cert_file.name,
                            dest_name=normalized_name)
         
-        print_success(f"Copied private certificates to {node_count} node data directories")
+        print_success(_("Copied private certificates to {} node data directories").format(node_count))
         logger.info("private_certs_copied_to_nodes", count=node_count)
     
     def _generate_simple_cert(
@@ -529,6 +537,46 @@ class CertGenerator:
         
         return missing
     
+    def generate_single_node_cert(self, output_dir: Path, cert_name: str = "node-addr") -> Optional[str]:
+        """Generate a single node-addr certificate and return the node address.
+
+        Uses ``cf-cert-generator --single`` which prints ``ADDR:<hex>`` to stdout.
+
+        Returns:
+            Node address string (e.g. "A1B2::C3D4::E5F6::7890") or None on failure.
+        """
+        if not self.build_docker_image():
+            logger.error("cert_builder_image_not_available")
+            return None
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        uid, gid = os.getuid(), os.getgid()
+
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "--entrypoint", "sh",
+            "-v", f"{output_dir.absolute()}:/output",
+            CERT_BUILDER_IMAGE,
+            "-c",
+            f"/usr/local/bin/cf-cert-generator --single /output {cert_name}"
+            f" && chown -R {uid}:{gid} /output",
+        ]
+
+        try:
+            result = subprocess.run(docker_cmd, capture_output=True, text=True, check=True)
+            for line in result.stdout.splitlines():
+                if line.startswith("ADDR:"):
+                    addr = line[5:].strip()
+                    logger.info("single_cert_generated", cert_name=cert_name, addr=addr,
+                                output_dir=str(output_dir))
+                    return addr
+            logger.warning("single_cert_no_addr_in_output", stdout=result.stdout[:300])
+            return None
+        except subprocess.CalledProcessError as e:
+            logger.error("single_cert_generation_failed", rc=e.returncode,
+                         stderr=e.stderr[:300])
+            return None
+
     def clean(self) -> None:
         """Remove all generated certificates."""
         logger.info("cleaning_certificates")
@@ -536,10 +584,10 @@ class CertGenerator:
         import shutil
         
         if self.certs_dir.exists():
-            print_info("Removing certificates...")
+            print_info(_("Removing certificates..."))
             shutil.rmtree(self.certs_dir)
             self.certs_dir.mkdir(parents=True, exist_ok=True)
         
-        print_success("Certificates cleaned")
+        print_success(_("Certificates cleaned"))
         logger.info("certificates_cleaned")
 

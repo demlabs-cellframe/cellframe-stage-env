@@ -278,7 +278,7 @@ class TokenGenesisManager(BaseGenesisManager):
                 check_output=False
             )
             # Check if DAG has ANY events
-            total_match = re.search(r'total events:\s*(\d+)', stdout_dag, re.IGNORECASE) if stdout_dag else None
+            total_match = re.search(r'total_events:\s*(\d+)', stdout_dag, re.IGNORECASE) if stdout_dag else None
             total_events = int(total_match.group(1)) if total_match else 0
             
             logger.info("dag_events_check",
