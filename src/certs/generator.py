@@ -59,6 +59,39 @@ class CertGenerator:
                    certs_dir=str(self.certs_dir),
                    docker_mode=True)
     
+    def _image_needs_rebuild(self) -> bool:
+        """Check if the Docker image is older than local source files."""
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "--format", "{{.Created}}", CERT_BUILDER_IMAGE],
+                capture_output=True, text=True, check=True,
+            )
+            from datetime import datetime, timezone
+            created_str = result.stdout.strip().split(".")[0]
+            image_ts = datetime.strptime(created_str, "%Y-%m-%dT%H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+
+            src_dir = self.base_path / "src" / "certs"
+            if not src_dir.exists():
+                return False
+            mtimes = [f.stat().st_mtime for f in src_dir.iterdir() if f.is_file()]
+            if self.dockerfile.exists():
+                mtimes.append(self.dockerfile.stat().st_mtime)
+            if not mtimes:
+                return False
+            max_mtime = max(mtimes)
+            src_ts = datetime.fromtimestamp(max_mtime, tz=timezone.utc)
+
+            if src_ts > image_ts:
+                logger.info("cert_builder_image_stale",
+                            image_created=image_ts.isoformat(),
+                            source_modified=src_ts.isoformat())
+                return True
+            return False
+        except Exception:
+            return False
+
     def build_docker_image(self) -> bool:
         """
         Build lightweight builder Docker image if needed.
@@ -66,6 +99,9 @@ class CertGenerator:
         The image is self-contained: it clones its own SDK copies and
         pre-builds cf-cert-generator during ``docker build``.  No host
         SDK mounts are needed at runtime.
+
+        Automatically rebuilds when local source files in ``src/certs/``
+        are newer than the existing Docker image.
 
         Returns:
             True if image is ready
@@ -75,9 +111,11 @@ class CertGenerator:
                 ["docker", "images", "-q", CERT_BUILDER_IMAGE],
                 capture_output=True, text=True, check=True,
             )
-            if result.stdout.strip():
+            if result.stdout.strip() and not self._image_needs_rebuild():
                 logger.debug("cert_builder_image_exists")
                 return True
+            if result.stdout.strip():
+                print_info(_("Certificate builder sources changed, rebuilding image..."))
         except subprocess.CalledProcessError:
             pass
 

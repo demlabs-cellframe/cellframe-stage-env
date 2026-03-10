@@ -144,6 +144,7 @@ RU = {
     "Building certificate builder Docker image (self-contained, clones SDK)...": "Сборка Docker-образа сборщика сертификатов (автономно, клонирует SDK)...",
     "Failed to build builder image: {}": "Не удалось собрать образ сборщика: {}",
     "Certificate builder image built": "Образ сборщика сертификатов собран",
+    "Certificate builder sources changed, rebuilding image...": "Исходники сборщика сертификатов изменились, пересборка образа...",
     "Exception building builder image: {}": "Исключение при сборке образа сборщика: {}",
     "Generating {} node certificates (self-contained Docker)...": "Генерация {} узловых сертификатов (автономный Docker)...",
     "Certificate generation failed: {}": "Генерация сертификатов не удалась: {}",
