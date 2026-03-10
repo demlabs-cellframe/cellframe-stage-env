@@ -266,6 +266,11 @@ class BaseWaiter(ABC):
                 await self._wait_via_notify(timeout, name)
                 return
             except TimeoutError:
+                remaining = timeout - (time.time() - start)
+                if remaining > self.poll_interval:
+                    logger.info(f"{name}: notify timed out, trying final poll")
+                    if await self.check():
+                        return
                 raise
             except Exception as exc:
                 logger.info(f"{name}: notify unavailable ({exc}), "
@@ -289,11 +294,11 @@ class BaseWaiter(ABC):
             await asyncio.sleep(self.poll_interval)
 
     async def _wait_via_notify(self, timeout: float, name: str) -> None:
-        """Pure notify listening.  No polling runs alongside.
+        """Notify listening with optional concurrent polling for hint_only mode.
 
-        For hint_only mode an initial ``check()`` is performed before
-        listening — this covers the case where the condition was already
-        met before we connected to the notify server.
+        For hint_only mode an initial ``check()`` is performed, and then
+        a periodic polling loop runs *alongside* the notify listener so
+        that the waiter succeeds even when no matching notifications arrive.
         """
         from .notify_client import NotifyClient
 
@@ -325,7 +330,34 @@ class BaseWaiter(ABC):
                         return
                 raise ConnectionError("notify stream closed before match")
 
-            await asyncio.wait_for(_scan(), timeout=timeout)
+            if self._notify_hint_mode:
+                async def _poll_alongside():
+                    while True:
+                        await asyncio.sleep(self.poll_interval)
+                        if await self.check():
+                            logger.info(f"{name}: hint polling -> check() passed")
+                            return
+
+                scan_task = asyncio.create_task(_scan())
+                poll_task = asyncio.create_task(_poll_alongside())
+                done, pending = await asyncio.wait(
+                    {scan_task, poll_task},
+                    timeout=timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in pending:
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                if not done:
+                    raise TimeoutError(f"{name} timeout after {timeout:.1f}s")
+                for t in done:
+                    if t.exception() is not None:
+                        raise t.exception()
+            else:
+                await asyncio.wait_for(_scan(), timeout=timeout)
         except asyncio.TimeoutError:
             raise TimeoutError(f"{name} timeout after {timeout:.1f}s")
         finally:

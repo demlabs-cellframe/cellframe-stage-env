@@ -74,7 +74,7 @@ rather than completing the waiter.
 GDBEvent and StakeEvent are available in SDK >= 5.8; on 5.7 falls back
 to polling."""
 
-HINT_ONLY_WAITER_TYPES = {"global_db_sync", "delegations_synced"}
+HINT_ONLY_WAITER_TYPES = {"global_db_sync", "delegations_synced", "block_created"}
 """Waiter types that use hint_only mode for notify (multi-node waiters)."""
 
 NOTIFY_PORT = 8080
