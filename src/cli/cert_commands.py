@@ -99,7 +99,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     "squashfs": SnapshotMode.SQUASHFS,
                 }
                 snapshot_mode = mode_map.get(mode_str, SnapshotMode.FILESYSTEM)
-                snapshot_manager = SnapshotManager(base_path, snapshot_mode, snapshots_config)
+                snapshot_manager = SnapshotManager(base_path, config=snapshots_config, mode=snapshot_mode)
 
                 async def _delete_all_snapshots():
                     snapshots = await snapshot_manager.list_snapshots()
