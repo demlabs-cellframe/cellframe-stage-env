@@ -336,24 +336,29 @@ class ArtifactsManager:
                             "finished_at": container.attrs.get('State', {}).get('FinishedAt'),
                         }
                         
-                        # Try to get cellframe-node CLI health check
+                        import subprocess as _sp
+                        _HEALTH_CMD_TIMEOUT = 10
+
                         try:
-                            result = container.exec_run("cellframe-node-cli version", demux=False)
-                            health_info["cli_available"] = result.exit_code == 0
-                            if result.exit_code == 0:
-                                health_info["version"] = result.output.decode('utf-8', errors='ignore').strip()
-                        except:
-                            health_info["cli_available"] = False
-                        
-                        # Try to get network status
-                        try:
-                            result = container.exec_run(
-                                "cellframe-node-cli net -net stagenet get status",
-                                demux=False
+                            proc = _sp.run(
+                                ["docker", "exec", container_name, "cellframe-node-cli", "version"],
+                                capture_output=True, timeout=_HEALTH_CMD_TIMEOUT
                             )
-                            if result.exit_code == 0:
-                                health_info["network_status"] = result.output.decode('utf-8', errors='ignore').strip()
-                        except:
+                            health_info["cli_available"] = proc.returncode == 0
+                            if proc.returncode == 0:
+                                health_info["version"] = proc.stdout.decode('utf-8', errors='ignore').strip()
+                        except (_sp.TimeoutExpired, Exception):
+                            health_info["cli_available"] = False
+
+                        try:
+                            proc = _sp.run(
+                                ["docker", "exec", container_name,
+                                 "cellframe-node-cli", "net", "get", "status"],
+                                capture_output=True, timeout=_HEALTH_CMD_TIMEOUT
+                            )
+                            if proc.returncode == 0:
+                                health_info["network_status"] = proc.stdout.decode('utf-8', errors='ignore').strip()
+                        except (_sp.TimeoutExpired, Exception):
                             pass
                         
                         # Write health info to file

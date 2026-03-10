@@ -175,7 +175,7 @@ test:
 ```yaml
 - config: "{{network_name}}/main"
   set:
-    is_add_directly: "true"
+    fee_addr: "{{fee_addr}}"
 - docker_op: restart  # ❌ Конфиг НЕ перезагружен!
 ```
 
@@ -184,7 +184,7 @@ test:
 - config: "{{network_name}}/main"
   nodes: "{{_active_nodes}}"
   set:
-    is_add_directly: "true"
+    fee_addr: "{{fee_addr}}"
 
 # Используйте stop + start вместо restart
 - docker_op: stop

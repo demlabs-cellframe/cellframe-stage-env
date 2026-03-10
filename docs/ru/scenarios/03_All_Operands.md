@@ -374,7 +374,7 @@ Docker операции над контейнерами.
 - config: "{{network}}/main"
   nodes: "{{all_nodes}}"
   set:
-    is_add_directly: "true"
+    fee_addr: "{{fee_addr}}"
 
 # НЕ restart! Конфиг не перезагрузится
 - docker_op: stop

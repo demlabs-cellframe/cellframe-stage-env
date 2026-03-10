@@ -277,7 +277,16 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
             cfg_dir.mkdir(parents=True, exist_ok=True)
             data_dir.mkdir(parents=True, exist_ok=True)
 
-        (cache_dir / "crash-artifacts" / f"node{node_id}").mkdir(parents=True, exist_ok=True)
+        _crash_dir = cache_dir / "crash-artifacts" / f"node{node_id}"
+        try:
+            _crash_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            import subprocess as _sp_crash, os as _os_crash
+            _sp_crash.run(["sudo", "mkdir", "-p", str(_crash_dir)], check=True, capture_output=True)
+            _sp_crash.run(
+                ["sudo", "chown", f"{_os_crash.getuid()}:{_os_crash.getgid()}", str(_crash_dir)],
+                check=True, capture_output=True,
+            )
 
         if freshly_cloned:
             # 5.x: chain MDBX copied from a live donor may be corrupt; wipe chains

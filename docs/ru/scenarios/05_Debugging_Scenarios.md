@@ -122,14 +122,14 @@ export STAGE_ENV_LOG_LEVEL=DEBUG
 # ПЛОХО: restart не перезагружает конфиг
 - config: "{{network}}/main"
   set:
-    is_add_directly: "true"
+    fee_addr: "{{fee_addr}}"
 - docker_op: restart
   services: "{{all_nodes}}"
 
 # ХОРОШО: stop + start
 - config: "{{network}}/main"
   set:
-    is_add_directly: "true"
+    fee_addr: "{{fee_addr}}"
 - docker_op: stop
   services: "{{all_nodes}}"
 - docker_op: start

@@ -684,8 +684,9 @@ class ScenarioExecutor:
         except ScenarioExecutionError:
             raise
         except Exception as e:
+            err_detail = str(e) or type(e).__name__
             raise ScenarioExecutionError(
-                f"Unexpected error during execution: {str(e)}",
+                f"Unexpected error during execution ({type(e).__name__}): {err_detail}",
                 context=ctx.get_summary()
             ) from e
         finally:
