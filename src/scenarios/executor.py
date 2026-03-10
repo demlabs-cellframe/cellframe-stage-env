@@ -98,9 +98,21 @@ class RuntimeContext:
         except ScenarioExecutionError:
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
     
-    def substitute(self, text: str) -> str:
-        """Substitute variables in text."""
-        return self.parser.substitute_variables(text, self.variables)
+    def substitute(self, text):
+        """Substitute variables in text.
+        
+        When the text is a bare {{var}} placeholder for a non-scalar variable
+        (list, dict), the raw Python object is returned so callers can iterate.
+        """
+        if isinstance(text, str):
+            stripped = text.strip()
+            if stripped.startswith('{{') and stripped.endswith('}}') and stripped.count('{{') == 1:
+                var_name = stripped[2:-2].strip()
+                if var_name in self.variables:
+                    val = self.variables[var_name]
+                    if isinstance(val, (list, dict)):
+                        return val
+        return self.parser.substitute_variables(str(text), self.variables)
     
     def add_result(self, step_type: str, success: bool, details: Dict[str, Any]):
         """Record step execution result."""

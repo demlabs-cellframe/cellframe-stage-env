@@ -544,14 +544,25 @@ class WaitStepExecutor(StepExecutor):
         # Node(s)
         if step.node:
             node_alias = ctx.substitute(step.node)
-            if self.resolve_node_alias_callback:
-                resolved_node = self.resolve_node_alias_callback(node_alias)
+            # Template might resolve to a list (e.g. {{_active_nodes}})
+            if isinstance(node_alias, list):
+                resolved_nodes = []
+                for n in node_alias:
+                    if self.resolve_node_alias_callback:
+                        resolved_nodes.append(self.resolve_node_alias_callback(n))
+                    else:
+                        resolved_nodes.append(n)
+                params["nodes"] = resolved_nodes
+                if resolved_nodes:
+                    params["node"] = resolved_nodes[0]
             else:
-                resolved_node = node_alias
-            params["node"] = resolved_node
-            # If no nodes list specified, create single-element list from node
-            if not step.nodes:
-                params["nodes"] = [resolved_node]
+                if self.resolve_node_alias_callback:
+                    resolved_node = self.resolve_node_alias_callback(node_alias)
+                else:
+                    resolved_node = node_alias
+                params["node"] = resolved_node
+                if not step.nodes:
+                    params["nodes"] = [resolved_node]
         
         if step.nodes:
             # Expand nodes list (can be template string like "{{all_nodes}}")
