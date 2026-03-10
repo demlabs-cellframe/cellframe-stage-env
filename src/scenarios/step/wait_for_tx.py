@@ -7,12 +7,14 @@ expected_status='success':
   1. Validate format for the recieved hash of transaction (0x + 64 hex)
   2. Check for certain transaction appearance in mempool ('find: true' & 'source: mempool')
   3. Check for certain transaction to reach the chain ('find: true' & 'source: chain')
-  4. Check for new block (containing the certain transaction) to appear in network (block find: total: 1, blocks with 0x+64hex)
+  4. Check for new block (main) or DAG event (zerochain) containing the transaction to appear in network
+     (block find / dag event find: total: 1, output contains at least one 0x+64hex hash)
 
 expected_status='failure':
   1. Validate format for the recieved hash of transaction (0x + 64 hex)
   2. Check for certain transaction appearance in mempool ('find: true' & 'status: hole')
-  3. Check for new block (containing the certain transaction) to not appear in network (block find: total: 0, no blocks with 0x+64hex)
+  3. Check for new block (main) or DAG event (zerochain) containing the transaction to NOT appear in network
+     (block find / dag event find: total: 0, no 0x+64hex hashes)
 
 After success: waits 5 seconds before continuing.
 """
@@ -28,7 +30,7 @@ from ..executor import ScenarioExecutionError, RuntimeContext
 logger = get_logger(__name__)
 
 HASH_PATTERN = re.compile(r'^0x[0-9a-fA-F]{64,}$')
-BLOCK_HASH_IN_OUTPUT = re.compile(r'0x[0-9a-fA-F]{64,}')
+HASH_IN_OUTPUT = re.compile(r'0x[0-9a-fA-F]{64,}')
 
 
 def format_tx_hash_preview(tx_hash: str) -> str:
@@ -56,7 +58,6 @@ class WaitForTxStepExecutor(StepExecutor):
             f"(network={network}, node={node}, expected_status={expected_status})"
         )
 
-        # Stage 1: Validate hash format.
         if not HASH_PATTERN.match(tx_hash):
             raise ScenarioExecutionError(
                 f"Invalid specified transaction hash format: '{format_tx_hash_preview(tx_hash)}'. Expected 0x + 64+ hex chars.",
@@ -101,22 +102,40 @@ class WaitForTxStepExecutor(StepExecutor):
             error_code="timeout_chain_verification",
             step=step,
         )
-        await self._wait_stage(
-            name="block",
-            tx_hash=tx_hash,
-            check_success_fn=lambda: self._check_block_success(node, network, tx_hash),
-            timeout=timeout,
-            interval=interval,
-            error_code="timeout_block_verification",
-            step=step,
-        )
-        logger.info(f"Specified transaction '{format_tx_hash_preview(tx_hash)}' successfully passed 'mempool', 'chain' and was confirmed in 'blocks'")
+        if chain == "zerochain":
+            await self._wait_stage(
+                name="dag event",
+                tx_hash=tx_hash,
+                check_success_fn=lambda: self._check_dag_event_success(node, network, tx_hash),
+                timeout=timeout,
+                interval=interval,
+                error_code="timeout_dag_event_verification",
+                step=step,
+            )
+            logger.info(
+                f"Specified transaction '{format_tx_hash_preview(tx_hash)}' successfully passed 'mempool', "
+                f"'chain' and was confirmed in 'events'"
+            )
+        else:
+            await self._wait_stage(
+                name="block",
+                tx_hash=tx_hash,
+                check_success_fn=lambda: self._check_block_success(node, network, tx_hash),
+                timeout=timeout,
+                interval=interval,
+                error_code="timeout_block_verification",
+                step=step,
+            )
+            logger.info(
+                f"Specified transaction '{format_tx_hash_preview(tx_hash)}' successfully passed 'mempool', "
+                f"'chain' and was confirmed in 'blocks'"
+            )
 
     async def _execute_failure_flow(
         self, tx_hash: str, node: str, network: str, chain: str,
         timeout: int, interval: int, step: WaitForTxStep
     ) -> None:
-        """Failure flow for the specified transaction: mempool (status: hole) → block (total: 0)."""
+        """Failure flow for the specified transaction: mempool (status: hole) → block (total: 0) / event (total: 0)."""
         await self._wait_stage(
             name="mempool (status: hole)",
             tx_hash=tx_hash,
@@ -126,15 +145,26 @@ class WaitForTxStepExecutor(StepExecutor):
             error_code="timeout_mempool_failure_verification",
             step=step,
         )
-        await self._wait_stage(
-            name="block (total: 0)",
-            tx_hash=tx_hash,
-            check_success_fn=lambda: self._check_block_failure(node, network, tx_hash),
-            timeout=timeout,
-            interval=interval,
-            error_code="timeout_block_failure_verification",
-            step=step,
-        )
+        if chain == "zerochain":
+            await self._wait_stage(
+                name="dag event (total: 0)",
+                tx_hash=tx_hash,
+                check_success_fn=lambda: self._check_dag_event_failure(node, network, tx_hash),
+                timeout=timeout,
+                interval=interval,
+                error_code="timeout_dag_event_failure_verification",
+                step=step,
+            )
+        else:
+            await self._wait_stage(
+                name="block (total: 0)",
+                tx_hash=tx_hash,
+                check_success_fn=lambda: self._check_block_failure(node, network, tx_hash),
+                timeout=timeout,
+                interval=interval,
+                error_code="timeout_block_failure_verification",
+                step=step,
+            )
         logger.info(f"Specified transaction '{format_tx_hash_preview(tx_hash)}' was correctly rejected by ledger, as expected")
 
     async def _wait_stage(
@@ -213,8 +243,17 @@ class WaitForTxStepExecutor(StepExecutor):
             return False
         if "total: 1" not in stdout:
             return False
-        block_hashes = BLOCK_HASH_IN_OUTPUT.findall(stdout)
+        block_hashes = HASH_IN_OUTPUT.findall(stdout)
         return len(block_hashes) >= 1
+
+    async def _check_dag_event_success(self, node: str, network: str, tx_hash: str) -> bool:
+        """Success: specified datum has at least one event hash in dag event find output."""
+        cmd = f"dag event find -net {network} -datum {tx_hash}"
+        exit_code, stdout, _ = await self._run_cli(node, cmd)
+        if exit_code != 0:
+            return False
+        event_hashes = HASH_IN_OUTPUT.findall(stdout)
+        return len(event_hashes) >= 1
 
     async def _check_block_failure(self, node: str, network: str, tx_hash: str) -> bool:
         """Failure: specified transaction has 'total: 0' and no block hash in block find output."""
@@ -224,5 +263,14 @@ class WaitForTxStepExecutor(StepExecutor):
             return False
         if "total: 0" not in stdout:
             return False
-        block_hashes = BLOCK_HASH_IN_OUTPUT.findall(stdout)
+        block_hashes = HASH_IN_OUTPUT.findall(stdout)
         return len(block_hashes) == 0
+
+    async def _check_dag_event_failure(self, node: str, network: str, tx_hash: str) -> bool:
+        """Failure: specified datum has no event hash in dag event find output."""
+        cmd = f"dag event find -net {network} -datum {tx_hash}"
+        exit_code, stdout, _ = await self._run_cli(node, cmd)
+        if exit_code != 0:
+            return False
+        event_hashes = HASH_IN_OUTPUT.findall(stdout)
+        return len(event_hashes) == 0
