@@ -15,10 +15,8 @@ logger = get_logger(__name__)
 class DatumInMempoolWaiter(BaseWaiter):
     """
     Wait for datum hash to appear in mempool.
-    
-    Usage:
-        waiter = DatumInMempoolWaiter(exec_cli_func, node_id, datum_hash, network_name, chain="zerochain")
-        await waiter.wait(timeout=30.0)
+
+    Supports notify: listens for ``MempoolEvent`` with matching hash.
     """
     
     def __init__(
@@ -48,7 +46,12 @@ class DatumInMempoolWaiter(BaseWaiter):
         self.network_name = network_name
         self.chain = chain
         self._start_time = None
-    
+
+    def notify_matches(self, msg: dict) -> bool:
+        msg_hash = (msg.get("hash") or "").lower().replace("0x", "")
+        my_hash = self.datum_hash.lower().replace("0x", "")
+        return msg_hash == my_hash
+
     async def check(self) -> bool:
         """Check if datum hash is in mempool."""
         if self._start_time is None:
@@ -203,7 +206,12 @@ class DatumInChainWaiter(BaseWaiter):
         self.network_name = network_name
         self.chain = chain
         self._start_time = None
-    
+
+    def notify_matches(self, msg: dict) -> bool:
+        msg_hash = (msg.get("hash") or "").lower().replace("0x", "")
+        my_hash = self.datum_hash.lower().replace("0x", "")
+        return msg_hash == my_hash
+
     async def check(self) -> bool:
         """Check if datum is written to chain."""
         if self._start_time is None:

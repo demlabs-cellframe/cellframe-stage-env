@@ -5,6 +5,7 @@ Extracted from genesis_esbocs.py for better code organization.
 """
 
 import asyncio
+import re
 import time
 from typing import List, Callable, Optional
 
@@ -95,6 +96,11 @@ class EmissionInLedgerWaiter(BaseWaiter):
         self.network_name = network_name
         self.chain = chain
         self._start_time = None
+
+    def notify_matches(self, msg: dict) -> bool:
+        msg_hash = (msg.get("hash") or "").lower().replace("0x", "")
+        my_hash = self.emission_hash.lower().replace("0x", "")
+        return msg_hash == my_hash
     
     async def check(self) -> bool:
         """Check if emission is in ledger."""
@@ -140,6 +146,11 @@ class EmissionInLedgerWaiter(BaseWaiter):
 class TransactionProcessedWaiter(BaseWaiter):
     """
     Wait for transaction to be processed (appear in ledger or mempool).
+
+    Supports notify: listens for ``MempoolEvent`` and ``LedgerTxEvent``
+    with matching hash.  MempoolEvent fires first (datum enters mempool),
+    LedgerTxEvent fires when the transaction is confirmed in the ledger.
+    Available in SDK >= 5.8; on older versions falls back to polling.
     
     Usage:
         waiter = TransactionProcessedWaiter(exec_cli_func, node_id, tx_hash, network_name, chain)
@@ -155,17 +166,6 @@ class TransactionProcessedWaiter(BaseWaiter):
         chain: str = "zerochain",
         poll_interval: float = 1.0
     ):
-        """
-        Initialize transaction processed waiter.
-        
-        Args:
-            exec_cli: CLI execution function (node_id, command, check_output) -> (exit_code, stdout, stderr)
-            node_id: Node ID to check
-            tx_hash: Transaction hash to look for
-            network_name: Network name
-            chain: Chain name
-            poll_interval: Seconds between checks
-        """
         super().__init__(poll_interval)
         self.exec_cli = exec_cli
         self.node_id = node_id
@@ -173,6 +173,11 @@ class TransactionProcessedWaiter(BaseWaiter):
         self.network_name = network_name
         self.chain = chain
         self._start_time = None
+
+    def notify_matches(self, msg: dict) -> bool:
+        msg_hash = (msg.get("hash") or "").lower().replace("0x", "")
+        my_hash = self.tx_hash.lower().replace("0x", "")
+        return msg_hash == my_hash
     
     async def check(self) -> bool:
         """Check if transaction is processed."""
@@ -273,12 +278,16 @@ class GDBSyncCompleteWaiter(BaseWaiter):
 class DelegationsSyncedWaiter(BaseWaiter):
     """
     Wait for delegations to be synced across nodes.
-    
+
+    Supports notify: listens for ``StakeEvent`` (SDK >= 5.8) using
+    **hint_only** mode — a ``delegate`` event triggers ``check()``
+    across all nodes.  Falls back to polling on SDK <= 5.7.
+
     Usage:
         waiter = DelegationsSyncedWaiter(exec_cli_func, nodes, expected_count, network_name)
         await waiter.wait(timeout=60.0)
     """
-    
+
     def __init__(
         self,
         exec_cli: Callable,
@@ -287,22 +296,17 @@ class DelegationsSyncedWaiter(BaseWaiter):
         network_name: str = "stagenet",
         poll_interval: float = 2.0
     ):
-        """
-        Initialize delegations synced waiter.
-        
-        Args:
-            exec_cli: CLI execution function (node_id, command, check_output) -> (exit_code, stdout, stderr)
-            nodes: List of nodes to check
-            expected_count: Expected number of delegations
-            network_name: Network name
-            poll_interval: Seconds between checks
-        """
         super().__init__(poll_interval)
         self.exec_cli = exec_cli
         self.nodes = nodes
         self.expected_count = expected_count
         self.network_name = network_name
         self._start_time = None
+
+    def notify_matches(self, msg: dict) -> bool:
+        """Match StakeEvent delegate operations for this network."""
+        return (msg.get("op") == "delegate"
+                and msg.get("net", "") == self.network_name)
     
     async def check(self) -> bool:
         """Check if delegations are synced."""
@@ -400,18 +404,16 @@ class CLIReadyWaiter(BaseWaiter):
 class WalletBalanceWaiter(BaseWaiter):
     """
     Wait for wallet to have specified balance of token.
-    
+
     Supports flexible balance conditions:
     - Simple value: expected_balance="1000000" (exact match)
     - Comparison: expected_balance="> 100", ">= 1e+18", "< 500"
     - Python expression: expected_balance="balance > (1000 + 13.4)"
     - None: checks for any non-zero balance
-    
-    Usage:
-        waiter = WalletBalanceWaiter(exec_cli_func, node_id, wallet_name, token_ticker, expected_balance="> 1e+18")
-        await waiter.wait(timeout=60.0)
+
+    Supports notify: listens for ``WalletInfo`` and checks balance in payload.
     """
-    
+
     def __init__(
         self,
         exec_cli: Callable,
@@ -422,19 +424,6 @@ class WalletBalanceWaiter(BaseWaiter):
         network_name: str = "stagenet",
         poll_interval: float = 2.0
     ):
-        """
-        Initialize wallet balance waiter.
-        
-        Args:
-            exec_cli: CLI execution function (node_id, command, check_output) -> (exit_code, stdout, stderr)
-            node_id: Node ID to check
-            wallet_name: Wallet name to check balance for
-            token_ticker: Token ticker to check (e.g., "TCELL")
-            expected_balance: Balance condition (e.g., "> 1000", "1e+18", "balance >= 100")
-                            If None, checks for any non-zero balance
-            network_name: Network name
-            poll_interval: Seconds between checks
-        """
         super().__init__(poll_interval)
         self.exec_cli = exec_cli
         self.node_id = node_id
@@ -443,6 +432,24 @@ class WalletBalanceWaiter(BaseWaiter):
         self.expected_balance = expected_balance
         self.network_name = network_name
         self._start_time = None
+
+    def notify_matches(self, msg: dict) -> bool:
+        wallets = msg.get("wallet", {})
+        for wname, wdata in wallets.items():
+            if self.wallet_name not in wname:
+                continue
+            net_data = wdata.get(self.network_name, {})
+            for tok in net_data.get("tokens", []):
+                if tok.get("ticker") != self.token_ticker:
+                    continue
+                coins_str = tok.get("coins") or tok.get("datoshi") or "0"
+                try:
+                    balance = float(str(coins_str).replace(",", ""))
+                except (ValueError, TypeError):
+                    continue
+                if self._check_balance_condition(balance):
+                    return True
+        return False
     
     def _check_balance_condition(self, balance: float) -> bool:
         """
@@ -610,6 +617,13 @@ class BlockCreatedWaiter(BaseWaiter):
         self.min_blocks = min_blocks
         self._start_time = None
         self._check_count = 0
+        self._notify_block_count = 0
+
+    def notify_matches(self, msg: dict) -> bool:
+        if msg.get("chain") != self.chain or msg.get("net") != self.network_name:
+            return False
+        self._notify_block_count += 1
+        return self._notify_block_count >= self.min_blocks
     
     async def check(self) -> bool:
         """Check if block(s) have been created on the chain."""
@@ -689,30 +703,35 @@ class BlockCreatedWaiter(BaseWaiter):
 class GlobalDBNodeListSyncWaiter(BaseWaiter):
     """
     Wait for Global DB synchronization across multiple nodes.
-    
+
     Two modes of operation:
-    
+
     1. Default (no group): checks 'node list' output — lightweight GDB readiness check.
     2. Group mode (group specified): checks 'global_db get_keys -group <group>' — waits
        until a specific GDB group is replicated to all target nodes. Optionally checks
        for a specific key within the group.
-    
+
+    Supports notify: listens for ``GDBEvent`` (SDK >= 5.8) using **hint_only**
+    mode — a notification triggers an immediate ``check()`` across all nodes
+    rather than completing the waiter directly.  Falls back to pure polling
+    on SDK <= 5.7.
+
     Usage:
         # Node list sync (default)
         waiter = GlobalDBNodeListSyncWaiter(exec_cli, nodes=[node1, node2], network_name="stagenet")
         await waiter.wait(timeout=60.0)
-        
+
         # Group sync — wait until group has data on all nodes
         waiter = GlobalDBNodeListSyncWaiter(exec_cli, nodes=[node1, node2],
                                             group="cdb.stagenet.serials")
         await waiter.wait(timeout=60.0)
-        
+
         # Group + key — wait for specific key in group on all nodes
         waiter = GlobalDBNodeListSyncWaiter(exec_cli, nodes=[node1, node2],
                                             group="cdb.stagenet.serials", key="ABCD-1234-EFGH-5678")
         await waiter.wait(timeout=60.0)
     """
-    
+
     def __init__(
         self,
         exec_cli: Callable,
@@ -726,14 +745,14 @@ class GlobalDBNodeListSyncWaiter(BaseWaiter):
     ):
         super().__init__(poll_interval)
         self.exec_cli = exec_cli
-        
+
         if nodes:
             self.nodes = nodes if isinstance(nodes, list) else [nodes]
         elif node:
             self.nodes = [node]
         else:
             raise ValueError("Either 'node' or 'nodes' must be provided")
-        
+
         self.network_name = network_name
         self.min_output_length = min_output_length
         self.group = group
@@ -741,6 +760,17 @@ class GlobalDBNodeListSyncWaiter(BaseWaiter):
         self._start_time = None
         self._check_count = 0
         self._synced_nodes = set()
+
+    def notify_matches(self, msg: dict) -> bool:
+        """Match GDBEvent for the relevant group (or any node-list event)."""
+        msg_group = msg.get("group", "")
+        if self.group:
+            if self.group not in msg_group:
+                return False
+            if self.key:
+                return msg.get("key", "") == self.key
+            return True
+        return "node" in msg_group.lower()
     
     def _build_check_command(self) -> str:
         """Build CLI command depending on mode."""

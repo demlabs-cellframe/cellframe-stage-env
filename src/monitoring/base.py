@@ -201,52 +201,133 @@ class BaseMonitor(ABC):
 class BaseWaiter(ABC):
     """
     Base class for waiters (used in scenario interpreter and genesis).
-    
+
     Similar to BaseMonitor but simpler interface for one-off waits.
     Compatible with WaitStep in scenario language.
+
+    Subclasses may override ``notify_matches`` to enable event-driven waiting
+    via the Cellframe Node notify server.  When ``enable_notify`` is called
+    the waiter uses pure notify listening (no polling).  If the notify
+    connection cannot be established, the waiter falls back to polling.
+
+    Backward compatibility with SDK <=5.7 (limited notifiers): if the
+    notify server is unreachable or doesn't exist, ``connect()`` fails
+    immediately and the waiter falls back to polling with no timeout
+    penalty.  If the server is reachable but the expected event class
+    is never emitted (e.g. GDBEvent on 5.7), the waiter times out
+    normally — callers should set appropriate timeouts.
     """
-    
+
     def __init__(self, poll_interval: float = 2.0):
-        """
-        Initialize waiter.
-        
-        Args:
-            poll_interval: Seconds between condition checks
-        """
         self.poll_interval = poll_interval
-    
+        self._notify_host: Optional[str] = None
+        self._notify_classes: set = set()
+        self._notify_hint_mode: bool = False
+
+    def enable_notify(self, host: str, notify_class: str, *,
+                      hint_only: bool = False) -> None:
+        """Activate notify-based waiting with polling as fallback.
+
+        May be called multiple times to listen for several event classes
+        (e.g. both ``MempoolEvent`` and ``LedgerTxEvent``).
+
+        Args:
+            host: Container IP for the notify server.
+            notify_class: Event class to listen for (e.g. ``"GDBEvent"``).
+            hint_only: When True, a notify match triggers an immediate
+                ``check()`` instead of completing the waiter directly.
+                Useful for multi-node waiters where a single notification
+                doesn't prove the condition is met on ALL nodes.
+        """
+        self._notify_host = host
+        self._notify_classes.add(notify_class)
+        if hint_only:
+            self._notify_hint_mode = True
+
+    def notify_matches(self, msg: Dict[str, Any]) -> bool:
+        """Return True when *msg* satisfies this waiter's condition.
+
+        Override in subclasses that support notify.  The default returns
+        ``False`` so that waiters without an override never match and fall
+        through to polling.
+        """
+        return False
+
     @abstractmethod
     async def check(self) -> bool:
-        """
-        Check if condition is met.
-        
-        Returns:
-            True if waiting should stop
-        """
+        """Check if condition is met (polling mode)."""
         pass
-    
+
     async def wait(self, timeout: float, name: str = "condition") -> None:
-        """
-        Wait until condition is met.
-        
-        Args:
-            timeout: Maximum wait time (seconds)
-            name: Name for logging
-            
-        Raises:
-            TimeoutError: If condition not met within timeout
-        """
+        start = time.time()
+
+        if self._notify_host and self._notify_classes:
+            try:
+                await self._wait_via_notify(timeout, name)
+                return
+            except TimeoutError:
+                raise
+            except Exception as exc:
+                logger.info(f"{name}: notify unavailable ({exc}), "
+                            "falling back to polling")
+
+        remaining = timeout - (time.time() - start)
+        if remaining <= 0:
+            raise TimeoutError(f"{name} timeout after {timeout:.1f}s")
+        await self._wait_polling(remaining, name)
+
+    async def _wait_polling(self, timeout: float, name: str) -> None:
+        """Pure polling loop."""
         start_time = time.time()
-        
         while True:
             elapsed = time.time() - start_time
-            
             if elapsed >= timeout:
                 raise TimeoutError(f"{name} timeout after {elapsed:.1f}s")
-            
             if await self.check():
                 logger.debug(f"{name}_ready", elapsed=f"{elapsed:.1f}s")
                 return
-            
             await asyncio.sleep(self.poll_interval)
+
+    async def _wait_via_notify(self, timeout: float, name: str) -> None:
+        """Pure notify listening.  No polling runs alongside.
+
+        For hint_only mode an initial ``check()`` is performed before
+        listening — this covers the case where the condition was already
+        met before we connected to the notify server.
+        """
+        from .notify_client import NotifyClient
+
+        client = NotifyClient()
+        await client.connect(self._notify_host, timeout=min(timeout, 5.0))
+
+        classes_str = ",".join(sorted(self._notify_classes))
+        logger.debug(f"{name}: listening via notify (classes={classes_str})")
+
+        try:
+            if self._notify_hint_mode and await self.check():
+                logger.debug(f"{name}: condition already met before notify")
+                return
+
+            async def _scan():
+                async for msg in client.messages():
+                    if msg.get("class") not in self._notify_classes:
+                        continue
+                    if not self.notify_matches(msg):
+                        continue
+                    if self._notify_hint_mode:
+                        if await self.check():
+                            logger.info(f"{name}: notify hint -> check() passed",
+                                        cls=msg.get("class"))
+                            return
+                    else:
+                        logger.info(f"{name}: notify matched",
+                                    cls=msg.get("class"))
+                        return
+                raise ConnectionError("notify stream closed before match")
+
+            await asyncio.wait_for(_scan(), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"{name} timeout after {timeout:.1f}s")
+        finally:
+            await client.close()
 

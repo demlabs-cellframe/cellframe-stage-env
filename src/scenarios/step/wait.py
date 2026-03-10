@@ -183,7 +183,7 @@ class WaitStepExecutor(StepExecutor):
 
         logger.info(f"Waiting for condition: {wait_type}")
         
-        # Handle polling waiters directly (cli, bash, python)
+        # Handle polling waiters directly (cli, bash, python, notify)
         if wait_type == "cli":
             await self._execute_cli_poll(step, ctx)
             return
@@ -192,6 +192,9 @@ class WaitStepExecutor(StepExecutor):
             return
         if wait_type == "python":
             await self._execute_python_poll(step, ctx)
+            return
+        if wait_type == "notify":
+            await self._execute_notify_wait(step, ctx)
             return
         
         # Map clean names to internal waiter types
@@ -265,6 +268,72 @@ class WaitStepExecutor(StepExecutor):
                 context=params
             )
     
+    async def _execute_notify_wait(self, step, ctx) -> None:
+        """Wait for a matching notification from the node's notify server.
+
+        YAML example::
+
+            - wait: notify
+              node: "{{client_node}}"
+              class: VpnClientState
+              contains: "connected"
+              timeout: 30
+        """
+        from ...monitoring.notify_client import wait_for_notify
+
+        node_alias = ctx.substitute(step.node) if step.node else "node1"
+        if self.resolve_node_alias_callback:
+            node_alias = self.resolve_node_alias_callback(node_alias)
+
+        node_ip_map = ctx.variables.get("node_ip", {})
+        host = node_ip_map.get(node_alias)
+        if not host:
+            host = node_ip_map.get(f"node{node_alias}") or node_ip_map.get(f"node-{node_alias}")
+        if not host:
+            raise ScenarioExecutionError(
+                f"wait: notify — cannot resolve IP for node '{node_alias}'. "
+                f"Available: {list(node_ip_map.keys())}",
+                step=step,
+            )
+
+        notify_class = ctx.substitute(getattr(step, 'notify_class', None) or "") or None
+        if not notify_class and hasattr(step, 'contains') and step.contains:
+            pass
+        expected = ctx.substitute(step.contains) if step.contains else None
+        unexpected = ctx.substitute(step.not_contains) if step.not_contains else None
+        timeout = float(step.timeout)
+
+        logger.info(
+            f"  wait: notify node={node_alias} ip={host} "
+            f"class={notify_class!r} contains={expected!r} "
+            f"not_contains={unexpected!r} timeout={timeout}s"
+        )
+
+        try:
+            msg = await wait_for_notify(
+                host=host,
+                notify_class=notify_class,
+                contains=expected,
+                not_contains=unexpected,
+                timeout=timeout,
+            )
+            logger.info(f"  ✅ wait: notify matched: {msg}")
+            ctx.add_result("wait", True, {"type": "notify", "message": msg})
+        except asyncio.TimeoutError:
+            err = (
+                f"wait: notify timeout after {timeout}s. "
+                f"class={notify_class!r} contains={expected!r}"
+            )
+            if getattr(step, "optional", False):
+                logger.warning(f"⚠️ {err} (optional, continuing)")
+                ctx.add_result("wait", False, {"type": "notify", "timeout": True})
+                return
+            raise ScenarioExecutionError(err, step=step)
+        except Exception as e:
+            raise ScenarioExecutionError(
+                f"wait: notify failed: {e}", step=step
+            )
+
     async def _execute_cli_poll(self, step, ctx) -> None:
         """
         Poll a CLI command until contains/not_contains condition is satisfied.
