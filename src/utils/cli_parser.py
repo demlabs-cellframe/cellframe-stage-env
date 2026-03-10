@@ -265,6 +265,10 @@ class CLICommandParser:
         if not defaults:
             return cli_command
         
+        # "net list" in 6.x takes no arguments; adding -net causes "To many arguments"
+        if isinstance(cli_command, str) and cli_command.strip().startswith("net list"):
+            return cli_command
+        
         # Ensure cli_command is a string
         if not isinstance(cli_command, str):
             logger.warning(f"apply_cli_defaults received non-string command: {type(cli_command)}")

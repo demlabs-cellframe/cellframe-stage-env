@@ -306,6 +306,11 @@ class WaitStep(BaseModel):
       - wait: python            # Poll python expression until truthy
         script: "int(ctx.get('_block_count', 0)) > 0"
         timeout: 30
+      - wait: notify            # Wait for notification from notify server
+        node: "{{client_node}}"
+        notify_class: VpnClientState
+        contains: "connected"
+        timeout: 30
     """
     wait: str = Field(..., description="Duration (e.g., '5s') or condition ('mempool', 'finalized', 'cli', 'bash', 'python', ...)")
     
@@ -333,6 +338,9 @@ class WaitStep(BaseModel):
     
     # Block creation parameters
     min_blocks: Optional[int] = Field(None, description="Minimum number of blocks (for block_created)")
+
+    # Notify server parameters (for wait: notify)
+    notify_class: Optional[str] = Field(None, description="Notification class filter, e.g. 'VpnClientState' (for wait: notify)")
 
     # GlobalDB group sync parameters
     group: Optional[str] = Field(None, description="GDB group name (for global_db_sync with specific group)")

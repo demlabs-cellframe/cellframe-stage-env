@@ -232,10 +232,8 @@ class NetworkOnlineWaiter(BaseWaiter):
     
     After restart, network goes through states:
     OFFLINE -> LINKS_PREPARE -> LINKS_CONNECTING -> LINKS_ESTABLISHED -> ONLINE
-    
-    Usage:
-        waiter = NetworkOnlineWaiter(exec_cli_func, node_id, network)
-        await waiter.wait(timeout=60.0, name="network_online")
+
+    Supports notify: listens for ``NetInfo`` with matching network name.
     """
     
     def __init__(
@@ -245,20 +243,21 @@ class NetworkOnlineWaiter(BaseWaiter):
         network: str = "stagenet",
         poll_interval: float = 1.0
     ):
-        """
-        Initialize network online waiter.
-        
-        Args:
-            exec_cli: CLI execution function
-            node_id: Node ID to check
-            network: Network name
-            poll_interval: Seconds between checks
-        """
         super().__init__(poll_interval)
         self.exec_cli = exec_cli
         self.node_id = node_id
         self.network = network
-    
+
+    def notify_matches(self, msg: dict) -> bool:
+        net = msg.get("net") or msg.get("name") or ""
+        if net != self.network:
+            return False
+        states = msg.get("states", {})
+        current = states.get("current", "")
+        if not current:
+            current = msg.get("network_state") or msg.get("networkState") or ""
+        return "ONLINE" in current.upper()
+
     async def check(self) -> bool:
         """
         Check if network is in ONLINE state.
@@ -291,20 +290,8 @@ class NetworkOnlineWaiter(BaseWaiter):
 class NetworkSyncCompletionWaiter(BaseWaiter):
     """
     Waits for network sync to complete (NET_STATE_SYNC_CHAINS -> NET_STATE_ONLINE).
-    
-    After calling 'net go sync', network transitions:
-    1. NET_STATE_ONLINE -> NET_STATE_OFFLINE (goes offline to reset)
-    2. NET_STATE_OFFLINE -> NET_STATE_SYNC_CHAINS (sync starts)
-    3. NET_STATE_SYNC_CHAINS -> NET_STATE_ONLINE (sync completes)
-    
-    During NET_STATE_SYNC_CHAINS, SDK indexes UTXO into ledger_items!
-    
-    This waiter handles all intermediate states (OFFLINE, LINKS_CONNECTING, etc.)
-    and waits for the complete cycle to finish.
-    
-    Usage:
-        waiter = NetworkSyncCompletionWaiter(exec_cli_func, node_id, network)
-        await waiter.wait(timeout=120.0, name="network_sync_completion")
+
+    Supports notify: tracks SYNC_CHAINS → ONLINE transition in ``NetInfo`` stream.
     """
     
     def __init__(
@@ -314,20 +301,26 @@ class NetworkSyncCompletionWaiter(BaseWaiter):
         network: str = "stagenet",
         poll_interval: float = 1.0
     ):
-        """
-        Initialize network sync completion waiter.
-        
-        Args:
-            exec_cli: CLI execution function
-            node_id: Node ID to check
-            network: Network name
-            poll_interval: Seconds between checks
-        """
         super().__init__(poll_interval)
         self.exec_cli = exec_cli
         self.node_id = node_id
         self.network = network
         self._sync_started = False
+
+    def notify_matches(self, msg: dict) -> bool:
+        net = msg.get("net") or msg.get("name") or ""
+        if net != self.network:
+            return False
+        states = msg.get("states", {})
+        current = states.get("current", "")
+        if not current:
+            current = msg.get("network_state") or msg.get("networkState") or ""
+        if "SYNC_CHAINS" in current.upper():
+            self._sync_started = True
+            return False
+        if "ONLINE" in current.upper() and self._sync_started:
+            return True
+        return False
     
     async def check(self) -> bool:
         """

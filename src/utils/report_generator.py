@@ -245,7 +245,8 @@ class ReportGenerator:
             return pdf_file
         
         logger.warning("pdf_generation_failed_no_tools_available",
-                      tried=['pandoc', 'weasyprint'])
+                      tried=['pandoc', 'weasyprint'],
+                      hint="Install pandoc or weasyprint to generate PDF report; markdown report is always generated")
         return None
     
     def _try_pandoc(self, md_file: Path, pdf_file: Path) -> bool:

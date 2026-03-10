@@ -70,7 +70,8 @@ class WaitForDatumStepExecutor(StepExecutor):
             
             # Check if monitoring failed
             if result.status != DatumStatus.SUCCESS:
-                error_msg = f"Datum monitoring failed: {result.error_message}"
+                from src.utils.i18n import _
+                error_msg = _("Datum monitoring failed: {}").format(result.error_message)
                 logger.error(error_msg)
                 
                 # Log to scenario file

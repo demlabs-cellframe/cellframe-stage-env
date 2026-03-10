@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .common import print_info, print_success, print_error, print_warning
+from src.utils.i18n import _
 
 
 def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callable[[], Optional[Path]]):
@@ -25,11 +26,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         snapshots = snapshot_mgr.list_snapshots()
         
         if not snapshots:
-            print_info("No snapshots found")
+            print_info(_("No snapshots found"))
             return
         
         console = Console()
-        table = Table(title="📦 Topology Snapshots")
+        table = Table(title=_("📦 Topology Snapshots"))
         table.add_column("Hash", style="cyan")
         table.add_column("Nodes", justify="right")
         table.add_column("Consensus", style="yellow")
@@ -55,7 +56,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         # Show total size
         total_size = snapshot_mgr.get_total_size()
-        print_info(f"Total snapshot size: {format_size(total_size)}")
+        print_info(_("Total snapshot size: {}").format(format_size(total_size)))
     
     @app.command()
     def snapshots_delete(
@@ -71,22 +72,22 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         if topology_hash.lower() == "all":
             if not yes:
-                if not Confirm.ask("Delete ALL snapshots?", default=False):
-                    print_info("Cancelled")
+                if not Confirm.ask(_("Delete ALL snapshots?"), default=False):
+                    print_info(_("Cancelled"))
                     return
             
             deleted = snapshot_mgr.delete_all()
-            print_success(f"Deleted {deleted} snapshot(s)")
+            print_success(_("Deleted {} snapshot(s)").format(deleted))
         else:
             if not yes:
-                if not Confirm.ask(f"Delete snapshot {topology_hash}?", default=False):
-                    print_info("Cancelled")
+                if not Confirm.ask(_("Delete snapshot {}?").format(topology_hash), default=False):
+                    print_info(_("Cancelled"))
                     return
             
             if snapshot_mgr.delete_snapshot(topology_hash):
-                print_success(f"Deleted snapshot {topology_hash}")
+                print_success(_("Deleted snapshot {}").format(topology_hash))
             else:
-                print_error(f"Snapshot {topology_hash} not found")
+                print_error(_("Snapshot {} not found").format(topology_hash))
                 raise typer.Exit(1)
     
     @app.command()
@@ -105,29 +106,29 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         info = snapshot_mgr.get_snapshot_info(topology_hash)
         
         if not info:
-            print_error(f"Snapshot {topology_hash} not found")
+            print_error(_("Snapshot {} not found").format(topology_hash))
             raise typer.Exit(1)
         
         console = Console()
         
         content = [
-            f"Topology Hash: {info['topology_hash']}",
-            f"Created: {info['created']}",
-            f"Modified: {info.get('modified', 'N/A')}",
-            f"Version: {info['version']}",
-            f"Node Count: {info['node_count']}",
-            f"Consensus: {info['consensus_type']}",
-            f"Network: {info.get('network', 'stagenet')}",
-            f"Size: {format_size(info['size_bytes'])}",
-            f"Valid: {'✅ Yes' if info['valid'] else '❌ No'}",
+            _("Topology Hash: {}").format(info['topology_hash']),
+            _("Created: {}").format(info['created']),
+            _("Modified: {}").format(info.get('modified', 'N/A')),
+            _("Version: {}").format(info['version']),
+            _("Node Count: {}").format(info['node_count']),
+            _("Consensus: {}").format(info['consensus_type']),
+            _("Network: {}").format(info.get('network', 'stagenet')),
+            _("Size: {}").format(format_size(info['size_bytes'])),
+            _("Valid: {}").format(_("✅ Yes") if info['valid'] else _("❌ No")),
         ]
         
         if 'nodes' in info:
-            content.append(f"\nNodes: {', '.join(info['nodes'])}")
+            content.append("\n" + _("Nodes: {}").format(', '.join(info['nodes'])))
         
         panel = Panel(
             "\n".join(content),
-            title="📦 Snapshot Information",
+            title=_("📦 Snapshot Information"),
             border_style="cyan"
         )
         console.print(panel)
@@ -167,15 +168,15 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 continue
         
         if not old_snapshots:
-            print_info(f"No snapshots older than {older_than_days} days")
+            print_info(_("No snapshots older than {} days").format(older_than_days))
             return
         
-        print_info(f"Found {len(old_snapshots)} snapshot(s) older than {older_than_days} days")
-        print_info(f"Total size: {format_size(total_size)}")
+        print_info(_("Found {} snapshot(s) older than {} days").format(len(old_snapshots), older_than_days))
+        print_info(_("Total size: {}").format(format_size(total_size)))
         
         if not yes:
-            if not Confirm.ask("Delete these snapshots?", default=False):
-                print_info("Cancelled")
+            if not Confirm.ask(_("Delete these snapshots?"), default=False):
+                print_info(_("Cancelled"))
                 return
         
         deleted = 0
@@ -183,5 +184,5 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             if snapshot_mgr.delete_snapshot(snapshot['topology_hash']):
                 deleted += 1
         
-        print_success(f"Deleted {deleted} snapshot(s), freed {format_size(total_size)}")
+        print_success(_("Deleted {} snapshot(s), freed {}").format(deleted, format_size(total_size)))
 
