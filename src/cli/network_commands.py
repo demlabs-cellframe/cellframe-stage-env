@@ -379,14 +379,21 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         paths_config = config_loader.get_paths_config()
         project_root = (base_path / paths_config.get('project_root', '../..')).resolve()
         build_dir = project_root / "build"
-        binary_path = build_dir / "cellframe-node-cli"
         
-        if not binary_path.exists():
-            print_error(_("Binary not found: {}").format(binary_path))
+        binaries = ["cellframe-node", "cellframe-node-cli", "cellframe-node-tool"]
+        found_binaries = []
+        for name in binaries:
+            p = build_dir / name
+            if p.exists():
+                found_binaries.append(p)
+                print_info(_("Found binary: {}").format(p))
+            else:
+                print_warning(_("Binary not found (skipping): {}").format(p))
+        
+        if not found_binaries:
+            print_error(_("No binaries found in {}").format(build_dir))
             print_info(_("Please build cellframe-node first: ./stage-env build"))
             raise typer.Exit(1)
-        
-        print_info(_("Found binary: {}").format(binary_path))
         
         # Initialize network manager to get containers
         network_mgr = NetworkManager(base_path, config_path=config_path)
@@ -440,30 +447,30 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             print_error(_("No running containers available for update"))
             raise typer.Exit(1)
         
-        # Copy binary to each container
-        print_info(_("Copying binary to {} container(s)...").format(len(running_containers)))
+        # Create tar archive with all found binaries
+        tar_stream = io.BytesIO()
+        with tarfile.open(fileobj=tar_stream, mode='w') as tar:
+            for bp in found_binaries:
+                tar.add(str(bp), arcname=bp.name)
+        tar_data = tar_stream.getvalue()
+        
+        bin_names = [bp.name for bp in found_binaries]
+        print_info(_("Copying {} binaries ({}) to {} container(s)...").format(len(bin_names), ', '.join(bin_names), len(running_containers)))
         for container in running_containers:
             try:
                 print_info(_("  → {}").format(container.name))
                 
-                # Create tar archive with binary
-                tar_stream = io.BytesIO()
-                with tarfile.open(fileobj=tar_stream, mode='w') as tar:
-                    tar.add(binary_path, arcname="cellframe-node-cli")
-                tar_data = tar_stream.getvalue()
-                
-                # Copy to container
                 container.put_archive("/tmp", tar_data)
                 
-                # Move to final location
-                container.exec_run(
-                    ["sh", "-c", "mv /tmp/cellframe-node-cli /opt/cellframe-node/bin/cellframe-node-cli && chmod +x /opt/cellframe-node/bin/cellframe-node-cli"],
-                    user="root"
+                mv_cmds = " && ".join(
+                    f"mv /tmp/{name} /opt/cellframe-node/bin/{name} && chmod +x /opt/cellframe-node/bin/{name}"
+                    for name in bin_names
                 )
+                container.exec_run(["sh", "-c", mv_cmds], user="root")
                 
-                print_success(_("  ✓ Binary updated in {}").format(container.name))
+                print_success(_("  ✓ {} binaries updated in {}").format(len(bin_names), container.name))
             except Exception as e:
-                print_error(_("  ✗ Failed to update binary in {}: {}").format(container.name, e))
+                print_error(_("  ✗ Failed to update binaries in {}: {}").format(container.name, e))
         
         # Update packages in containers
         print_info(_("Updating packages in {} container(s)...").format(len(running_containers)))
