@@ -259,6 +259,16 @@ class CLIStepExecutor(StepExecutor):
                 # Not YAML format - continue with hash extraction
                 pass
             
+            # CLI returned success (exit 0) but output may indicate node-side failure (e.g. tx_create)
+            if output and ("Can't place TX datum in mempool" in output or
+                          ("emission: False" in output and "message:" in output)):
+                raise ScenarioExecutionError(
+                    "CLI command reported failure in output (node could not process request). "
+                    "Check node logs for details.",
+                    step=cmd[:100],
+                    context={"output": output[:500]}
+                )
+            
             # Extract hash from output
             pattern = DataExtractor.get_default_pattern(ExtractType.HASH)
             try:

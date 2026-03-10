@@ -87,19 +87,20 @@ class DockerComposeManager:
             try:
                 from src.utils.mirror_tester import select_fastest_mirrors
                 from ..cli.common import print_info, print_success, print_warning
+                from src.utils.i18n import _
                 
-                print_info("Testing mirror speeds...")
+                print_info(_("Testing mirror speeds..."))
                 mirror_results = select_fastest_mirrors(timeout=5)
                 debian_mirror = mirror_results['debian_mirror']
                 debian_time = mirror_results['debian_time']
                 
-                print_success(f"Fastest Debian mirror: {debian_mirror} ({debian_time:.2f}s)")
+                print_success(_("Fastest Debian mirror: {} ({}s)").format(debian_mirror, f"{debian_time:.2f}"))
                 logger.info("fastest_mirror_selected", 
                            debian_mirror=debian_mirror,
                            debian_time=debian_time)
             except Exception as e:
                 logger.warning("mirror_test_failed", error=str(e))
-                print_warning(f"Mirror testing failed: {e}, using default mirrors")
+                print_warning(_("Mirror testing failed: {}, using default mirrors").format(e))
         
         # Use docker compose CLI via subprocess for build
         # (docker SDK doesn't have direct compose build API yet)
@@ -125,14 +126,15 @@ class DockerComposeManager:
         
         # Print informative messages before starting Docker build
         from ..cli.common import print_info, print_success
-        print_info("Starting Docker build...")
-        print_info(f"Docker Compose file: {self.compose_file.name}")
-        print_info(f"Project name: {self.project_name}")
+        from src.utils.i18n import _
+        print_info(_("Starting Docker build..."))
+        print_info(_("Docker Compose file: {}").format(self.compose_file.name))
+        print_info(_("Project name: {}").format(self.project_name))
         if debian_mirror:
-            print_info(f"Using Debian mirror: {debian_mirror}")
+            print_info(_("Using Debian mirror: {}").format(debian_mirror))
         if no_cache:
-            print_info("Build mode: --no-cache (clean build)")
-        print_info("Docker Compose is building images (this may take a while)...")
+            print_info(_("Build mode: --no-cache (clean build)"))
+        print_info(_("Docker Compose is building images (this may take a while)..."))
         
         logger.info("starting_docker_build", 
                    compose_file=str(self.compose_file),
@@ -144,11 +146,11 @@ class DockerComposeManager:
             # Run command with real-time output (not captured)
             run_command(cmd, cwd=self.project_dir, env=env, capture_output=False)
             
-            print_success("Docker build completed successfully")
+            print_success(_("Docker build completed successfully"))
             logger.info("build_completed")
         except KeyboardInterrupt:
             from ..cli.common import print_warning
-            print_warning("\nDocker build interrupted by user (Ctrl+C)")
+            print_warning(_("\nDocker build interrupted by user (Ctrl+C)"))
             logger.warning("docker_build_interrupted")
             raise
     
@@ -544,9 +546,12 @@ class DockerComposeManager:
             # Add to services
             compose_data['services'][service_name] = node_service
         
-        # Merge extra services from suite descriptor
+        # Merge extra services from suite descriptor.
+        # Auto-connect to the project network so they can reach cellframe nodes.
         if extra_services:
             for svc_name, svc_config in extra_services.items():
+                if isinstance(svc_config, dict) and 'networks' not in svc_config:
+                    svc_config['networks'] = [self.network_name]
                 compose_data['services'][svc_name] = svc_config
                 logger.info("extra_service_added", name=svc_name)
         
@@ -610,7 +615,22 @@ class DockerComposeManager:
             service_name = node_spec.get('service_name', f"node-{node_id}")
 
             if service_name in compose_data.get('services', {}):
-                logger.info("extra_node_already_exists", service=service_name)
+                existing_svc = compose_data['services'][service_name]
+                existing_nets = existing_svc.get('networks')
+                desired_ip = node_spec['ip_address']
+                has_static = (
+                    isinstance(existing_nets, dict)
+                    and isinstance(existing_nets.get(self.network_name), dict)
+                    and existing_nets[self.network_name].get('ipv4_address') == desired_ip
+                )
+                if has_static:
+                    logger.info("extra_node_already_exists", service=service_name)
+                    continue
+                existing_svc['networks'] = {
+                    self.network_name: {'ipv4_address': desired_ip}
+                }
+                logger.info("extra_node_ip_updated",
+                           service=service_name, ip=desired_ip)
                 continue
 
             svc = yaml.safe_load(yaml.dump(node_template))
@@ -665,6 +685,12 @@ class DockerComposeManager:
                     "no existing node has 'image' and template has no 'build'"
                 )
 
+            extra_caps = node_spec.get('cap_add')
+            if extra_caps:
+                existing_caps = svc.get('cap_add', [])
+                merged = list(dict.fromkeys(existing_caps + extra_caps))
+                svc['cap_add'] = merged
+
             compose_data['services'][service_name] = svc
             logger.info("extra_node_service_added",
                        service=service_name, role=node_spec.get('role', 'full'),
@@ -674,6 +700,36 @@ class DockerComposeManager:
             yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
 
         logger.info("extra_nodes_added_to_compose", count=len(extra_nodes))
+
+    def add_docker_compose_services(self, services: Dict[str, Any]) -> None:
+        """Add arbitrary docker-compose service definitions to the generated compose file.
+
+        Services that don't specify ``networks`` are automatically connected
+        to the project network so they can reach cellframe nodes.
+        """
+        if not self.compose_file or not self.compose_file.exists():
+            logger.warning("add_docker_compose_services_no_file",
+                           path=str(self.compose_file))
+            return
+
+        with open(self.compose_file) as f:
+            compose_data = yaml.safe_load(f) or {}
+
+        added = 0
+        for svc_name, svc_config in services.items():
+            if svc_name in compose_data.get('services', {}):
+                logger.debug("docker_compose_service_exists", service=svc_name)
+                continue
+            if isinstance(svc_config, dict) and 'networks' not in svc_config:
+                svc_config['networks'] = [self.network_name]
+            compose_data.setdefault('services', {})[svc_name] = svc_config
+            added += 1
+            logger.info("docker_compose_service_added", name=svc_name)
+
+        if added:
+            with open(self.compose_file, 'w') as f:
+                yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
+            logger.info("docker_compose_services_written", count=added)
 
     def set_service_images(self, image_map: Dict[str, str]) -> None:
         """
@@ -840,14 +896,28 @@ class DockerComposeManager:
         if services:
             cmd.extend(services)
         
-        try:
-            run_command(cmd, cwd=self.project_dir)
-        except subprocess.CalledProcessError as e:
-            logger.error("docker_up_failed", error=str(e))
-            raise
-        except Exception as e:
-            logger.error("docker_up_failed", error=str(e))
-            raise
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                run_command(cmd, cwd=self.project_dir)
+                break
+            except subprocess.CalledProcessError as e:
+                stderr_text = getattr(e, 'stderr', '') or ''
+                if isinstance(stderr_text, bytes):
+                    stderr_text = stderr_text.decode('utf-8', errors='replace')
+                is_transient = 'Address already in use' in stderr_text
+                if is_transient and attempt < max_retries:
+                    wait_secs = 3 * attempt
+                    logger.warning("docker_up_transient_failure",
+                                   attempt=attempt, retry_in=wait_secs,
+                                   error=str(e))
+                    time.sleep(wait_secs)
+                    continue
+                logger.error("docker_up_failed", error=str(e))
+                raise
+            except Exception as e:
+                logger.error("docker_up_failed", error=str(e))
+                raise
         
         if wait:
             self.wait_for_services(services)

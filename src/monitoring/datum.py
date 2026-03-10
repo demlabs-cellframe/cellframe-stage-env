@@ -21,15 +21,20 @@ import asyncio
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional, Tuple, Set
 from dataclasses import dataclass, field
 
 import docker
 
 from ..scenarios.schema import DatumStatus
 from ..utils.logger import get_logger
+from ..utils.i18n import _
 
 logger = get_logger(__name__)
+
+# Datum hash format: 0x + 64 hex chars (strict); extraction accepts first such substring
+_STRICT_HASH_PATTERN = re.compile(r"^0x[0-9a-fA-F]{64,}$")
+_EXTRACT_HASH_PATTERN = re.compile(r"(0x[0-9a-fA-F]{64})")
 
 
 @dataclass
@@ -175,20 +180,26 @@ class DatumMonitor:
             timeout_verification = max(60.0, timeout_total * 0.5)
         if timeout_in_blocks is None:
             timeout_in_blocks = max(60.0, timeout_total * 0.5)
-        # Validate datum hash format
-        hash_pattern = r'^0x[0-9a-fA-F]{64,}$'
-        if not re.match(hash_pattern, datum_hash):
-            error_msg = f"Invalid datum hash format: {datum_hash[:200]}"
-            self._log(f"❌ {error_msg}")
-            self._log(f"  Expected: 0x[hex] format (64+ hex chars)")
-            self._log(f"  This likely means the CLI command failed and returned error output instead of a hash")
-            
-            return DatumMonitorResult(
-                status=DatumStatus.REJECTED,
-                datum_hash=datum_hash[:100],
-                elapsed_time=0.0,
-                error_message=error_msg
-            )
+        # Normalize: if value is not a strict 0x hash, try to extract first 0x<64 hex> from it
+        # (e.g. "result: Datum 0xABC... with token X" or variable saved via save: instead of save_hash:)
+        if not _STRICT_HASH_PATTERN.match(datum_hash):
+            extracted = _EXTRACT_HASH_PATTERN.search(datum_hash)
+            if extracted:
+                original = datum_hash[:80] + ("..." if len(datum_hash) > 80 else "")
+                datum_hash = extracted.group(1)
+                self._log(f"  ℹ️  Extracted datum hash from variable/output: {datum_hash[:16]}... (value contained extra text)")
+                logger.debug("datum_hash_extracted_from_string", original_preview=original, extracted=datum_hash[:16])
+            else:
+                error_msg = f"Invalid datum hash format: {datum_hash[:200]}"
+                self._log(f"❌ {error_msg}")
+                self._log(f"  Expected: 0x[hex] format (64 hex chars) or text containing such hash")
+                self._log(f"  This likely means the CLI command failed and returned error output instead of a hash")
+                return DatumMonitorResult(
+                    status=DatumStatus.REJECTED,
+                    datum_hash=datum_hash[:100],
+                    elapsed_time=0.0,
+                    error_message=error_msg
+                )
         
         self._log(f"📝 Monitoring datum: {datum_hash[:16]}... (node={node}, timeouts: {timeout_total}s total)")
         
@@ -466,14 +477,22 @@ class DatumMonitor:
                 if time_since_mempool > timeout_in_blocks:
                     is_dag = self._is_dag_chain(chain)
                     item_type = "events" if is_dag else "blocks"
-                    error = f"Datum not in {item_type} after {time_since_mempool:.1f}s"
+                    item_singular = item_type[:-1]  # event / block
+                    details = {"time_since_mempool": time_since_mempool}
+                    if is_dag:
+                        dag_diag = await self._log_dag_find_diagnostic(node, network, chain, datum_hash)
+                        if dag_diag:
+                            details["dag_event_find_exit_code"] = dag_diag["exit_code"]
+                            details["dag_event_find_stdout"] = dag_diag["stdout_preview"]
+                            details["dag_event_find_stderr"] = dag_diag["stderr_preview"]
+                    error = _("Datum not in {} after {}s").format(item_type, f"{time_since_mempool:.1f}")
                     self._log(f"  ❌ {error}")
-                    self._log(f"  💡 Datum was in mempool but never made it into a {item_type[:-1]}")
+                    self._log(f"  💡 {_('Datum was in mempool but never made it into a {}').format(item_singular)}")
                     return DatumMonitorResult(
                         status=DatumStatus.TIMEOUT_IN_BLOCKS,
                         datum_hash=datum_hash,
                         elapsed_time=elapsed,
-                        details={"time_since_mempool": time_since_mempool},
+                        details=details,
                         error_message=error
                     )
             
@@ -615,46 +634,79 @@ class DatumMonitor:
     async def _check_in_dag_events(self, node: str, network: str, chain: str, datum_hash: str) -> Optional[Tuple[int, str]]:
         """
         Check if datum is in a DAG event (for DAG-PoA chains like zerochain).
+        Uses 'dag event find -datum <hash>' to verify this specific datum is in the chain
+        (required for tx_create -from_emission: emission must be in DAG/ledger to be spendable).
         
         Returns:
-            Tuple of (event_number, event_hash) if found, None otherwise
+            Tuple of (event_count, event_hash) if found, None otherwise
         """
         try:
             container_name = self._node_to_container(node)
             container = self.docker_client.containers.get(container_name)
-            
-            # Get recent events and search for our datum
+            # Normalize hash for CLI (hex 0x...)
+            hash_for_cli = datum_hash if _STRICT_HASH_PATTERN.match(datum_hash) else (
+                _EXTRACT_HASH_PATTERN.search(datum_hash).group(1) if _EXTRACT_HASH_PATTERN.search(datum_hash) else datum_hash
+            )
             cmd = [
-                self.node_cli_path, "dag", "event", "list",
-                "-net", network, "-chain", chain, "-from", "events", "-limit", "20"
+                self.node_cli_path, "dag", "event", "find",
+                "-net", network, "-chain", chain, "-datum", hash_for_cli
             ]
-            
             result = container.exec_run(cmd, demux=True)
             exit_code = result.exit_code
             stdout, stderr = result.output
-            
-            if exit_code != 0:
-                return None
-            
             stdout_str = stdout.decode('utf-8') if stdout else ""
-            
-            # For DAG, we check if total_events > 0 (datum creates event)
-            # Note: CLI doesn't show datum hash inside event, only event hash
-            total_match = re.search(r'total_events:\s*(\d+)', stdout_str, re.IGNORECASE)
-            if total_match and int(total_match.group(1)) > 0:
-                # Extract first event hash as reference
-                hash_match = re.search(r'event_hash:\s*([0-9a-fA-Fx]+)', stdout_str, re.IGNORECASE)
-                event_hash = hash_match.group(1) if hash_match else "latest"
-                event_count = int(total_match.group(1))
-                
-                self._log(f"  ✅ Datum likely in DAG events (total: {event_count})")
-                return (event_count, event_hash)
-            
+            stderr_str = stderr.decode('utf-8') if stderr else ""
+            if exit_code != 0:
+                self._log(f"  🔍 dag event find exit_code={exit_code} stdout_preview={stdout_str[:400]!r} stderr_preview={stderr_str[:200]!r}")
+                return None
+            # CLI returns JSON: "total": N and "events": [{"event_hash": "0x..."}, ...] (v2) or "Total"/"event hash" (v1)
+            total_match = re.search(r'["\']?(?:total|Total)["\']?\s*:\s*(\d+)', stdout_str, re.IGNORECASE)
+            total = int(total_match.group(1)) if total_match else 0
+            if total > 0:
+                event_hash_match = re.search(r'["\']?(?:event_hash|event hash)["\']?\s*:\s*["\']?([0-9a-fA-Fx]+)', stdout_str, re.IGNORECASE)
+                event_hash = event_hash_match.group(1) if event_hash_match else "0x0"
+                self._log(f"  ✅ Datum {datum_hash[:16]}... found in DAG (event find total: {total})")
+                return (total, event_hash)
             return None
-            
         except Exception as e:
             self._log(f"  ⚠️ Failed to check DAG events: {e}")
             return None
+    
+    async def _log_dag_find_diagnostic(self, node: str, network: str, chain: str, datum_hash: str) -> Optional[Dict[str, Any]]:
+        """Run dag event find and log raw stdout/stderr for timeout diagnostics. Returns dict for result.details."""
+        try:
+            container_name = self._node_to_container(node)
+            container = self.docker_client.containers.get(container_name)
+            hash_for_cli = datum_hash if _STRICT_HASH_PATTERN.match(datum_hash) else (
+                _EXTRACT_HASH_PATTERN.search(datum_hash).group(1) if _EXTRACT_HASH_PATTERN.search(datum_hash) else datum_hash
+            )
+            cmd = [
+                self.node_cli_path, "dag", "event", "find",
+                "-net", network, "-chain", chain, "-datum", hash_for_cli
+            ]
+            result = container.exec_run(cmd, demux=True)
+            stdout, stderr = result.output
+            stdout_str = stdout.decode('utf-8') if stdout else ""
+            stderr_str = stderr.decode('utf-8') if stderr else ""
+            self._log(f"  🔍 Diagnostic (dag event find): exit_code={result.exit_code}")
+            self._log(f"     stdout: {stdout_str[:800]}")
+            if stderr_str:
+                self._log(f"     stderr: {stderr_str[:400]}")
+            logger.info(
+                "dag_event_find_diagnostic",
+                exit_code=result.exit_code,
+                stdout_preview=stdout_str[:800],
+                stderr_preview=stderr_str[:400] if stderr_str else "",
+            )
+            return {
+                "exit_code": result.exit_code,
+                "stdout_preview": stdout_str[:800],
+                "stderr_preview": stderr_str[:400] if stderr_str else "",
+            }
+        except Exception as e:
+            self._log(f"  🔍 Diagnostic failed: {e}")
+            logger.warning("dag_event_find_diagnostic_failed", error=str(e))
+            return {"diagnostic_error": str(e)}
     
     async def _check_in_blockchain_blocks(self, node: str, network: str, chain: str, datum_hash: str) -> Optional[Tuple[int, str]]:
         """
