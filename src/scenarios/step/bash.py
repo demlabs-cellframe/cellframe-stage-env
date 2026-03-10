@@ -18,25 +18,29 @@ class BashStepExecutor(StepExecutor):
     
     async def execute(self, step: BashStep, ctx: RuntimeContext) -> Dict[str, Any]:
         """Execute Bash script step."""
-        # Substitute variables in bash script
         script = ctx.substitute(step.bash)
         
-        # If node is specified, execute in container; otherwise execute on host
         timeout = step.timeout or 300
-        if step.node:
-            node = ctx.substitute(step.node)
-            result = await self.container_manager.exec_bash_command(
-                script=script,
-                node=node,
-                timeout=timeout
+        try:
+            if step.node:
+                node = ctx.substitute(step.node)
+                result = await self.container_manager.exec_bash_command(
+                    script=script,
+                    node=node,
+                    timeout=timeout
+                )
+            else:
+                logger.info("executing_bash_on_host", script_preview=script[:100])
+                result = await self._exec_on_host(script, timeout)
+        except asyncio.TimeoutError:
+            raise ScenarioExecutionError(
+                f"Bash step timed out after {timeout}s",
+                step=script[:200],
+                context={"timeout": timeout, "node": getattr(step, 'node', None)}
             )
-        else:
-            logger.info("executing_bash_on_host", script_preview=script[:100])
-            result = await self._exec_on_host(script, timeout)
         
-        # Save result if requested
         if step.save:
-            ctx.set_variable(step.save, result["stdout"])
+            ctx.set_variable(step.save, result["stdout"].strip())
             logger.debug("bash_step_saved", variable=step.save)
         
         # Check expectation
