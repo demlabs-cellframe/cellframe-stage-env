@@ -374,8 +374,10 @@ class WaitStepExecutor(StepExecutor):
 
         timeout = float(step.timeout)
         interval = float(step.interval)
-        elapsed = 0.0
         attempt = 0
+
+        import time as _time
+        t_start = _time.monotonic()
 
         logger.info(
             f"  wait: cli cmd='{cmd}' node={node} "
@@ -386,11 +388,15 @@ class WaitStepExecutor(StepExecutor):
         import re as _re
 
         last_output = ""
-        while elapsed < timeout:
+        while True:
+            elapsed = _time.monotonic() - t_start
+            if elapsed >= timeout:
+                break
             attempt += 1
+            cli_timeout = min(30, max(5, timeout - elapsed))
             try:
                 result = await self.container_manager.exec_cli_command(
-                    command=cmd, node=node, timeout=30
+                    command=cmd, node=node, timeout=int(cli_timeout)
                 )
                 output = result.get("stdout", "")
                 last_output = output
@@ -429,11 +435,14 @@ class WaitStepExecutor(StepExecutor):
             except Exception as e:
                 logger.debug(f"  wait: cli attempt {attempt} error: {e}")
 
-            await asyncio.sleep(interval)
-            elapsed += interval
+            remaining = timeout - (_time.monotonic() - t_start)
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(interval, remaining))
 
+        real_elapsed = _time.monotonic() - t_start
         msg = (
-            f"wait: cli timeout after {timeout}s ({attempt} attempts). "
+            f"wait: cli timeout after {real_elapsed:.0f}s/{timeout}s ({attempt} attempts). "
             f"cmd='{cmd}' contains={expected!r} not_contains={unexpected!r}"
         )
         if getattr(step, "optional", False):
@@ -467,8 +476,10 @@ class WaitStepExecutor(StepExecutor):
         unexpected = ctx.substitute(step.not_contains) if step.not_contains else None
         timeout = float(step.timeout)
         interval = float(step.interval)
-        elapsed = 0.0
         attempt = 0
+
+        import time as _time
+        t_start = _time.monotonic()
 
         logger.info(
             f"  wait: bash node={node} timeout={timeout}s interval={interval}s"
@@ -477,13 +488,17 @@ class WaitStepExecutor(StepExecutor):
         import re as _re
         last_output = ""
 
-        while elapsed < timeout:
+        while True:
+            elapsed = _time.monotonic() - t_start
+            if elapsed >= timeout:
+                break
             attempt += 1
+            bash_timeout = min(30, max(5, timeout - elapsed))
             try:
                 result = await self.container_manager.exec_command(
                     command=["bash", "-c", script],
                     node=node,
-                    timeout=30,
+                    timeout=int(bash_timeout),
                 )
                 exit_code = result.get("returncode", -1)
                 output = result.get("stdout", "")
@@ -524,11 +539,14 @@ class WaitStepExecutor(StepExecutor):
             except Exception as e:
                 logger.debug(f"  wait: bash attempt {attempt} error: {e}")
 
-            await asyncio.sleep(interval)
-            elapsed += interval
+            remaining = timeout - (_time.monotonic() - t_start)
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(interval, remaining))
 
+        real_elapsed = _time.monotonic() - t_start
         msg = (
-            f"wait: bash timeout after {timeout}s ({attempt} attempts). "
+            f"wait: bash timeout after {real_elapsed:.0f}s/{timeout}s ({attempt} attempts). "
             f"script='{script[:80]}'"
         )
         if getattr(step, "optional", False):
