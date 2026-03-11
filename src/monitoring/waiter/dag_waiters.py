@@ -76,11 +76,11 @@ class DAGEventWaiter(BaseWaiter):
             self._last_log_time = time.time()
         
         # CRITICAL: Check if THIS SPECIFIC datum hash is in DAG events
-        # Not just "total events > 0" - we need to verify the specific datum is there
+        # Not just "total_events > 0" - we need to verify the specific datum is there
         if exit_code == 0 and stdout_events_str:
             # Parse event hashes from output
             event_hashes = re.findall(r'hash:\s*(0x[A-Fa-f0-9]{64})', stdout_events_str, re.IGNORECASE)
-            total_match = re.search(r'total events:\s*(\d+)', stdout_events_str, re.IGNORECASE)
+            total_match = re.search(r'total_events:\s*(\d+)', stdout_events_str, re.IGNORECASE)
             total_events = int(total_match.group(1)) if total_match else 0
             
             # Check each event for our datum hash

@@ -103,27 +103,15 @@ class FirstBlockWaiter(BaseWaiter):
         )
         
         if exit_code == 0 and stdout:
-            # Check if we have at least one block
-            # Block list output format varies, but usually contains block numbers or hashes
-            if "block" in stdout.lower() or "height" in stdout.lower() or len(stdout.strip()) > 20:
-                # Try to extract block number
-                block_match = re.search(r'block[_\s]*#?\s*(\d+)', stdout, re.IGNORECASE)
-                if block_match:
-                    block_num = int(block_match.group(1))
-                    if block_num > 0:
-                        elapsed = time.time() - self._start_time
-                        logger.info("first_block_created",
-                                   chain=self.chain_name,
-                                   block_num=block_num,
-                                   elapsed=f"{elapsed:.1f}s")
-                        return True
-                # If no block number found but output looks like block list, assume success
-                elif len(stdout.strip()) > 50:
+            block_match = re.search(r'block_num:\s*(\d+)', stdout, re.IGNORECASE)
+            if block_match:
+                block_num = int(block_match.group(1))
+                if block_num > 0:
                     elapsed = time.time() - self._start_time
-                    logger.info("first_block_created_no_number",
+                    logger.info("first_block_created",
                                chain=self.chain_name,
-                               elapsed=f"{elapsed:.1f}s",
-                               note="Block list returned data but couldn't parse block number")
+                               block_num=block_num,
+                               elapsed=f"{elapsed:.1f}s")
                     return True
         
         return False

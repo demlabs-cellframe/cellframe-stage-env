@@ -23,6 +23,7 @@ events-sign-cert={{ events_sign_cert }}
 # ESBocs blocks signing certificate (for MASTER nodes only)
 # This enables master nodes to sign blocks in the main chain
 [esbocs]
+consensus_debug={{ consensus_debug | default('true', true) }}
 {% if blocks_sign_cert %}
 blocks-sign-cert={{ blocks_sign_cert }}
 {% endif %}

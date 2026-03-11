@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .common import print_info, print_success, print_error, print_warning, confirm
+from src.utils.i18n import _
 
 
 def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callable[[], Optional[Path]]):
@@ -33,12 +34,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         cert_gen = CertGenerator(base_path, certs_dir=certs_dir)
         
         if cert_gen.certs_exist() and not force:
-            if not confirm("Certificates already exist. Regenerate?", default=False):
-                print_info("Keeping existing certificates")
+            if not confirm(_("Certificates already exist. Regenerate?"), default=False):
+                print_info(_("Keeping existing certificates"))
                 return
             cert_gen.clean()
         
-        print_info(f"Generating certificates for {nodes} nodes + {validators} validators...")
+        print_info(_("Generating certificates for {} nodes + {} validators...").format(nodes, validators))
         
         result = cert_gen.generate_all(
             network_name=network,
@@ -46,9 +47,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             validator_count=validators,
         )
         
-        print_success(f"Generated {len(result['nodes'])} node certificates")
-        print_success(f"Generated {len(result['validators'])} validator certificates")
-        print_info(f"Certificates saved to: {certs_dir}")
+        print_success(_("Generated {} node certificates").format(len(result['nodes'])))
+        print_success(_("Generated {} validator certificates").format(len(result['validators'])))
+        print_info(_("Certificates saved to: {}").format(certs_dir))
     
     @app.command()
     def clean(
@@ -64,8 +65,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         # Skip confirmation if --yes or --all is used
         if not yes and not all:
-            if not confirm("This will delete all generated certificates and cache. Continue?", default=False):
-                print_info("Cancelled")
+            if not confirm(_("This will delete all generated certificates and cache. Continue?"), default=False):
+                print_info(_("Cancelled"))
                 return
         
         config_loader = get_config_loader()
@@ -79,8 +80,39 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         # Clean certificates
         cert_gen = CertGenerator(base_path, certs_dir=certs_dir)
         cert_gen.clean()
-        print_success("Cleaned certificates")
-        
+        print_success(_("Cleaned certificates"))
+
+        # Clean snapshots (so genesis can be re-run from scratch)
+        print_info(_("Removing snapshots..."))
+        try:
+            snapshots_config = config_loader.get_suite_isolation_config()
+            snapshots_dir_relative = snapshots_config.get("snapshots_dir", "../../cache/snapshots")
+            snapshots_dir = (base_path / snapshots_dir_relative).resolve()
+            if snapshots_dir.exists():
+                import asyncio
+                from ..snapshots.manager import SnapshotManager, SnapshotMode
+                mode_str = snapshots_config.get("mode", "filesystem").lower()
+                mode_map = {
+                    "disabled": SnapshotMode.DISABLED,
+                    "recreate": SnapshotMode.RECREATE,
+                    "filesystem": SnapshotMode.FILESYSTEM,
+                    "squashfs": SnapshotMode.SQUASHFS,
+                }
+                snapshot_mode = mode_map.get(mode_str, SnapshotMode.FILESYSTEM)
+                snapshot_manager = SnapshotManager(base_path, config=snapshots_config, mode=snapshot_mode)
+
+                async def _delete_all_snapshots():
+                    snapshots = await snapshot_manager.list_snapshots()
+                    for name in snapshots:
+                        await snapshot_manager.delete_snapshot(name)
+
+                asyncio.run(_delete_all_snapshots())
+                print_success(_("Snapshots cleaned"))
+            else:
+                print_info(_("No snapshots directory found"))
+        except Exception as e:
+            print_warning(_("Failed to clean snapshots: {}").format(e))
+
         if all:
             # Initialize Docker client for cleanup (no need for compose project)
             compose_mgr = None
@@ -89,18 +121,18 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 docker_client = docker.from_env()
                 # Create minimal compose manager just for cleanup
                 compose_mgr = DockerComposeManager(base_path, project_name="stage_env_cleanup")
-                print_info("Using Docker for cleanup")
+                print_info(_("Using Docker for cleanup"))
             except Exception as e:
-                print_warning(f"Could not initialize Docker cleanup, falling back to sudo: {e}")
+                print_warning(_("Could not initialize Docker cleanup, falling back to sudo: {}").format(e))
                 compose_mgr = None
             
             # Clean configs using Docker if available, otherwise sudo
             if configs_dir.exists():
-                print_info("Cleaning configs...")
+                print_info(_("Cleaning configs..."))
                 try:
                     if compose_mgr:
                         # Use Docker for cleanup
-                        print_info("Removing configs via Docker container...")
+                        print_info(_("Removing configs via Docker container..."))
                         container = compose_mgr.client.containers.run(
                             image="alpine:latest",
                             command=["sh", "-c", "rm -rf /cleanup/configs && echo 'Configs cleaned'"],
@@ -115,84 +147,71 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         )
                     else:
                         # Fallback to sudo
-                        print_warning("Falling back to sudo for configs cleanup")
+                        print_warning(_("Falling back to sudo for configs cleanup"))
                         import subprocess
                         subprocess.run(["sudo", "rm", "-rf", str(configs_dir)], check=True)
                     configs_dir.mkdir(parents=True, exist_ok=True)
-                    print_success("Cleaned configs")
+                    print_success(_("Cleaned configs"))
                 except Exception as e:
-                    print_error(f"Failed to clean configs: {e}")
+                    print_error(_("Failed to clean configs: {}").format(e))
                     sys.exit(1)
             
             # Clean data using Docker
             if data_dir.exists():
-                print_info("Cleaning cache/data...")
+                print_info(_("Cleaning cache/data..."))
                 try:
                     if compose_mgr:
-                        print_info("Removing cache/data via Docker container...")
+                        print_info(_("Removing cache/data via Docker container..."))
                         compose_mgr.clean_cache_data(cache_dir)
                     else:
                         # Fallback to sudo
-                        print_warning("Falling back to sudo for data cleanup")
+                        print_warning(_("Falling back to sudo for data cleanup"))
                         import subprocess
                         subprocess.run(["sudo", "rm", "-rf", str(data_dir)], check=True)
                         data_dir.mkdir(parents=True, exist_ok=True)
-                    print_success("Cleaned cache/data")
+                    print_success(_("Cleaned cache/data"))
                 except Exception as e:
-                    print_error(f"Failed to clean data: {e}")
+                    print_error(_("Failed to clean data: {}").format(e))
                     sys.exit(1)
             
             # Clean snapshots
-            print_info("Removing snapshots...")
+            print_info(_("Removing snapshots..."))
             try:
                 snapshots_config = config_loader.get_suite_isolation_config()
                 snapshots_dir_relative = snapshots_config.get('snapshots_dir', '../../cache/snapshots')
                 snapshots_dir = (base_path / snapshots_dir_relative).resolve()
                 
                 if snapshots_dir.exists():
-                    # Use snapshot manager to clean
                     import asyncio
                     
-                    # Check if event loop is already running
                     try:
                         loop = asyncio.get_running_loop()
-                        print_error("Cannot run async code: event loop already running")
+                        print_error(_("Cannot run async code: event loop already running"))
                         sys.exit(1)
                     except RuntimeError:
                         pass
                     
-                    # Get snapshot mode from config
-                    mode_str = snapshots_config.get('mode', 'filesystem').lower()
-                    mode_map = {
-                        'disabled': SnapshotMode.DISABLED,
-                        'recreate': SnapshotMode.RECREATE,
-                        'filesystem': SnapshotMode.FILESYSTEM,
-                        'squashfs': SnapshotMode.SQUASHFS,
-                    }
-                    snapshot_mode = mode_map.get(mode_str, SnapshotMode.FILESYSTEM)
+                    snapshot_manager = SnapshotManager(base_path, config=snapshots_config)
                     
-                    snapshot_manager = SnapshotManager(base_path, snapshot_mode, snapshots_config)
-                    
-                    # Delete all snapshots
                     async def delete_all_snapshots():
                         try:
                             snapshots = await snapshot_manager.list_snapshots()
                             for snapshot_name in snapshots:
                                 await snapshot_manager.delete_snapshot(snapshot_name)
                         except Exception as e:
-                            print_error(f"Error deleting snapshots: {e}")
+                            print_error(_("Error deleting snapshots: {}").format(e))
                             raise
                     
                     asyncio.run(delete_all_snapshots())
-                    print_success("Snapshots cleaned")
+                    print_success(_("Snapshots cleaned"))
                 else:
-                    print_info("No snapshots directory found")
+                    print_info(_("No snapshots directory found"))
             except Exception as e:
-                print_error(f"Failed to clean snapshots: {e}")
+                print_error(_("Failed to clean snapshots: {}").format(e))
                 sys.exit(1)
             
             # Clean Docker networks (including conflicting ones)
-            print_info("Cleaning Docker networks...")
+            print_info(_("Cleaning Docker networks..."))
             try:
                 import docker
                 docker_client = docker.from_env()
@@ -209,37 +228,37 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 ]
                 
                 if test_networks:
-                    print_info(f"Found {len(test_networks)} test network(s) to remove...")
+                    print_info(_("Found {} test network(s) to remove...").format(len(test_networks)))
                     for network in test_networks:
                         try:
                             # Check if network has active endpoints
                             network.reload()
                             if network.containers:
-                                print_info(f"Stopping containers on network {network.name}...")
+                                print_info(_("Stopping containers on network {}...").format(network.name))
                                 for container in network.containers:
                                     try:
                                         container.stop(timeout=5)
                                         container.remove()
                                     except Exception as e:
-                                        print_warning(f"Could not remove container {container.name}: {e}")
+                                        print_warning(_("Could not remove container {}: {}").format(container.name, e))
                             
                             network.remove()
-                            print_info(f"Removed network: {network.name}")
+                            print_info(_("Removed network: {}").format(network.name))
                         except docker.errors.APIError as e:
                             if "has active endpoints" in str(e):
-                                print_warning(f"Network {network.name} has active endpoints, skipping")
+                                print_warning(_("Network {} has active endpoints, skipping").format(network.name))
                             else:
-                                print_warning(f"Could not remove network {network.name}: {e}")
+                                print_warning(_("Could not remove network {}: {}").format(network.name, e))
                         except Exception as e:
-                            print_warning(f"Error removing network {network.name}: {e}")
+                            print_warning(_("Error removing network {}: {}").format(network.name, e))
                     
-                    print_success("Docker networks cleaned")
+                    print_success(_("Docker networks cleaned"))
                 else:
-                    print_info("No test networks found")
+                    print_info(_("No test networks found"))
             except ImportError:
-                print_warning("Docker Python library not available, skipping network cleanup")
+                print_warning(_("Docker Python library not available, skipping network cleanup"))
             except Exception as e:
-                print_warning(f"Failed to clean Docker networks: {e}")
+                print_warning(_("Failed to clean Docker networks: {}").format(e))
                 # Don't exit - network cleanup is not critical
         
-        print_success("Cleaned certificates and cache")
+        print_success(_("Cleaned certificates and cache"))

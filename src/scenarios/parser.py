@@ -46,16 +46,23 @@ class BaseScenarioParser:
     Provides reusable functionality for both suite and scenario parsing.
     """
     
-    def __init__(self, scenarios_root: Path, common_root: Optional[Path] = None):
+    def __init__(
+        self,
+        scenarios_root: Path,
+        common_root: Optional[Path] = None,
+        fallback_common_root: Optional[Path] = None,
+    ):
         """
         Initialize base parser.
-        
+
         Args:
             scenarios_root: Root directory for scenario/suite files
             common_root: Optional root directory for common includes
+            fallback_common_root: Optional extra root for includes (e.g. stage-env integration scenarios)
         """
         self.scenarios_root = Path(scenarios_root)
         self.common_root = Path(common_root) if common_root else self.scenarios_root
+        self.fallback_common_root = Path(fallback_common_root) if fallback_common_root else None
         self._loaded_files: Dict[Path, Dict[str, Any]] = {}
         # Pattern to match {{anything}} including complex expressions like {{map['key']}} or {{array[0]}}
         self._variable_pattern = re.compile(r'\{\{([^}]+)\}\}')
@@ -65,6 +72,7 @@ class BaseScenarioParser:
         for candidate in [
             self.common_root / "operands",
             self.common_root / "common" / "operands",
+            self.common_root / "scenarios" / "common" / "operands",
         ]:
             if candidate.is_dir():
                 self._operand_registry.load_directory(candidate)
@@ -137,17 +145,19 @@ class BaseScenarioParser:
                 (self.common_root / include_entry).resolve(),
                 (self.common_root / "integration" / "scenarios" / include_entry).resolve(),
             ]
-            
+            if self.fallback_common_root:
+                search_paths.append((self.fallback_common_root / include_entry).resolve())
+
             include_full = None
             for path in search_paths:
                 if path.exists():
                     include_full = path
                     break
-            
+
             if include_full is None:
                 raise ScenarioParseError(
-                    f"Included file not found: {include_entry}\nSearched in:\n" +
-                    "\n".join(f"  - {p}" for p in search_paths),
+                    f"Included file not found: {include_entry}\nSearched in:\n"
+                    + "\n".join(f"  - {p}" for p in search_paths),
                     file_path=search_paths[0]
                 )
             
@@ -195,20 +205,24 @@ class BaseScenarioParser:
         "cli", "rpc", "wait", "wait_for_datum", "wait_network", "python",
         "print", "bash", "tool", "loop", "docker_op", "snapshot", "dpkg",
         "config", "set", "if", "while", "for", "switch", "name",
-        "operand_name",
+        "metric", "metrics_table",
+        "operand_name", "deploy",
     })
 
     def _transform_operand_steps(self, data: Any) -> Any:
         """Recursively rewrite custom-operand dicts into ``CustomOperandStep`` format."""
         if isinstance(data, dict):
-            # Is this dict a step invocation for a registered operand?
             operand_key = self._detect_operand_key(data)
             if operand_key is not None:
-                action = data[operand_key]
+                action_raw = str(data[operand_key])
                 params = {k: v for k, v in data.items() if k not in (operand_key, "description")}
+                defn = self._operand_registry.get(operand_key)
+                resolved_action, extra_args = defn.resolve_action(action_raw)
+                if extra_args is not None:
+                    params.setdefault("args", extra_args)
                 return {
                     "operand_name": operand_key,
-                    "operand_action": str(action),
+                    "operand_action": resolved_action,
                     "operand_params": params,
                     "description": data.get("description"),
                 }
@@ -415,7 +429,13 @@ class ScenarioParser(BaseScenarioParser):
                 raise ScenarioParseError(f"Undefined variable: {full_expr}")
             return str(variables[full_expr])
         
-        return self._variable_pattern.sub(replace_var, text)
+        result = self._variable_pattern.sub(replace_var, text)
+        MAX_DEPTH = 10
+        for _ in range(MAX_DEPTH):
+            if '{{' not in result:
+                break
+            result = self._variable_pattern.sub(replace_var, result)
+        return result
 
 
 class SuiteSetupParser(BaseScenarioParser):

@@ -19,12 +19,82 @@ class ConfigStepExecutor(StepExecutor):
         container_manager, 
         log_file=None, 
         debug=False,
-        resolve_node_alias_callback=None
+        resolve_node_alias_callback=None,
+        custom_templates_dirs=None,
     ):
         super().__init__(container_manager, log_file, debug)
         self.resolve_node_alias_callback = resolve_node_alias_callback
         self.base_path = container_manager.base_path
+        self.custom_templates_dirs: List[Path] = [Path(d) for d in (custom_templates_dirs or [])]
         
+    def _lookup_node_id_from_compose(self, service_name: str):
+        """Resolve NODE_ID for a custom compose service (e.g. cdb-node-1 → 9)."""
+        try:
+            compose_file = self.base_path / "docker-compose.generated.yml"
+            if not compose_file.exists():
+                logger.debug(f"compose file not found at {compose_file}")
+                return None
+            import yaml
+            with open(compose_file) as f:
+                data = yaml.safe_load(f)
+            svc = (data or {}).get("services", {}).get(service_name)
+            if not svc:
+                logger.debug(f"service '{service_name}' not in compose file")
+                return None
+            env = svc.get("environment", {})
+            nid = env.get("NODE_ID")
+            if nid is not None:
+                logger.info(f"resolved_compose_node_id", service=service_name, node_id=int(nid))
+                return int(nid)
+        except Exception as e:
+            logger.warning(f"compose_node_id_lookup_failed", service=service_name, error=str(e))
+        return None
+
+    def _resolve_container_for_node_id(self, node_id: int) -> str:
+        """Map numeric node_id to the Docker container name via compose file."""
+        try:
+            import yaml
+            compose_file = self.base_path / "docker-compose.generated.yml"
+            if compose_file.exists():
+                with open(compose_file) as f:
+                    data = yaml.safe_load(f)
+                for name, svc in (data or {}).get("services", {}).items():
+                    env = svc.get("environment", {})
+                    if isinstance(env, dict) and str(env.get("NODE_ID")) == str(node_id):
+                        cname = svc.get("container_name", f"cellframe-stage-{name}")
+                        logger.info("resolved_container_for_node", node_id=node_id, container=cname)
+                        return cname
+            else:
+                logger.warning("compose_file_not_found_for_container_resolve", path=str(compose_file))
+        except Exception as e:
+            logger.warning("container_resolve_exception", node_id=node_id, error=str(e))
+        logger.warning("container_resolve_fallback", node_id=node_id)
+        return f"cellframe-stage-node-{node_id}"
+
+    def _sync_config_to_container(self, node_id: int, config_rel_path: str, host_file: Path):
+        """Push a rendered config file into the running container via docker cp.
+
+        Only needed for paths that are NOT bind-mounted (e.g. lib/plugins/).
+        Paths under ``configs/`` or mounted ``data/`` subdirs are already
+        visible inside the container.
+        """
+        container_dest = f"/opt/cellframe-node/var/{config_rel_path}"
+        svc_name = self._resolve_container_for_node_id(node_id)
+
+        try:
+            result = subprocess.run(
+                ["docker", "cp", str(host_file), f"{svc_name}:{container_dest}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                logger.info("config_synced_to_container",
+                            node_id=node_id, container=svc_name, path=container_dest)
+            else:
+                logger.warning("config_sync_docker_cp_failed",
+                               node_id=node_id, container=svc_name, stderr=result.stderr.strip())
+        except Exception as e:
+            logger.warning("config_sync_exception", node_id=node_id, error=str(e))
+
     def _expand_nodes_list(self, nodes, ctx) -> list:
         """Expand nodes that can be a template string or list."""
         if isinstance(nodes, str):
@@ -39,30 +109,68 @@ class ConfigStepExecutor(StepExecutor):
                 return [s.strip() for s in expanded.split(',') if s.strip()]
         return list(nodes)
     
+    def _resolve_template_path(self, template_str: str) -> Path:
+        """
+        Resolve template path by searching custom_templates_dirs, then base_path.
+        Bare names (no directory separators) are looked up in custom dirs first.
+        """
+        tpl_path = Path(template_str)
+        if tpl_path.is_absolute() and tpl_path.exists():
+            return tpl_path
+
+        if '/' not in template_str and '\\' not in template_str:
+            for d in self.custom_templates_dirs:
+                candidate = d / template_str
+                if candidate.exists():
+                    return candidate.resolve()
+
+        resolved = (self.base_path / tpl_path).resolve()
+        if resolved.exists():
+            return resolved
+
+        raise ScenarioExecutionError(
+            f"Template not found: {template_str} "
+            f"(searched: {[str(d) for d in self.custom_templates_dirs]} + {self.base_path})"
+        )
+
     async def execute(self, step: ConfigStep, ctx: RuntimeContext) -> None:
         """Execute config regeneration step."""
+        if isinstance(step.set, dict):
+            variables = {k: ctx.substitute(str(v)) for k, v in step.set.items()}
+        else:
+            variables = self._parse_set_string(ctx.substitute(step.set))
+
+        config_path = ctx.substitute(step.config)
+        template_path = ctx.substitute(step.template) if step.template else None
+        deploy_mode = ctx.substitute(step.deploy) if step.deploy else None
+
+        if deploy_mode == "container":
+            await self._deploy_to_containers(step, ctx, config_path, template_path, variables)
+            return
+
         nodes_list = self._expand_nodes_list(step.nodes, ctx)
+        svc_map = ctx.variables.get('_service_node_ids', {})
         node_ids = []
         for node_alias in nodes_list:
             resolved = ctx.substitute(node_alias)
             if self.resolve_node_alias_callback:
                 resolved = self.resolve_node_alias_callback(resolved)
-            match = re.search(r'(?:node|root|master|full)-?(\d+)', resolved)
+            # Match base-topology names: node1, node-1, root-2, master-3, full-1
+            match = re.match(r'^(?:node|root|master|full)-?(\d+)$', resolved)
             if match:
                 node_ids.append(int(match.group(1)))
+            elif resolved in svc_map:
+                node_ids.append(int(svc_map[resolved]))
             else:
-                logger.warning(f"Could not parse node ID from {resolved}")
+                # Custom compose service (cdb-node-1, kelvpn-client-3, etc.)
+                nid = self._lookup_node_id_from_compose(resolved)
+                if nid is not None:
+                    node_ids.append(nid)
+                else:
+                    logger.warning(f"Could not parse node ID from {resolved}")
 
         if not node_ids:
             raise ScenarioExecutionError(f"No valid nodes resolved from {step.nodes}", step=step)
-
-        if isinstance(step.set, dict):
-            variables = {k: ctx.substitute(str(v)) for k, v in step.set.items()}
-        else:
-            variables = self._parse_set_string(ctx.substitute(step.set))
-            
-        config_path = ctx.substitute(step.config)
-        template_path = ctx.substitute(step.template) if step.template else None
 
         logger.info(f"Config: regenerating '{config_path}' for nodes {node_ids} with vars {list(variables.keys())}")
         
@@ -71,6 +179,44 @@ class ConfigStepExecutor(StepExecutor):
         await self._regenerate_config(node_ids, config_path, variables, network_name, template_path)
         
         ctx.add_result("config", True, {"name": step.config, "nodes": node_ids})
+
+    async def _deploy_to_containers(
+        self, step: ConfigStep, ctx: RuntimeContext,
+        config_path: str, template_path: str, variables: Dict[str, Any],
+    ) -> None:
+        """Render a J2 template and deploy the result into running containers via docker exec."""
+        import jinja2
+
+        if not template_path:
+            raise ScenarioExecutionError("deploy: container requires a 'template' field", step=step)
+
+        tpl_path = self._resolve_template_path(template_path)
+        env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(tpl_path.parent)))
+        template = env.get_template(tpl_path.name)
+
+        nodes_list = self._expand_nodes_list(step.nodes, ctx)
+        deployed = []
+        for node_alias in nodes_list:
+            node = ctx.substitute(node_alias)
+            full_context = {**variables, "node": node}
+            rendered = template.render(full_context)
+            escaped = rendered.replace("'", "'\\''")
+
+            target = config_path.replace("{{node}}", node)
+            result = await self.container_manager.exec_bash_command(
+                f"mkdir -p $(dirname '{target}') && printf '%s' '{escaped}' > '{target}'",
+                node=node,
+                timeout=30,
+            )
+            if result["returncode"] != 0:
+                raise ScenarioExecutionError(
+                    f"Failed to deploy config to {node}:{target}: {result['stderr'] or result['stdout']}",
+                    step=step,
+                )
+            deployed.append(node)
+            logger.info("config_deployed_to_container", node=node, target=target, template=str(tpl_path))
+
+        ctx.add_result("config", True, {"name": config_path, "deploy": "container", "nodes": deployed})
 
     def _parse_set_string(self, set_str: str) -> Dict[str, Any]:
         """Parse 'key=value, key2="value 2"' string."""
@@ -171,11 +317,7 @@ class ConfigStepExecutor(StepExecutor):
         """
         import jinja2
 
-        tpl_path = Path(template_path_str)
-        if not tpl_path.is_absolute():
-            tpl_path = (self.base_path / tpl_path).resolve()
-        if not tpl_path.exists():
-            raise ScenarioExecutionError(f"Template not found: {tpl_path}")
+        tpl_path = self._resolve_template_path(template_path_str)
 
         env = jinja2.Environment(
             loader=jinja2.FileSystemLoader(str(tpl_path.parent))
@@ -207,6 +349,13 @@ class ConfigStepExecutor(StepExecutor):
             except PermissionError:
                 self._write_root_owned_file(target, rendered)
             logger.info("config_rendered", node_id=node_id, target=str(target), template=str(tpl_path))
+
+            # Paths under cache/data/ (e.g. lib/plugins/) are NOT bind-mounted
+            # by default — push the rendered file into the running container.
+            # Paths under cache/configs/ (cellframe-node.cfg, cfg.d/, network/)
+            # ARE bind-mounted and don't need docker cp.
+            if "/data/" in str(target):
+                self._sync_config_to_container(node_id, expanded, target)
 
     async def _regenerate_standard_config(
         self,

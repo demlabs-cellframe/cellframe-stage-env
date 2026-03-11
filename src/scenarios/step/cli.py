@@ -2,6 +2,7 @@
 CLI command step executor.
 """
 
+import asyncio
 import json
 from typing import Any, Dict, Optional
 
@@ -135,20 +136,26 @@ class CLIStepExecutor(StepExecutor):
         has_executor_ref = hasattr(self, '_executor_ref')
         has_run_cli = hasattr(self._executor_ref, '_run_cli_command') if has_executor_ref else False
         
-        if has_executor_ref and has_run_cli:
-            # If we have executor reference, use its _run_cli_command with retry
-            result = await self._executor_ref._run_cli_command(
-                command=cmd,
-                node=node,
-                timeout=step.timeout,
-                retry_on_init_failure=(step.save_node is not None)  # Enable retry for save_node
-            )
-        else:
-            # Fallback to direct container manager call (no retry)
-            result = await self.container_manager.exec_cli_command(
-                command=cmd,
-                node=node,
-                timeout=step.timeout
+        timeout = step.timeout or 30
+        try:
+            if has_executor_ref and has_run_cli:
+                result = await self._executor_ref._run_cli_command(
+                    command=cmd,
+                    node=node,
+                    timeout=timeout,
+                    retry_on_init_failure=(step.save_node is not None)
+                )
+            else:
+                result = await self.container_manager.exec_cli_command(
+                    command=cmd,
+                    node=node,
+                    timeout=timeout
+                )
+        except asyncio.TimeoutError:
+            raise ScenarioExecutionError(
+                f"CLI step timed out after {timeout}s",
+                step=cmd[:200],
+                context={"timeout": timeout, "node": node}
             )
         
         output = result["stdout"]
@@ -258,6 +265,16 @@ class CLIStepExecutor(StepExecutor):
             except yaml.YAMLError:
                 # Not YAML format - continue with hash extraction
                 pass
+            
+            # CLI returned success (exit 0) but output may indicate node-side failure (e.g. tx_create)
+            if output and ("Can't place TX datum in mempool" in output or
+                          ("emission: False" in output and "message:" in output)):
+                raise ScenarioExecutionError(
+                    "CLI command reported failure in output (node could not process request). "
+                    "Check node logs for details.",
+                    step=cmd[:100],
+                    context={"output": output[:500]}
+                )
             
             # Extract hash from output
             pattern = DataExtractor.get_default_pattern(ExtractType.HASH)

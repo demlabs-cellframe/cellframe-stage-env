@@ -12,3 +12,4 @@ config/stage-env.cfg
 .context
 .cursorrules
 slc
+logs/

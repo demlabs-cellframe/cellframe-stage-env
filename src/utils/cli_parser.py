@@ -180,22 +180,26 @@ class CLICommandParser:
     
     def _extract_commands(self, help_text: str) -> List[str]:
         """Extract command names from main help output."""
-        commands = []
-        
-        # Look for lines that look like commands
-        # Cellframe CLI format: "command_name:\t\t\tDescription"
-        # Example: "token_decl:\t\t\tToken declaration"
-        # Also support indented commands like "    version:    Show version"
-        pattern = r'^\s*([a-zA-Z_][a-zA-Z0-9_]*):\s+'
-        
+        seen: Set[str] = set()
+        commands: List[str] = []
+        skip = {'help', 'version', 'exit', 'quit', '?', 'Commands', 'Usage', 'Options'}
+
         for line in help_text.split('\n'):
-            match = re.match(pattern, line)
+            # Format 1: "command_name:\t\t\tDescription" (single-word command)
+            match = re.match(r'^\s*([a-zA-Z_][a-zA-Z0-9_]*):\s+', line)
             if match:
                 cmd = match.group(1)
-                # Filter out common help keywords and special commands
-                if cmd not in ['help', 'version', 'exit', 'quit', '?', 'Commands', 'Usage', 'Options']:
+                if cmd not in skip and cmd not in seen:
+                    seen.add(cmd)
                     commands.append(cmd)
-        
+                continue
+            # Format 2: "node dump:\t\t\tDescription" (6.x: parent + subcommand) -> add "node"
+            match2 = re.match(r'^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*:', line)
+            if match2:
+                parent = match2.group(1)
+                if parent not in skip and parent not in seen:
+                    seen.add(parent)
+                    commands.append(parent)
         return commands
     
     def _extract_options(self, help_text: str) -> Set[str]:
@@ -261,6 +265,10 @@ class CLICommandParser:
         if not defaults:
             return cli_command
         
+        # "net list" in 6.x takes no arguments; adding -net causes "To many arguments"
+        if isinstance(cli_command, str) and cli_command.strip().startswith("net list"):
+            return cli_command
+        
         # Ensure cli_command is a string
         if not isinstance(cli_command, str):
             logger.warning(f"apply_cli_defaults received non-string command: {type(cli_command)}")
@@ -273,18 +281,23 @@ class CLICommandParser:
         
         command = parts[0]
         
-        # Get available options for this command
+        # Get available options for this command (may be empty if help parsing found no options)
         available_options = self.get_command_options(command)
-        
+        command_known = command in self.commands
+
         # Debug logging
         logger.debug(f"apply_cli_defaults: cli_command='{cli_command}', command='{command}', available_options={available_options}, defaults={defaults}, parsed={self._parsed}")
-        
-        # If command not found, log warning
-        if not available_options:
+
+        # Warn only when command is not in the parsed list at all (not when it has no options)
+        if not command_known:
             if self._parsed:
-                logger.warning(f"Command '{command}' not found in parsed commands. Available commands: {list(self.commands.keys())[:10]}")
+                logger.warning(
+                    f"Command '{command}' not found in parsed commands. Available commands: {list(self.commands.keys())[:15]}"
+                )
             else:
-                logger.warning(f"CLI parser not initialized (parsed={self._parsed}). Cannot apply defaults for command '{command}'. Parser must be initialized before use.")
+                logger.warning(
+                    f"CLI parser not initialized (parsed={self._parsed}). Cannot apply defaults for command '{command}'. Parser must be initialized before use."
+                )
         
         # Build list of options to add
         options_to_add = []

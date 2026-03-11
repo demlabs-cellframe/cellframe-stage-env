@@ -60,28 +60,28 @@ test:
       
       - print: "Root node zerochain events: {{_dag_events_output}}"
   
-  - group: Wait for master nodes to sync
-    description: Wait for ledger propagation via Global DB
+  - group: Wait for master nodes to sync chain data
+    description: Trigger chain sync and wait for network sync completion
     steps:
-      # Wait for Global DB sync on first root (ensures GDB is ready)
-      - wait: global_db_sync
-        node: "{{_active_nodes}}"
-        timeout: 120
-      
-      # Verify network is online on first master
-      - cli: "net get status"
+      - cli: "net go sync"
         node: "{{first_master}}"
-        contains: "NET_STATE_ONLINE"
-      
-      # Debug: Check zerochain events on master (may be empty - that's OK)
+
+      - wait: network_sync
+        nodes: "{{_active_nodes}}"
+        timeout: 120
+
+      - wait: global_db_sync
+        nodes: "{{_active_nodes}}"
+        timeout: 60
+
+      # Debug: Check zerochain events on master after sync
       - cli: "dag event list -chain zerochain"
         node: "{{first_master}}"
         save_to: _master_dag_events
       
       - print: "Master node zerochain events: {{_master_dag_events}}"
       
-      # CRITICAL: Check if emission is in ledger on master node
-      # If not, we need to trigger chain sync
+      # Check if emission is in ledger on master node
       - cli: "ledger list coins"
         node: "{{first_master}}"
         save_to: _master_ledger_coins

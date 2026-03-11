@@ -64,8 +64,10 @@ class NodeComposeSpec(BaseModel):
     role: str = Field("full", description="Node role: root, master, full")
     source: str = Field("genesis", description="Init mode: 'genesis', 'node-<id>', or 'fresh'")
     packages: Optional[str] = Field(None, description="Space-separated deb packages to install on this node")
+    cap_add: List[str] = Field(default_factory=list, description="Linux capabilities (e.g. NET_ADMIN, SYS_PTRACE)")
     config_overrides: Dict[str, Any] = Field(default_factory=dict, description="Config overrides as {section: {key: value}}")
     setup: Optional[List[Any]] = Field(None, description="Extra setup steps executed after the node is running")
+    regenerate_cert: bool = Field(False, description="Delete node-addr cert after cloning so the node gets a unique address on restart")
 
 
 class NodeComposeGenSpec(BaseModel):
@@ -80,8 +82,27 @@ class NodeComposeGenSpec(BaseModel):
     role: str = Field("full", description="Node role: root, master, full")
     source: str = Field("genesis", description="Init mode: 'genesis', 'node-<id>', or 'fresh'")
     packages: Optional[str] = Field(None, description="Space-separated deb packages to install")
+    cap_add: List[str] = Field(default_factory=list, description="Linux capabilities (e.g. NET_ADMIN, SYS_PTRACE)")
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
     setup: Optional[List[Any]] = Field(None, description="Extra setup steps per node")
+    regenerate_cert: bool = Field(False, description="Delete node-addr cert after cloning so each node gets a unique address")
+
+
+class DockerComposeGenSpec(BaseModel):
+    """Generator template for creating multiple docker-compose services.
+
+    Expands ``prefix`` + count into lightweight Docker containers
+    (no cellframe-node, no config/data volumes).
+    """
+    prefix: str = Field(..., description="Service name prefix (e.g. 'kelvpn-client' → kelvpn-client-1..N)")
+    count: Union[int, str] = Field(1, description="Number of containers — int or '{{variable}}'")
+    image: str = Field("debian:bookworm-slim", description="Docker image")
+    command: Optional[List[str]] = Field(None, description="Container command (default: ['sleep', 'infinity'])")
+    restart: str = Field("unless-stopped", description="Restart policy")
+    packages: Optional[str] = Field(None, description="Space-separated apt packages to install on containers")
+    cap_add: List[str] = Field(default_factory=list, description="Linux capabilities (e.g. NET_ADMIN, SYS_PTRACE)")
+    privileged: bool = Field(False, description="Run container in privileged mode")
+    environment: Dict[str, Any] = Field(default_factory=dict, description="Environment variables")
 
 
 class NodePackageSourceConfig(BaseModel):
@@ -272,8 +293,26 @@ class WaitStep(BaseModel):
       - wait: finalized         # Wait for datum finalization (DAG/Block/None)
       - wait: network_online    # Wait for network state
       - wait: wallet_balance    # Wait for wallet balance condition
+      - wait: cli               # Poll CLI command until contains/not_contains matched
+        cmd: "ledger list coins"
+        node: "{{first_master}}"
+        contains: "{{native_ticker}}"
+        timeout: 120
+        interval: 5
+      - wait: bash              # Poll bash script on node until exit 0
+        script: "pgrep -f cellframe-node"
+        node: "{{first_root}}"
+        timeout: 60
+      - wait: python            # Poll python expression until truthy
+        script: "int(ctx.get('_block_count', 0)) > 0"
+        timeout: 30
+      - wait: notify            # Wait for notification from notify server
+        node: "{{client_node}}"
+        notify_class: VpnClientState
+        contains: "connected"
+        timeout: 30
     """
-    wait: str = Field(..., description="Duration (e.g., '5s') or condition ('mempool', 'finalized', ...)")
+    wait: str = Field(..., description="Duration (e.g., '5s') or condition ('mempool', 'finalized', 'cli', 'bash', 'python', ...)")
     
     # Context parameters
     datum: Optional[str] = Field(None, description="Datum hash (for mempool/finalized)")
@@ -283,6 +322,15 @@ class WaitStep(BaseModel):
     chain: Optional[str] = Field(None, description="Chain name")
     timeout: int = Field(60, description="Timeout in seconds")
     
+    # CLI polling parameters (for wait: cli)
+    cmd: Optional[str] = Field(None, description="CLI command to poll (for wait: cli)")
+    contains: Optional[str] = Field(None, description="Expected substring/regex in output (for wait: cli, wait: bash)")
+    not_contains: Optional[str] = Field(None, description="Unexpected substring in output (for wait: cli, wait: bash)")
+    interval: int = Field(5, ge=1, description="Seconds between polling attempts")
+    
+    # Script body (for wait: bash, wait: python)
+    script: Optional[str] = Field(None, description="Bash script or Python expression to poll")
+    
     # Wallet balance parameters
     wallet: Optional[str] = Field(None, description="Wallet name (for wallet_balance)")
     token: Optional[str] = Field(None, description="Token ticker (for wallet_balance)")
@@ -290,6 +338,9 @@ class WaitStep(BaseModel):
     
     # Block creation parameters
     min_blocks: Optional[int] = Field(None, description="Minimum number of blocks (for block_created)")
+
+    # Notify server parameters (for wait: notify)
+    notify_class: Optional[str] = Field(None, description="Notification class filter, e.g. 'VpnClientState' (for wait: notify)")
 
     # GlobalDB group sync parameters
     group: Optional[str] = Field(None, description="GDB group name (for global_db_sync with specific group)")
@@ -405,8 +456,22 @@ class SnapshotStep(BaseModel):
     name: str = Field(..., description="Snapshot name (supports templates like '{{topology_name}}')")
     is_base: bool = Field(False, description="Mark as base topology snapshot (used as default for suites)")
     nodes: Optional[Union[str, List[str]]] = Field(None, description="Nodes to include (optional, defaults to all)")
-    stop_containers: bool = Field(True, description="Stop containers before create (ensures consistent state)")
+    stop_containers: bool = Field(True, description="Stop containers before create (ensures consistent state for MDBX/GDB)")
+    restart_after: bool = Field(True, description="Restart containers after create when stop_containers is true")
     save: Optional[str] = Field(None, description="Variable name to save result (verify: True/False; restore: True/False)")
+    regenerate_certs: bool = Field(False, description="Regenerate unique node-addr certificates after restore (prevents address collisions)")
+    clone_images: Optional[Dict[str, Any]] = Field(None, description="Clone committed image from prototype to other services: {source_svc: [target1, target2, ...]}")
+    wait_ready: Optional[Union[bool, List[str]]] = Field(
+        None,
+        description="Wait for cellframe nodes to be CLI-ready after restore. "
+                    "true = auto-detect nodes, list = specific service names"
+    )
+    wait_ready_timeout: int = Field(90, description="Timeout for readiness wait in seconds")
+    wait_ready_check: Optional[str] = Field(
+        None,
+        description="Custom CLI command to verify full readiness after basic CLI check "
+                    "(e.g. 'vpn_cdb version' to ensure plugin is loaded)"
+    )
 
 
 # ============================================================================
@@ -417,6 +482,7 @@ from .schema_control_flow import SetStep, IfStep, WhileStep, ForStep, SwitchStep
 from .schema_config import ConfigStep
 from .schema_dpkg import DpkgStep
 from .schema_operand import CustomOperandStep
+from .schema_metrics import MetricStep, MetricsTableStep
 
 
 # ============================================================================
@@ -502,7 +568,7 @@ TestStep = Union[
     NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep, DpkgStep,
     CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
-    ConfigStep,
+    ConfigStep, MetricStep, MetricsTableStep,
     WaitStep,
     CustomOperandStep,
 ]
@@ -587,9 +653,14 @@ class SuiteDescriptor(BaseModel):
         description="Additional cellframe nodes to provision (key = service name)"
     )
 
+    # Generator templates — expanded into docker_compose entries before provisioning.
+    docker_compose_gen: List[DockerComposeGenSpec] = Field(
+        default_factory=list,
+        description="Templates to generate multiple docker-compose services"
+    )
+
     # Arbitrary docker-compose services merged into the generated compose file.
     # Each key is a service name, value is a docker-compose service definition.
-    # Special field 'packages' (str) is stripped before merge and installed on all nodes.
     docker_compose: Dict[str, Any] = Field(
         default_factory=dict,
         description="Docker-compose services to add (iperf, webservers, etc.)"

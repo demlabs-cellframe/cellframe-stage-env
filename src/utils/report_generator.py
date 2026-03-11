@@ -153,6 +153,29 @@ class ReportGenerator:
                 
                 md += "\n"
         
+        # Collected metrics (from metric: steps in scenarios)
+        all_metrics = summary_data.get('metrics', [])
+        if all_metrics:
+            groups = {}
+            for m in all_metrics:
+                g = m.get('group', 'default')
+                groups.setdefault(g, []).append(m)
+
+            md += "## Collected Metrics\n\n"
+            for group_name, entries in groups.items():
+                md += f"### {group_name}\n\n"
+                md += "| Name | Value | Unit |\n"
+                md += "|------|------:|------|\n"
+                for e in entries:
+                    name = e.get('name', '?')
+                    value = e.get('value', '')
+                    unit = e.get('unit', '') or ''
+                    if isinstance(value, float):
+                        md += f"| {name} | {value:.4g} | {unit} |\n"
+                    else:
+                        md += f"| {name} | {value} | {unit} |\n"
+                md += "\n"
+
         # Artifacts
         md += "## Collected Artifacts\n\n"
         
@@ -222,7 +245,8 @@ class ReportGenerator:
             return pdf_file
         
         logger.warning("pdf_generation_failed_no_tools_available",
-                      tried=['pandoc', 'weasyprint'])
+                      tried=['pandoc', 'weasyprint'],
+                      hint="Install pandoc or weasyprint to generate PDF report; markdown report is always generated")
         return None
     
     def _try_pandoc(self, md_file: Path, pdf_file: Path) -> bool:
