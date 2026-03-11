@@ -5,6 +5,8 @@ Uses system locale (LANG/LC_ALL): if Russian, user-facing messages are shown in 
 otherwise English (default in code). No external .po/.mo files — translations live in
 translations_ru.py.
 """
+from __future__ import annotations
+
 import locale
 import os
 
