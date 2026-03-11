@@ -9,6 +9,7 @@ Manages snapshot creation/restoration via scenario steps:
     name: phase1
     regenerate_certs: true   # unique node identity after restore
 """
+from __future__ import annotations
 
 from pathlib import Path
 
