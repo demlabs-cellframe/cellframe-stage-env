@@ -36,6 +36,7 @@ x-cf-node-template:
     NETWORK_NAME: ${NETWORK_NAME:-stagenet}
     DAP_DEBUG: ${DAP_DEBUG:-1}
     CELLFRAME_DEBUG: ${CELLFRAME_DEBUG:-1}
+  stop_grace_period: 60s
   restart: 'no'
   healthcheck: &id008
     test:

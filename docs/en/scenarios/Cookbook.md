@@ -175,7 +175,7 @@ Properly apply configuration changes.
 ```yaml
 - config: "{{network_name}}/main"
   set:
-    is_add_directly: "true"
+    fee_addr: "{{fee_addr}}"
 - docker_op: restart  # ❌ Config NOT reloaded!
 ```
 
@@ -184,7 +184,7 @@ Properly apply configuration changes.
 - config: "{{network_name}}/main"
   nodes: "{{_active_nodes}}"
   set:
-    is_add_directly: "true"
+    fee_addr: "{{fee_addr}}"
 
 # Use stop + start instead of restart
 - docker_op: stop

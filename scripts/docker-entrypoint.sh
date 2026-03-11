@@ -18,10 +18,17 @@ echo "Network: $NETWORK_NAME"
 # from the host (log/, lib/ca/, lib/global_db/, lib/wallet/, lib/network/),
 # so directories like var/run/ and var/lib/plugins/ remain from the image.
 
-# Enable core dumps — they land in cwd (/opt/cellframe-node) which is bind-mounted via var/
+# Enable core dumps — save to crash-artifacts mount that survives snapshot restores
 ulimit -c unlimited
-mkdir -p /opt/cellframe-node/var/coredumps
-cd /opt/cellframe-node/var/coredumps
+CRASH_DIR="/crash-artifacts/node-${NODE_ID}"
+mkdir -p "$CRASH_DIR"
+cd "$CRASH_DIR"
+
+# ASAN support: if the binary was built with -fsanitize=address, configure runtime
+if ldd /opt/cellframe-node/bin/cellframe-node 2>/dev/null | grep -q libasan; then
+    export ASAN_OPTIONS="detect_leaks=0:halt_on_error=0:abort_on_error=0:print_stacktrace=1:detect_odr_violation=0"
+    echo "ASAN enabled: $ASAN_OPTIONS"
+fi
 
 # Start cellframe-node with maximum debug level
 echo "Starting cellframe-node..."

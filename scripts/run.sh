@@ -239,7 +239,7 @@ elif $SKIP_BUILD; then
     # --skip-build flag: use existing local package or config
     info "Skipping build (--skip-build specified)"
     if $IN_CELLFRAME_REPO; then
-        DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f 2>/dev/null | head -n 1)
+        DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 2 -name "cellframe-node[_-][0-9]*.deb" -type f 2>/dev/null | head -n 1)
         if [ -n "$DEB_PACKAGE" ]; then
             success "Using existing package: $(basename "$DEB_PACKAGE")"
         else
@@ -250,10 +250,9 @@ elif $IN_CELLFRAME_REPO; then
     # In cellframe-node repo with type=local or no type
     # Check if package already exists and is up to date
     info "Checking for existing package in $TEST_BUILD_DIR..."
-    DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f 2>/dev/null | head -n 1)
+    DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 2 -name "cellframe-node[_-][0-9]*.deb" -type f 2>/dev/null | head -n 1)
     
     if [ -n "$DEB_PACKAGE" ]; then
-        # Package exists - check if we need to rebuild
         info "Found existing package: $(basename "$DEB_PACKAGE")"
         
         # TODO: Add hash check here to detect if package changed
@@ -291,7 +290,7 @@ if $SHOULD_BUILD; then
         exit 1
     }
     
-    DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 1 -name "cellframe-node*.deb" -type f | head -n 1)
+    DEB_PACKAGE=$(find "$TEST_BUILD_DIR" -maxdepth 2 -name "cellframe-node[_-][0-9]*.deb" -type f | head -n 1)
     
     if [ -z "$DEB_PACKAGE" ]; then
         error "No .deb package found after build"
@@ -453,6 +452,24 @@ else
     error "Failed to start stage environment"
     FUNCTIONAL_EXIT=$E2E_EXIT
     REGRESSION_EXIT=$E2E_EXIT
+
+    # Show last lines of stage-env log so user sees the actual error
+    LOG_TAIL_LINES=80
+    for LOG_BASE in "$PROJECT_ROOT/build/stage-env/logs" "$CACHE_DIR/logs" "$STAGE_ENV_DIR/logs"; do
+        if [ -d "$LOG_BASE" ]; then
+            LATEST_LOG=$(find "$LOG_BASE" -maxdepth 1 -name "stage-env_*.log" -type f 2>/dev/null | sort -r | head -n 1)
+            if [ -n "$LATEST_LOG" ] && [ -f "$LATEST_LOG" ]; then
+                echo ""
+                echo "════════════════════════════════════"
+                echo " Last $LOG_TAIL_LINES lines of stage-env log (failure context)"
+                echo " $LATEST_LOG"
+                echo "════════════════════════════════════"
+                tail -n "$LOG_TAIL_LINES" "$LATEST_LOG" 2>/dev/null | sed 's/^/  /'
+                echo "════════════════════════════════════"
+                break
+            fi
+        fi
+    done
 fi
 
 # Summary
@@ -488,7 +505,8 @@ fi
 echo "════════════════════════════════════"
 
 # Find and display detailed test results from summary.json
-LATEST_RUN_DIR=$(find "$CACHE_DIR/artifacts" -maxdepth 1 -type d -name "run_*" 2>/dev/null | sort -r | head -n 1)
+# Check both default cache and build/stage-env (when paths.cache_dir points there)
+LATEST_RUN_DIR=$(find "$CACHE_DIR/artifacts" "$PROJECT_ROOT/build/stage-env/artifacts" -maxdepth 1 -type d -name "run_*" 2>/dev/null | sort -r | head -n 1)
 if [ -n "$LATEST_RUN_DIR" ] && [ -f "$LATEST_RUN_DIR/summary.json" ]; then
     echo ""
     echo "════════════════════════════════════"
