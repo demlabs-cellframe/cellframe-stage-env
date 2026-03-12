@@ -92,6 +92,13 @@ class WaitStepExecutor(StepExecutor):
             return self.get_node_config_callback(node_name)
         return None
     
+    def _resolve_timeout(self, step, ctx) -> float:
+        """Resolve timeout value, substituting templates if needed."""
+        val = step.timeout
+        if isinstance(val, str):
+            val = ctx.substitute(val)
+        return float(val)
+
     async def execute(self, step: WaitStep, ctx: RuntimeContext) -> None:
         """Execute wait step."""
         try:
@@ -190,6 +197,9 @@ class WaitStepExecutor(StepExecutor):
         if wait_type == "bash":
             await self._execute_bash_poll(step, ctx)
             return
+        if wait_type == "docker_exec":
+            await self._execute_docker_exec_poll(step, ctx)
+            return
         if wait_type == "python":
             await self._execute_python_poll(step, ctx)
             return
@@ -223,7 +233,7 @@ class WaitStepExecutor(StepExecutor):
                     node=params["node"],
                     network=params.get("network", ctx.variables.get('network_name', 'stagenet')),
                     chain=params.get("chain", "zerochain"),
-                    timeout=float(step.timeout)
+                    timeout=self._resolve_timeout(step, ctx)
                 )
             elif registry_type == "datum_finalized":
                 result = await dispatcher.execute_datum_finalized(
@@ -231,7 +241,7 @@ class WaitStepExecutor(StepExecutor):
                     node=params["node"],
                     network=params.get("network", ctx.variables.get('network_name', 'stagenet')),
                     chain=params.get("chain", "main"),
-                    timeout=float(step.timeout),
+                    timeout=self._resolve_timeout(step, ctx),
                     check_master_nodes=step.check_master if hasattr(step, 'check_master') else True
                 )
             else:
@@ -239,7 +249,7 @@ class WaitStepExecutor(StepExecutor):
                 result = await dispatcher.execute_waiter(
                     waiter_type=registry_type,
                     params=params,
-                    timeout=float(step.timeout)
+                    timeout=self._resolve_timeout(step, ctx)
                 )
             
             logger.info(f"✅ Waiter '{wait_type}' completed")
@@ -301,7 +311,7 @@ class WaitStepExecutor(StepExecutor):
             pass
         expected = ctx.substitute(step.contains) if step.contains else None
         unexpected = ctx.substitute(step.not_contains) if step.not_contains else None
-        timeout = float(step.timeout)
+        timeout = self._resolve_timeout(step, ctx)
 
         logger.info(
             f"  wait: notify node={node_alias} ip={host} "
@@ -372,7 +382,7 @@ class WaitStepExecutor(StepExecutor):
             if patched and isinstance(patched, str):
                 cmd = patched
 
-        timeout = float(step.timeout)
+        timeout = self._resolve_timeout(step, ctx)
         interval = float(step.interval)
         attempt = 0
 
@@ -427,6 +437,10 @@ class WaitStepExecutor(StepExecutor):
                         f"  ✅ wait: cli satisfied after {attempt} attempts "
                         f"({elapsed:.0f}s)"
                     )
+                    if step.save or step.save_map:
+                        ctx.save_output(
+                            output, step.save, step.save_regex, step.save_map
+                        )
                     ctx.add_result("wait", True, {
                         "type": "cli", "attempts": attempt, "elapsed": elapsed
                     })
@@ -474,7 +488,7 @@ class WaitStepExecutor(StepExecutor):
 
         expected = ctx.substitute(step.contains) if step.contains else None
         unexpected = ctx.substitute(step.not_contains) if step.not_contains else None
-        timeout = float(step.timeout)
+        timeout = self._resolve_timeout(step, ctx)
         interval = float(step.interval)
         attempt = 0
 
@@ -531,6 +545,10 @@ class WaitStepExecutor(StepExecutor):
                             f"  ✅ wait: bash satisfied after {attempt} attempts "
                             f"({elapsed:.0f}s)"
                         )
+                        if step.save or step.save_map:
+                            ctx.save_output(
+                                output, step.save, step.save_regex, step.save_map
+                            )
                         ctx.add_result("wait", True, {
                             "type": "bash", "attempts": attempt, "elapsed": elapsed
                         })
@@ -558,6 +576,151 @@ class WaitStepExecutor(StepExecutor):
             context={"last_output": last_output[:500]}
         )
 
+    async def _execute_docker_exec_poll(self, step, ctx) -> None:
+        """Poll a command inside docker container(s) until exit 0.
+
+        Optionally checks ``contains`` / ``not_contains`` on stdout.
+        On success, saves output via ``save`` / ``save_regex`` / ``save_map``.
+
+        YAML::
+
+            - wait: docker_exec
+              cmd: "test -S /opt/cf-vpn-clientd/var/run/cf-vpn-clientd.sock && echo ready"
+              services: ["clientd-1"]
+              contains: "ready"
+              timeout: 20
+              interval: 1
+        """
+        command_str = step.cmd
+        if not command_str:
+            raise ScenarioExecutionError(
+                "wait: docker_exec requires 'cmd' parameter", step=step
+            )
+        command_str = ctx.substitute(command_str)
+
+        raw_services = step.services
+        if not raw_services:
+            raise ScenarioExecutionError(
+                "wait: docker_exec requires 'services' parameter", step=step
+            )
+        if isinstance(raw_services, str):
+            expanded = ctx.substitute(raw_services)
+            if expanded.startswith('[') and expanded.endswith(']'):
+                import ast
+                try:
+                    raw_services = ast.literal_eval(expanded)
+                except (ValueError, SyntaxError):
+                    raw_services = [expanded]
+            else:
+                raw_services = [s.strip() for s in expanded.split(',') if s.strip()]
+        services = [ctx.substitute(s) for s in raw_services]
+
+        expected = ctx.substitute(step.contains) if step.contains else None
+        unexpected = ctx.substitute(step.not_contains) if step.not_contains else None
+        timeout = self._resolve_timeout(step, ctx)
+        interval = float(step.interval)
+
+        if not hasattr(ctx, 'compose_manager'):
+            raise ScenarioExecutionError(
+                "DockerComposeManager not available in context.", step=step
+            )
+        compose_manager = ctx.compose_manager
+
+        import time as _time
+        import re as _re
+        t_start = _time.monotonic()
+        attempt = 0
+        last_output = ""
+
+        logger.info(
+            f"  wait: docker_exec services={services} "
+            f"cmd='{command_str[:80]}' timeout={timeout}s interval={interval}s"
+        )
+
+        command_parts = ["sh", "-c", command_str]
+
+        while True:
+            elapsed = _time.monotonic() - t_start
+            if elapsed >= timeout:
+                break
+            attempt += 1
+
+            try:
+                all_ok = True
+                combined = []
+                for svc in services:
+                    exit_code, output = compose_manager.exec(
+                        service=svc, command=command_parts
+                    )
+                    combined.append(output)
+                    if exit_code != 0:
+                        all_ok = False
+                        break
+
+                merged = "\n".join(combined)
+                last_output = merged
+
+                if all_ok:
+                    ok = True
+                    output_lower = merged.lower()
+                    if expected:
+                        exp_lower = expected.lower()
+                        if exp_lower not in output_lower:
+                            try:
+                                if not _re.search(exp_lower, output_lower):
+                                    ok = False
+                            except _re.error:
+                                ok = False
+                    if unexpected:
+                        unexp_lower = unexpected.lower()
+                        found = unexp_lower in output_lower
+                        if not found:
+                            try:
+                                found = bool(_re.search(unexp_lower, output_lower))
+                            except _re.error:
+                                pass
+                        if found:
+                            ok = False
+
+                    if ok:
+                        logger.info(
+                            f"  ✅ wait: docker_exec satisfied after {attempt} "
+                            f"attempts ({elapsed:.0f}s)"
+                        )
+                        if step.save or step.save_map:
+                            ctx.save_output(
+                                merged, step.save, step.save_regex, step.save_map
+                            )
+                        ctx.add_result("wait", True, {
+                            "type": "docker_exec", "attempts": attempt,
+                            "elapsed": elapsed,
+                        })
+                        return
+
+            except Exception as e:
+                logger.debug(f"  wait: docker_exec attempt {attempt} error: {e}")
+
+            remaining = timeout - (_time.monotonic() - t_start)
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(interval, remaining))
+
+        real_elapsed = _time.monotonic() - t_start
+        msg = (
+            f"wait: docker_exec timeout after {real_elapsed:.0f}s/{timeout}s "
+            f"({attempt} attempts). cmd='{command_str[:80]}'"
+        )
+        if getattr(step, "optional", False):
+            logger.warning(f"⚠️ {msg} (optional, continuing)")
+            ctx.add_result("wait", False, {
+                "type": "docker_exec", "timeout": True
+            })
+            return
+        raise ScenarioExecutionError(
+            msg, step=step,
+            context={"last_output": last_output[:500]}
+        )
+
     async def _execute_python_poll(self, step, ctx) -> None:
         """
         Poll a Python expression until it evaluates to a truthy value.
@@ -571,7 +734,7 @@ class WaitStepExecutor(StepExecutor):
             )
 
         expr = ctx.substitute(step.script)
-        timeout = float(step.timeout)
+        timeout = self._resolve_timeout(step, ctx)
         interval = float(step.interval)
         elapsed = 0.0
         attempt = 0

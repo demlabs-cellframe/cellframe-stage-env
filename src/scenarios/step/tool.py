@@ -42,11 +42,10 @@ class ToolStepExecutor(StepExecutor):
             self._log_to_file(f"Stderr:\n{result['stderr']}")
         self._log_to_file("\n" + "=" * 70 + "\n")
         
-        # Save result if requested
-        if step.save:
-            ctx.set_variable(step.save, result["stdout"].strip())
-            self._log_to_file(f"✓ Saved to variable: {step.save}")
-            logger.debug("tool_step_saved", variable=step.save)
+        if step.save or step.save_map:
+            ctx.save_output(result["stdout"], step.save, step.save_regex, step.save_map)
+            if step.save:
+                self._log_to_file(f"✓ Saved to variable: {step.save}")
         
         # Check expectation
         if step.expect == "success" and result["returncode"] != 0:

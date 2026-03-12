@@ -262,6 +262,8 @@ class CLIStep(BaseModel):
     cli: str = Field(..., description="CLI command to execute")
     node: str = Field("node1", description="Node to execute on")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output (null regex = full output)")
     save_hash: Optional[str] = Field(None, description="Extract and save hash (0x[hex]) to variable")
     save_wallet: Optional[str] = Field(None, description="Extract and validate wallet address to variable")
     save_node: Optional[str] = Field(None, description="Extract node address (0x::format) to variable")
@@ -301,6 +303,8 @@ class RPCStep(BaseModel):
     params: List[Any] = Field(default_factory=list, description="RPC parameters")
     node: str = Field("node1", description="Node to call RPC on")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
     wait: Optional[str] = Field(None, description="Wait duration after call")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     timeout: Optional[int] = Field(30, description="RPC call timeout")
@@ -332,6 +336,12 @@ class WaitStep(BaseModel):
       - wait: python            # Poll python expression until truthy
         script: "int(ctx.get('_block_count', 0)) > 0"
         timeout: 30
+      - wait: docker_exec       # Poll command inside docker container(s)
+        cmd: "test -S /opt/cf-vpn-clientd/var/run/cf-vpn-clientd.sock"
+        services: ["clientd-1"]
+        contains: "ready"
+        timeout: 20
+        interval: 1
       - wait: notify            # Wait for notification from notify server
         node: "{{client_node}}"
         notify_class: VpnClientState
@@ -346,8 +356,8 @@ class WaitStep(BaseModel):
     nodes: Optional[Union[str, List[str]]] = Field(None, description="Target nodes list (can be template like '{{all_nodes}}')")
     network: Optional[str] = Field(None, description="Network name")
     chain: Optional[str] = Field(None, description="Chain name")
-    timeout: int = Field(60, description="Timeout in seconds")
-    
+    timeout: Union[int, str] = Field(60, description="Timeout in seconds (can be template e.g. '{{var}}')")
+
     # CLI polling parameters (for wait: cli)
     cmd: Optional[str] = Field(None, description="CLI command to poll (for wait: cli)")
     contains: Optional[str] = Field(None, description="Expected substring/regex in output (for wait: cli, wait: bash)")
@@ -356,6 +366,9 @@ class WaitStep(BaseModel):
     
     # Script body (for wait: bash, wait: python)
     script: Optional[str] = Field(None, description="Bash script or Python expression to poll")
+
+    # Docker exec polling (for wait: docker_exec) — uses 'cmd' for the command
+    services: Optional[Union[str, List[str]]] = Field(None, description="Docker services for docker_exec polling")
     
     # Wallet balance parameters
     wallet: Optional[str] = Field(None, description="Wallet name (for wallet_balance)")
@@ -372,6 +385,11 @@ class WaitStep(BaseModel):
     group: Optional[str] = Field(None, description="GDB group name (for global_db_sync with specific group)")
     key: Optional[str] = Field(None, description="GDB key to wait for in group (for global_db_sync)")
 
+    # Save output from polling (for wait: docker_exec, wait: bash, wait: cli)
+    save: Optional[str] = Field(None, description="Variable name to save last successful output to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} for multi-extraction")
+
     # Advanced options
     check_master: bool = Field(True, description="Check master nodes (for finalized)")
     expected_count: Optional[int] = Field(None, description="Expected count (for specific waiters)")
@@ -382,6 +400,8 @@ class PythonStep(BaseModel):
     """Execute Python code with access to context."""
     python: str = Field(..., description="Python code to execute")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
 
 
 class PrintStep(BaseModel):
@@ -394,6 +414,8 @@ class BashStep(BaseModel):
     bash: str = Field(..., description="Bash script to execute")
     node: Optional[str] = Field(None, description="Node to execute on (None = execute on host)")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     timeout: Optional[int] = Field(300, description="Script timeout in seconds")
     
@@ -406,6 +428,8 @@ class ToolStep(BaseModel):
     tool: str = Field(..., description="Tool command (e.g., 'cert create test_cert sig_dil')")
     node: str = Field("node1", description="Node to execute on")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     timeout: Optional[int] = Field(30, description="Command timeout in seconds")
     
@@ -458,6 +482,30 @@ class DockerOpStep(BaseModel):
     tail: int = Field(100, description="Number of log lines from end (for 'logs' operation)")
     # Common output field
     save: Optional[str] = Field(None, description="Variable name to save command/logs output into")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
+
+
+class DockerExecStep(BaseModel):
+    """Shorthand for ``docker_op: exec``.
+
+    YAML::
+
+        - docker_exec: "cf-vpn-clientd-ctl status 2>&1"
+          services: ["clientd-1"]
+          save: _status
+          save_regex: "State:\\\\s*(\\\\d+)"
+    """
+    docker_exec: str = Field(..., description="Command to execute inside the container(s)")
+    services: Union[str, List[str]] = Field(..., description="Docker service(s) to run the command on")
+    save: Optional[str] = Field(None, description="Variable name to save output to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} for multi-extraction")
+    expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
+    timeout: Optional[int] = Field(300, description="Command timeout in seconds")
+
+    class Config:
+        use_enum_values = True
 
 
 class SnapshotStep(BaseModel):
@@ -591,7 +639,7 @@ class StepGroup(BaseModel):
 # CustomOperandStep MUST be LAST — it is a catch-all populated by the parser's
 # pre-processing pass and will never appear in raw YAML directly.
 TestStep = Union[
-    NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerOpStep, DpkgStep,
+    NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerExecStep, DockerOpStep, DpkgStep,
     CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep, MetricStep, MetricsTableStep,

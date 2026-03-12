@@ -198,11 +198,9 @@ class CLIStepExecutor(StepExecutor):
                     step=cmd[:100],
                     context={"exit_code": exit_code, "stderr": result.get("stderr", "")[:500]}
                 )
-            # For save/save_to, save empty string or error message
-            if step.save or step.save_to:
-                variable_name = ctx.substitute(step.save or step.save_to)
-                ctx.set_variable(variable_name, result.get("stderr", "") or "")
-                logger.debug("cli_step_saved_error", variable=variable_name)
+            if step.save or step.save_to or step.save_map:
+                variable_name = ctx.substitute(step.save or step.save_to) if (step.save or step.save_to) else None
+                ctx.save_output(result.get("stderr", "") or "", variable_name, step.save_regex, step.save_map)
             return result
         
         # Extract and save values if requested (only if command succeeded)
@@ -330,11 +328,9 @@ class CLIStepExecutor(StepExecutor):
                     context={"output": output[:500]}
                 )
         
-        # Save raw output if requested
-        if step.save or step.save_to:
-            variable_name = ctx.substitute(step.save or step.save_to)
-            ctx.set_variable(variable_name, output.strip())
-            logger.debug("cli_step_saved", variable=variable_name)
+        if step.save or step.save_to or step.save_map:
+            variable_name = ctx.substitute(step.save or step.save_to) if (step.save or step.save_to) else None
+            ctx.save_output(output, variable_name, step.save_regex, step.save_map)
         
         # Check contains/not_contains assertions (case-insensitive)
         # Supports both literal substring match and regex patterns

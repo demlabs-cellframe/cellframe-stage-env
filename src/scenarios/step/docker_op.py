@@ -139,9 +139,8 @@ class DockerOpStepExecutor(StepExecutor):
                     logger.info(f"Logs for {svc} (last {tail} lines):\n{log_output}")
                     all_output.append(log_output)
                 combined = "\n".join(all_output)
-                if step.save:
-                    ctx.set_variable(step.save, combined)
-                    logger.info(f"Saved logs output to variable '{step.save}'")
+                if step.save or step.save_map:
+                    ctx.save_output(combined, step.save, step.save_regex, step.save_map)
             elif operation == "exec":
                 if not step.command:
                     raise ScenarioExecutionError("Command required for 'exec' operation", step=step)
@@ -160,9 +159,8 @@ class DockerOpStepExecutor(StepExecutor):
                         )
                     all_output.append(output)
                 combined = "\n".join(all_output)
-                if step.save:
-                    ctx.set_variable(step.save, combined)
-                    logger.info(f"Saved exec output to variable '{step.save}'")
+                if step.save or step.save_map:
+                    ctx.save_output(combined, step.save, step.save_regex, step.save_map)
             else:
                 raise ScenarioExecutionError(f"Unknown Docker operation: {operation}", step=step)
             

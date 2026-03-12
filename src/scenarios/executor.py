@@ -17,7 +17,7 @@ from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
     CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
-    NetworkWaitStep, DockerOpStep, SnapshotStep,
+    NetworkWaitStep, DockerOpStep, DockerExecStep, SnapshotStep,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep, DpkgStep, CustomOperandStep,
     MetricStep, MetricsTableStep,
@@ -74,6 +74,56 @@ class RuntimeContext:
         """Set runtime variable."""
         self.variables[name] = value
         logger.debug(f"Set variable: {name} = {value}")
+
+    def save_output(self, output: str, save: Optional[str], save_regex: Optional[str] = None,
+                     save_map: Optional[Dict[str, Optional[str]]] = None) -> None:
+        """Save command output to variable(s) with optional regex extraction.
+
+        Args:
+            output: Raw command output.
+            save: Variable name to save to. If *None* and *save_map* is also
+                *None*, does nothing.
+            save_regex: Optional regex applied to *output* before saving to
+                *save*. First capturing group is stored; otherwise full match.
+            save_map: Optional dict ``{variable_name: regex_or_None}``.
+                For each entry the regex is applied to *output* and the result
+                is stored under *variable_name*. ``None`` regex means save the
+                full (stripped) output.
+        """
+        raw = output.strip() if output else ""
+
+        def _extract(match: re.Match) -> str:
+            """Return the first non-None capturing group, or the full match."""
+            if match.lastindex:
+                for i in range(1, match.lastindex + 1):
+                    if match.group(i) is not None:
+                        return match.group(i).strip()
+            return match.group(0).strip()
+
+        def _apply(var: str, pattern: Optional[str]) -> None:
+            if not pattern:
+                self.set_variable(var, raw)
+                logger.info("output_saved", variable=var,
+                             value_len=len(raw), regex="none")
+                return
+            m = re.search(pattern, raw, re.MULTILINE | re.DOTALL)
+            if m:
+                val = _extract(m)
+            else:
+                logger.warning("save_regex_no_match",
+                               variable=var, pattern=pattern,
+                               output_preview=raw[:200])
+                val = ""
+            self.set_variable(var, val)
+            logger.info("output_saved", variable=var,
+                         value_len=len(val), regex=pattern)
+
+        if save:
+            _apply(save, save_regex)
+
+        if save_map:
+            for var_name, pattern in save_map.items():
+                _apply(var_name, pattern)
     
     def get_variable(self, name: str) -> Any:
         """Get runtime variable."""
@@ -192,7 +242,7 @@ class ScenarioExecutor:
             CLIStepExecutor, RPCStepExecutor, PythonStepExecutor, PrintStepExecutor,
             BashStepExecutor, ToolStepExecutor, WaitStepExecutor,
             WaitForDatumStepExecutor, LoopStepExecutor,
-            NetworkWaitStepExecutor, DockerOpStepExecutor, SnapshotStepExecutor,
+            NetworkWaitStepExecutor, DockerOpStepExecutor, DockerExecStepExecutor, SnapshotStepExecutor,
             SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor,
             ConfigStepExecutor, DpkgStepExecutor
         )
@@ -225,6 +275,10 @@ class ScenarioExecutor:
             self.container_manager, log_file, debug,
             resolve_node_alias_callback=self._resolve_node_alias,
             wait_executor=self.wait_executor
+        )
+        self.docker_exec_executor = DockerExecStepExecutor(
+            self.container_manager, log_file, debug,
+            resolve_node_alias_callback=self._resolve_node_alias,
         )
         self.snapshot_executor = SnapshotStepExecutor(
             self.container_manager, log_file, debug, compose_manager=None,
@@ -768,6 +822,8 @@ class ScenarioExecutor:
                 step_desc = f"MetricStep ({step.metric}={step.value})"
             elif isinstance(step, MetricsTableStep):
                 step_desc = f"MetricsTableStep ({step.metrics_table})"
+            elif isinstance(step, DockerExecStep):
+                step_desc = f"DockerExec ({step.docker_exec[:60]})"
             elif isinstance(step, CustomOperandStep):
                 step_desc = f"CustomOperand ({step.operand_name}.{step.operand_action})"
 
@@ -812,6 +868,8 @@ class ScenarioExecutor:
                 await self.loop_executor.execute(step, ctx, defaults)
             elif isinstance(step, NetworkWaitStep):
                 await self.network_wait_executor.execute(step, ctx)
+            elif isinstance(step, DockerExecStep):
+                await self.docker_exec_executor.execute(step, ctx)
             elif isinstance(step, DockerOpStep):
                 await self.docker_op_executor.execute(step, ctx)
             elif isinstance(step, SnapshotStep):

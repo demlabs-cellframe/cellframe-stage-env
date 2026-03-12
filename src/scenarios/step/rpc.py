@@ -38,10 +38,9 @@ class RPCStepExecutor(StepExecutor):
             response = await client.post(url, json=payload)
             result = response.json()
         
-        # Save result if requested
-        if step.save:
-            ctx.set_variable(step.save, result)
-            logger.debug("rpc_step_saved", variable=step.save)
+        if step.save or step.save_map:
+            output = str(result) if not isinstance(result, str) else result
+            ctx.save_output(output, step.save, step.save_regex, step.save_map)
         
         return result
 

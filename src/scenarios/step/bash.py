@@ -39,12 +39,9 @@ class BashStepExecutor(StepExecutor):
                 context={"timeout": timeout, "node": getattr(step, 'node', None)}
             )
         
-        if step.save:
-            var_name = ctx.substitute(step.save)
-            ctx.set_variable(var_name, result["stdout"].strip())
-            logger.info("bash_step_saved", variable=var_name,
-                        save_template=step.save,
-                        stdout_len=len(result["stdout"]))
+        if step.save or step.save_map:
+            var_name = ctx.substitute(step.save) if step.save else None
+            ctx.save_output(result["stdout"], var_name, step.save_regex, step.save_map)
         
         # Check expectation
         if step.expect == "success" and result["returncode"] != 0:
