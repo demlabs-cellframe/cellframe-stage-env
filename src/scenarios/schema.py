@@ -60,11 +60,19 @@ class NodeComposeSpec(BaseModel):
       - "node-N"   — clone configs+data from existing node N
       - "fresh"    — empty dirs, only a base cellframe-node.cfg is copied
     """
+    model_config = ConfigDict(populate_by_name=True)
+
     id: Optional[int] = Field(None, description="Internal node ID for IP/volume assignment (auto-assigned if omitted)")
     role: str = Field("full", description="Node role: root, master, full")
     source: str = Field("genesis", description="Init mode: 'genesis', 'node-<id>', or 'fresh'")
     packages: Optional[str] = Field(None, description="Space-separated deb packages to install on this node")
-    cap_add: List[str] = Field(default_factory=list, description="Linux capabilities (e.g. NET_ADMIN, SYS_PTRACE)")
+    cap_add: List[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices('cap_add', 'docker_capabilities'),
+        description="Linux capabilities (e.g. NET_ADMIN, SYS_PTRACE). YAML alias: docker_capabilities",
+    )
+    docker_devices: List[str] = Field(default_factory=list, description="Device mappings (e.g. /dev/net/tun:/dev/net/tun)")
+    environment: Dict[str, str] = Field(default_factory=dict, description="Extra environment variables for the container")
     config_overrides: Dict[str, Any] = Field(default_factory=dict, description="Config overrides as {section: {key: value}}")
     setup: Optional[List[Any]] = Field(None, description="Extra setup steps executed after the node is running")
     regenerate_cert: bool = Field(False, description="Delete node-addr cert after cloning so the node gets a unique address on restart")
@@ -77,12 +85,20 @@ class NodeComposeGenSpec(BaseModel):
     Expands ``prefix`` + count into entries like vpn-server-1, vpn-server-2, etc.
     IDs are auto-assigned sequentially if not specified.
     """
+    model_config = ConfigDict(populate_by_name=True)
+
     prefix: str = Field(..., description="Service name prefix (e.g. 'vpn-server' → vpn-server-1..N)")
     count: Union[int, str] = Field(1, description="Number of nodes — int or '{{variable}}' resolved from suite variables")
     role: str = Field("full", description="Node role: root, master, full")
     source: str = Field("genesis", description="Init mode: 'genesis', 'node-<id>', or 'fresh'")
     packages: Optional[str] = Field(None, description="Space-separated deb packages to install")
-    cap_add: List[str] = Field(default_factory=list, description="Linux capabilities (e.g. NET_ADMIN, SYS_PTRACE)")
+    cap_add: List[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices('cap_add', 'docker_capabilities'),
+        description="Linux capabilities. YAML alias: docker_capabilities",
+    )
+    docker_devices: List[str] = Field(default_factory=list, description="Device mappings (e.g. /dev/net/tun:/dev/net/tun)")
+    environment: Dict[str, str] = Field(default_factory=dict, description="Extra environment variables for all generated containers")
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
     setup: Optional[List[Any]] = Field(None, description="Extra setup steps per node")
     regenerate_cert: bool = Field(False, description="Delete node-addr cert after cloning so each node gets a unique address")
@@ -93,14 +109,24 @@ class DockerComposeGenSpec(BaseModel):
 
     Expands ``prefix`` + count into lightweight Docker containers
     (no cellframe-node, no config/data volumes).
+
+    When ``build`` is provided the first generated service carries the full
+    build definition; siblings reuse the resulting image tag via
+    ``pull_policy: never``.
     """
     prefix: str = Field(..., description="Service name prefix (e.g. 'kelvpn-client' → kelvpn-client-1..N)")
     count: Union[int, str] = Field(1, description="Number of containers — int or '{{variable}}'")
-    image: str = Field("debian:bookworm-slim", description="Docker image")
+    image: str = Field("debian:bookworm-slim", description="Docker image (ignored when build is set)")
+    build: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Docker-compose build config: {context, dockerfile, args, ...}",
+    )
     command: Optional[List[str]] = Field(None, description="Container command (default: ['sleep', 'infinity'])")
     restart: str = Field("unless-stopped", description="Restart policy")
     packages: Optional[str] = Field(None, description="Space-separated apt packages to install on containers")
     cap_add: List[str] = Field(default_factory=list, description="Linux capabilities (e.g. NET_ADMIN, SYS_PTRACE)")
+    devices: List[str] = Field(default_factory=list, description="Device mappings (e.g. /dev/net/tun:/dev/net/tun)")
+    volumes: List[str] = Field(default_factory=list, description="Volume mounts (host:container[:mode])")
     privileged: bool = Field(False, description="Run container in privileged mode")
     environment: Dict[str, Any] = Field(default_factory=dict, description="Environment variables")
 
@@ -627,6 +653,11 @@ class SuiteDescriptor(BaseModel):
     
     # Suite-level variables inherited by all scenarios (scenario variables take priority)
     variables: Dict[str, Any] = Field(default_factory=dict, description="Variables inherited by all scenarios in suite")
+
+    # Path to an .env file (relative to suite YAML) whose key=value pairs are
+    # injected into every cellframe-node container's environment.  Per-node
+    # ``environment`` from node_compose/node_compose_gen takes priority.
+    env_file: Optional[str] = Field(None, description="Path to .env file (relative to suite dir) applied to all nodes")
 
     # Ordered list of includes — file paths (str) or inline data blocks (dict).
     # Inline blocks may contain ``variables``, ``node_compose``, ``node_compose_gen``

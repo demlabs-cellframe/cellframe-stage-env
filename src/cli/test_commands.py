@@ -7,7 +7,7 @@ import asyncio
 import typer
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Callable
+from typing import Optional, List, Dict, Callable
 
 from .common import print_info, print_success, print_error, print_warning
 from src.utils.i18n import _
@@ -84,8 +84,13 @@ def _provision_docker_compose(compose_mgr, docker_compose, print_info, print_suc
             deferred_svcs.update(group_svcs[1:])
 
     start_first = [s for s in svc_names if s not in deferred_svcs]
+    has_buildable = any(
+        isinstance(clean_services.get(s), dict) and 'build' in clean_services[s]
+        for s in start_first
+    )
     try:
-        compose_mgr.up(services=start_first, detach=True, wait=False, no_build=True)
+        compose_mgr.up(services=start_first, detach=True, wait=False,
+                       no_build=not has_buildable)
         print_success(_("  Started: {}").format(', '.join(start_first)))
     except Exception as e:
         print_error(_("  Failed to start docker_compose services: {}").format(e))
@@ -166,7 +171,7 @@ def _commit_and_clone_prototypes(compose_mgr, clone_map, print_info, print_warni
         compose_mgr.set_service_images(image_map)
 
 
-def _provision_node_compose(network_mgr, node_compose, base_path, config_loader, print_info, print_success, print_warning, print_error, suite_variables=None):
+def _provision_node_compose(network_mgr, node_compose, base_path, config_loader, print_info, print_success, print_warning, print_error, suite_variables=None, suite_env=None):
     """
     Provision additional cellframe nodes declared in suite.node_compose.
 
@@ -175,6 +180,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
 
     Args:
         node_compose: Dict[str, NodeComposeSpec] — keys are service names
+        suite_env: suite-level env vars from env_file (applied to all nodes)
     """
     import ipaddress
     import re
@@ -226,6 +232,10 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
         }
         if spec.cap_add:
             node_spec_dict['cap_add'] = list(spec.cap_add)
+        if spec.docker_devices:
+            node_spec_dict['docker_devices'] = list(spec.docker_devices)
+        if spec.environment:
+            node_spec_dict['environment'] = dict(spec.environment)
         compose_specs.append(node_spec_dict)
 
         cfg_dir = cache_dir / "configs" / f"node{node_id}"
@@ -399,6 +409,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
             compose_specs,
             network_settings=stage_config,
             cache_dir_relative=str(Path(config_loader.get_paths_config().get('cache_dir', '../../cache'))),
+            suite_env=suite_env,
         )
     except Exception as e:
         print_error(_("  Failed to provision node_compose: {}").format(e))
@@ -953,22 +964,56 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             count = _resolve_count(gen.count, f"docker_compose_gen '{gen.prefix}'")
                             if count is None:
                                 continue
+                            # When build is specified, derive an image tag so
+                            # only the first service builds and siblings reuse it.
+                            gen_image_tag = None
+                            resolved_build = None
+                            if gen.build:
+                                gen_image_tag = f"{gen.prefix}:stage-latest"
+                                resolved_build = dict(gen.build)
+                                if 'context' in resolved_build:
+                                    ctx = Path(resolved_build['context'])
+                                    if not ctx.is_absolute():
+                                        resolved_build['context'] = str((suite_path / ctx).resolve())
+
+                            resolved_volumes = None
+                            if gen.volumes:
+                                resolved_volumes = []
+                                for vol in gen.volumes:
+                                    parts = vol.split(':')
+                                    host_path = Path(parts[0])
+                                    if not host_path.is_absolute():
+                                        parts[0] = str((suite_path / host_path).resolve())
+                                    resolved_volumes.append(':'.join(parts))
+
                             for i in range(1, count + 1):
                                 svc_name = f"{gen.prefix}-{i}"
                                 if svc_name not in suite_spec.docker_compose:
                                     svc_def: dict = {
-                                        "image": gen.image,
                                         "container_name": f"cellframe-stage-{svc_name}",
                                         "hostname": svc_name,
                                         "command": gen.command or ["sleep", "infinity"],
                                         "restart": gen.restart,
                                     }
+                                    if resolved_build:
+                                        if i == 1:
+                                            svc_def["build"] = dict(resolved_build)
+                                        svc_def["image"] = gen_image_tag
+                                        svc_def["pull_policy"] = "never"
+                                    else:
+                                        svc_def["image"] = gen.image
                                     if gen.cap_add:
                                         svc_def["cap_add"] = list(gen.cap_add)
+                                    if gen.devices:
+                                        svc_def["devices"] = list(gen.devices)
+                                    if resolved_volumes:
+                                        svc_def["volumes"] = list(resolved_volumes)
                                     if gen.privileged:
                                         svc_def["privileged"] = True
                                     if gen.environment:
-                                        svc_def["environment"] = dict(gen.environment)
+                                        env = dict(gen.environment)
+                                        env["INSTANCE_ID"] = str(i)
+                                        svc_def["environment"] = env
                                     if gen.packages:
                                         svc_def["_gen_packages"] = gen.packages
                                     suite_spec.docker_compose[svc_name] = svc_def
@@ -987,10 +1032,29 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                         source=gen.source,
                                         packages=gen.packages,
                                         cap_add=list(gen.cap_add),
+                                        docker_devices=list(gen.docker_devices),
+                                        environment=dict(gen.environment),
                                         config_overrides=gen.config_overrides,
                                         setup=gen.setup,
                                         regenerate_cert=gen.regenerate_cert,
                                     )
+
+                    # --- Load suite-level env_file --------------------------------
+                    suite_env: Optional[Dict[str, str]] = None
+                    if isinstance(suite_spec, SuiteDescriptor) and suite_spec.env_file:
+                        env_path = suite_path / suite_spec.env_file
+                        if env_path.is_file():
+                            suite_env = {}
+                            for line in env_path.read_text().splitlines():
+                                line = line.strip()
+                                if not line or line.startswith('#'):
+                                    continue
+                                if '=' in line:
+                                    k, v = line.split('=', 1)
+                                    suite_env[k.strip()] = v.strip()
+                            print_info(_("📄 Loaded {} env vars from {}").format(len(suite_env), suite_spec.env_file))
+                        else:
+                            print_warning(_("⚠️ env_file not found: {}").format(env_path))
 
                     # --- Provision cellframe nodes from node_compose ----------
                     # MUST run before docker_compose: node_compose services get
@@ -1003,6 +1067,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             network_mgr, suite_spec.node_compose, base_path,
                             config_loader, print_info, print_success, print_warning, print_error,
                             suite_variables=suite_spec.variables,
+                            suite_env=suite_env,
                         )
 
                     # --- Provision docker_compose services ---------------------

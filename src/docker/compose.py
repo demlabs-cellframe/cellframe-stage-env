@@ -369,6 +369,9 @@ class DockerComposeManager:
             ).split(',')
         ]
         
+        # Load [role_docker_*] / [node_docker_*] customizations from stage-env.cfg
+        docker_customizations = get_config_loader().get_docker_customizations()
+
         # Generate service for each node
         for node in nodes:
             service_name = f"node-{node.node_id}"
@@ -493,21 +496,48 @@ class DockerComposeManager:
                 'NODE_IP': node.ip_address,
                 'NETWORK_NAME': self.network_name,
                 'DAP_DEBUG': '1',
-                'CELLFRAME_DEBUG': '1'
+                'CELLFRAME_DEBUG': '1',
             }
             if network_settings:
                 env['DOCKER_SUBNET'] = network_settings.get('subnet', '172.20.0.0/16')
                 env['DOCKER_GATEWAY'] = network_settings.get('gateway', '172.20.0.1')
+
+            # Apply [role_docker_<role>] and [node_docker_<id>] from stage-env.cfg
+            role_section = docker_customizations.get(f'role_docker_{node.role}', {})
+            node_section = docker_customizations.get(f'node_docker_{node.node_id}', {})
+            for section in (role_section, node_section):
+                section_env = section.get('environment')
+                if section_env:
+                    env.update(section_env)
+                section_caps = section.get('capabilities')
+                if section_caps:
+                    if 'cap_add' not in node_service:
+                        node_service['cap_add'] = []
+                    node_service['cap_add'].extend(section_caps)
+                section_devices = section.get('devices')
+                if section_devices:
+                    existing_devices = node_service.get('devices', [])
+                    node_service['devices'] = list(dict.fromkeys(existing_devices + section_devices))
+                section_extra = section.get('extra_config')
+                if section_extra:
+                    for key, value in section_extra.items():
+                        if isinstance(value, dict) and key in node_service and isinstance(node_service[key], dict):
+                            node_service[key].update(value)
+                        elif isinstance(value, list) and key in node_service and isinstance(node_service[key], list):
+                            node_service[key].extend(value)
+                        else:
+                            node_service[key] = value
+
             node_service['environment'] = env
-            
-            # Add custom environment variables if specified
+
+            # Add custom environment variables if specified (from NodeConfig)
             if hasattr(node, 'custom_env_vars') and node.custom_env_vars:
                 node_service['environment'].update(node.custom_env_vars)
                 logger.debug("added_custom_env_vars",
                            node_id=node.node_id,
                            vars=list(node.custom_env_vars.keys()))
             
-            # Add custom capabilities if specified
+            # Add custom capabilities if specified (from NodeConfig)
             if hasattr(node, 'docker_capabilities') and node.docker_capabilities:
                 if 'cap_add' not in node_service:
                     node_service['cap_add'] = []
@@ -516,24 +546,21 @@ class DockerComposeManager:
                            node_id=node.node_id,
                            caps=node.docker_capabilities)
             
-            # Add custom devices if specified
+            # Add custom devices if specified (from NodeConfig)
             if hasattr(node, 'docker_devices') and node.docker_devices:
                 node_service['devices'] = node.docker_devices
                 logger.debug("added_custom_devices",
                            node_id=node.node_id,
                            devices=node.docker_devices)
             
-            # Merge custom docker config if specified
+            # Merge custom docker config if specified (from NodeConfig)
             if hasattr(node, 'docker_extra_config') and node.docker_extra_config:
                 for key, value in node.docker_extra_config.items():
                     if isinstance(value, dict) and key in node_service and isinstance(node_service[key], dict):
-                        # Merge dictionaries
                         node_service[key].update(value)
                     elif isinstance(value, list) and key in node_service and isinstance(node_service[key], list):
-                        # Extend lists
                         node_service[key].extend(value)
                     else:
-                        # Override or add new key
                         node_service[key] = value
                 logger.debug("merged_custom_docker_config",
                            node_id=node.node_id,
@@ -573,6 +600,7 @@ class DockerComposeManager:
         extra_nodes: List[Dict[str, Any]],
         network_settings: Optional[Dict[str, str]] = None,
         cache_dir_relative: str = "cache",
+        suite_env: Optional[Dict[str, str]] = None,
     ) -> None:
         """
         Add extra cellframe node services to the generated compose file.
@@ -581,9 +609,11 @@ class DockerComposeManager:
         follows the same volume/network conventions as base topology nodes.
 
         Args:
-            extra_nodes: List of dicts with keys: id, role, ip_address, http_port
+            extra_nodes: List of dicts with keys: id, role, ip_address, http_port,
+                         and optional: cap_add, docker_devices, environment
             network_settings: subnet/gateway overrides
             cache_dir_relative: relative cache directory
+            suite_env: suite-level env vars (from env_file) applied to all nodes
         """
         if not self.compose_file.exists():
             raise FileNotFoundError(f"Generated compose file not found: {self.compose_file}")
@@ -668,6 +698,11 @@ class DockerComposeManager:
             if network_settings:
                 env['DOCKER_SUBNET'] = network_settings.get('subnet', '172.20.0.0/16')
                 env['DOCKER_GATEWAY'] = network_settings.get('gateway', '172.20.0.1')
+            if suite_env:
+                env.update(suite_env)
+            node_env = node_spec.get('environment')
+            if node_env:
+                env.update(node_env)
             svc['environment'] = env
 
             existing_image = next(
@@ -690,6 +725,12 @@ class DockerComposeManager:
                 existing_caps = svc.get('cap_add', [])
                 merged = list(dict.fromkeys(existing_caps + extra_caps))
                 svc['cap_add'] = merged
+
+            extra_devices = node_spec.get('docker_devices')
+            if extra_devices:
+                existing_devices = svc.get('devices', [])
+                merged_devices = list(dict.fromkeys(existing_devices + extra_devices))
+                svc['devices'] = merged_devices
 
             compose_data['services'][service_name] = svc
             logger.info("extra_node_service_added",

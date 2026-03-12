@@ -32,5 +32,18 @@ fi
 
 # Start cellframe-node with maximum debug level
 echo "Starting cellframe-node..."
-exec /opt/cellframe-node/bin/cellframe-node -D 5
+if [ "${DEBUG_GDB:-0}" = "1" ] && command -v gdb >/dev/null 2>&1; then
+    echo "Running under gdb (DEBUG_GDB=1) — backtrace on crash"
+    exec gdb -batch -q \
+        -ex 'set pagination off' \
+        -ex 'set confirm off' \
+        -ex 'handle SIGPIPE nostop noprint pass' \
+        -ex 'run -D 5' \
+        -ex 'echo \n=== CRASH BACKTRACE ===\n' \
+        -ex 'thread apply all bt full' \
+        -ex 'quit 1' \
+        /opt/cellframe-node/bin/cellframe-node
+else
+    exec /opt/cellframe-node/bin/cellframe-node -D 5
+fi
 
