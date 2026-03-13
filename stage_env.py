@@ -124,10 +124,18 @@ snapshot_commands.register_commands(app, BASE_PATH, get_config_path)
 
 
 if __name__ == "__main__":
+    import signal
+
+    def _shutdown(signum, frame):
+        """Convert SIGTERM/SIGHUP into SystemExit so finally blocks run."""
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGHUP, _shutdown)
+
     try:
         app()
     finally:
-        # Cleanup PID file on exit
         if PID_MANAGER is not None:
             PID_MANAGER.remove()
 
