@@ -83,11 +83,10 @@ def main(
     
     # Initialize PID manager to prevent multiple instances
     # BUT skip PID check for stop/kill/terminate commands (they need to work even if PID is stale)
-    # When --config points outside BASE_PATH, put PID file next to the config
-    # so we don't need write access to /opt/
+    # PID file lives in /tmp/ — shared across all users/jobs on this machine,
+    # writable without root, prevents parallel runs that share Docker resources
     global PID_MANAGER
-    pid_dir = CONFIG_PATH.parent if CONFIG_PATH else BASE_PATH
-    PID_MANAGER = PIDManager(pid_dir)
+    PID_MANAGER = PIDManager(Path("/tmp"))
     
     # Get the command being executed
     command = ctx.invoked_subcommand
