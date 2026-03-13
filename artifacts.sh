@@ -9,6 +9,14 @@ DEB_PATH="$(realpath "$1")"
 CI_DIR="$(pwd)"
 WORK_DIR="${CI_DIR}/.stage-env-run"
 CACHE_DIR="${WORK_DIR}/cache"
+CFG="$WORK_DIR/stage-env.cfg"
+
+cleanup() {
+    echo "=== Stage Environment: cleanup ==="
+    cd "$STAGE_ENV_DIR"
+    ./stage-env --config "$CFG" stop 2>/dev/null || true
+}
+trap cleanup EXIT
 
 echo "=== Stage Environment CI ==="
 echo "Package: $DEB_PATH"
@@ -22,19 +30,17 @@ sed \
   -e "s|^cache_dir = .*|cache_dir = $CACHE_DIR|" \
   -e "s|^artifacts_dir = .*|artifacts_dir = $CACHE_DIR/artifacts|" \
   -e "s|^snapshots_dir = .*|snapshots_dir = $CACHE_DIR/snapshots|" \
-  "$STAGE_ENV_DIR/config/stage-env.cfg.default" > "$WORK_DIR/stage-env.cfg"
+  "$STAGE_ENV_DIR/config/stage-env.cfg.default" > "$CFG"
 
 cd "$STAGE_ENV_DIR"
 
 # Run
 TEST_EXIT=0
-./stage-env --config "$WORK_DIR/stage-env.cfg" start --wait --clean -y || TEST_EXIT=$?
+./stage-env --config "$CFG" start --wait --clean -y || TEST_EXIT=$?
 
 if [ "$TEST_EXIT" -eq 0 ]; then
-    ./stage-env --config "$WORK_DIR/stage-env.cfg" status || true
+    ./stage-env --config "$CFG" status || true
 fi
-
-./stage-env --config "$WORK_DIR/stage-env.cfg" stop 2>/dev/null || true
 
 # Collect artifacts
 mkdir -p "$CI_DIR/test_logs"
