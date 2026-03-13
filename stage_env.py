@@ -83,8 +83,11 @@ def main(
     
     # Initialize PID manager to prevent multiple instances
     # BUT skip PID check for stop/kill/terminate commands (they need to work even if PID is stale)
+    # When --config points outside BASE_PATH, put PID file next to the config
+    # so we don't need write access to /opt/
     global PID_MANAGER
-    PID_MANAGER = PIDManager(BASE_PATH)
+    pid_dir = CONFIG_PATH.parent if CONFIG_PATH else BASE_PATH
+    PID_MANAGER = PIDManager(pid_dir)
     
     # Get the command being executed
     command = ctx.invoked_subcommand

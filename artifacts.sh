@@ -25,7 +25,6 @@ sed \
   "$STAGE_ENV_DIR/config/stage-env.cfg.default" > "$WORK_DIR/stage-env.cfg"
 
 cd "$STAGE_ENV_DIR"
-rm -f .stage-env.pid
 
 # Run
 TEST_EXIT=0
