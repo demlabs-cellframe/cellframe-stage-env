@@ -24,7 +24,7 @@ rm -f .stage-env.pid
 
 # Run
 TEST_EXIT=0
-./stage-env --config "$WORK_DIR/stage-env.cfg" start --wait || TEST_EXIT=$?
+./stage-env --config "$WORK_DIR/stage-env.cfg" start --wait --clean -y || TEST_EXIT=$?
 
 if [ "$TEST_EXIT" -eq 0 ]; then
     ./stage-env --config "$WORK_DIR/stage-env.cfg" status || true

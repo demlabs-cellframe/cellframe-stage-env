@@ -50,6 +50,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         topology: str = typer.Option("default", "--topology", "-t", help="Topology to use"),
         rebuild: bool = typer.Option(False, "--rebuild", help="Rebuild images"),
         clean: bool = typer.Option(False, "--clean", help="Clean all data"),
+        yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompts"),
         wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for nodes"),
         keep_running: bool = typer.Option(False, "--keep-running", help="Keep containers running on failure (for debugging)"),
     ):
@@ -86,10 +87,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             raise typer.Exit(1)
         
         if clean:
-            from rich.prompt import Confirm
-            if not Confirm.ask(_("This will delete all data. Continue?"), default=False):
-                print_info(_("Cancelled"))
-                return
+            if not yes:
+                from rich.prompt import Confirm
+                if not Confirm.ask(_("This will delete all data. Continue?"), default=False):
+                    print_info(_("Cancelled"))
+                    return
 
             print_warning(_("Cleaning all data..."))
             config_loader = get_config_loader()
