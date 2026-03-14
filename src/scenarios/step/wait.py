@@ -409,6 +409,9 @@ class WaitStepExecutor(StepExecutor):
                     command=cmd, node=node, timeout=int(cli_timeout)
                 )
                 output = result.get("stdout", "")
+                cli_stderr = result.get("stderr", "")
+                if cli_stderr:
+                    logger.debug(f"  wait: cli stderr: {cli_stderr[:300]}")
                 last_output = output
                 output_lower = output.lower()
 

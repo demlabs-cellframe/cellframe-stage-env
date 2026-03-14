@@ -452,8 +452,31 @@ class DockerContainerManager:
                 "returncode": process.returncode
             }
         except asyncio.TimeoutError:
+            logger.warning("exec_cli_timeout",
+                         container=container_name,
+                         command=command[:100],
+                         timeout=timeout)
             process.kill()
-            raise
+            partial_out = ""
+            partial_err = ""
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=3
+                )
+                partial_out = stdout.decode('utf-8', errors='replace')
+                partial_err = stderr.decode('utf-8', errors='replace')
+                if partial_out or partial_err:
+                    logger.warning("exec_cli_timeout_partial_output",
+                                 container=container_name,
+                                 stdout=partial_out[:500],
+                                 stderr=partial_err[:500])
+            except Exception:
+                pass
+            return {
+                "stdout": partial_out,
+                "stderr": f"TIMEOUT after {timeout}s: {partial_err}",
+                "returncode": -1
+            }
     
     async def exec_bash_command(
         self,

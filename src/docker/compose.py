@@ -382,6 +382,7 @@ class DockerComposeManager:
             # Update service configuration
             node_service['container_name'] = f"{self.project_name}-node-{node.node_id}"
             node_service['hostname'] = f"{self.project_name}-node-{node.node_id}"
+            node_service['init'] = True
             
             # Set network IP
             node_service['networks'] = {
@@ -666,6 +667,7 @@ class DockerComposeManager:
             svc = yaml.safe_load(yaml.dump(node_template))
             svc['container_name'] = f"{self.project_name}-{service_name}"
             svc['hostname'] = f"{self.project_name}-{service_name}"
+            svc['init'] = True
 
             svc['networks'] = {
                 self.network_name: {'ipv4_address': node_spec['ip_address']}
