@@ -265,8 +265,8 @@ class ConfigStepExecutor(StepExecutor):
             )
             return
         
-        # Route 2: cfg.d snippets — direct INI write
-        if config_name.startswith("cellframe-node.cfg.d/"):
+        # Route 2: cfg.d snippets — direct INI write (any path containing .cfg.d/)
+        if '.cfg.d/' in config_name:
             self._write_ini_snippet(node_ids, config_name, variables, cache_dir)
             return
 
@@ -282,10 +282,14 @@ class ConfigStepExecutor(StepExecutor):
         variables: Dict[str, Any],
         cache_dir: Path,
     ):
-        """Write cfg.d INI snippet directly (no template)."""
-        snippet_name = config_name.split("/", 1)[1]
+        """Write cfg.d INI snippet directly (no template).
+        
+        Supports any path containing .cfg.d/, e.g.:
+          - cellframe-node.cfg.d/overrides.cfg
+          - network/vpntest.cfg.d/role.cfg
+        """
         for node_id in node_ids:
-            target = cache_dir / "configs" / f"node{node_id}" / "cellframe-node.cfg.d" / snippet_name
+            target = cache_dir / "configs" / f"node{node_id}" / config_name
             target.parent.mkdir(parents=True, exist_ok=True)
             lines = []
             current_section = None
@@ -299,7 +303,7 @@ class ConfigStepExecutor(StepExecutor):
                 else:
                     lines.append(f"{k}={v}")
             target.write_text("\n".join(lines) + "\n")
-            logger.info("config_snippet_written", node_id=node_id, file=snippet_name)
+            logger.info("config_snippet_written", node_id=node_id, file=config_name)
 
     async def _render_with_template(
         self,
