@@ -887,47 +887,49 @@ class DockerComposeManager:
             # Brief wait to ensure Docker daemon processes removal
             time.sleep(1)
         
-        # Build image ONCE before starting services to avoid race conditions
-        # When multiple services use the same image, parallel builds cause "already exists" errors
+        # Build missing images before starting services
+        # Check ALL services with build directives, not just the first one
         if not no_build:
-            # Check if image needs to be built by trying to find first service's image
-            need_build = True
-            first_service = services[0] if services else "node-1"
-            
+            import os
             try:
                 with open(self.compose_file, 'r') as f:
                     compose_data = yaml.safe_load(f)
-                
-                # Get image name from first service and resolve variables
-                svc_data = compose_data.get('services', {}).get(first_service, {})
-                image_template = svc_data.get('image', '')
-                
-                # Resolve common shell variables in image name
-                import os
-                image_name = image_template
-                image_name = image_name.replace('${BUILD_TYPE:-debug}', os.environ.get('BUILD_TYPE', 'debug'))
-                image_name = image_name.replace('${CELLFRAME_VERSION:-latest}', os.environ.get('CELLFRAME_VERSION', 'latest'))
-                
-                if image_name:
+
+                built_images = set()
+                target_services = services or list(compose_data.get('services', {}).keys())
+
+                for svc_name in target_services:
+                    svc_data = compose_data.get('services', {}).get(svc_name, {})
+                    if 'build' not in svc_data:
+                        continue
+
+                    image_template = svc_data.get('image', '')
+                    image_name = image_template
+                    image_name = image_name.replace('${BUILD_TYPE:-debug}', os.environ.get('BUILD_TYPE', 'debug'))
+                    image_name = image_name.replace('${CELLFRAME_VERSION:-latest}', os.environ.get('CELLFRAME_VERSION', 'latest'))
+
+                    if not image_name or image_name in built_images:
+                        continue
+
                     try:
                         self.client.images.get(image_name)
-                        need_build = False
                         logger.info("image_already_exists", image=image_name)
+                        continue
                     except NotFound:
                         logger.info("image_not_found_will_build", image=image_name)
+
+                    logger.info("building_image_once", service=svc_name)
+                    build_cmd = ["docker", "compose", "-f", str(self.compose_file),
+                               "-p", self.project_name, "build", svc_name]
+                    try:
+                        run_command(build_cmd, cwd=self.project_dir)
+                        logger.info("image_built_successfully", image=image_name)
+                        built_images.add(image_name)
+                    except Exception as e:
+                        logger.warning("image_build_failed_will_retry_on_up",
+                                     service=svc_name, error=str(e))
             except Exception as e:
                 logger.info("failed_to_check_image_existence", error=str(e))
-            
-            if need_build:
-                # Build image ONCE using first service only
-                logger.info("building_image_once", service=first_service)
-                build_cmd = ["docker", "compose", "-f", str(self.compose_file),
-                           "-p", self.project_name, "build", first_service]
-                try:
-                    run_command(build_cmd, cwd=self.project_dir)
-                    logger.info("image_built_successfully")
-                except Exception as e:
-                    logger.warning("image_build_failed_will_retry_on_up", error=str(e))
         
         # Now start all services WITHOUT building (image already exists)
         cmd = ["docker", "compose", "-f", str(self.compose_file),
