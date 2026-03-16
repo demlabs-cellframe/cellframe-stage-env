@@ -133,12 +133,31 @@ class ConfigStepExecutor(StepExecutor):
             f"(searched: {[str(d) for d in self.custom_templates_dirs]} + {self.base_path})"
         )
 
+    _TRUTHY = frozenset(('true', '1', 'yes'))
+
     async def execute(self, step: ConfigStep, ctx: RuntimeContext) -> None:
         """Execute config regeneration step."""
-        if isinstance(step.set, dict):
-            variables = {k: ctx.substitute(str(v)) for k, v in step.set.items()}
+        raw_set = step.set
+        if isinstance(raw_set, str):
+            raw_set = ctx.substitute_raw(raw_set)
+
+        if isinstance(raw_set, dict):
+            variables = {k: ctx.substitute(str(v)) for k, v in raw_set.items()}
+        elif isinstance(raw_set, str):
+            variables = self._parse_set_string(ctx.substitute(raw_set))
         else:
-            variables = self._parse_set_string(ctx.substitute(step.set))
+            variables = {}
+
+        if step.param_map:
+            for var_name, config_key in step.param_map.items():
+                val = ctx.variables.get(var_name, '')
+                if str(val).lower() in self._TRUTHY:
+                    variables[config_key] = 'true'
+
+            if not variables:
+                logger.info("config_param_map_noop", config=step.config,
+                           reason="no truthy params matched")
+                return
 
         config_path = ctx.substitute(step.config)
         template_path = ctx.substitute(step.template) if step.template else None

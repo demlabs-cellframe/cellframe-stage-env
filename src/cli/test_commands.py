@@ -545,10 +545,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
     @app.command()
     def run_tests(
         test_dirs: List[str] = typer.Argument(..., help="Test scenario directories to run"),
-        parallel: bool = typer.Option(False, "--parallel", "-p", help="Run tests in parallel (not yet implemented)"),
+        parallel: bool = typer.Option(False, "--parallel", help="Run tests in parallel (not yet implemented)"),
         filter: Optional[str] = typer.Option(None, "--filter", "-k", help="Filter tests by pattern"),
         start_network: bool = typer.Option(True, "--start-network/--no-start-network", help="Start network before tests"),
         stop_after: bool = typer.Option(True, "--stop-after/--keep-running", help="Stop network after tests"),
+        params: Optional[List[str]] = typer.Option(None, "--param", "-P", help="Pass KEY=VALUE params to scenarios (repeatable)"),
     ):
         """🧪 Run YAML test scenarios from specified directories."""
         
@@ -564,6 +565,16 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         import docker
         from src.utils.logger import logger
         
+        cli_params: Dict[str, str] = {}
+        if params:
+            for p in params:
+                if '=' not in p:
+                    print_error(_("Invalid param format '{}', expected KEY=VALUE").format(p))
+                    raise typer.Exit(1)
+                k, v = p.split('=', 1)
+                cli_params[k.strip()] = v.strip()
+            print_info(_("CLI params: {}").format(cli_params))
+
         _dir_suffix = _("y") if len(test_dirs) == 1 else _("ies")
         print_info(_("Running tests from {} director{}:").format(len(test_dirs), _dir_suffix))
         for test_dir in test_dirs:
@@ -1105,6 +1116,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 _svc_ids[_svc] = _ncfg.node_id
                         if _svc_ids:
                             topology_vars['_service_node_ids'] = _svc_ids
+
+                    if cli_params:
+                        topology_vars.update(cli_params)
 
                     # Execute suite-level setup (includes + setup steps).
                     # Includes always run — each include decides internally whether
