@@ -183,18 +183,23 @@ Genesis scenarios are organized by Cellframe Node major version (`v5.x`, `v6.x`)
 - `RPCStep` - JSON-RPC calls
 - `PythonStep` / `PythonCheck` - Python code
 - `BashStep` / `BashCheck` - Bash scripts
-- `WaitStep` - Simple waiting
+- `PrintStep` - Debug output with Jinja2 substitution
+- `WaitStep` - Simple/polling waiting (duration, cli, bash, python, docker_exec, notify)
 - `WaitForDatumStep` - Datum lifecycle monitoring
-- `ConfigStep` - Config modifications
-- `DockerOpStep` - Docker operations (start/stop/restart/pause/unpause/logs/exec/cp)
 - `NetworkWaitStep` - Network state waiting
-- `SnapshotStep` - Snapshot operations
+- `DockerExecStep` - Execute command in container (shorthand for docker_op exec)
+- `DockerOpStep` - Docker operations (start/stop/restart/pause/unpause/logs/exec/cp)
+- `DpkgStep` - DEB package install/remove
+- `ConfigStep` - Config modifications (standard, cfg.d, template, deploy, param_map)
+- `SnapshotStep` - Snapshot operations (create/restore/verify/delete)
+- `MetricStep` / `MetricsTableStep` - Performance metrics recording and display
 - `ForStep` - For loops with iteration
 - `IfStep` - Conditional execution (if/then/else)
 - `WhileStep` - While loops with max iterations
 - `SwitchStep` - Switch/case statements
 - `SetStep` - Variable assignment
 - `StepGroup` - Group steps with local defaults (YAML keys: `group:` or `name:`)
+- `CustomOperandStep` - User-defined operands loaded from `operands/` directories
 
 **Integration:**
 - Uses `CLICommandParser` for auto-adding CLI options
@@ -341,7 +346,12 @@ src/
 ├── scenarios/              # Scenario system
 │   ├── parser.py            # YAML parsing
 │   ├── executor.py          # Execution engine
-│   ├── schema.py            # Pydantic models
+│   ├── schema.py            # Pydantic models (main)
+│   ├── schema_control_flow.py # Set/If/While/For/Switch models
+│   ├── schema_config.py     # ConfigStep model
+│   ├── schema_dpkg.py       # DpkgStep model
+│   ├── schema_operand.py    # CustomOperandStep model
+│   ├── schema_metrics.py    # MetricStep/MetricsTableStep models
 │   ├── extractors.py        # Data extraction
 │   ├── validator.py         # Pre-execution validation
 │   └── step/                # Step executors
@@ -350,7 +360,8 @@ src/
 │       ├── python.py        # Python step executor
 │       ├── bash.py          # Bash step executor
 │       ├── wait.py          # Wait executor
-│       └── wait_for_datum.py # Datum monitoring
+│       ├── wait_for_datum.py # Datum monitoring
+│       └── config.py        # Config step executor
 │
 ├── network/                # Network management
 │   ├── manager.py           # NetworkManager
@@ -481,9 +492,10 @@ def _execute_step(self, step, ctx: RuntimeContext, defaults):
 **Main models:**
 - `TestScenario` - Full test scenario
 - `SuiteSetupScenario` - Lightweight suite setup
-- `SuiteDescriptor` - Suite metadata (includes `node_compose`, `node_compose_gen`, `docker_compose`)
-- `NodeComposeSpec` - Dynamic node definition (id, role, source, packages, setup)
+- `SuiteDescriptor` - Suite metadata (includes `node_compose`, `node_compose_gen`, `docker_compose`, `docker_compose_gen`, `env_file`)
+- `NodeComposeSpec` - Dynamic node definition (id, role, source, packages, cap_add, docker_devices, environment, setup)
 - `NodeComposeGenSpec` - Parametric node generator (prefix, count with `{{var}}` support)
+- `DockerComposeGenSpec` - Parametric generation of non-cellframe containers (build, devices, volumes)
 - `NetworkConfig` - Network configuration
 - `NodeConfig` - Single node config
 - `SectionConfig` - setup/test sections

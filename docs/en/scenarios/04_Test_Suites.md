@@ -1,132 +1,8 @@
 # Test Suites
 
-## Suite Structure
+## Suite Descriptor Format
 
-```yaml
-# suite_setup.yml
-suite_name: Token Tests
-suite_description: Comprehensive token testing
-
-suite_setup:
-  variables:
-    network_name: stagenet
-    native_ticker: TCELL
-    
-  steps:
-    - cli: "wallet new -w shared_wallet"
-      save_wallet: suite_wallet
-    # Available in all scenarios
-
-scenarios:
-  - token/001_token_decl.yml
-  - token/002_token_emit.yml
-```
-
-## Suite Variables
-
-### Definition
-```yaml
-suite_setup:
-  variables:
-    shared_var: value
-```
-
-### Usage in Scenarios
-```yaml
-# Any scenario in suite
-test:
-  - cli: "wallet info -w {{suite_wallet}}"
-  - print: "API: {{api_key}}"
-```
-
-### Visibility
-- Available in all scenarios within the suite
-- Cannot be overridden by individual scenarios
-- Take priority over global variables
-
-## Suite Lifecycle
-
-1. Parse suite_setup.yml
-2. Execute suite_setup steps
-3. Save suite variables
-4. For each scenario:
-   - Load scenario
-   - Merge suite variables
-   - Execute scenario
-   - Collect results
-5. Generate suite report
-
-## Suite Configuration
-
-### Network Topology
-```yaml
-suite_setup:
-  network:
-    topology: custom
-    root_nodes: 3
-    master_nodes: 3
-```
-
-### Packages
-```yaml
-suite_setup:
-  packages:
-    - name: vim
-      nodes: all
-```
-
-### Files
-```yaml
-suite_setup:
-  files:
-    - src: config.txt
-      dst: /opt/config.txt
-      nodes: all
-    - src: script.sh
-      dst: /tmp/script.sh
-      nodes: [node1]
-      mode: "755"
-```
-
-## Advanced Patterns
-
-### Shared Setup
-```yaml
-suite_setup:
-  steps:
-    - for: i
-      in: "range(5)"
-      eval: true
-      steps:
-        - cli: "wallet new -w wallet{{i}}"
-          save_wallet: "wallet{{i}}_addr"
-```
-
-### Shared Resources
-```yaml
-suite_setup:
-  variables:
-    shared_token: MYTOKEN
-
-  steps:
-    - cli: "token_decl -t {{shared_token}}"
-      save_hash: token_hash
-    - cli: "token_emit -t {{shared_token}}"
-      save_hash: emission_hash
-```
-
-### Conditional Setup
-```yaml
-suite_setup:
-  steps:
-    - if: "{{ctx.has_variable('ENABLE_FEATURE_X')}}"
-      then:
-        - cli: "enable feature_x"
-```
-
-## E2E Suite Descriptors
-
-E2E test suites use a lightweight descriptor format with `suite:` field.
+Test suites use a descriptor YAML file with `suite:` field. The descriptor defines shared metadata, variables, includes, setup steps, and the list of scenarios.
 
 ### Directory Layout
 
@@ -286,6 +162,36 @@ includes:
       vpn_client_count: 5
   - ../common/vpn_nodes.yml
 ```
+
+---
+
+## docker_compose_gen — Parametric Service Generation
+
+Generate multiple non-cellframe containers from a template:
+
+```yaml
+docker_compose_gen:
+  - prefix: clientd
+    count: "{{clientd_count}}"     # int or {{variable}}
+    image: "debian:bookworm-slim"  # Ignored when build is set
+    build:
+      context: ../docker
+      dockerfile: Dockerfile.clientd
+      args: { BUILD_TYPE: Release }
+    command: ["sleep", "infinity"]
+    restart: "unless-stopped"
+    packages: "iperf3 curl"        # apt packages to install
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    volumes: ["../configs:/etc/app:ro"]
+    privileged: false
+    environment:
+      APP_MODE: client
+```
+
+First service carries full `build` definition; siblings reuse image via `pull_policy: never`. `INSTANCE_ID` env var is automatically injected (1, 2, …N).
+
+When `packages` is specified, the first container installs them and commits the image; subsequent containers clone from it.
 
 ---
 
