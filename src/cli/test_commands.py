@@ -1445,6 +1445,65 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 if failed_scenarios > 0:
                     print_error(_("❌ Failed: {}").format(failed_scenarios))
                 print_info(f"{'═' * 60}")
+
+                # Detailed per-scenario results to stdout
+                passed_list = [r for r in scenario_results if r.get("status") == "passed"]
+                failed_list = [r for r in scenario_results if r.get("status") in ("failed", "error")]
+
+                if passed_list:
+                    print_info("")
+                    print_success(_("✅ Passed scenarios ({}):").format(len(passed_list)))
+                    for r in passed_list:
+                        dur = r.get("duration", 0)
+                        steps = r.get("steps_total", 0)
+                        steps_ok = r.get("steps_passed", 0)
+                        name = r.get("name", r.get("file", "?"))
+                        print_success(f"   ✓ {name}  ({steps_ok}/{steps} steps, {dur:.1f}s)")
+                        # Print collected metrics inline
+                        for m in r.get("metrics", []):
+                            unit = f" {m['unit']}" if m.get("unit") else ""
+                            print_info(f"     ▸ {m['name']}: {m['value']}{unit}")
+
+                if failed_list:
+                    print_info("")
+                    print_error(_("❌ Failed scenarios ({}):").format(len(failed_list)))
+                    for r in failed_list:
+                        name = r.get("name", r.get("file", "?"))
+                        err = r.get("error", "—")
+                        print_error(f"   ✗ {name}")
+                        print_error(f"     Error: {err[:300]}")
+                        if r.get("error_log"):
+                            excerpt_lines = (r["error_log"].strip().split("\n") or [])[-5:]
+                            if excerpt_lines:
+                                print_info("     Log tail:")
+                                for line in excerpt_lines:
+                                    print_info(f"       {line[:120]}")
+
+                # Timing summary
+                total_duration = sum(r.get("duration", 0) for r in scenario_results)
+                if total_duration > 0:
+                    print_info(f"\n{'─' * 60}")
+                    print_info(_("⏱  Total test time: {:.0f}s ({:.0f}m {:.0f}s)").format(
+                        total_duration, total_duration // 60, total_duration % 60))
+
+                # Aggregated metrics summary
+                all_collected_metrics = []
+                for sr in scenario_results:
+                    all_collected_metrics.extend(sr.get("metrics", []))
+                if all_collected_metrics:
+                    groups = {}
+                    for m in all_collected_metrics:
+                        g = m.get("group", "default")
+                        groups.setdefault(g, []).append(m)
+                    print_info(f"\n{'─' * 60}")
+                    print_info(_("📈 Collected metrics:"))
+                    for group_name, entries in groups.items():
+                        print_info(f"   [{group_name}]")
+                        for m in entries:
+                            unit = f" {m['unit']}" if m.get("unit") else ""
+                            print_info(f"     {m['name']}: {m['value']}{unit}")
+
+                print_info(f"{'═' * 60}")
                 
         except KeyboardInterrupt:
             print_info(_("\n⚠️ Interrupted by user (Ctrl-C). Summary below."))
@@ -1551,16 +1610,22 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     _("📋 Summary: passed and failed scenarios"),
                     "═" * 60,
                 ]
-                passed_list = [r for r in scenario_results if r.get("status") == "passed"]
-                failed_list = [r for r in scenario_results if r.get("status") in ("failed", "error")]
-                if passed_list:
-                    lines.append(_("\n✅ Passed ({}):").format(len(passed_list)))
-                    for r in passed_list:
-                        path = r.get("path", r.get("file", "?"))
-                        lines.append(_("   • {}  [{}]").format(r.get('name', path), path))
-                if failed_list:
-                    lines.append(_("\n❌ Failed ({}):").format(len(failed_list)))
-                    for r in failed_list:
+                _passed_list = [r for r in scenario_results if r.get("status") == "passed"]
+                _failed_list = [r for r in scenario_results if r.get("status") in ("failed", "error")]
+                if _passed_list:
+                    lines.append(_("\n✅ Passed ({}):").format(len(_passed_list)))
+                    for r in _passed_list:
+                        dur = r.get("duration", 0)
+                        steps = r.get("steps_total", 0)
+                        steps_ok = r.get("steps_passed", 0)
+                        lines.append("   • {}  ({}/{} steps, {:.1f}s)".format(
+                            r.get('name', r.get("file", "?")), steps_ok, steps, dur))
+                        for m in r.get("metrics", []):
+                            unit = f" {m['unit']}" if m.get("unit") else ""
+                            lines.append(f"     ▸ {m['name']}: {m['value']}{unit}")
+                if _failed_list:
+                    lines.append(_("\n❌ Failed ({}):").format(len(_failed_list)))
+                    for r in _failed_list:
                         path = r.get("path", r.get("file", "?"))
                         err = r.get("error", "—")
                         log_rel = r.get("log_file", "")
@@ -1568,21 +1633,25 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         lines.append(_("   • {}  [{}]").format(r.get('name', path), path))
                         lines.append(_("     Error: {}").format(err[:200] + ('…' if len(err) > 200 else '')))
                         if log_full:
-                            lines.append(_("     Log (error at end of file): {}").format(str(log_full)))
+                            lines.append(_("     Log: {}").format(str(log_full)))
                         if r.get("error_log"):
                             excerpt = (r["error_log"].strip().split("\n") or [])[-8:]
                             if excerpt:
-                                lines.append(_("     Fragment (end of log):"))
+                                lines.append(_("     Log tail:"))
                                 for line in excerpt:
                                     lines.append(f"       {line[:100]}")
+                _total_dur = sum(r.get("duration", 0) for r in scenario_results)
+                if _total_dur > 0:
+                    lines.append("")
+                    lines.append("⏱  Total test time: {:.0f}s ({:.0f}m {:.0f}s)".format(
+                        _total_dur, _total_dur // 60, _total_dur % 60))
                 lines.extend([
                     "",
                     "═" * 60,
-                    _("📁 Full path to artifacts and logs directory:"),
-                    f"   {run_dir_base.resolve()}",
+                    _("📁 Artifacts: {}").format(run_dir_base.resolve()),
                 ])
                 if main_stage_env_log_path and main_stage_env_log_path.exists():
-                    lines.append(_("   Main stage-env log: {}").format(str(main_stage_env_log_path)))
+                    lines.append(_("   Log: {}").format(str(main_stage_env_log_path)))
                 lines.extend(["═" * 60, ""])
                 summary_file = log_dir_path / "last_final_summary.txt"
                 log_dir_path.mkdir(parents=True, exist_ok=True)
