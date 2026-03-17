@@ -83,8 +83,10 @@ def main(
     
     # Initialize PID manager to prevent multiple instances
     # BUT skip PID check for stop/kill/terminate commands (they need to work even if PID is stale)
+    # PID file lives in /tmp/ — shared across all users/jobs on this machine,
+    # writable without root, prevents parallel runs that share Docker resources
     global PID_MANAGER
-    PID_MANAGER = PIDManager(BASE_PATH)
+    PID_MANAGER = PIDManager(Path("/tmp"))
     
     # Get the command being executed
     command = ctx.invoked_subcommand
@@ -122,10 +124,18 @@ snapshot_commands.register_commands(app, BASE_PATH, get_config_path)
 
 
 if __name__ == "__main__":
+    import signal
+
+    def _shutdown(signum, frame):
+        """Convert SIGTERM/SIGHUP into SystemExit so finally blocks run."""
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGHUP, _shutdown)
+
     try:
         app()
     finally:
-        # Cleanup PID file on exit
         if PID_MANAGER is not None:
             PID_MANAGER.remove()
 

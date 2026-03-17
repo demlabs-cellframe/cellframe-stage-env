@@ -370,6 +370,15 @@ class WaitStep(BaseModel):
     # Docker exec polling (for wait: docker_exec) — uses 'cmd' for the command
     services: Optional[Union[str, List[str]]] = Field(None, description="Docker services for docker_exec polling")
     
+    # CLI polling parameters (for wait: cli)
+    cmd: Optional[str] = Field(None, description="CLI command to poll (for wait: cli)")
+    contains: Optional[str] = Field(None, description="Expected substring/regex in output (for wait: cli, wait: bash)")
+    not_contains: Optional[str] = Field(None, description="Unexpected substring in output (for wait: cli, wait: bash)")
+    interval: int = Field(5, ge=1, description="Seconds between polling attempts")
+    
+    # Script body (for wait: bash, wait: python)
+    script: Optional[str] = Field(None, description="Bash script or Python expression to poll")
+    
     # Wallet balance parameters
     wallet: Optional[str] = Field(None, description="Wallet name (for wallet_balance)")
     token: Optional[str] = Field(None, description="Token ticker (for wallet_balance)")

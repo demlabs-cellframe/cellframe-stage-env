@@ -975,8 +975,6 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             count = _resolve_count(gen.count, f"docker_compose_gen '{gen.prefix}'")
                             if count is None:
                                 continue
-                            # When build is specified, derive an image tag so
-                            # only the first service builds and siblings reuse it.
                             gen_image_tag = None
                             resolved_build = None
                             if gen.build:

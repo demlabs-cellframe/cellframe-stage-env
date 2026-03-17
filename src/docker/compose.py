@@ -5,6 +5,7 @@ Modern replacement for deprecated docker-compose library.
 Uses docker SDK 7.0+ with native compose v2 support.
 """
 
+import os
 import time
 import yaml
 from pathlib import Path
@@ -251,6 +252,9 @@ class DockerComposeManager:
             network_settings: Dict with 'subnet' and 'base_ip' from config
             extra_services: Additional docker-compose services to merge (from suite descriptor)
         """
+        if os.path.isabs(cache_dir_relative):
+            cache_dir_relative = os.path.relpath(cache_dir_relative, str(self.project_dir))
+
         logger.info("generating_compose_file",
                    node_count=len(nodes),
                    build_type=build_type,
@@ -616,6 +620,9 @@ class DockerComposeManager:
             cache_dir_relative: relative cache directory
             suite_env: suite-level env vars (from env_file) applied to all nodes
         """
+        if os.path.isabs(cache_dir_relative):
+            cache_dir_relative = os.path.relpath(cache_dir_relative, str(self.project_dir))
+
         if not self.compose_file.exists():
             raise FileNotFoundError(f"Generated compose file not found: {self.compose_file}")
 
