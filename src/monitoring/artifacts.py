@@ -172,7 +172,11 @@ class ArtifactsCollector:
         logger.debug("collecting_coredumps", container=container_name)
         
         artifacts = []
-        core_locations = ["/tmp", "/var/crash"]
+        core_locations = [
+            f"/crash-artifacts/node-{node_id}",
+            "/tmp",
+            "/var/crash",
+        ]
         
         for location in core_locations:
             try:
@@ -208,7 +212,8 @@ class ArtifactsCollector:
         try:
             with tarfile.open(fileobj=tar_bytes) as tar:
                 for member in tar.getmembers():
-                    if not member.isfile() or "core." not in member.name:
+                    basename = Path(member.name).name
+                    if not member.isfile() or not (basename == "core" or basename.startswith("core.")):
                         continue
                     local_path = output_dir / f"coredump_{Path(member.name).name}"
                     with tar.extractfile(member) as src:
@@ -237,59 +242,36 @@ class ArtifactsCollector:
         output_dir: Path,
         node_id: str,
     ) -> List[ArtifactMetadata]:
-        """Collect application logs from container."""
+        """Collect application logs from container using docker cp (works on stopped containers)."""
         
         logger.debug("collecting_app_logs", container=container_name)
         
         artifacts = []
         
-        # Common log locations for cellframe-node
-        log_locations = [
-            "/opt/cellframe-node/var/log",
-            "/var/log/cellframe-node",
-            "/tmp/cellframe-node.log",
+        log_paths = [
+            "/opt/cellframe-node/var/log/cellframe-node.log",
         ]
         
-        for location in log_locations:
+        for log_path in log_paths:
             try:
-                exit_code, output = self._exec_in_container(
-                    container_name,
-                    ["find", location, "-name", "*.log", "-type", "f"],
-                )
+                local_path = output_dir / f"log_{Path(log_path).name}"
+                self._copy_from_container(container_name, log_path, local_path)
                 
-                if exit_code == 0 and output.strip():
-                    log_files = output.strip().split("\n")
-                    
-                    for log_file in log_files:
-                        if not log_file:
-                            continue
-                        
-                        local_path = output_dir / f"log_{Path(log_file).name}"
-                        
-                        self._copy_from_container(
-                            container_name,
-                            log_file,
-                            local_path,
-                        )
-                        
-                        if local_path.exists():
-                            # Compress log
-                            compressed_path = self._compress_file(local_path)
-                            
-                            artifacts.append(ArtifactMetadata(
-                                artifact_type="log",
-                                node_id=node_id,
-                                timestamp=self._get_timestamp(),
-                                size_bytes=compressed_path.stat().st_size,
-                                compressed=True,
-                                source_path=log_file,
-                                description=f"Application log: {Path(log_file).name}",
-                            ))
-            
+                if local_path.exists() and local_path.stat().st_size > 0:
+                    compressed_path = self._compress_file(local_path)
+                    artifacts.append(ArtifactMetadata(
+                        artifact_type="log",
+                        node_id=node_id,
+                        timestamp=self._get_timestamp(),
+                        size_bytes=compressed_path.stat().st_size,
+                        compressed=True,
+                        source_path=log_path,
+                        description=f"Application log: {Path(log_path).name}",
+                    ))
+                    logger.info("app_log_collected", node_id=node_id,
+                              source=log_path, size_mb=compressed_path.stat().st_size / 1024 / 1024)
             except Exception as e:
-                logger.debug("log_collection_skipped",
-                           location=location,
-                           error=str(e))
+                logger.debug("log_collection_skipped", path=log_path, error=str(e))
         
         return artifacts
     
@@ -299,32 +281,108 @@ class ArtifactsCollector:
         output_dir: Path,
         node_id: str,
     ) -> Optional[ArtifactMetadata]:
-        """Collect backtrace if available."""
+        """Generate backtrace from core dump using GDB in a temporary helper container.
+        
+        Spins up a new container from the same image with the crash-artifacts
+        volume mounted, runs GDB against the core dump, and captures the output.
+        Works regardless of the original container's state.
+        """
         
         logger.debug("collecting_backtrace", container=container_name)
         
-        # Try to generate backtrace from core dump using gdb
-        # This requires gdb in container
+        core_path = f"/crash-artifacts/node-{node_id}/core"
+        binary_path = "/opt/cellframe-node/bin/cellframe-node"
         
         try:
-            # Check if gdb is available
-            exit_code, _ = self._exec_in_container(
-                container_name,
-                ["which", "gdb"],
-            )
+            import docker as docker_lib
+            client = docker_lib.from_env()
             
-            if exit_code != 0:
-                logger.debug("gdb_not_available")
+            src_container = client.containers.get(container_name)
+            image = src_container.image.tags[0] if src_container.image.tags else src_container.image.id
+            
+            crash_volume = None
+            for mount in src_container.attrs.get("Mounts", []):
+                if mount.get("Destination", "").startswith("/crash-artifacts"):
+                    crash_volume = mount["Source"]
+                    break
+            
+            if not crash_volume:
+                logger.warning("no_crash_artifacts_mount", container=container_name)
                 return None
             
-            # Find binary and core
-            # This is placeholder - real implementation would need proper paths
+            gdb_cmd = (
+                f"if [ ! -f {core_path} ]; then echo 'NO_CORE_DUMP'; exit 1; fi; "
+                f"gdb -batch "
+                f"-ex 'set pagination off' "
+                f"-ex 'thread apply all bt full' "
+                f"-ex 'info registers' "
+                f"-ex 'info threads' "
+                f"{binary_path} {core_path} 2>&1"
+            )
             
-            logger.debug("backtrace_generation_not_implemented")
-            return None
+            helper_name = f"gdb-helper-{node_id}"
+            try:
+                old = client.containers.get(helper_name)
+                old.remove(force=True)
+            except docker_lib.errors.NotFound:
+                pass
+            
+            logger.info("running_gdb_helper", image=image, core=core_path)
+            
+            helper = client.containers.run(
+                image,
+                ["sh", "-c", gdb_cmd],
+                name=helper_name,
+                entrypoint="",
+                volumes={crash_volume: {"bind": f"/crash-artifacts/node-{node_id}", "mode": "ro"}},
+                remove=False,
+                detach=True,
+            )
+            
+            result = helper.wait(timeout=60)
+            bt_text = helper.logs().decode("utf-8", errors="ignore")
+            
+            try:
+                helper.remove(force=True)
+            except Exception:
+                pass
+            
+            if "NO_CORE_DUMP" in bt_text:
+                logger.warning("no_core_dump_file", node_id=node_id, path=core_path)
+                return None
+            
+            if not bt_text or len(bt_text.strip()) < 20:
+                logger.warning("gdb_empty_backtrace", container=container_name,
+                             exit_code=result.get("StatusCode"), output=bt_text[:500])
+                return None
+            
+            bt_file = output_dir / "backtrace.txt"
+            bt_file.write_text(bt_text)
+            
+            print(f"\n{'='*80}")
+            print(f"STACK TRACE ({container_name}, node-{node_id}):")
+            print(f"{'='*80}")
+            for line in bt_text.split("\n")[:80]:
+                print(line)
+            if bt_text.count("\n") > 80:
+                print(f"... ({bt_text.count(chr(10)) - 80} more lines in {bt_file})")
+            print(f"{'='*80}\n")
+            
+            logger.info("backtrace_collected", node_id=node_id,
+                       size=len(bt_text), file=str(bt_file))
+            
+            return ArtifactMetadata(
+                artifact_type="backtrace",
+                node_id=node_id,
+                timestamp=self._get_timestamp(),
+                size_bytes=bt_file.stat().st_size,
+                compressed=False,
+                source_path=core_path,
+                description="GDB backtrace from core dump",
+            )
         
         except Exception as e:
-            logger.debug("backtrace_collection_failed", error=str(e))
+            logger.warning("backtrace_collection_failed", error=str(e))
             return None
     
     def _collect_system_info(
