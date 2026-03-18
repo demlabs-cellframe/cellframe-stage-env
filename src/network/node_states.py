@@ -9,6 +9,7 @@ Provides intelligent waiting for node state transitions:
 
 import asyncio
 import json
+import re
 from typing import List, Set
 from enum import Enum
 
@@ -29,6 +30,9 @@ class NodeState(Enum):
     LINKS_CONNECTING = "NET_STATE_LINKS_CONNECTING"
     LINKS_ESTABLISHED = "NET_STATE_LINKS_ESTABLISHED"
     ADDR_REQUEST = "NET_STATE_ADDR_REQUEST"
+    SYNC_CHAINS = "NET_STATE_SYNC_CHAINS"
+    SYNC_GDB = "NET_STATE_SYNC_GDB"
+    SYNC_ALL = "NET_STATE_SYNC_ALL"
     UNKNOWN = "UNKNOWN"
 
 
@@ -338,7 +342,45 @@ class NodeStateManager:
                                        state=state.value,
                                        format="text")
                             return state
-            
+
+            # Fallback 1: scan whole output for any NET_STATE_* token
+            for state in [NodeState.ONLINE, NodeState.SYNC_CHAINS,
+                          NodeState.LINKS_ESTABLISHED, NodeState.LINKS_CONNECTING,
+                          NodeState.LINKS_PREPARE, NodeState.OFFLINE]:
+                if state.value in output_str:
+                    logger.debug("node_state_detected",
+                               node_id=node_id,
+                               state=state.value,
+                               format="text_fallback")
+                    return state
+
+            # Fallback 2: v5.7 text format without explicit NET_STATE_*.
+            # Deduce state from structural indicators (links, chain sync).
+            links_match = re.search(r'links:\s*\n\s*active:\s*(\d+)', output_str)
+            has_active_links = links_match and int(links_match.group(1)) > 0
+            has_syncing = 'sync in process' in output_str.lower()
+            has_synced = bool(re.search(r'status:\s*synced', output_str))
+
+            if has_active_links:
+                if has_synced and not has_syncing:
+                    logger.debug("node_state_detected",
+                               node_id=node_id,
+                               state=NodeState.ONLINE.value,
+                               format="structural_heuristic")
+                    return NodeState.ONLINE
+                elif has_syncing:
+                    logger.debug("node_state_detected",
+                               node_id=node_id,
+                               state=NodeState.SYNC_CHAINS.value,
+                               format="structural_heuristic")
+                    return NodeState.SYNC_CHAINS
+                else:
+                    logger.debug("node_state_detected",
+                               node_id=node_id,
+                               state=NodeState.LINKS_ESTABLISHED.value,
+                               format="structural_heuristic")
+                    return NodeState.LINKS_ESTABLISHED
+
             logger.debug("state_not_parsed",
                        node_id=node_id,
                        output_preview=output_str[:200])

@@ -196,7 +196,8 @@ class DockerContainerManager:
             logger.debug("no_core_dumps_found_for_stack_trace", container=container_name)
             # Try to find core dumps directly in container
             try:
-                core_locations = ["/tmp/cores", "/var/crash", "/core", "/opt/cellframe-node/var/log"]
+                node_id = container_name.split("-")[-1] if "-" in container_name else "1"
+                core_locations = [f"/crash-artifacts/node-{node_id}", "/tmp/cores", "/var/crash", "/core", "/opt/cellframe-node/var/log"]
                 for location in core_locations:
                     try:
                         result = subprocess.run(
