@@ -3,6 +3,8 @@ CLI commands for running tests.
 
 This module contains the main test execution command extracted from stage_env.py.
 """
+from __future__ import annotations
+
 import asyncio
 import typer
 from pathlib import Path
