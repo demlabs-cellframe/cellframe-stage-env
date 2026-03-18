@@ -30,19 +30,36 @@ class NetworkWaitStepExecutor(StepExecutor):
         self.get_node_config_callback = get_node_config_callback
     
     def _expand_nodes_list(self, nodes, ctx: RuntimeContext) -> list:
-        """Expand nodes that can be a template string or list."""
+        """Expand nodes that can be a template string, list, or nested list."""
+        if isinstance(nodes, list):
+            result = []
+            for item in nodes:
+                if isinstance(item, list):
+                    result.extend(item)
+                elif isinstance(item, str):
+                    expanded = ctx.substitute(item)
+                    if isinstance(expanded, list):
+                        result.extend(expanded)
+                    else:
+                        result.append(expanded)
+                else:
+                    result.append(str(item))
+            return result
         if isinstance(nodes, str):
-            # Template string like "{{all_nodes}}" - substitute and parse
             expanded = ctx.substitute(nodes)
-            if expanded.startswith('[') and expanded.endswith(']'):
+            if isinstance(expanded, list):
+                return self._expand_nodes_list(expanded, ctx)
+            expanded_str = str(expanded)
+            if expanded_str.startswith('[') and expanded_str.endswith(']'):
                 import ast
                 try:
-                    return ast.literal_eval(expanded)
+                    parsed = ast.literal_eval(expanded_str)
+                    if isinstance(parsed, (list, tuple)):
+                        return self._expand_nodes_list(list(parsed), ctx)
                 except (ValueError, SyntaxError):
-                    return [expanded]
-            else:
-                return [s.strip() for s in expanded.split(',') if s.strip()]
-        return list(nodes)
+                    pass
+            return [s.strip() for s in expanded_str.split(',') if s.strip()]
+        return [str(nodes)]
     
     async def execute(self, step: NetworkWaitStep, ctx: RuntimeContext) -> None:
         """Execute network wait step."""

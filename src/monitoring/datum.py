@@ -317,7 +317,7 @@ class DatumMonitor:
                 
                 try:
                     # Wait for datum to appear in mempool (with reasonable timeout)
-                    mempool_wait_timeout = min(10.0, timeout_mempool)  # Wait up to 10s or timeout_mempool, whichever is smaller
+                    mempool_wait_timeout = timeout_mempool
                     await waiter.wait(timeout=mempool_wait_timeout, name=f"datum_{datum_hash[:16]}_in_mempool")
                     was_in_mempool = True
                     mempool_start = current_time
@@ -749,43 +749,38 @@ class DatumMonitor:
     async def _check_in_blockchain_blocks(self, node: str, network: str, chain: str, datum_hash: str) -> Optional[Tuple[int, str]]:
         """
         Check if datum is in a blockchain block (for ESBocs chains like main, kelvin).
+        Uses 'find datum' CLI command which searches for a datum hash across the chain.
         
         Returns:
             Tuple of (block_number, block_hash) if found, None otherwise
         """
         try:
-            # Convert node to container name
             container_name = self._node_to_container(node)
             container = self.docker_client.containers.get(container_name)
             
-            # Get recent blocks and search for our datum
+            hash_for_cli = datum_hash if _STRICT_HASH_PATTERN.match(datum_hash) else (
+                _EXTRACT_HASH_PATTERN.search(datum_hash).group(1) if _EXTRACT_HASH_PATTERN.search(datum_hash) else datum_hash
+            )
             cmd = [
-                self.node_cli_path, "block", "list",
-                "-net", network, "-chain", chain, "-last", "10"
+                self.node_cli_path, "find", "datum",
+                "-net", network, "-chain", chain, "-hash", hash_for_cli
             ]
             
             result = container.exec_run(cmd, demux=True)
             exit_code = result.exit_code
             stdout, stderr = result.output
+            stdout_str = stdout.decode('utf-8') if stdout else ""
             
             if exit_code != 0:
                 return None
             
-            stdout_str = stdout.decode('utf-8') if stdout else ""
-            
-            # Parse block list output for our datum hash
-            # v2 format: block_num: N, block_hash: ..., datums: ...
-            lines = stdout_str.split('\n')
-            for line in lines:
-                if datum_hash.lower() in line.lower():
-                    num_match = re.search(r'block_num:\s*(\d+)', line, re.IGNORECASE)
-                    if num_match:
-                        block_num = int(num_match.group(1))
-                        
-                        hash_match = re.search(r'block_hash:\s*([0-9a-fA-Fx]+)', line, re.IGNORECASE)
-                        block_hash = hash_match.group(1) if hash_match else "unknown"
-                        
-                        return (block_num, block_hash)
+            find_match = re.search(r'find:\s*true', stdout_str, re.IGNORECASE)
+            source_match = re.search(r'source:\s*chain', stdout_str, re.IGNORECASE)
+            if find_match and source_match:
+                atom_hash_match = re.search(r'atom_hash:\s*(0x[0-9a-fA-F]+)', stdout_str, re.IGNORECASE)
+                atom_hash = atom_hash_match.group(1) if atom_hash_match else "unknown"
+                self._log(f"  ✅ Datum {datum_hash[:16]}... found in chain (atom: {atom_hash[:16]}...)")
+                return (1, atom_hash)
             
             return None
             

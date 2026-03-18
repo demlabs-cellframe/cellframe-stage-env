@@ -1,6 +1,7 @@
 #!/bin/bash
 # Docker entrypoint for Cellframe Node
-# Minimal wrapper that delegates to Python modules
+# Runs node as a child process (NOT exec) so the kernel can write core dumps.
+# PID 1 processes don't generate core dumps on Linux.
 
 set -e
 
@@ -12,11 +13,6 @@ echo "=== Cellframe Node Docker Entrypoint ==="
 echo "Node ID: $NODE_ID"
 echo "Node Role: $NODE_ROLE"
 echo "Network: $NETWORK_NAME"
-
-# Directory structure under /opt/cellframe-node/var/ is created by the .deb
-# package at image build time. Only individual subdirectories are bind-mounted
-# from the host (log/, lib/ca/, lib/global_db/, lib/wallet/, lib/network/),
-# so directories like var/run/ and var/lib/plugins/ remain from the image.
 
 # Enable core dumps — save to crash-artifacts mount that survives snapshot restores
 ulimit -c unlimited
@@ -30,7 +26,31 @@ if ldd /opt/cellframe-node/bin/cellframe-node 2>/dev/null | grep -q libasan; the
     echo "ASAN enabled: $ASAN_OPTIONS"
 fi
 
-# Start cellframe-node with maximum debug level
+# Forward termination signals to the child process
+cleanup() {
+    if [ -n "$NODE_PID" ]; then
+        kill -TERM "$NODE_PID" 2>/dev/null
+        wait "$NODE_PID" 2>/dev/null
+    fi
+    exit 0
+}
+trap cleanup SIGTERM SIGINT SIGHUP SIGQUIT
+
 echo "Starting cellframe-node..."
-exec /opt/cellframe-node/bin/cellframe-node -D 5
+/opt/cellframe-node/bin/cellframe-node -D 5 &
+NODE_PID=$!
+wait "$NODE_PID"
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "=== NODE CRASHED (exit_code=$EXIT_CODE, node_id=$NODE_ID) ==="
+    if [ -f "$CRASH_DIR/core" ]; then
+        CORE_SIZE=$(stat -c %s "$CRASH_DIR/core" 2>/dev/null || stat -f %z "$CRASH_DIR/core" 2>/dev/null)
+        echo "Core dump saved: $CRASH_DIR/core ($CORE_SIZE bytes)"
+    else
+        echo "WARNING: No core dump found at $CRASH_DIR/core"
+    fi
+fi
+
+exit $EXIT_CODE
 
