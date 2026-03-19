@@ -763,6 +763,13 @@ class SuiteDescriptor(BaseModel):
         description="Templates to generate multiple docker-compose services"
     )
 
+    # External docker-compose files whose services/volumes/networks are merged
+    # into docker-compose.generated.yml.  Paths are relative to the suite file.
+    docker_compose_files: List[str] = Field(
+        default_factory=list,
+        description="External docker-compose files to merge (paths relative to suite file)"
+    )
+
     # Arbitrary docker-compose services merged into the generated compose file.
     # Each key is a service name, value is a docker-compose service definition.
     docker_compose: Dict[str, Any] = Field(

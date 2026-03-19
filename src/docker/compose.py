@@ -781,6 +781,59 @@ class DockerComposeManager:
                 yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
             logger.info("docker_compose_services_written", count=added)
 
+    def merge_compose_file(self, compose_file_path: 'Path') -> None:
+        """Merge an external docker-compose file into the generated compose.
+
+        Imports ``services``, ``volumes``, and ``networks`` from
+        *compose_file_path* into ``docker-compose.generated.yml``.
+        Services without an explicit ``networks`` key are connected to the
+        project network automatically (same behaviour as
+        :meth:`add_docker_compose_services`).
+        """
+        from pathlib import Path
+        compose_file_path = Path(compose_file_path)
+
+        if not compose_file_path.exists():
+            logger.error("merge_compose_file_not_found",
+                         path=str(compose_file_path))
+            return
+        if not self.compose_file or not self.compose_file.exists():
+            logger.warning("merge_compose_file_no_generated",
+                           path=str(self.compose_file))
+            return
+
+        with open(compose_file_path) as f:
+            external = yaml.safe_load(f) or {}
+
+        with open(self.compose_file) as f:
+            compose_data = yaml.safe_load(f) or {}
+
+        added_svc = 0
+        for svc_name, svc_config in (external.get('services') or {}).items():
+            if svc_name in compose_data.get('services', {}):
+                logger.debug("merge_compose_service_exists", service=svc_name)
+                continue
+            if isinstance(svc_config, dict) and 'networks' not in svc_config:
+                svc_config['networks'] = [self.network_name]
+            compose_data.setdefault('services', {})[svc_name] = svc_config
+            added_svc += 1
+            logger.info("merge_compose_service_added", name=svc_name,
+                        source=compose_file_path.name)
+
+        for vol_name, vol_def in (external.get('volumes') or {}).items():
+            compose_data.setdefault('volumes', {}).setdefault(vol_name, vol_def)
+
+        for net_name, net_def in (external.get('networks') or {}).items():
+            compose_data.setdefault('networks', {}).setdefault(net_name, net_def)
+
+        if added_svc:
+            with open(self.compose_file, 'w') as f:
+                yaml.dump(compose_data, f, default_flow_style=False,
+                          sort_keys=False)
+            logger.info("merge_compose_file_done",
+                        source=compose_file_path.name,
+                        services=added_svc)
+
     def set_service_images(self, image_map: Dict[str, str]) -> None:
         """
         Override service images in the generated compose file.
