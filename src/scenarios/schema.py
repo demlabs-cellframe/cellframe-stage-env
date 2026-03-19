@@ -273,7 +273,7 @@ class CLIStep(BaseModel):
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     contains: Optional[str] = Field(None, description="Expected substring in output")
     not_contains: Optional[str] = Field(None, description="Unexpected substring (fails if found)")
-    timeout: Optional[int] = Field(30, description="Command timeout in seconds")
+    timeout: Optional[Union[int, str]] = Field(30, description="Command timeout in seconds (can be template e.g. '{{var}}')")
     
     def get_extraction_info(self) -> List[str]:
         """
@@ -307,7 +307,7 @@ class RPCStep(BaseModel):
     save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
     wait: Optional[str] = Field(None, description="Wait duration after call")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
-    timeout: Optional[int] = Field(30, description="RPC call timeout")
+    timeout: Optional[Union[int, str]] = Field(30, description="RPC call timeout (can be template e.g. '{{var}}')")
     
     class Config:
         use_enum_values = True
@@ -426,7 +426,7 @@ class BashStep(BaseModel):
     save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
     save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
-    timeout: Optional[int] = Field(300, description="Script timeout in seconds")
+    timeout: Optional[Union[int, str]] = Field(300, description="Script timeout in seconds (can be template e.g. '{{var}}')")
     
     class Config:
         use_enum_values = True
@@ -440,7 +440,7 @@ class ToolStep(BaseModel):
     save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
     save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
-    timeout: Optional[int] = Field(30, description="Command timeout in seconds")
+    timeout: Optional[Union[int, str]] = Field(30, description="Command timeout in seconds (can be template e.g. '{{var}}')")
     
     class Config:
         use_enum_values = True
@@ -471,7 +471,7 @@ class NetworkWaitStep(BaseModel):
     """Wait for network state (online, offline, links_connecting, links_established, sync_complete)."""
     wait_network: str = Field(..., description="Network state to wait for: 'online', 'offline', 'links_connecting', 'links_established', 'sync_complete'")
     nodes: Union[str, List[str]] = Field(default_factory=lambda: ["root-1", "root-2", "root-3"], description="Nodes to check (can be template like '{{all_nodes}}')")
-    timeout: int = Field(120, description="Timeout in seconds")
+    timeout: Union[int, str] = Field(120, description="Timeout in seconds (can be template e.g. '{{var}}')")
     network: str = Field("{{network_name}}", description="Network name (Jinja2 template, resolved from context)")
     chain: Optional[str] = Field(None, description="Chain name (optional)")
 
@@ -511,7 +511,7 @@ class DockerExecStep(BaseModel):
     save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving")
     save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} for multi-extraction")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
-    timeout: Optional[int] = Field(300, description="Command timeout in seconds")
+    timeout: Optional[Union[int, str]] = Field(300, description="Command timeout in seconds (can be template e.g. '{{var}}')")
 
     class Config:
         use_enum_values = True
@@ -523,7 +523,7 @@ class PlaywrightStep(BaseModel):
     browser: str = Field("chromium", description="Browser project: chromium, firefox, webkit")
     env: Dict[str, str] = Field(default_factory=dict, description="Environment variables passed to the spec")
     save: Optional[Dict[str, str]] = Field(None, description="Map spec output keys to context variable names")
-    timeout: int = Field(120, description="Spec execution timeout in seconds")
+    timeout: Union[int, str] = Field(120, description="Spec execution timeout in seconds (can be template e.g. '{{var}}')")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     headed: bool = Field(False, description="Run in headed mode (for local debugging via VNC)")
     container: str = Field("playwright-runner", description="Docker service name for the Playwright runner")
@@ -594,7 +594,7 @@ class CLICheck(BaseModel):
     contains: Optional[str] = Field(None, description="Expected substring")
     not_contains: Optional[str] = Field(None, description="Substring that should not be present")
     equals: Optional[str] = Field(None, description="Exact expected output")
-    timeout: Optional[int] = Field(30, description="Command timeout")
+    timeout: Optional[Union[int, str]] = Field(30, description="Command timeout (can be template e.g. '{{var}}')")
 
 
 class RPCCheck(BaseModel):
@@ -604,7 +604,7 @@ class RPCCheck(BaseModel):
     node: str = Field("node1", description="Node to call on")
     result_contains: Optional[Any] = Field(None, description="Expected value in result")
     result_equals: Optional[Any] = Field(None, description="Exact expected result")
-    timeout: Optional[int] = Field(30, description="RPC timeout")
+    timeout: Optional[Union[int, str]] = Field(30, description="RPC timeout (can be template e.g. '{{var}}')")
 
 
 class PythonCheck(BaseModel):
@@ -616,7 +616,7 @@ class BashCheck(BaseModel):
     """Verify condition using Bash script."""
     bash: str = Field(..., description="Bash script (exit 0 = success)")
     node: str = Field("node1", description="Node to execute on")
-    timeout: Optional[int] = Field(30, description="Script timeout")
+    timeout: Optional[Union[int, str]] = Field(30, description="Script timeout (can be template e.g. '{{var}}')")
 
 
 CheckSpec = Union[CLICheck, RPCCheck, PythonCheck, BashCheck]
@@ -631,7 +631,7 @@ class StepDefaults(BaseModel):
     node: Optional[str] = Field(None, description="Default node for all steps")
     wait: Optional[str] = Field(None, description="Default wait duration after each step")
     expect: Optional[ExpectResult] = Field(None, description="Default expected result")
-    timeout: Optional[int] = Field(None, description="Default timeout in seconds")
+    timeout: Optional[Union[int, str]] = Field(None, description="Default timeout in seconds (can be template e.g. '{{var}}')")
     cli: Optional[Dict[str, str]] = Field(None, description="Default CLI option prefixes (e.g., {'net': 'stagenet'})")
     
     class Config:

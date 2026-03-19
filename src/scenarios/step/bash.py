@@ -6,7 +6,7 @@ import asyncio
 from typing import Any, Dict
 
 from ...utils.logger import get_logger
-from .base import StepExecutor
+from .base import StepExecutor, resolve_timeout
 from ..schema import BashStep
 from ..executor import ScenarioExecutionError, RuntimeContext
 
@@ -20,7 +20,7 @@ class BashStepExecutor(StepExecutor):
         """Execute Bash script step."""
         script = ctx.substitute(step.bash)
         
-        timeout = step.timeout or 300
+        timeout = resolve_timeout(step.timeout, ctx, default=300)
         try:
             if step.node:
                 node = ctx.substitute(step.node)

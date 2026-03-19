@@ -328,6 +328,11 @@ class DockerComposeManager:
                 if pkg_info['type'] == 'local':
                     src = Path(pkg_info['path'])
                     dst = build_context_packages_dir / src.name
+                    try:
+                        if dst.exists() and dst.stat().st_size == src.stat().st_size:
+                            continue
+                    except OSError:
+                        pass
                     _shutil.copy2(src, dst)
                     logger.info("extra_package_copied", name=src.name,
                                size_mb=round(src.stat().st_size / (1024 * 1024), 2))
@@ -451,25 +456,35 @@ class DockerComposeManager:
                 # IMPORTANT: Use copy instead of symlink because Docker COPY doesn't follow
                 # symlinks that point outside build context
                 package_dest = self.project_dir / "packages" / package_name
-                if package_dest.exists() or package_dest.is_symlink():
-                    package_dest.unlink()
-                
-                # Always copy file (not symlink) so Docker COPY can access it
+
+                # Skip re-copy when the file is already present with matching
+                # size (avoids race condition in parallel mode where multiple
+                # shards write to the shared packages/ directory).
                 import shutil
+                needs_copy = True
                 try:
-                    shutil.copy2(local_package_path, package_dest)
-                    logger.debug("copied_package_to_build_context",
-                               node_id=node.node_id,
-                               source=str(local_package_path),
-                               dest=str(package_dest),
-                               size_mb=round(local_package_path.stat().st_size / (1024*1024), 2))
-                except Exception as e:
-                    logger.error("failed_to_copy_package_to_build_context",
-                               node_id=node.node_id,
-                               source=str(local_package_path),
-                               dest=str(package_dest),
-                               error=str(e))
-                    raise RuntimeError(f"Failed to copy package to build context: {e}")
+                    if package_dest.exists() and package_dest.stat().st_size == local_package_path.stat().st_size:
+                        needs_copy = False
+                except OSError:
+                    pass
+
+                if needs_copy:
+                    if package_dest.exists() or package_dest.is_symlink():
+                        package_dest.unlink()
+                    try:
+                        shutil.copy2(local_package_path, package_dest)
+                        logger.debug("copied_package_to_build_context",
+                                   node_id=node.node_id,
+                                   source=str(local_package_path),
+                                   dest=str(package_dest),
+                                   size_mb=round(local_package_path.stat().st_size / (1024*1024), 2))
+                    except Exception as e:
+                        logger.error("failed_to_copy_package_to_build_context",
+                                   node_id=node.node_id,
+                                   source=str(local_package_path),
+                                   dest=str(package_dest),
+                                   error=str(e))
+                        raise RuntimeError(f"Failed to copy package to build context: {e}")
                 
                 node_service['build']['args']['LOCAL_PACKAGE_NAME'] = package_name
                 logger.debug("set_local_package_build_arg",
@@ -587,15 +602,16 @@ class DockerComposeManager:
                 compose_data['services'][svc_name] = svc_config
                 logger.info("extra_service_added", name=svc_name)
         
-        # Write generated compose file
-        generated_file = self.project_dir / "docker-compose.generated.yml"
-        
+        # Write generated compose file (respect pre-set compose_file for shards)
+        if self.compose_file.name.startswith("docker-compose.shard-"):
+            generated_file = self.compose_file
+        else:
+            generated_file = self.project_dir / "docker-compose.generated.yml"
+            self.compose_file = generated_file
+
         with open(generated_file, 'w') as f:
             yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
-        
-        # Update compose_file to use generated file
-        self.compose_file = generated_file
-        
+
         logger.info("compose_file_generated",
                    path=str(generated_file),
                    services=len(compose_data.get('services', {})))

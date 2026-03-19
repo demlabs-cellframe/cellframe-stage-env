@@ -37,18 +37,20 @@ trap cleanup SIGTERM SIGINT SIGHUP SIGQUIT
 
 echo "Starting cellframe-node..."
 if [ "${DEBUG_GDB:-0}" = "1" ] && command -v gdb >/dev/null 2>&1; then
-    # GDB batch mode: only `run`, no post-mortem commands.
-    # In -batch mode any failing -ex command (e.g. `bt` on a dead process after
-    # clean SIGTERM exit) causes immediate exit with code 1 — a false crash.
-    # Crash analysis relies on core dumps processed by stage-env's gdb_helper.
     echo "Running under gdb (DEBUG_GDB=1) — core dumps enabled for crash analysis"
-    gdb -batch -q \
-        -ex 'set pagination off' \
-        -ex 'set confirm off' \
-        -ex 'handle SIGPIPE nostop noprint pass' \
-        -ex 'handle SIGTERM nostop noprint pass' \
-        -ex 'run -D 5' \
-        /opt/cellframe-node/bin/cellframe-node &
+    GDB_INIT="/tmp/gdb-init-${NODE_ID}"
+    cat > "$GDB_INIT" << 'GDBEOF'
+set pagination off
+set confirm off
+handle SIGPIPE nostop noprint pass
+handle SIGTERM nostop noprint pass
+run -D 5
+printf "\n=== CRASH BACKTRACE ===\n"
+thread apply all bt full
+printf "\n=== END BACKTRACE ===\n"
+quit
+GDBEOF
+    gdb -q -x "$GDB_INIT" /opt/cellframe-node/bin/cellframe-node </dev/null &
 else
     /opt/cellframe-node/bin/cellframe-node -D 5 &
 fi

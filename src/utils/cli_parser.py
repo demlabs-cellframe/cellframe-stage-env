@@ -306,7 +306,10 @@ class CLICommandParser:
             pattern = rf'(^|\s)-{re.escape(option)}(\s|$)'
             if re.search(pattern, cli_command):
                 continue
-            if not available_options or option in available_options:
+            if not self._parsed:
+                options_to_add.append(f"-{option} {value}")
+                logger.debug(f"Parser not initialized, permissively adding -{option} {value} to command '{cli_command}'")
+            elif option in available_options:
                 options_to_add.append(f"-{option} {value}")
                 logger.debug(f"Adding option -{option} {value} to command '{cli_command}'")
             else:

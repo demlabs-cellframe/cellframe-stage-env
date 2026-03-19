@@ -6,7 +6,7 @@ compose manager's ``exec()`` without the ``docker_op: exec`` boilerplate.
 """
 
 from ...utils.logger import get_logger
-from .base import StepExecutor
+from .base import StepExecutor, resolve_timeout
 from ..schema import DockerExecStep
 from ..executor import ScenarioExecutionError, RuntimeContext
 

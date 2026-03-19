@@ -12,6 +12,7 @@ from typing import List, Callable, Optional
 from ..base import BaseWaiter
 from ...network.models import NodeConfig
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 
 logger = get_logger(__name__)
 
@@ -46,7 +47,7 @@ class MasterContainersRunningWaiter(BaseWaiter):
     async def check(self) -> bool:
         """Check if all master containers are running."""
         for master_node in self.master_nodes:
-            container_name = f"cellframe-stage-node-{master_node.node_id}"
+            container_name = make_container_name(f"node-{master_node.node_id}")
             try:
                 container = self.docker_client.containers.get(container_name)
                 container.reload()

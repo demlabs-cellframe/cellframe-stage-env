@@ -8,6 +8,7 @@ from typing import Callable, Optional
 
 from .common import print_info, print_success, print_error, print_warning, confirm
 from src.utils.i18n import _
+from src.utils.project import get_project_name
 
 
 def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callable[[], Optional[Path]]):
@@ -221,7 +222,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 test_networks = [
                     net for net in all_networks
                     if any(pattern in net.name for pattern in [
-                        'cellframe-stage',
+                        get_project_name(),
                         'stage-env',
                         'stagenet'
                     ])

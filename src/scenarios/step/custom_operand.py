@@ -75,9 +75,11 @@ class CustomOperandStepExecutor(StepExecutor):
                         saved_keys=list(saved_vars.keys()),
                         ctx_vars=list(ctx.variables.keys()))
 
+            substituted_steps = _substitute_raw(copy.deepcopy(raw_steps), ctx)
+
             from ..schema import TestStep
             adapter = TypeAdapter(List[TestStep])
-            parsed_steps = adapter.validate_python(copy.deepcopy(raw_steps))
+            parsed_steps = adapter.validate_python(substituted_steps)
 
             await self._execute_steps(parsed_steps, ctx, defaults)
 
@@ -95,3 +97,28 @@ class CustomOperandStepExecutor(StepExecutor):
 
 _SENTINEL = object()
 _SINGLE_VAR_RE = re.compile(r'^\{\{(\w+)\}\}$')
+_TEMPLATE_RE = re.compile(r'\{\{(\w+)\}\}')
+
+
+def _substitute_raw(data: Any, ctx: RuntimeContext) -> Any:
+    """Recursively substitute {{var}} in raw step dicts/lists before Pydantic validation.
+
+    Numeric fields like ``timeout`` may reference variables that are set in
+    context right before this call.  Without pre-substitution Pydantic
+    rejects ``"{{timeout}}"`` when it expects ``int``.
+    """
+    if isinstance(data, str):
+        single = _SINGLE_VAR_RE.fullmatch(data)
+        if single:
+            var_name = single.group(1)
+            if ctx.has_variable(var_name):
+                return ctx.get_variable(var_name)
+        return _TEMPLATE_RE.sub(
+            lambda m: str(ctx.get_variable(m.group(1))) if ctx.has_variable(m.group(1)) else m.group(0),
+            data,
+        )
+    if isinstance(data, dict):
+        return {k: _substitute_raw(v, ctx) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_substitute_raw(item, ctx) for item in data]
+    return data

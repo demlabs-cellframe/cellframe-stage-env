@@ -5,6 +5,7 @@ Docker operation step executor.
 import subprocess
 
 from ...utils.logger import get_logger
+from ...utils.project import make_container_name
 from .base import StepExecutor
 from ..schema import DockerOpStep, WaitStep
 from ..executor import ScenarioExecutionError, RuntimeContext
@@ -110,7 +111,7 @@ class DockerOpStepExecutor(StepExecutor):
                     
                     # Map docker service names to container names
                     # node-1 -> cellframe-stage-node-1
-                    container_names = [f"cellframe-stage-{svc}" for svc in services]
+                    container_names = [make_container_name(svc) for svc in services]
                     
                     logger.info("waiting_for_container_ips", containers=container_names)
                     
@@ -203,7 +204,7 @@ class DockerOpStepExecutor(StepExecutor):
                 container = parts[0]
                 # Convert node-1 to cellframe-stage-node-1
                 if container.startswith('node-'):
-                    container = f"cellframe-stage-{container}"
+                    container = make_container_name(container)
                 return container, parts[1]
             return None, path
         

@@ -7,7 +7,7 @@ import json
 from typing import Any, Dict, Optional
 
 from ...utils.logger import get_logger
-from .base import StepExecutor
+from .base import StepExecutor, resolve_timeout
 from ..schema import CLIStep, StepDefaults
 from ..executor import ScenarioExecutionError, RuntimeContext
 
@@ -136,7 +136,7 @@ class CLIStepExecutor(StepExecutor):
         has_executor_ref = hasattr(self, '_executor_ref')
         has_run_cli = hasattr(self._executor_ref, '_run_cli_command') if has_executor_ref else False
         
-        timeout = step.timeout or 30
+        timeout = resolve_timeout(step.timeout, ctx, default=30)
         try:
             if has_executor_ref and has_run_cli:
                 result = await self._executor_ref._run_cli_command(

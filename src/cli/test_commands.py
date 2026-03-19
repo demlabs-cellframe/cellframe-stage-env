@@ -11,6 +11,7 @@ from typing import Optional, List, Dict, Callable
 
 from .common import print_info, print_success, print_error, print_warning
 from src.utils.i18n import _
+from src.utils.project import get_project_name, make_container_name
 
 
 def _fixup_node_identity(cfg_dir: Path, data_dir: Path, role: str, node_id: int,
@@ -539,13 +540,479 @@ def _find_donor_node(cache_dir: Path, subdir: str) -> Optional[str]:
     return None
 
 
+def provision_suite_services(
+    suite_spec, network_mgr, suite_path: Path, base_path: Path,
+    common_root: Path, fallback_common, config_loader,
+    suite_variables=None, project_root=None,
+):
+    """Merge includes, expand generators, provision node_compose & docker_compose.
+
+    Mutates *suite_spec* in place and returns ``(topology_vars, suite_env)``.
+    Extracted so that both sequential and parallel runners can reuse it.
+    """
+    import re as _re
+    import yaml as _yaml
+    from ..scenarios.schema import (
+        SuiteDescriptor, NodeComposeSpec, NodeComposeGenSpec, DockerComposeGenSpec,
+    )
+
+    suite_env = None
+
+    if not isinstance(suite_spec, SuiteDescriptor):
+        return {}, suite_env
+
+    # --- Merge includes (variables, *_compose, *_compose_gen) ---------------
+    if network_mgr and suite_spec.includes:
+        def _merge_inc(inc_data: dict):
+            iv = inc_data.get("variables")
+            if iv and isinstance(iv, dict):
+                merged = dict(iv)
+                merged.update(suite_spec.variables)
+                suite_spec.variables = merged
+            for key, cls in [("node_compose", NodeComposeSpec)]:
+                raw = inc_data.get(key)
+                if raw and isinstance(raw, dict):
+                    for k, v in raw.items():
+                        if k not in suite_spec.node_compose:
+                            suite_spec.node_compose[k] = cls(**(v if isinstance(v, dict) else {}))
+            for raw_list, target, cls in [
+                (inc_data.get("node_compose_gen"), suite_spec.node_compose_gen, NodeComposeGenSpec),
+                (inc_data.get("docker_compose_gen"), suite_spec.docker_compose_gen, DockerComposeGenSpec),
+            ]:
+                if raw_list and isinstance(raw_list, list):
+                    for entry in raw_list:
+                        target.append(cls(**(entry if isinstance(entry, dict) else {})))
+            dc = inc_data.get("docker_compose")
+            if dc and isinstance(dc, dict):
+                for k, v in dc.items():
+                    if k not in suite_spec.docker_compose:
+                        suite_spec.docker_compose[k] = v
+            dcf = inc_data.get("docker_compose_files")
+            if dcf and isinstance(dcf, list):
+                for f in dcf:
+                    if f not in suite_spec.docker_compose_files:
+                        suite_spec.docker_compose_files.append(f)
+
+        for inc_entry in suite_spec.includes:
+            if isinstance(inc_entry, dict):
+                _merge_inc(inc_entry)
+                continue
+            for search_dir in [suite_path, common_root]:
+                inc_full = (search_dir / inc_entry).resolve()
+                if inc_full.exists():
+                    with open(inc_full) as _f:
+                        _merge_inc(_yaml.safe_load(_f) or {})
+                    break
+
+    # --- Generator expansion ------------------------------------------------
+    variables = suite_spec.variables or {}
+
+    def _resolve_count(raw, label):
+        c = raw
+        if isinstance(c, str):
+            c = _re.sub(r'\{\{(\w+)\}\}', lambda m: str(variables.get(m.group(1), m.group(0))), c)
+            try:
+                c = int(c)
+            except ValueError:
+                return None
+        return int(c)
+
+    for gen in suite_spec.docker_compose_gen:
+        count = _resolve_count(gen.count, f"docker_compose_gen '{gen.prefix}'")
+        if count is None:
+            continue
+        gen_image_tag = None
+        resolved_build = None
+        if gen.build:
+            gen_image_tag = f"{gen.prefix}:stage-latest"
+            resolved_build = dict(gen.build)
+            if 'context' in resolved_build:
+                ctx = Path(resolved_build['context'])
+                if not ctx.is_absolute():
+                    resolved_build['context'] = str((suite_path / ctx).resolve())
+        resolved_volumes = None
+        if gen.volumes:
+            resolved_volumes = []
+            for vol in gen.volumes:
+                parts = vol.split(':')
+                host_path = Path(parts[0])
+                if not host_path.is_absolute():
+                    parts[0] = str((suite_path / host_path).resolve())
+                resolved_volumes.append(':'.join(parts))
+        for i in range(1, count + 1):
+            svc_name = f"{gen.prefix}-{i}"
+            if svc_name not in suite_spec.docker_compose:
+                svc_def = {
+                    "container_name": make_container_name(svc_name),
+                    "hostname": svc_name,
+                    "command": gen.command or ["sleep", "infinity"],
+                    "restart": gen.restart,
+                }
+                if resolved_build:
+                    if i == 1:
+                        svc_def["build"] = dict(resolved_build)
+                    svc_def["image"] = gen_image_tag
+                    svc_def["pull_policy"] = "never"
+                else:
+                    svc_def["image"] = gen.image
+                if gen.cap_add:
+                    svc_def["cap_add"] = list(gen.cap_add)
+                if gen.devices:
+                    svc_def["devices"] = list(gen.devices)
+                if resolved_volumes:
+                    svc_def["volumes"] = list(resolved_volumes)
+                if gen.privileged:
+                    svc_def["privileged"] = True
+                if gen.environment:
+                    env = dict(gen.environment)
+                    env["INSTANCE_ID"] = str(i)
+                    svc_def["environment"] = env
+                if gen.packages:
+                    svc_def["_gen_packages"] = gen.packages
+                suite_spec.docker_compose[svc_name] = svc_def
+
+    for gen in suite_spec.node_compose_gen:
+        count = _resolve_count(gen.count, f"node_compose_gen '{gen.prefix}'")
+        if count is None:
+            continue
+        for i in range(1, count + 1):
+            svc_name = f"{gen.prefix}-{i}"
+            if svc_name not in suite_spec.node_compose:
+                suite_spec.node_compose[svc_name] = NodeComposeSpec(
+                    role=gen.role, source=gen.source, packages=gen.packages,
+                    cap_add=list(gen.cap_add), docker_devices=list(gen.docker_devices),
+                    environment=dict(gen.environment), config_overrides=gen.config_overrides,
+                    setup=gen.setup, regenerate_cert=gen.regenerate_cert,
+                )
+
+    # --- env_file -----------------------------------------------------------
+    if suite_spec.env_file:
+        env_path = suite_path / suite_spec.env_file
+        if env_path.is_file():
+            suite_env = {}
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    k, v = line.split('=', 1)
+                    suite_env[k.strip()] = v.strip()
+
+    # --- Provision node_compose ---------------------------------------------
+    if network_mgr and suite_spec.node_compose:
+        _provision_node_compose(
+            network_mgr, suite_spec.node_compose, base_path,
+            config_loader, print_info, print_success, print_warning, print_error,
+            suite_variables=suite_spec.variables, suite_env=suite_env,
+        )
+
+    # --- Merge compose files ------------------------------------------------
+    if network_mgr and suite_spec.docker_compose_files:
+        for dcf_rel in suite_spec.docker_compose_files:
+            dcf_path = Path(base_path) / dcf_rel
+            network_mgr.compose.merge_compose_file(dcf_path)
+
+    # --- Provision docker_compose -------------------------------------------
+    if network_mgr and suite_spec.docker_compose:
+        clean_dc = _provision_docker_compose(
+            network_mgr.compose, suite_spec.docker_compose,
+            print_info, print_success, print_warning, print_error,
+        )
+        network_mgr.docker_compose = clean_dc
+
+    # --- Topology vars ------------------------------------------------------
+    topology_vars = {}
+    if network_mgr:
+        from ..scenarios.global_context import ScenarioGlobalContext
+        gc = ScenarioGlobalContext(
+            network_name=network_mgr.topology.network.name,
+            topology_name=network_mgr.topology_name,
+            native_ticker=getattr(network_mgr.topology.network, 'native_ticker', 'TCELL'),
+            node_port=getattr(network_mgr.topology.network_settings, 'node_port', 8079),
+        )
+        node_configs = network_mgr.generate_node_configs()
+        gc.set_static_node_info(node_configs)
+        gc.collect_node_ips(node_configs, wait_for_ips=False)
+        if suite_spec.node_compose:
+            for svc_name in suite_spec.node_compose:
+                ncfg = network_mgr.nodes.get(svc_name)
+                if ncfg and ncfg.ip_address:
+                    gc.add_extra_node_ip(svc_name, ncfg.ip_address)
+        topology_vars = gc.to_dict()
+        if project_root:
+            topology_vars['project_root'] = str(project_root)
+        _svc_ids = {}
+        for _svc, _ncfg in network_mgr.nodes.items():
+            if not _svc.startswith('node'):
+                _svc_ids[_svc] = _ncfg.node_id
+        if _svc_ids:
+            topology_vars['_service_node_ids'] = _svc_ids
+
+    return topology_vars, suite_env
+
+
+def _discover_suites(test_dirs, filter_pattern=None):
+    """Discover all suites from test directories.
+
+    Returns a list of dicts with keys:
+      suite_key, suite_path, descriptor, scenarios, test_type
+    """
+    from ..scenarios.schema import SuiteDescriptor
+
+    all_suites = []
+    for test_dir in test_dirs:
+        test_path = Path(test_dir).resolve()
+        if not test_path.exists():
+            continue
+
+        yml_files = list(test_path.glob("**/*.yml")) + list(test_path.glob("**/*.yaml"))
+        if not yml_files:
+            continue
+
+        suites: Dict[str, dict] = {}
+        standalone: List[Path] = []
+
+        external_suite = test_path.parent / f"{test_path.name}.yml"
+        if test_path.is_dir() and external_suite.exists():
+            suites["."] = {"descriptor": external_suite, "scenarios": [], "path": test_path}
+
+        for yml_file in yml_files:
+            parent_dir = yml_file.parent
+            file_stem = yml_file.stem
+
+            matching_dir = parent_dir / file_stem
+            if matching_dir.exists() and matching_dir.is_dir():
+                suite_key = str(matching_dir.relative_to(test_path))
+                if suite_key not in suites:
+                    suites[suite_key] = {"descriptor": yml_file, "scenarios": [], "path": matching_dir}
+                continue
+
+            if file_stem == "suite":
+                suite_key = str(parent_dir.relative_to(test_path))
+                if suite_key not in suites:
+                    suites[suite_key] = {"descriptor": yml_file, "scenarios": [], "path": parent_dir}
+                continue
+
+            suite_found = False
+            for potential_suite_dir in [parent_dir] + list(parent_dir.parents):
+                if potential_suite_dir == test_path:
+                    if "." in suites:
+                        suites["."]["scenarios"].append(yml_file)
+                        suite_found = True
+                    break
+                suite_name = potential_suite_dir.name
+                ext_desc = potential_suite_dir.parent / f"{suite_name}.yml"
+                int_desc = potential_suite_dir / "suite.yml"
+                descriptor_file = ext_desc if ext_desc.exists() else (int_desc if int_desc.exists() else None)
+                if descriptor_file:
+                    suite_key = str(potential_suite_dir.relative_to(test_path))
+                    if suite_key not in suites:
+                        suites[suite_key] = {"descriptor": descriptor_file, "scenarios": [], "path": potential_suite_dir}
+                    suites[suite_key]["scenarios"].append(yml_file)
+                    suite_found = True
+                    break
+
+            if not suite_found:
+                standalone.append(yml_file)
+
+        for suite_key, info in suites.items():
+            scenarios = info["scenarios"]
+            if filter_pattern:
+                scenarios = [f for f in scenarios if filter_pattern.lower() in f.name.lower()]
+                if not scenarios:
+                    continue
+            all_suites.append({
+                "suite_key": suite_key,
+                "suite_path": info["path"],
+                "descriptor": info["descriptor"],
+                "scenarios": scenarios,
+                "test_type": test_path.name,
+            })
+
+    return all_suites
+
+
+def _run_parallel_suites(
+    test_dirs,
+    base_path: Path,
+    config_path,
+    run_dir_base: Path,
+    debug_mode: bool,
+    topology_name: str,
+    cli_params: Dict[str, str],
+    filter_pattern,
+    max_workers: int,
+    network_mgr,
+    stop_after: bool,
+):
+    """Orchestrate parallel suite execution.
+
+    Discovers suites, assigns shards, launches worker processes via
+    ``multiprocessing.Pool``, collects and prints results.
+    """
+    import multiprocessing
+    import time
+    from ..config.manager import get_config_loader
+    from ..parallel.worker import run_suite_in_shard, SuiteTask, SuiteResult
+    from ..parallel.shard import ShardContext
+    from ..monitoring.manager import MonitoringManager
+
+    suites = _discover_suites(test_dirs, filter_pattern)
+    if not suites:
+        print_warning(_("No suites discovered — nothing to run in parallel"))
+        return
+
+    print_info(_("\n⚡ Parallel mode: {} suite(s) discovered").format(len(suites)))
+    for i, s in enumerate(suites):
+        print_info(_("   [shard {}] {} ({} scenarios)").format(i, s["suite_key"], len(s["scenarios"])))
+
+    if max_workers <= 0:
+        max_workers = min(len(suites), max(1, multiprocessing.cpu_count() // 2))
+    max_workers = min(max_workers, len(suites))
+    print_info(_("   Workers: {}").format(max_workers))
+
+    # Build shard_settings from the base topology
+    config_loader = get_config_loader()
+    topology = config_loader.load_topology(topology_name)
+    settings = topology.network_settings
+    paths_config = config_loader.get_paths_config()
+
+    shard_settings = {
+        "_base_project": get_project_name(),
+        "_base_subnet": settings.subnet,
+        "_base_ip": settings.base_ip,
+        "_base_http_port": settings.base_http_port,
+        "_base_rpc_port": settings.base_rpc_port,
+        "_base_p2p_port": settings.base_p2p_port,
+        "_base_cf_port": settings.base_cf_port,
+        "_base_cache_dir": paths_config.get("cache_dir", "../../cache"),
+    }
+
+    tasks = []
+    for i, s in enumerate(suites):
+        tasks.append((
+            i,  # shard_id
+            SuiteTask(
+                suite_key=s["suite_key"],
+                suite_dir=s["suite_path"],
+                descriptor_path=s["descriptor"],
+                scenario_files=s["scenarios"],
+                test_type=s["test_type"],
+            ),
+            base_path,
+            config_path,
+            run_dir_base,
+            debug_mode,
+            topology_name,
+            cli_params,
+            shard_settings,
+        ))
+
+    # ------------------------------------------------------------------
+    # Ensure genesis snapshot exists before launching parallel shards.
+    # If the snapshot is already there (normal case after `./stage-env start`),
+    # we just stop the base network and proceed.
+    # If it's missing, we run genesis on a dedicated shard-0 first.
+    # ------------------------------------------------------------------
+    import asyncio as _aio
+    base_cache = (base_path / paths_config.get("cache_dir", "../../cache")).resolve()
+    snapshot_name = config_loader.get_suite_isolation_config().get(
+        "snapshot_name", "clean_state"
+    )
+    snap_backend = None
+    if network_mgr and network_mgr.snapshot_manager.snapshot:
+        snap_backend = network_mgr.snapshot_manager.snapshot
+
+    snapshot_exists = False
+    if snap_backend:
+        snapshot_exists = snap_backend.exists(snapshot_name)
+    else:
+        snapshot_exists = (
+            (base_cache / "snapshots" / f"{snapshot_name}.sqfs").exists()
+            or (base_cache / "snapshots" / snapshot_name).is_dir()
+        )
+
+    if not snapshot_exists:
+        print_info(_("  No genesis snapshot '{}' found — running genesis shard first...").format(snapshot_name))
+        from ..network.manager import NetworkManager as _NM
+
+        genesis_mgr = _NM(base_path, topology_name=topology_name, config_path=config_path)
+        genesis_mgr.keep_running = False
+        try:
+            _aio.run(genesis_mgr.start(rebuild=False, wait_ready=True))
+            print_success(_("  Genesis completed, snapshot created"))
+        finally:
+            try:
+                _aio.run(genesis_mgr.stop(remove_volumes=False))
+            except Exception:
+                pass
+    else:
+        print_info(_("  Genesis snapshot '{}' found — skipping genesis").format(snapshot_name))
+
+    # Stop the base network (may still be running from `./stage-env start`)
+    if network_mgr:
+        try:
+            _aio.run(network_mgr.stop(remove_volumes=False))
+        except Exception:
+            pass
+
+    t0 = time.monotonic()
+    results: List[SuiteResult] = []
+
+    with multiprocessing.Pool(processes=max_workers) as pool:
+        results = pool.starmap(run_suite_in_shard, tasks)
+
+    elapsed = time.monotonic() - t0
+
+    # Aggregate & print
+    total_passed = sum(r.passed for r in results)
+    total_failed = sum(r.failed for r in results)
+    total_scenarios = sum(r.total for r in results)
+    all_scenario_results = []
+    for r in results:
+        all_scenario_results.extend(r.scenario_results)
+
+    print_info(f"\n{'═' * 60}")
+    print_info(_("⚡ Parallel Test Summary ({} shards, {:.0f}s)").format(len(results), elapsed))
+    print_info(f"{'═' * 60}")
+    print_info(_("Total scenarios: {}").format(total_scenarios))
+    if total_passed:
+        print_success(_("✅ Passed: {}").format(total_passed))
+    if total_failed:
+        print_error(_("❌ Failed: {}").format(total_failed))
+
+    for r in results:
+        status_icon = "✅" if r.failed == 0 and not r.error else "❌"
+        print_info(_("  {} [shard] {} — {}/{} passed ({:.1f}s)").format(
+            status_icon, r.suite_key, r.passed, r.total, r.duration_seconds))
+        if r.error:
+            print_error(_("    Shard error: {}").format(r.error[:200]))
+
+    passed_list = [r for r in all_scenario_results if r.get("status") == "passed"]
+    failed_list = [r for r in all_scenario_results if r.get("status") in ("failed", "error")]
+    if failed_list:
+        print_info("")
+        print_error(_("❌ Failed scenarios ({}):").format(len(failed_list)))
+        for r in failed_list:
+            print_error(_("   ✗ {} — {}").format(r.get("name", "?"), r.get("error", "—")[:200]))
+
+    print_info(f"{'═' * 60}")
+
+    # Cleanup
+    MonitoringManager.reset_instance()
+
+    if total_failed > 0 or any(r.error for r in results):
+        raise typer.Exit(1)
+
+
 def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callable[[], Optional[Path]]):
     """Register test execution commands."""
     
     @app.command()
     def run_tests(
         test_dirs: List[str] = typer.Argument(..., help="Test scenario directories to run"),
-        parallel: bool = typer.Option(False, "--parallel", help="Run tests in parallel (not yet implemented)"),
+        parallel: bool = typer.Option(True, "--parallel/--sequential", help="Run suites in parallel (each in isolated Docker project)"),
+        workers: int = typer.Option(0, "--workers", "-j", help="Max parallel workers (0 = auto, based on CPU count)"),
         filter: Optional[str] = typer.Option(None, "--filter", "-k", help="Filter tests by pattern"),
         start_network: bool = typer.Option(True, "--start-network/--no-start-network", help="Start network before tests"),
         stop_after: bool = typer.Option(True, "--stop-after/--keep-running", help="Stop network after tests"),
@@ -628,8 +1095,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 
                 # Parse CLI help from first node container
                 async def _init_cli_parser():
-                    # Use node1 container for parsing
-                    container_name = "cellframe-stage-node-1"
+                    container_name = make_container_name("node-1")
                     success = await cli_parser.parse_cli_help(container_name, use_cache=True)
                     return success
                 
@@ -662,7 +1128,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             cli_parser = get_cli_parser(cache_file=cache_file)
             
             async def _init_cli_parser():
-                container_name = "cellframe-stage-node-1"
+                container_name = make_container_name("node-1")
                 success = await cli_parser.parse_cli_help(container_name, use_cache=True)
                 return success
             
@@ -704,8 +1170,27 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             print_info(_("🔍 Monitoring services initialized"))
         except Exception as e:
             print_warning(_("Failed to initialize monitoring: {}").format(e))
+
+        # ============================================================
+        # PARALLEL MODE
+        # ============================================================
+        if parallel:
+            _run_parallel_suites(
+                test_dirs=test_dirs,
+                base_path=base_path,
+                config_path=get_config_path(),
+                run_dir_base=run_dir_base,
+                debug_mode=debug_mode,
+                topology_name="default",
+                cli_params=cli_params,
+                filter_pattern=filter,
+                max_workers=workers,
+                network_mgr=network_mgr,
+                stop_after=stop_after,
+            )
+            return
         
-        # Main test execution loop
+        # Main test execution loop (sequential)
         try:
             for test_dir in test_dirs:
                 test_path = Path(test_dir).resolve()
@@ -1004,7 +1489,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 svc_name = f"{gen.prefix}-{i}"
                                 if svc_name not in suite_spec.docker_compose:
                                     svc_def: dict = {
-                                        "container_name": f"cellframe-stage-{svc_name}",
+                                        "container_name": make_container_name(svc_name),
                                         "hostname": svc_name,
                                         "command": gen.command or ["sleep", "infinity"],
                                         "restart": gen.restart,
@@ -1190,7 +1675,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                     _client = docker.from_env()
                                     _containers = _client.containers.list(
                                         all=True,
-                                        filters={"label": "com.docker.compose.project=cellframe-stage"}
+                                        filters={"label": f"com.docker.compose.project={get_project_name()}"}
                                     )
                                     _logs_dir = suite_dir / "node-logs"
                                     for _ctr in _containers:
@@ -1490,7 +1975,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         print_info(_("\n📦 Collecting suite artifacts for {}...").format(suite_relative_path))
                         try:
                             client = docker.from_env()
-                            project_name = "cellframe-stage"
+                            project_name = get_project_name()
                             
                             containers = client.containers.list(
                                 all=True,

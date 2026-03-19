@@ -7,7 +7,7 @@ from typing import Any, Dict
 import httpx
 
 from ...utils.logger import get_logger
-from .base import StepExecutor
+from .base import StepExecutor, resolve_timeout
 from ..schema import RPCStep
 from ..executor import RuntimeContext
 
@@ -34,7 +34,8 @@ class RPCStepExecutor(StepExecutor):
             "id": 1
         }
         
-        async with httpx.AsyncClient(timeout=step.timeout) as client:
+        timeout = resolve_timeout(step.timeout, ctx, default=30)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, json=payload)
             result = response.json()
         

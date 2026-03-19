@@ -11,7 +11,7 @@ import re
 from typing import Any, Dict
 
 from ...utils.logger import get_logger
-from .base import StepExecutor
+from .base import StepExecutor, resolve_timeout
 from ..schema import PlaywrightStep
 from ..executor import ScenarioExecutionError, RuntimeContext
 
@@ -46,25 +46,26 @@ class PlaywrightStepExecutor(StepExecutor):
 
         cmd = " ".join(p for p in cmd_parts if p)
 
+        timeout = resolve_timeout(step.timeout, ctx, default=120)
         logger.info(
             "playwright_exec",
             spec=step.playwright,
             browser=step.browser,
             container=step.container,
-            timeout=step.timeout,
+            timeout=timeout,
         )
 
         try:
             result = await self.container_manager.exec_bash_command(
                 script=cmd,
                 node=step.container,
-                timeout=step.timeout,
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
             raise ScenarioExecutionError(
-                f"Playwright spec timed out after {step.timeout}s: {step.playwright}",
+                f"Playwright spec timed out after {timeout}s: {step.playwright}",
                 step=step.playwright,
-                context={"timeout": step.timeout, "browser": step.browser},
+                context={"timeout": timeout, "browser": step.browser},
             )
 
         stdout = result.get("stdout", "")

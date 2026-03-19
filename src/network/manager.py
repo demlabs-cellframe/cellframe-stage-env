@@ -22,6 +22,7 @@ from ..monitoring.health import HealthChecker, HealthStatus
 from ..monitoring.network_consensus import NetworkConsensusMonitor
 from src.utils.logger import get_logger
 from src.utils.artifacts import ArtifactsManager
+from src.utils.project import get_project_name
 from ..snapshots.manager import SnapshotManager, SnapshotMode
 from .models import NodeConfig
 from .genesis import GenesisInitializer
@@ -67,7 +68,7 @@ class NetworkManager:
         # Docker compose manager
         self.compose = DockerComposeManager(
             base_path,
-            project_name="cellframe-stage",
+            project_name=get_project_name(),
             network_name=self.topology.network.name
         )
         
@@ -1218,7 +1219,7 @@ class NetworkManager:
                     import docker
                     docker_client = docker.from_env()
                     for container in docker_client.containers.list(all=True):
-                        if "cellframe-stage-node" in container.name:
+                        if f"{self.compose.project_name}-node" in container.name:
                             log_path = f"/tmp/{container.name}.log"
                             try:
                                 with open(log_path, "wb") as f:
@@ -1494,9 +1495,9 @@ class NetworkManager:
             try:
                 # Convert node_name to container name (node1 -> node-1)
                 if node_name.startswith('node'):
-                    container_name = f"cellframe-stage-node-{node_name[4:]}"
+                    container_name = f"{self.compose.project_name}-node-{node_name[4:]}"
                 else:
-                    container_name = f"cellframe-stage-{node_name}"
+                    container_name = f"{self.compose.project_name}-{node_name}"
                 
                 container = self.compose.client.containers.get(container_name)
                 network_name = self.topology.network.name
@@ -1827,7 +1828,7 @@ class NetworkManager:
             crashed_containers = []
             
             for node in master_nodes:
-                container_name = f"cellframe-stage-node-{node.node_id}"
+                container_name = f"{self.compose.project_name}-node-{node.node_id}"
                 try:
                     container = self.compose.client.containers.get(container_name)
                     container.reload()
@@ -1887,7 +1888,7 @@ class NetworkManager:
         # Timeout reached - check final status
         failed_nodes = []
         for node in master_nodes:
-            container_name = f"cellframe-stage-node-{node.node_id}"
+            container_name = f"{self.compose.project_name}-node-{node.node_id}"
             try:
                 container = self.compose.client.containers.get(container_name)
                 container.reload()

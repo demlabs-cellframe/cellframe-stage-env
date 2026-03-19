@@ -5,7 +5,7 @@ Cellframe-node-tool command step executor.
 from typing import Any, Dict
 
 from ...utils.logger import get_logger
-from .base import StepExecutor
+from .base import StepExecutor, resolve_timeout
 from ..schema import ToolStep
 from ..executor import ScenarioExecutionError, RuntimeContext
 
@@ -20,10 +20,11 @@ class ToolStepExecutor(StepExecutor):
         tool_cmd = ctx.substitute(step.tool)
         node = ctx.substitute(step.node) if step.node else step.node
         
+        timeout = resolve_timeout(step.timeout, ctx, default=30)
         result = await self.container_manager.exec_tool_command(
             tool_cmd=tool_cmd,
             node=node,
-            timeout=step.timeout
+            timeout=timeout
         )
         
         # Log tool execution
@@ -32,7 +33,7 @@ class ToolStepExecutor(StepExecutor):
         self._log_to_file("=" * 70)
         self._log_to_file(f"Node: {step.node}")
         self._log_to_file(f"Command: cellframe-node-tool {tool_cmd}")
-        self._log_to_file(f"Timeout: {step.timeout}s")
+        self._log_to_file(f"Timeout: {timeout}s")
         self._log_to_file(f"Expected: {step.expect}")
         self._log_to_file("\n--- Tool Response ---")
         self._log_to_file(f"Exit Code: {result['returncode']}\n")

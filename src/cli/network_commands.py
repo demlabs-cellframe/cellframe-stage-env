@@ -8,6 +8,7 @@ from typing import Callable, Optional
 
 from .common import print_info, print_success, print_error, print_warning
 from src.utils.i18n import _
+from src.utils.project import make_container_name
 
 
 def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callable[[], Optional[Path]]):
@@ -260,7 +261,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         """📜 Show logs from a specific node."""
         import subprocess
         
-        container_name = f"cellframe-stage-{node}"
+        container_name = make_container_name(node)
         cmd = ["docker", "logs"]
         if follow:
             cmd.append("-f")
@@ -282,7 +283,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         """⚡ Execute command on a node."""
         import subprocess
         
-        container_name = f"cellframe-stage-{node}"
+        container_name = make_container_name(node)
         cmd = ["docker", "exec", "-it", container_name, "sh", "-c", command]
         
         try:

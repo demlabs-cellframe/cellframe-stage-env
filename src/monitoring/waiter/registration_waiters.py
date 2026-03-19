@@ -12,6 +12,7 @@ from typing import List, Callable, Optional
 from ..base import BaseWaiter
 from ...network.models import NodeConfig
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 
 logger = get_logger(__name__)
 
@@ -73,7 +74,7 @@ class NodeListPropagationWaiter(BaseWaiter):
         for node in self.nodes:
             try:
                 # Check if container is running first
-                container_name = f"cellframe-stage-node-{node.node_id}"
+                container_name = make_container_name(f"node-{node.node_id}")
                 try:
                     container = self.docker_client.containers.get(container_name)
                     container.reload()

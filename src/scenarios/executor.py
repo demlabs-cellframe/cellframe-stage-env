@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
@@ -687,7 +688,9 @@ class ScenarioExecutor:
                     # Try to find a running node container
                     try:
                         # Find first running node container using container manager
-                        containers = self.container_manager.docker_client.containers.list(filters={"name": "cellframe-stage-node-"})
+                        containers = self.container_manager.docker_client.containers.list(
+                            filters={"name": make_container_name("node-")}
+                        )
                         if containers:
                             container_name = containers[0].name
                             cache_file = Path(__file__).parent.parent.parent / ".cache" / "cli_commands.json"
@@ -753,7 +756,7 @@ class ScenarioExecutor:
         """Detect cellframe-node version and inject cf_version* variables into context."""
         try:
             containers = self.container_manager.docker_client.containers.list(
-                filters={"name": "cellframe-stage-node-"}
+                filters={"name": make_container_name("node-")}
             )
             if not containers:
                 logger.warning("no_containers_for_version_detection")
