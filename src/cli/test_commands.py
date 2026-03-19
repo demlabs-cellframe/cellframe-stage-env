@@ -915,6 +915,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 for k, v in dc_raw.items():
                                     if k not in suite_spec.docker_compose:
                                         suite_spec.docker_compose[k] = v
+                            dcf_raw = inc_data.get("docker_compose_files")
+                            if dcf_raw and isinstance(dcf_raw, list):
+                                for f in dcf_raw:
+                                    if f not in suite_spec.docker_compose_files:
+                                        suite_spec.docker_compose_files.append(f)
 
                         for inc_entry in suite_spec.includes:
                             if isinstance(inc_entry, dict):
@@ -1004,6 +1009,15 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             config_loader, print_info, print_success, print_warning, print_error,
                             suite_variables=suite_spec.variables,
                         )
+
+                    # --- Merge external docker-compose files -------------------
+                    if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.docker_compose_files:
+                        from pathlib import Path as _Path
+                        for dcf_rel in suite_spec.docker_compose_files:
+                            dcf_path = _Path(base_path) / dcf_rel
+                            print_info(_("📎 Merging compose file: {}").format(dcf_rel))
+                            network_mgr.compose.merge_compose_file(dcf_path)
+                            print_success(_("  Merged: {}").format(dcf_path.name))
 
                     # --- Provision docker_compose services ---------------------
                     if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.docker_compose:
