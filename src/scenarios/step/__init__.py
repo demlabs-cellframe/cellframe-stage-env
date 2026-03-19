@@ -22,6 +22,7 @@ from .control_flow import SetStepExecutor, IfStepExecutor, WhileStepExecutor, Sw
 from .config import ConfigStepExecutor
 from .dpkg import DpkgStepExecutor
 from .custom_operand import CustomOperandStepExecutor
+from .playwright import PlaywrightStepExecutor
 
 __all__ = [
     'StepExecutor',
@@ -46,4 +47,5 @@ __all__ = [
     'ConfigStepExecutor',
     'DpkgStepExecutor',
     'CustomOperandStepExecutor',
+    'PlaywrightStepExecutor',
 ]

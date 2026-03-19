@@ -17,7 +17,7 @@ from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
     CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
-    NetworkWaitStep, DockerOpStep, DockerExecStep, SnapshotStep,
+    NetworkWaitStep, DockerOpStep, DockerExecStep, SnapshotStep, PlaywrightStep,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep, DpkgStep, CustomOperandStep,
     MetricStep, MetricsTableStep,
@@ -312,6 +312,9 @@ class ScenarioExecutor:
         from .step.metrics import MetricStepExecutor, MetricsTableStepExecutor
         self.metric_executor = MetricStepExecutor(self.container_manager, log_file, debug)
         self.metrics_table_executor = MetricsTableStepExecutor(self.container_manager, log_file, debug)
+
+        from .step.playwright import PlaywrightStepExecutor
+        self.playwright_executor = PlaywrightStepExecutor(self.container_manager, log_file, debug)
 
         # Custom operand support
         self._operand_registry = OperandRegistry()
@@ -826,6 +829,8 @@ class ScenarioExecutor:
                 step_desc = f"DockerExec ({step.docker_exec[:60]})"
             elif isinstance(step, CustomOperandStep):
                 step_desc = f"CustomOperand ({step.operand_name}.{step.operand_action})"
+            elif isinstance(step, PlaywrightStep):
+                step_desc = f"Playwright ({step.playwright} [{step.browser}])"
 
             logger.info(f"Step {i}/{len(steps)}: {step_desc}")
             
@@ -892,6 +897,8 @@ class ScenarioExecutor:
                 await self.metric_executor.execute(step, ctx)
             elif isinstance(step, MetricsTableStep):
                 await self.metrics_table_executor.execute(step, ctx)
+            elif isinstance(step, PlaywrightStep):
+                await self.playwright_executor.execute(step, ctx)
             elif isinstance(step, CustomOperandStep):
                 await self.custom_operand_executor.execute(step, ctx, defaults)
             else:
