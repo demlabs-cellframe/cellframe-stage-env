@@ -434,6 +434,21 @@ class DockerOpStep(BaseModel):
     save: Optional[str] = Field(None, description="Variable name to save command/logs output into")
 
 
+class PlaywrightStep(BaseModel):
+    """Execute Playwright test spec in a browser runner container."""
+    playwright: str = Field(..., description="Spec file path relative to browser/ dir (e.g. 'auth.spec.ts')")
+    browser: str = Field("chromium", description="Browser project: chromium, firefox, webkit")
+    env: Dict[str, str] = Field(default_factory=dict, description="Environment variables passed to the spec")
+    save: Optional[Dict[str, str]] = Field(None, description="Map spec output keys to context variable names")
+    timeout: int = Field(120, description="Spec execution timeout in seconds")
+    expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
+    headed: bool = Field(False, description="Run in headed mode (for local debugging via VNC)")
+    container: str = Field("playwright-runner", description="Docker service name for the Playwright runner")
+
+    class Config:
+        use_enum_values = True
+
+
 class SnapshotStep(BaseModel):
     """Snapshot operations (create, restore, verify, delete).
     
@@ -569,6 +584,7 @@ TestStep = Union[
     CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep, MetricStep, MetricsTableStep,
+    PlaywrightStep,
     WaitStep,
     CustomOperandStep,
 ]
