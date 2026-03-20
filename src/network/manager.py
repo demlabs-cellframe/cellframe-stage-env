@@ -364,20 +364,6 @@ class NetworkManager:
                 gdb_dir.mkdir(parents=True, exist_ok=True)
                 gdb_wiped += 1
 
-            # -- 3) Enable is_add_directly for zerochain --
-            # DAG-PoA round consensus requires a fully established GDB cluster
-            # between root nodes which takes too long after snapshot restore.
-            # Bypass consensus for test shards — emissions go directly into DAG.
-            zc_cfg = configs_cache / f"node{node.node_id}" / "network" / net_name / "zerochain.cfg"
-            if zc_cfg.exists():
-                zc = zc_cfg.read_text()
-                new_zc = _re.sub(
-                    r'(?m)^is_add_directly\s*=\s*\w+',
-                    'is_add_directly=true',
-                    zc,
-                )
-                if new_zc != zc:
-                    zc_cfg.write_text(new_zc)
 
         if patched or gdb_wiped:
             logger.info("remapped_seed_nodes_for_shard",
