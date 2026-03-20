@@ -17,8 +17,10 @@
 #include <stdint.h>
 #include <stdarg.h>
 
-/* DAP SDK includes - only crypto and chain_common (no heavy network deps) */
+/* DAP SDK — unified init + crypto */
+#include "dap_sdk.h"
 #include "dap_common.h"
+#include "dap_strfuncs.h"
 #include "dap_cert.h"
 #include "dap_cert_file.h"
 #include "dap_enc_key.h"
@@ -26,7 +28,6 @@
 #include "dap_sign.h"
 #include "dap_hash.h"
 #include "dap_hash_compat.h"
-#include "dap_chain_common.h"
 
 /* === Inline Node Address Generation (from dap_stream.h - avoids heavy deps) === */
 
@@ -70,8 +71,8 @@ static bool s_debug_more = false;
 /* Buffer sizes following DAP SDK conventions */
 #define DAP_CERT_GEN_MAX_NODE_NAME_LEN       32
 #define DAP_CERT_GEN_MAX_CERT_NAME_LEN       128
-/* Use DAP SDK constant for address string size */
-#define DAP_CERT_GEN_MAX_VALIDATOR_ADDR_LEN  DAP_ENC_BASE58_ENCODE_SIZE(sizeof(dap_chain_addr_t))
+/* Node address format: XXXX::XXXX::XXXX::XXXX (max 24 chars) */
+#define DAP_CERT_GEN_MAX_VALIDATOR_ADDR_LEN  256
 #define DAP_CERT_GEN_MAX_PATH_LEN            512
 #define DAP_CERT_GEN_MAX_TIMESTAMP_LEN       64
 #define DAP_CERT_GEN_FILE_BUFFER_SIZE        4096
@@ -646,9 +647,12 @@ int main(int argc, char *argv[]) {
     int node_count = 0;
     int root_count = 2;  /* Default: 2 ROOT nodes */
     
-    /* Initialize DAP SDK FIRST - before ANY other DAP calls */
+    /* Initialize DAP SDK (core + crypto) — sets up common, enc, cert, sign */
+    if (dap_sdk_init_with_app_name("cf-cert-generator", DAP_SDK_MODULE_CRYPTO) != 0) {
+        fprintf(stderr, "Fatal: dap_sdk_init failed\n");
+        return DAP_CERT_GEN_RET_ERROR;
+    }
     dap_log_level_set(L_DEBUG);
-    dap_enc_key_init();
     
     debug_if(s_debug_more, L_NOTICE, "=== Initializing DAP Certificate Generator ===");
 
@@ -657,7 +661,7 @@ int main(int argc, char *argv[]) {
         const char *s_out = argv[2];
         const char *s_name = (argc >= 4) ? argv[3] : "node-addr";
         ret = s_single_cert_mode(s_out, s_name);
-        dap_enc_key_deinit();
+        dap_sdk_deinit();
         return ret;
     }
 
@@ -667,7 +671,7 @@ int main(int argc, char *argv[]) {
         log_it(L_ERROR, "       %s --single <output_dir> [cert_name]  # generate one cert, print address", argv[0]);
         log_it(L_ERROR, "Example: %s /certs 6 stagenet 0x1234 2  # 6 nodes, 2 ROOT, 4 MASTER", argv[0]);
         log_it(L_ERROR, "Example: %s --single /tmp/mynode node-addr  # single cert → ADDR:XXXX::YYYY::...", argv[0]);
-        dap_enc_key_deinit();
+        dap_sdk_deinit();
         return DAP_CERT_GEN_RET_ERROR;
     }
     
@@ -677,7 +681,7 @@ int main(int argc, char *argv[]) {
     node_count = atoi(argv[2]);
     if (node_count <= 0 || node_count > DAP_CERT_GEN_MAX_NODE_COUNT) {
         log_it(L_ERROR, "Invalid node count: %d (must be 1-%d)", node_count, DAP_CERT_GEN_MAX_NODE_COUNT);
-        dap_enc_key_deinit();
+        dap_sdk_deinit();
         return DAP_CERT_GEN_RET_ERROR;
     }
     
@@ -685,7 +689,7 @@ int main(int argc, char *argv[]) {
     network_name = argv[3];
     if (strlen(network_name) == 0 || strlen(network_name) >= DAP_CERT_GEN_MAX_NODE_NAME_LEN) {
         log_it(L_ERROR, "Invalid network name length");
-        dap_enc_key_deinit();
+        dap_sdk_deinit();
         return DAP_CERT_GEN_RET_ERROR;
     }
     
@@ -695,7 +699,7 @@ int main(int argc, char *argv[]) {
         network_id = strtoull(argv[4], &endptr, 0);  /* 0 base allows 0x prefix */
         if (*endptr != '\0' || network_id == 0) {
             log_it(L_ERROR, "Invalid network ID format. Use hex format like 0x1234");
-            dap_enc_key_deinit();
+            dap_sdk_deinit();
             return DAP_CERT_GEN_RET_ERROR;
         }
     }
@@ -705,7 +709,7 @@ int main(int argc, char *argv[]) {
         root_count = atoi(argv[5]);
         if (root_count < 0 || root_count > node_count) {
             log_it(L_ERROR, "Invalid root_count: %d (must be 0-%d)", root_count, node_count);
-            dap_enc_key_deinit();
+            dap_sdk_deinit();
             return DAP_CERT_GEN_RET_ERROR;
         }
     }
@@ -717,7 +721,7 @@ int main(int argc, char *argv[]) {
     nodes = DAP_NEW_Z_COUNT(dap_cert_generator_node_t, node_count);
     if (!nodes) {
         log_it(L_CRITICAL, "%s", c_error_memory_alloc);
-        dap_enc_key_deinit();
+        dap_sdk_deinit();
         return DAP_CERT_GEN_RET_ERROR;
     }
     
@@ -725,7 +729,7 @@ int main(int argc, char *argv[]) {
     size_t path_len = strlen(output_dir);
     if (path_len == 0 || path_len >= DAP_CERT_GEN_MAX_PATH_LEN) {
         log_it(L_ERROR, "Invalid output directory path length");
-        dap_enc_key_deinit();
+        dap_sdk_deinit();
         return DAP_CERT_GEN_RET_ERROR;
     }
     
@@ -738,7 +742,7 @@ int main(int argc, char *argv[]) {
     /* Create main output directory */
     if (s_create_directory(output_dir) != DAP_CERT_GEN_RET_SUCCESS) {
         DAP_DELETE(nodes);
-        dap_enc_key_deinit();
+        dap_sdk_deinit();
         return DAP_CERT_GEN_RET_ERROR;
     }
     
@@ -799,7 +803,7 @@ cleanup:
     DAP_DELETE(nodes);
     
     /* Deinitialize DAP SDK encryption key subsystem */
-    dap_enc_key_deinit();
+    dap_sdk_deinit();
     
     if (ret != DAP_CERT_GEN_RET_SUCCESS) {
         log_it(L_ERROR, "=== Certificate generation failed ===");

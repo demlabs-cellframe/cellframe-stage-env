@@ -52,6 +52,7 @@ class CertGenerator:
         self.base_path = base_path
         self.certs_dir = certs_dir if certs_dir is not None else (base_path / "cache" / "certs")
         self.dockerfile = base_path / "Dockerfile.cert-generator"
+        self.project_root = base_path.parent.parent
         
         self.certs_dir.mkdir(parents=True, exist_ok=True)
         
@@ -128,7 +129,7 @@ class CertGenerator:
                     "docker", "build",
                     "-f", str(self.dockerfile),
                     "-t", CERT_BUILDER_IMAGE,
-                    str(self.dockerfile.parent),
+                    str(self.project_root),
                 ],
                 capture_output=True, text=True,
             )
@@ -616,16 +617,30 @@ class CertGenerator:
             return None
 
     def clean(self) -> None:
-        """Remove all generated certificates."""
+        """Remove all generated certificates.
+
+        Certificates may have been created inside Docker (owned by root),
+        so ``shutil.rmtree`` can fail with PermissionError.  Fall back to
+        ``docker run … rm -rf`` which runs as root inside the container.
+        """
         logger.info("cleaning_certificates")
-        
-        import shutil
-        
+
         if self.certs_dir.exists():
             print_info(_("Removing certificates..."))
-            shutil.rmtree(self.certs_dir)
+            try:
+                shutil.rmtree(self.certs_dir)
+            except PermissionError:
+                logger.warning("rmtree_permission_denied_fallback_docker",
+                               path=str(self.certs_dir))
+                subprocess.run(
+                    ["docker", "run", "--rm",
+                     "-v", f"{self.certs_dir.absolute()}:/certs",
+                     "alpine:latest", "rm", "-rf", "/certs/."],
+                    check=False,
+                )
+                shutil.rmtree(self.certs_dir, ignore_errors=True)
             self.certs_dir.mkdir(parents=True, exist_ok=True)
-        
+
         print_success(_("Certificates cleaned"))
         logger.info("certificates_cleaned")
 
