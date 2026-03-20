@@ -308,16 +308,17 @@ class NetworkManager:
         """Adapt snapshot data for the current shard subnet.
 
         Snapshot data originates from the genesis shard (shard-0).  In parallel
-        mode every shard uses a shifted subnet, so we remap
-        ``seed_nodes_hosts`` IPs in network configs.
-
-        GDB is intentionally preserved: it contains the node list, GDB cluster
-        membership, and DAG-PoA round state from genesis.  Stale peer IPs
-        (shard-0 addresses) will fail to connect but the node falls back to the
-        (remapped) seed_nodes_hosts for discovery.  Wiping GDB would force a
-        full cluster re-formation that races with the first mempool processing.
+        mode every shard uses a shifted subnet, so:
+          1. Remap ``seed_nodes_hosts`` IPs in network configs.
+          2. Wipe ``global_db`` — it caches peer addresses that point at shard-0
+             IPs.  Connecting to unreachable IPs on a different Docker subnet
+             hits the Linux TCP SYN timeout (~127 s) which races with the
+             ``tx_create`` wait.  With a clean GDB the node discovers peers
+             exclusively through the (already remapped) seed_nodes within
+             seconds.  Chain data and the ledger are rebuilt from on-disk files.
         """
         import re as _re
+        import shutil as _shutil
 
         settings = self.topology.network_settings
         base_ip_parts = settings.base_ip.split('.')
@@ -326,8 +327,10 @@ class NetworkManager:
 
         cache_dir = self.paths_config.get('cache_dir', 'cache')
         configs_cache = (self.base_path / cache_dir / 'configs').resolve()
+        data_cache = (self.base_path / cache_dir / 'data').resolve()
 
         patched = 0
+        gdb_wiped = 0
         for node in node_configs:
             net_cfg = configs_cache / f"node{node.node_id}" / "network" / f"{net_name}.cfg"
             if net_cfg.exists():
@@ -356,9 +359,16 @@ class NetworkManager:
                     net_cfg.write_text(new_content)
                     patched += 1
 
-        if patched:
+            gdb_dir = data_cache / f"node{node.node_id}" / "lib" / "global_db"
+            if gdb_dir.exists():
+                _shutil.rmtree(gdb_dir)
+                gdb_dir.mkdir(parents=True, exist_ok=True)
+                gdb_wiped += 1
+
+        if patched or gdb_wiped:
             logger.info("remapped_seed_nodes_for_shard",
-                       new_prefix=new_prefix, patched_nodes=patched)
+                       new_prefix=new_prefix, patched_nodes=patched,
+                       gdb_wiped=gdb_wiped)
 
     async def _restore_snapshots(self) -> None:
         """Restore clean_state or phase1 snapshot if available."""
