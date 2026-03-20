@@ -424,22 +424,31 @@ class ScenarioExecutor:
         return node_alias
     
     def _lookup_compose_node_id(self, service_name: str):
-        """Resolve NODE_ID from docker-compose.generated.yml for custom services."""
+        """Resolve NODE_ID from compose files for custom services.
+
+        Checks docker-compose.generated.yml first, then shard-specific
+        compose files used in parallel mode (docker-compose.shard-*.yml).
+        """
+        import yaml as _yaml
+        candidates = [self.base_path / "docker-compose.generated.yml"]
         try:
-            compose_file = self.base_path / "docker-compose.generated.yml"
-            if not compose_file.exists():
-                return None
-            import yaml
-            with open(compose_file) as f:
-                data = yaml.safe_load(f)
-            svc = (data or {}).get("services", {}).get(service_name)
-            if not svc:
-                return None
-            nid = svc.get("environment", {}).get("NODE_ID")
-            if nid is not None:
-                return int(nid)
+            candidates.extend(sorted(self.base_path.glob("docker-compose.shard-*.yml")))
         except Exception:
             pass
+        for compose_file in candidates:
+            try:
+                if not compose_file.exists():
+                    continue
+                with open(compose_file) as f:
+                    data = _yaml.safe_load(f)
+                svc = (data or {}).get("services", {}).get(service_name)
+                if not svc:
+                    continue
+                nid = svc.get("environment", {}).get("NODE_ID")
+                if nid is not None:
+                    return int(nid)
+            except Exception:
+                continue
         return None
 
     def _resolve_node_to_container(self, node: str) -> str:
@@ -917,21 +926,26 @@ class ScenarioExecutor:
         return f"node{node_id}"
 
     def _lookup_compose_node_id_reverse(self, node_id: int):
-        """Reverse lookup: numeric NODE_ID → service name from compose file."""
+        """Reverse lookup: numeric NODE_ID -> service name from compose file."""
+        import yaml as _yaml
+        candidates = [self.base_path / "docker-compose.generated.yml"]
         try:
-            import yaml
-            compose_file = self.base_path / "docker-compose.generated.yml"
-            if not compose_file.exists():
-                logger.warning("compose_not_found_reverse", path=str(compose_file))
-                return None
-            with open(compose_file) as f:
-                data = yaml.safe_load(f)
-            for name, svc in (data or {}).get("services", {}).items():
-                env = svc.get("environment", {})
-                if isinstance(env, dict) and str(env.get("NODE_ID")) == str(node_id):
-                    return name
-        except Exception as e:
-            logger.warning("compose_reverse_lookup_failed", node_id=node_id, error=str(e))
+            candidates.extend(sorted(self.base_path.glob("docker-compose.shard-*.yml")))
+        except Exception:
+            pass
+        for compose_file in candidates:
+            try:
+                if not compose_file.exists():
+                    continue
+                with open(compose_file) as f:
+                    data = _yaml.safe_load(f)
+                for name, svc in (data or {}).get("services", {}).items():
+                    env = svc.get("environment", {})
+                    if isinstance(env, dict) and str(env.get("NODE_ID")) == str(node_id):
+                        return name
+            except Exception as e:
+                logger.warning("compose_reverse_lookup_failed",
+                               node_id=node_id, file=str(compose_file), error=str(e))
         return None
 
     def _create_exec_cli_for_waiter(self):

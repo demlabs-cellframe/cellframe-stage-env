@@ -35,6 +35,10 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT SIGHUP SIGQUIT
 
+# Remove stale MDBX lock files — may remain from snapshot restore or
+# data cloning and prevent the database from opening.
+find /opt/cellframe-node/var/lib -name "mdbx.lck" -delete 2>/dev/null
+
 echo "Starting cellframe-node..."
 if [ "${DEBUG_GDB:-0}" = "1" ] && command -v gdb >/dev/null 2>&1; then
     echo "Running under gdb (DEBUG_GDB=1) — core dumps enabled for crash analysis"

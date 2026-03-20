@@ -157,11 +157,6 @@ def _run_suite_sync(
         network_mgr.compose.project_dir / f"docker-compose.shard-{shard.shard_id}.yml"
     )
 
-    async def _start():
-        await network_mgr.start(rebuild=False, wait_ready=True)
-
-    asyncio.run(_start())
-
     # Monitoring per-shard
     shard_key = shard.project_name
     suite_dir = run_dir_base / task.test_type / task.suite_dir.name
@@ -200,6 +195,11 @@ def _run_suite_sync(
     suite_desc_rel = task.descriptor_path.relative_to(task.descriptor_path.parent)
     suite_spec = parser.load_scenario(str(suite_desc_rel))
     suite_name = suite_spec.name if hasattr(suite_spec, "name") else task.suite_dir.name
+
+    async def _start():
+        await network_mgr.start(rebuild=False, wait_ready=True)
+
+    asyncio.run(_start())
 
     # Provision suite services (node_compose, docker_compose, generators, etc.)
     from ..cli.test_commands import provision_suite_services

@@ -588,7 +588,6 @@ class ConfigLoader:
             'auto_create_on_startup': True,
             'snapshot_name': 'clean_state',
             'genesis_stage': 'full',
-            'phase1_snapshot_name': 'phase1_zerochain_genesis',
             'auto_cleanup': True,
             'keep_snapshot_count': 5,
             'snapshots_dir': '../../cache/snapshots',

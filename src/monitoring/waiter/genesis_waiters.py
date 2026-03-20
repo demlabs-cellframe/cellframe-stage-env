@@ -528,48 +528,78 @@ class WalletBalanceWaiter(BaseWaiter):
                 check_output=False
             )
             
+            elapsed = time.time() - self._start_time
+            condition_str = self.expected_balance or "> 0"
+
             if exit_code != 0:
+                if int(elapsed) % 30 < 2:
+                    logger.info("wallet_balance_cli_error",
+                               node_id=self.node_id,
+                               wallet=self.wallet_name,
+                               exit_code=exit_code,
+                               stdout_preview=stdout[:300] if stdout else "",
+                               stderr_preview=stderr[:300] if stderr else "",
+                               elapsed=f"{elapsed:.1f}s")
                 return False
             
-            # Check if token ticker appears in output with balance
-            # Looking for patterns like "TCELL: 1000000.0" or "TCELL:     12345.67"
             import re
-            pattern = rf"{re.escape(self.token_ticker)}:\s+([0-9]+(?:\.[0-9]+)?)"
-            match = re.search(pattern, stdout)
+            balance_val = None
+
+            # wallet info output varies by SDK version.  Try several patterns:
+            #  1) "tVPN: <number>"  — old single-line format
+            #  2) token section: "tVPN:\n  ...\n  coins: <number>"
+            #  3) any "coins: <number>" (single-token wallets)
+            #  4) "datoshi: <number>" (fallback, convert to coins)
+            #  5) bare "balance: <number>" (zero-balance format)
+            pattern_direct = rf"{re.escape(self.token_ticker)}:\s+([0-9]+(?:\.[0-9]+)?)"
+            m = re.search(pattern_direct, stdout)
+            if m:
+                balance_val = float(m.group(1))
+
+            if balance_val is None:
+                # Token section with coins on a separate line
+                pattern_section = rf"{re.escape(self.token_ticker)}.*?coins:\s+([0-9]+(?:\.[0-9]+)?)"
+                m = re.search(pattern_section, stdout, re.DOTALL)
+                if m:
+                    balance_val = float(m.group(1))
+
+            if balance_val is None:
+                m = re.search(r"coins:\s+([0-9]+(?:\.[0-9]+)?)", stdout)
+                if m:
+                    balance_val = float(m.group(1))
+
+            if balance_val is None:
+                m = re.search(r"datoshi:\s+([0-9]+)", stdout)
+                if m:
+                    balance_val = int(m.group(1)) / 1e18
+
+            if balance_val is None:
+                m = re.search(r"\bbalance:\s+([0-9]+(?:\.[0-9]+)?)", stdout)
+                if m:
+                    balance_val = float(m.group(1))
+
+            if balance_val is not None:
+                if self._check_balance_condition(balance_val):
+                    logger.info("wallet_balance_condition_met",
+                               node_id=self.node_id,
+                               wallet=self.wallet_name,
+                               token=self.token_ticker,
+                               balance=str(balance_val),
+                               condition=condition_str,
+                               elapsed=f"{elapsed:.1f}s")
+                    return True
             
-            if match:
-                balance_str = match.group(1)
-                try:
-                    balance = float(balance_str)
-                    
-                    # Check if balance meets condition
-                    if self._check_balance_condition(balance):
-                        elapsed = time.time() - self._start_time
-                        condition_str = self.expected_balance or "> 0"
-                        logger.info("wallet_balance_condition_met",
-                                   node_id=self.node_id,
-                                   wallet=self.wallet_name,
-                                   token=self.token_ticker,
-                                   balance=balance_str,
-                                   condition=condition_str,
-                                   elapsed=f"{elapsed:.1f}s")
-                        return True
-                except ValueError:
-                    pass
-            
-            # Log progress periodically (every 10s)
-            elapsed = time.time() - self._start_time
-            if int(elapsed) % 10 == 0 and elapsed > 0:
-                condition_str = self.expected_balance or "> 0"
-                logger.debug("waiting_for_wallet_balance",
+            if int(elapsed) % 30 < 2:
+                logger.info("wallet_balance_waiting",
                            node_id=self.node_id,
                            wallet=self.wallet_name,
                            token=self.token_ticker,
                            condition=condition_str,
+                           stdout_preview=stdout[:500] if stdout else "<empty>",
                            elapsed=f"{elapsed:.1f}s")
             
         except Exception as e:
-            logger.debug("wallet_balance_check_error",
+            logger.info("wallet_balance_check_error",
                        node_id=self.node_id,
                        wallet=self.wallet_name,
                        error=str(e))

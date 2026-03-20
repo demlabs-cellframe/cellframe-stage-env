@@ -30,19 +30,52 @@ def _fixup_node_identity(cfg_dir: Path, data_dir: Path, role: str, node_id: int,
     import shutil as _shutil
 
     ca_dir = data_dir / "lib" / "ca"
+    net_name = network_mgr.topology.network.name
     if ca_dir.exists():
         for f in ca_dir.iterdir():
+            if role == "root" and f.name.startswith(f"{net_name}.root.pvt."):
+                continue
+            # Keep the first root signing cert for all nodes: needed for
+            # order creation (-cert) and receipt signing on VPN servers.
+            if f.name == f"{net_name}.root.pvt.0.dcert":
+                continue
             if f.name == "node-addr.dcert" or ".pvt." in f.name:
                 f.unlink()
-        print_info(_("    [{}] removed donor private keys from var/lib/ca").format(svc_name))
+        print_info(_("    [{}] removed donor private keys from var/lib/ca (role={})").format(svc_name, role))
 
-    net_name = network_mgr.topology.network.name
     net_cfg = cfg_dir / "network" / f"{net_name}.cfg"
     if net_cfg.exists():
         content = net_cfg.read_text()
         content = _re.sub(r'(?m)^node-role\s*=\s*\S+', f'node-role={role}', content)
         if role not in ("root",):
             content = _re.sub(r'(?m)^events-sign-cert\s*=.*$', '#events-sign-cert=', content)
+
+        # Remap seed_nodes_hosts IPs to match the current shard subnet.
+        # Snapshot configs contain shard-0 IPs; other shards use shifted subnets.
+        settings = network_mgr.topology.network_settings
+        base_ip_parts = settings.base_ip.split('.')
+        new_prefix = '.'.join(base_ip_parts[:3])
+
+        def _remap_hosts(hosts_str):
+            remapped = []
+            for entry in hosts_str.split(','):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                ip_port = entry.split(':')
+                if len(ip_port) == 2:
+                    old_octets = ip_port[0].split('.')
+                    remapped.append(f"{new_prefix}.{old_octets[3]}:{ip_port[1]}")
+                else:
+                    remapped.append(entry)
+            return '[' + ','.join(remapped) + ']'
+
+        content = _re.sub(
+            r'(?m)^(seed_nodes_hosts\s*=\s*)\[([^\]]*)\]',
+            lambda m: m.group(1) + _remap_hosts(m.group(2)),
+            content,
+        )
+
         net_cfg.write_text(content)
         print_info(_("    [{}] patched network config: role={}").format(svc_name, role))
 
@@ -156,7 +189,7 @@ def _commit_and_clone_prototypes(compose_mgr, clone_map, print_info, print_warni
             continue
 
         container.reload()
-        tag = f"prototype-{prototype}"
+        tag = f"prototype-{compose_mgr.project_name}-{prototype}"
         try:
             container.commit(repository=tag)
         except Exception as e:
@@ -193,7 +226,14 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
     settings = network_mgr.topology.network_settings
     base_ip = ipaddress.ip_address(settings.base_ip)
 
-    cache_dir = Path(config_loader.get_paths_config().get('cache_dir', '../../cache'))
+    # Prefer the (potentially shard-overridden) cache_dir from network_mgr
+    # over the global config_loader value, so each parallel shard uses its
+    # own isolated data/configs directories.
+    _raw_cache = network_mgr.paths_config.get(
+        'cache_dir',
+        config_loader.get_paths_config().get('cache_dir', '../../cache'),
+    )
+    cache_dir = Path(_raw_cache)
     if not cache_dir.is_absolute():
         cache_dir = (base_path / cache_dir).resolve()
 
@@ -204,6 +244,30 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
 
     compose_specs: list[dict] = []
     packages_to_install: dict[str, list[str]] = {}
+
+    # Collect donor node IDs that need to be stopped before cloning
+    # to avoid copying inconsistent MDBX files from a running process.
+    _donor_service_ids: set[str] = set()
+    for _svc, _spec in node_compose.items():
+        _src = _spec.source.strip().lower()
+        if _src == "genesis":
+            _dn = _find_donor_node(cache_dir, "configs")
+            if _dn:
+                _donor_service_ids.add(_dn.replace("node", ""))
+        elif _src.startswith("node-"):
+            _m = re.match(r'node-(\d+)', _src)
+            if _m:
+                _donor_service_ids.add(_m.group(1))
+
+    _stopped_donors: list[str] = []
+    if _donor_service_ids:
+        _donor_svcs = [f"node-{did}" for did in sorted(_donor_service_ids)]
+        try:
+            network_mgr.compose.stop(services=_donor_svcs)
+            _stopped_donors = _donor_svcs
+            print_info(_("  Stopped donors for safe clone: {}").format(", ".join(_donor_svcs)))
+        except Exception:
+            pass
 
     for svc_name, spec in node_compose.items():
         node_id = spec.id if spec.id is not None else next_auto_id
@@ -300,18 +364,16 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
             )
 
         if freshly_cloned:
-            # 5.x: chain MDBX copied from a live donor may be corrupt; wipe chains
-            # but keep global_db (contains node list needed for balancer bootstrap)
-            _stage_cfg = config_loader.load_stage_config()
-            _gver = _stage_cfg.get('genesis_version', '')
-            if not _gver.startswith('v6'):
-                import subprocess as _sp
-                for mdbx_subdir in ("lib/network",):
-                    mdbx_dir = data_dir / mdbx_subdir
-                    if mdbx_dir.is_dir():
-                        _sp.run(["sudo", "rm", "-rf", str(mdbx_dir)], check=True, capture_output=True)
-                        _sp.run(["sudo", "mkdir", "-p", str(mdbx_dir)], check=True, capture_output=True)
-                        print_info(_("    mdbx_wipe: {} for {}").format(mdbx_subdir, svc_name))
+            # Donor was stopped before cloning → data files are consistent.
+            # Only remove stale MDBX lock files (they reference the donor's
+            # PID). Keep chain data intact so the cloned node starts with a
+            # full chain and does not need prolonged P2P sync.
+            import subprocess as _sp
+            _sp.run(
+                ["sudo", "find", str(data_dir), "-name", "mdbx.lck", "-delete"],
+                capture_output=True,
+            )
+            print_info(_("    mdbx_lck_cleanup for {}").format(svc_name))
 
         if freshly_cloned and spec.regenerate_cert:
             import glob as _glob
@@ -398,6 +460,14 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
 
         print_info(_("  {}  id={} role={} {}:{}").format(svc_name, node_id, spec.role, ip_addr, http_port))
 
+    # Restart donor nodes that were stopped for safe cloning
+    if _stopped_donors:
+        try:
+            network_mgr.compose.up(services=_stopped_donors, detach=True, wait=False, no_build=True)
+            print_info(_("  Restarted donors: {}").format(", ".join(_stopped_donors)))
+        except Exception:
+            pass
+
     if not compose_specs:
         return
 
@@ -409,7 +479,10 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
         network_mgr.compose.add_extra_node_services(
             compose_specs,
             network_settings=stage_config,
-            cache_dir_relative=str(Path(config_loader.get_paths_config().get('cache_dir', '../../cache'))),
+            cache_dir_relative=str(Path(network_mgr.paths_config.get(
+                'cache_dir',
+                config_loader.get_paths_config().get('cache_dir', '../../cache'),
+            ))),
             suite_env=suite_env,
         )
     except Exception as e:

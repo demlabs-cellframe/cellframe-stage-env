@@ -323,7 +323,7 @@ class DockerComposeManager:
             extra_packages = []
         
         if extra_packages:
-            import shutil as _shutil
+            import shutil as _shutil, tempfile as _tmpf
             for pkg_info in extra_packages:
                 if pkg_info['type'] == 'local':
                     src = Path(pkg_info['path'])
@@ -333,7 +333,18 @@ class DockerComposeManager:
                             continue
                     except OSError:
                         pass
-                    _shutil.copy2(src, dst)
+                    try:
+                        fd, tmp = _tmpf.mkstemp(dir=dst.parent, suffix='.tmp')
+                        os.close(fd)
+                        _shutil.copy2(src, tmp)
+                        os.replace(tmp, dst)
+                    except Exception:
+                        try:
+                            os.unlink(tmp)
+                        except OSError:
+                            pass
+                        if not dst.exists():
+                            raise
                     logger.info("extra_package_copied", name=src.name,
                                size_mb=round(src.stat().st_size / (1024 * 1024), 2))
                 elif pkg_info['type'] == 'url':
@@ -416,7 +427,8 @@ class DockerComposeManager:
             ] + [
                 f"./{cache_dir_relative}/configs/shared/ca:/opt/cellframe-node/share/ca:ro",
                 f"./{cache_dir_relative}/crash-artifacts/node{node.node_id}:/crash-artifacts/node-{node.node_id}",
-                f"./{cache_dir_relative}/cellframe-packages:/var/cache/cellframe-packages"
+                f"./{cache_dir_relative}/cellframe-packages:/var/cache/cellframe-packages",
+                f"./scripts/docker-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro",
             ]
             
             # Add local package volume mount if using local source
@@ -457,10 +469,7 @@ class DockerComposeManager:
                 # symlinks that point outside build context
                 package_dest = self.project_dir / "packages" / package_name
 
-                # Skip re-copy when the file is already present with matching
-                # size (avoids race condition in parallel mode where multiple
-                # shards write to the shared packages/ directory).
-                import shutil
+                import shutil, tempfile
                 needs_copy = True
                 try:
                     if package_dest.exists() and package_dest.stat().st_size == local_package_path.stat().st_size:
@@ -469,22 +478,32 @@ class DockerComposeManager:
                     pass
 
                 if needs_copy:
-                    if package_dest.exists() or package_dest.is_symlink():
-                        package_dest.unlink()
                     try:
-                        shutil.copy2(local_package_path, package_dest)
+                        fd, tmp = tempfile.mkstemp(
+                            dir=package_dest.parent, suffix='.tmp',
+                        )
+                        os.close(fd)
+                        shutil.copy2(local_package_path, tmp)
+                        os.replace(tmp, package_dest)
                         logger.debug("copied_package_to_build_context",
                                    node_id=node.node_id,
                                    source=str(local_package_path),
                                    dest=str(package_dest),
                                    size_mb=round(local_package_path.stat().st_size / (1024*1024), 2))
                     except Exception as e:
-                        logger.error("failed_to_copy_package_to_build_context",
-                                   node_id=node.node_id,
-                                   source=str(local_package_path),
-                                   dest=str(package_dest),
-                                   error=str(e))
-                        raise RuntimeError(f"Failed to copy package to build context: {e}")
+                        try:
+                            os.unlink(tmp)
+                        except OSError:
+                            pass
+                        if package_dest.exists():
+                            pass
+                        else:
+                            logger.error("failed_to_copy_package_to_build_context",
+                                       node_id=node.node_id,
+                                       source=str(local_package_path),
+                                       dest=str(package_dest),
+                                       error=str(e))
+                            raise RuntimeError(f"Failed to copy package to build context: {e}")
                 
                 node_service['build']['args']['LOCAL_PACKAGE_NAME'] = package_name
                 logger.debug("set_local_package_build_arg",
@@ -709,6 +728,7 @@ class DockerComposeManager:
                 f"./{cache_dir_relative}/configs/shared/ca:/opt/cellframe-node/share/ca:ro",
                 f"./{cache_dir_relative}/crash-artifacts/node{node_id}:/crash-artifacts/node-{node_id}",
                 f"./{cache_dir_relative}/cellframe-packages:/var/cache/cellframe-packages",
+                f"./scripts/docker-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro",
             ]
 
             env = {
