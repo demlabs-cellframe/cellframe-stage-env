@@ -1,8 +1,11 @@
 /**
  * @file dap-gdb-tool.c
  * @brief DAP Global Database Management Tool
- * @details Standalone utility for direct GDB B-tree operations without running
- *          a node.  Uses the lightweight dap_global_db_groups_init() API.
+ * @details Standalone utility for direct GDB operations without running a node.
+ *
+ * Supports two SDK generations:
+ *   - SDK 5.x (DAP_SDK_PRE_6): B-tree cursor API via dap_global_db_btree.h
+ *   - SDK 6.x:                  Driver-level API via dap_global_db_driver.h
  *
  * Commands:
  *   list-keys    - List all keys in a GDB group
@@ -19,10 +22,20 @@
 
 #include "dap_common.h"
 #include "dap_time.h"
+
+#ifdef DAP_SDK_PRE_6
+/* ---------- SDK 5.x headers ---------- */
 #include "dap_global_db.h"
 #include "dap_global_db_pkt.h"
 #include "dap_global_db_btree.h"
 #include "dap_cluster_node.h"
+typedef dap_cluster_node_addr_t gdb_node_addr_t;
+#else
+/* ---------- SDK 6.x headers ---------- */
+#include "dap_global_db_driver.h"
+#include "dap_global_db_pkt.h"
+typedef dap_stream_node_addr_t gdb_node_addr_t;
+#endif
 
 typedef union {
     uint8_t  raw[8];
@@ -30,22 +43,25 @@ typedef union {
 } DAP_ALIGN_PACKED gdb_cell_id_t;
 
 typedef struct {
-    dap_cluster_node_addr_t address;
-    gdb_cell_id_t           cell_id;
-    char                    alias[64];
-    uint16_t                ext_port;
-    uint8_t                 ext_host_len;
-    char                    ext_host[];
+    gdb_node_addr_t address;
+    gdb_cell_id_t   cell_id;
+    char            alias[64];
+    uint16_t        ext_port;
+    uint8_t         ext_host_len;
+    char            ext_host[];
 } DAP_ALIGN_PACKED gdb_node_info_t;
 
 #define LOG_TAG "dap-gdb-tool"
 
+static const char *s_driver_name = "mdbx";
+
 static void s_print_usage(const char *a_prog)
 {
-    printf("DAP GlobalDB Management Tool (B-tree native)\n\n");
-    printf("Usage: %s --db-path <path> <command> [args]\n\n", a_prog);
+    printf("DAP GlobalDB Management Tool\n\n");
+    printf("Usage: %s --db-path <path> [--driver <name>] <command> [args]\n\n", a_prog);
     printf("Global options:\n");
-    printf("  --db-path <path>   Path to global_db storage directory\n\n");
+    printf("  --db-path <path>   Path to global_db storage directory\n");
+    printf("  --driver  <name>   DB driver: mdbx (default), sqlite, pgsql\n\n");
     printf("Commands:\n");
     printf("  list-keys <group>\n");
     printf("  read <group> <key>\n");
@@ -56,9 +72,10 @@ static void s_print_usage(const char *a_prog)
     printf("      node-rehost vpntest 3FDA::0325::3A71::2C74 10.0.2.3 8079\n");
 }
 
-/* ------------------------------------------------------------------ */
-/*  Command: list-keys                                                 */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  SDK 5.x implementation (B-tree cursor API)                         */
+/* ================================================================== */
+#ifdef DAP_SDK_PRE_6
 
 static int s_cmd_list_keys(const char *a_group)
 {
@@ -102,10 +119,6 @@ static int s_cmd_list_keys(const char *a_group)
     printf("Total: %zu\n", l_count);
     return 0;
 }
-
-/* ------------------------------------------------------------------ */
-/*  Command: read                                                      */
-/* ------------------------------------------------------------------ */
 
 static int s_cmd_read(const char *a_group, const char *a_key)
 {
@@ -162,10 +175,6 @@ static int s_cmd_read(const char *a_group, const char *a_key)
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Command: delete                                                    */
-/* ------------------------------------------------------------------ */
-
 static int s_cmd_delete(const char *a_group, const char *a_key)
 {
     dap_global_db_t *l_tree = dap_global_db_group_get_or_create(a_group);
@@ -216,10 +225,6 @@ static int s_cmd_delete(const char *a_group, const char *a_key)
     printf("OK\n");
     return 0;
 }
-
-/* ------------------------------------------------------------------ */
-/*  Command: node-rehost                                               */
-/* ------------------------------------------------------------------ */
 
 static int s_cmd_node_rehost(const char *a_net_name,
                              const char *a_node_addr_str,
@@ -318,10 +323,8 @@ static int s_cmd_node_rehost(const char *a_net_name,
 
     DAP_DEL_Z(l_old_value);
 
-    /* Delete old entry, insert new with same hash key to preserve ordering */
     dap_global_db_delete(l_tree, &l_found_key);
 
-    /* Build new hash key from updated store object */
     dap_global_db_store_obj_t l_obj = {
         .group     = l_group,
         .key       = (char *)a_node_addr_str,
@@ -358,9 +361,173 @@ static int s_cmd_node_rehost(const char *a_net_name,
     return l_rc ? 1 : 0;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Main                                                               */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  SDK 6.x implementation (driver-level API)                          */
+/* ================================================================== */
+#else /* !DAP_SDK_PRE_6 */
+
+static int s_cmd_list_keys(const char *a_group)
+{
+    size_t l_count = 0;
+    dap_store_obj_t *l_objs = dap_global_db_driver_read(a_group, NULL, &l_count, false);
+    if (!l_objs || !l_count) {
+        fprintf(stderr, "No records in group '%s'\n", a_group);
+        return 0;
+    }
+    size_t l_visible = 0;
+    for (size_t i = 0; i < l_count; i++) {
+        if (!(l_objs[i].flags & DAP_GLOBAL_DB_RECORD_DEL)) {
+            printf("%s\t%zu\n",
+                   l_objs[i].key ? l_objs[i].key : "(null)",
+                   l_objs[i].value_len);
+            l_visible++;
+        }
+    }
+    dap_store_obj_free(l_objs, l_count);
+    printf("Total: %zu\n", l_visible);
+    return 0;
+}
+
+static int s_cmd_read(const char *a_group, const char *a_key)
+{
+    size_t l_count = 0;
+    dap_store_obj_t *l_objs = dap_global_db_driver_read(a_group, a_key, &l_count, false);
+    if (!l_objs || !l_count) {
+        fprintf(stderr, "Record '%s/%s' not found\n", a_group, a_key);
+        return 1;
+    }
+    for (size_t i = 0; i < l_count; i++) {
+        if (!(l_objs[i].flags & DAP_GLOBAL_DB_RECORD_DEL)) {
+            printf("group: %s\nkey: %s\nsize: %zu\n",
+                   a_group, a_key, l_objs[i].value_len);
+            if (l_objs[i].value && l_objs[i].value_len) {
+                printf("value (hex): ");
+                for (size_t j = 0; j < l_objs[i].value_len; j++)
+                    printf("%02x", l_objs[i].value[j]);
+                printf("\n");
+            }
+            dap_store_obj_free(l_objs, l_count);
+            return 0;
+        }
+    }
+    dap_store_obj_free(l_objs, l_count);
+    fprintf(stderr, "Record '%s/%s' not found\n", a_group, a_key);
+    return 1;
+}
+
+static int s_cmd_delete(const char *a_group, const char *a_key)
+{
+    size_t l_count = 0;
+    dap_store_obj_t *l_objs = dap_global_db_driver_read(a_group, a_key, &l_count, false);
+    if (!l_objs || !l_count) {
+        fprintf(stderr, "Record '%s/%s' not found\n", a_group, a_key);
+        return 1;
+    }
+    l_objs[0].flags |= DAP_GLOBAL_DB_RECORD_DEL;
+    int l_rc = dap_global_db_driver_apply(l_objs, 1);
+    dap_store_obj_free(l_objs, l_count);
+    if (l_rc) {
+        fprintf(stderr, "Failed to delete '%s/%s', code %d\n", a_group, a_key, l_rc);
+        return 1;
+    }
+    printf("OK\n");
+    return 0;
+}
+
+static int s_cmd_node_rehost(const char *a_net_name,
+                             const char *a_node_addr_str,
+                             const char *a_new_host,
+                             const char *a_new_port_str)
+{
+    char l_group[256];
+    snprintf(l_group, sizeof(l_group), "%s.nodes.list", a_net_name);
+
+    size_t l_count = 0;
+    dap_store_obj_t *l_objs = dap_global_db_driver_read(l_group, a_node_addr_str,
+                                                         &l_count, false);
+    if (!l_objs || !l_count) {
+        fprintf(stderr, "Record '%s/%s' not found\n", l_group, a_node_addr_str);
+        return 1;
+    }
+
+    dap_store_obj_t *l_found = NULL;
+    for (size_t i = 0; i < l_count; i++) {
+        if (!(l_objs[i].flags & DAP_GLOBAL_DB_RECORD_DEL) &&
+            l_objs[i].key && strcmp(l_objs[i].key, a_node_addr_str) == 0) {
+            l_found = &l_objs[i];
+            break;
+        }
+    }
+
+    if (!l_found) {
+        dap_store_obj_free(l_objs, l_count);
+        fprintf(stderr, "Record '%s/%s' not found\n", l_group, a_node_addr_str);
+        return 1;
+    }
+
+    if (l_found->value_len < sizeof(gdb_node_info_t)) {
+        fprintf(stderr, "Record too small (%zu < %zu)\n",
+                l_found->value_len, sizeof(gdb_node_info_t));
+        dap_store_obj_free(l_objs, l_count);
+        return 1;
+    }
+
+    gdb_node_info_t *l_old_info = (gdb_node_info_t *)l_found->value;
+
+    size_t l_new_host_len = strlen(a_new_host);
+    size_t l_new_size = sizeof(gdb_node_info_t) + l_new_host_len + 1;
+    gdb_node_info_t *l_new_info = calloc(1, l_new_size);
+    if (!l_new_info) {
+        dap_store_obj_free(l_objs, l_count);
+        return 1;
+    }
+
+    l_new_info->address  = l_old_info->address;
+    l_new_info->cell_id  = l_old_info->cell_id;
+    memcpy(l_new_info->alias, l_old_info->alias, sizeof(l_new_info->alias));
+    l_new_info->ext_port = a_new_port_str
+        ? (uint16_t)atoi(a_new_port_str)
+        : l_old_info->ext_port;
+    l_new_info->ext_host_len = (uint8_t)l_new_host_len;
+    memcpy(l_new_info->ext_host, a_new_host, l_new_host_len + 1);
+
+    /* Delete old record, then insert updated one */
+    l_found->flags |= DAP_GLOBAL_DB_RECORD_DEL;
+    dap_global_db_driver_apply(l_found, 1);
+
+    dap_store_obj_t l_new_obj = {
+        .group     = l_group,
+        .key       = (char *)a_node_addr_str,
+        .value     = (byte_t *)l_new_info,
+        .value_len = l_new_size,
+        .timestamp = dap_nanotime_now(),
+        .flags     = 0,
+        .sign      = NULL,
+        .crc       = 0,
+    };
+    l_new_obj.crc = dap_store_obj_checksum(&l_new_obj);
+
+    int l_rc = dap_global_db_driver_apply(&l_new_obj, 1);
+
+    if (l_rc == 0) {
+        printf("OK %s/%s -> %s:%s\n", l_group, a_node_addr_str,
+               a_new_host,
+               a_new_port_str ? a_new_port_str : "unchanged");
+    } else {
+        fprintf(stderr, "Failed to write '%s/%s', code %d\n",
+                l_group, a_node_addr_str, l_rc);
+    }
+
+    free(l_new_info);
+    dap_store_obj_free(l_objs, l_count);
+    return l_rc ? 1 : 0;
+}
+
+#endif /* DAP_SDK_PRE_6 */
+
+/* ================================================================== */
+/*  Main (common for both SDK versions)                                */
+/* ================================================================== */
 
 int main(int argc, char **argv)
 {
@@ -375,9 +542,8 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--db-path") && i + 1 < argc) {
             l_db_path = argv[++i];
-        } else if (!strcmp(argv[i], "--driver")) {
-            /* Accepted but ignored — single native B-tree backend */
-            i++;
+        } else if (!strcmp(argv[i], "--driver") && i + 1 < argc) {
+            s_driver_name = argv[++i];
         } else {
             l_cmd_start = i;
             break;
@@ -393,10 +559,14 @@ int main(int argc, char **argv)
     dap_common_init("dap-gdb-tool", NULL);
     dap_log_level_set(L_WARNING);
 
-    int l_rc = dap_global_db_groups_init(l_db_path);
-    if (l_rc) {
+#ifdef DAP_SDK_PRE_6
+    int l_init_rc = dap_global_db_groups_init(l_db_path);
+#else
+    int l_init_rc = dap_global_db_driver_init(s_driver_name, l_db_path);
+#endif
+    if (l_init_rc) {
         fprintf(stderr, "Failed to initialize GDB at '%s', code %d\n",
-                l_db_path, l_rc);
+                l_db_path, l_init_rc);
         return 1;
     }
 
@@ -437,7 +607,12 @@ int main(int argc, char **argv)
         s_print_usage(argv[0]);
     }
 
+#ifdef DAP_SDK_PRE_6
     dap_global_db_groups_flush();
     dap_global_db_groups_deinit();
+#else
+    dap_global_db_driver_flush();
+    dap_global_db_driver_deinit();
+#endif
     return l_ret;
 }

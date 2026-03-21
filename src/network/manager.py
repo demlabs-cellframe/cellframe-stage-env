@@ -251,6 +251,13 @@ class NetworkManager:
 
         return default_dir
 
+    def _sdk_branch_for_tools(self) -> str:
+        """Derive dap-sdk git branch from genesis version (v5.8 -> release-5.8)."""
+        ver = self._genesis_version_dir
+        if ver and ver.startswith("v"):
+            return f"release-{ver[1:]}"
+        return "release-6.0"
+
     async def prepare(self, rebuild: bool = False) -> None:
         """Restore snapshot, generate configs and compose — but do NOT start containers.
 
@@ -374,7 +381,8 @@ class NetworkManager:
         from ..certs.generator import CertGenerator, CERT_BUILDER_IMAGE
 
         tools_image = CERT_BUILDER_IMAGE
-        cg = CertGenerator(self.base_path)
+        sdk_branch = self._sdk_branch_for_tools()
+        cg = CertGenerator(self.base_path, dap_sdk_branch=sdk_branch)
         if not cg.build_docker_image():
             logger.error("gdb_tool_image_not_available")
             return
@@ -574,7 +582,7 @@ class NetworkManager:
             # Start ALL containers from restored clean_state
             all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
             logger.info("starting_all_containers_from_clean_state", services=all_services)
-            self.compose.up(services=all_services, detach=True, wait=False, no_build=True)
+            self.compose.up(services=all_services, detach=True, wait=False, no_build=False)
             
             # Wait for all nodes to come online
             await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
@@ -1279,7 +1287,7 @@ class NetworkManager:
             if not self.compose.are_services_running(master_full_services):
                 logger.info("starting_remaining_nodes_after_phase2_skip", services=master_full_services)
                 all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
-                self.compose.up(services=all_services, detach=True, wait=False, no_build=True)
+                self.compose.up(services=all_services, detach=True, wait=False, no_build=False)
                 await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
         else:
             logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
@@ -1912,7 +1920,7 @@ class NetworkManager:
                    services=node_services)
         self.compose.up(
             services=node_services,
-            detach=True, wait=False, no_build=True,
+            detach=True, wait=False, no_build=False,
         )
         
         startup_timeout = self.timeouts.get('startup', 600)

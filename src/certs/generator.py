@@ -41,23 +41,29 @@ class CertConfig(BaseModel):
 class CertGenerator:
     """Generate certificates for test network."""
     
-    def __init__(self, base_path: Path, certs_dir: Optional[Path] = None):
+    def __init__(self, base_path: Path, certs_dir: Optional[Path] = None,
+                 dap_sdk_branch: Optional[str] = None):
         """
         Initialize certificate generator.
         
         Args:
             base_path: Base path to stage-env directory
             certs_dir: Optional path to certificates directory (defaults to base_path/cache/certs)
+            dap_sdk_branch: Git branch of dap-sdk to build tools against
+                           (e.g. "release-5.8", "release-6.0").
+                           Defaults to "release-6.0".
         """
         self.base_path = base_path
         self.certs_dir = certs_dir if certs_dir is not None else (base_path / "cache" / "certs")
         self.dockerfile = base_path / "Dockerfile.tools"
         self.project_root = base_path.parent.parent
+        self.dap_sdk_branch = dap_sdk_branch or "release-6.0"
         
         self.certs_dir.mkdir(parents=True, exist_ok=True)
         
         logger.info("cert_generator_initialized",
                    certs_dir=str(self.certs_dir),
+                   dap_sdk_branch=self.dap_sdk_branch,
                    docker_mode=True)
     
     def _image_needs_rebuild(self) -> bool:
@@ -98,14 +104,14 @@ class CertGenerator:
 
     def build_docker_image(self) -> bool:
         """
-        Build lightweight builder Docker image if needed.
+        Build the cf-tools Docker image if needed.
 
-        The image is self-contained: it clones its own SDK copies and
-        pre-builds cf-cert-generator during ``docker build``.  No host
-        SDK mounts are needed at runtime.
+        The image clones dap-sdk from remote (branch = ``self.dap_sdk_branch``)
+        and builds cf-cert-generator + dap-gdb-tool.  Tool sources are COPY'd
+        from the project tree; the SDK is NOT copied — it's always cloned fresh.
 
-        Automatically rebuilds when local source files in ``src/certs/``
-        are newer than the existing Docker image.
+        Automatically rebuilds when local source files in ``src/certs/`` or
+        ``src/gdb/`` are newer than the existing Docker image.
 
         Returns:
             True if image is ready
@@ -123,14 +129,17 @@ class CertGenerator:
         except subprocess.CalledProcessError:
             pass
 
-        logger.info("building_cert_builder_image")
-        print_info(_("Building certificate builder Docker image (self-contained, clones SDK)..."))
+        logger.info("building_cert_builder_image",
+                    dap_sdk_branch=self.dap_sdk_branch)
+        print_info(_("Building cf-tools image (SDK branch: {})...").format(
+            self.dap_sdk_branch))
 
         try:
             result = subprocess.run(
                 [
                     "docker", "build",
                     "-f", str(self.dockerfile),
+                    "--build-arg", f"DAP_SDK_BRANCH={self.dap_sdk_branch}",
                     "-t", CERT_BUILDER_IMAGE,
                     str(self.project_root),
                 ],
@@ -143,8 +152,10 @@ class CertGenerator:
                 print_error(_("Failed to build builder image: {}").format(result.stderr))
                 return False
 
-            print_success(_("Certificate builder image built"))
-            logger.info("cert_builder_image_built")
+            print_success(_("cf-tools image built (SDK: {})").format(
+                self.dap_sdk_branch))
+            logger.info("cert_builder_image_built",
+                        dap_sdk_branch=self.dap_sdk_branch)
             return True
 
         except Exception as e:

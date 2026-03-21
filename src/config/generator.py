@@ -60,8 +60,12 @@ class ConfigGenerator:
         self.data_cache = self.cache_dir / "data"
         self.certs_cache = self.cache_dir / "certs"
         
+        # Derive dap-sdk branch from genesis_version (v5.8 -> release-5.8)
+        sdk_branch = self._sdk_branch_from_version(version_dir)
+
         # Initialize cert generator with correct certs path
-        self.cert_generator = CertGenerator(base_path, certs_dir=self.certs_cache)
+        self.cert_generator = CertGenerator(base_path, certs_dir=self.certs_cache,
+                                            dap_sdk_branch=sdk_branch)
         
         # Template directories: versioned first, then common fallback
         self.templates_dir = base_path / "config" / "templates"
@@ -69,6 +73,13 @@ class ConfigGenerator:
         
         logger.debug("config_generator_initialized", base_path=str(base_path), version_dir=version_dir)
     
+    @staticmethod
+    def _sdk_branch_from_version(version_dir: str) -> str:
+        """Map genesis version directory (e.g. 'v5.8') to dap-sdk git branch."""
+        if version_dir and version_dir.startswith("v"):
+            return f"release-{version_dir[1:]}"
+        return "release-6.0"
+
     def _resolve_template(self, relative_path: str) -> Optional[Path]:
         """Find template file/dir: versioned directory first, then common fallback."""
         versioned = self.versioned_templates_dir / relative_path

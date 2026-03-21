@@ -1,4 +1,5 @@
 # Certificate Tools for Cellframe Node E2E Testing
+# Builds against dap-sdk 5.x or 6.x (auto-detected)
 cmake_minimum_required(VERSION 3.10)
 project(CellframeCertTools C)
 
@@ -15,50 +16,70 @@ message(STATUS "DAP SDK Build: ${DAP_SDK_BUILD}")
 
 add_definitions(-DDAP_OS_UNIX -DDAP_OS_LINUX)
 
+# DAP_HAS_SDK_INIT can be passed from Docker (based on compiled symbol check)
+# Fallback: check if dap_sdk.c.o exists in build tree
+if(NOT DEFINED DAP_HAS_SDK_INIT)
+    file(GLOB_RECURSE _sdk_init_obj "${DAP_SDK_BUILD}/**/dap_sdk.c.o")
+    if(_sdk_init_obj)
+        set(DAP_HAS_SDK_INIT ON)
+    else()
+        set(DAP_HAS_SDK_INIT OFF)
+    endif()
+endif()
+
+message(STATUS "DAP_HAS_SDK_INIT=${DAP_HAS_SDK_INIT}")
+
+# If no unified init → legacy SDK (pre-6)
+if(DAP_HAS_SDK_INIT)
+    set(DAP_SDK_PRE_6 OFF)
+else()
+    set(DAP_SDK_PRE_6 ON)
+endif()
+
 # === cf-cert-generator (dap-sdk only, no cellframe-sdk dependency) ===
 add_executable(cf-cert-generator cert-generator.c)
 
+if(DAP_SDK_PRE_6)
+    target_compile_definitions(cf-cert-generator PRIVATE DAP_SDK_PRE_6)
+endif()
+
 target_include_directories(cf-cert-generator PRIVATE
     ${DAP_SDK_SRC}
-    ${DAP_SDK_SRC}/module/core/include
-    ${DAP_SDK_SRC}/module/core/src
-    ${DAP_SDK_SRC}/module/core/src/unix
-    ${DAP_SDK_BUILD}/module/core
-    ${DAP_SDK_SRC}/module/crypto/include
-    ${DAP_SDK_SRC}/module/crypto/src/Kyber/crypto_kem/kyber512/optimized
-    ${DAP_SDK_SRC}/module/hash/include
-    ${DAP_SDK_SRC}/module/hash/table/include
-    ${DAP_SDK_SRC}/module/math/include
-    ${DAP_SDK_SRC}/module/json/include
-    ${DAP_SDK_SRC}/module/config/include
-    ${DAP_SDK_SRC}/module/io/include
-    ${DAP_SDK_SRC}/module/net/common/include
-    ${DAP_SDK_SRC}/module/cluster/include
+    ${DAP_SDK_SRC}/core/include
+    ${DAP_SDK_SRC}/core/src
+    ${DAP_SDK_SRC}/core/src/unix
+    ${DAP_SDK_BUILD}/core
+    ${DAP_SDK_SRC}/crypto/include
+    ${DAP_SDK_SRC}/crypto/src/Kyber/crypto_kem/kyber512/optimized
+    ${DAP_SDK_SRC}/3rdparty/uthash/src
+    ${DAP_SDK_SRC}/3rdparty/json-c
+    ${DAP_SDK_BUILD}/core/json-c
+    ${DAP_SDK_SRC}/io/include
 )
 
 target_link_directories(cf-cert-generator PRIVATE ${DAP_SDK_BUILD})
-target_link_libraries(cf-cert-generator PRIVATE dap-sdk pthread m)
+target_link_libraries(cf-cert-generator PRIVATE dap-sdk pthread m ssl crypto)
 
 # === dap-cert (needs cellframe-sdk — built separately when SDK is available) ===
 if(DEFINED CELLFRAME_SDK_BUILD AND DEFINED CELLFRAME_SDK_SRC)
     add_executable(dap-cert dap-cert.c)
 
+    if(DAP_SDK_PRE_6)
+        target_compile_definitions(dap-cert PRIVATE DAP_SDK_PRE_6)
+    endif()
+
     target_include_directories(dap-cert PRIVATE
-        ${DAP_SDK_SRC}/module/core/include
-        ${DAP_SDK_SRC}/module/core/src
-        ${DAP_SDK_SRC}/module/core/src/unix
-        ${DAP_SDK_BUILD}/module/core
-        ${DAP_SDK_SRC}/module/crypto/include
-        ${DAP_SDK_SRC}/module/crypto/src/Kyber/crypto_kem/kyber512/optimized
-        ${DAP_SDK_SRC}/module/hash/include
-        ${DAP_SDK_SRC}/module/hash/table/include
-        ${DAP_SDK_SRC}/module/math/include
-        ${DAP_SDK_SRC}/module/json/include
-        ${DAP_SDK_SRC}/module/config/include
-        ${DAP_SDK_SRC}/module/io/include
-        ${DAP_SDK_SRC}/module/net/common/include
-        ${DAP_SDK_SRC}/module/net/stream/stream/include
-        ${DAP_SDK_SRC}/module/cluster/include
+        ${DAP_SDK_SRC}/core/include
+        ${DAP_SDK_SRC}/core/src
+        ${DAP_SDK_SRC}/core/src/unix
+        ${DAP_SDK_BUILD}/core
+        ${DAP_SDK_SRC}/crypto/include
+        ${DAP_SDK_SRC}/crypto/src/Kyber/crypto_kem/kyber512/optimized
+        ${DAP_SDK_SRC}/3rdparty/uthash/src
+        ${DAP_SDK_SRC}/3rdparty/json-c
+        ${DAP_SDK_BUILD}/core/json-c
+        ${DAP_SDK_SRC}/io/include
+        ${DAP_SDK_SRC}/net/stream/stream/include
         ${CELLFRAME_SDK_SRC}/modules/common/include
     )
 
