@@ -43,6 +43,7 @@ include_directories(
     ${DAP_SDK_SRC}/module/io/include
 
     ${DAP_SDK_SRC}/module/net/common/include
+    ${DAP_SDK_SRC}/module/cluster/include
 
     # cellframe-sdk modules
     ${CELLFRAME_SDK_SRC}/modules/common/include

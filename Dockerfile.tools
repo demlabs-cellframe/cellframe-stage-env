@@ -1,15 +1,20 @@
-# Self-contained certificate generator for Cellframe Node E2E testing.
+# Self-contained SDK tools for Cellframe Node E2E testing.
 #
-# Clones its own copies of cellframe-sdk and dap-sdk, builds cf-cert-generator
-# at image build time. No host SDK mounts required at runtime.
+# Builds cf-cert-generator and dap-gdb-tool at image build time.
+# No host SDK mounts required at runtime.
 #
 # Build:
-#   docker build -f Dockerfile.cert-generator -t cf-cert-builder:latest \
+#   docker build -f Dockerfile.tools -t cf-tools:latest \
 #       --build-arg SDK_BRANCH=release-6.0 .
 #
-# Run:
-#   docker run --rm -v /path/to/output:/output cf-cert-builder:latest \
+# Run (cert-generator):
+#   docker run --rm -v /path/to/output:/output cf-tools:latest \
 #       /usr/local/bin/cf-cert-generator /output 2 stagenet 0x1234 1
+#
+# Run (gdb-tool):
+#   docker run --rm -v /path/to/nodedata:/data cf-tools:latest \
+#       /usr/local/bin/dap-gdb-tool --driver mdbx --db-path /data/var/lib/global_db \
+#       node-rehost vpntest 3FDA::0325::3A71::2C74 10.0.2.3 8079
 #
 # Override SDK repos/branches via build args for different SDK versions.
 
@@ -33,6 +38,7 @@ RUN git clone --depth 1 -b ${SDK_BRANCH} ${CELLFRAME_SDK_REPO} cellframe-sdk && 
     git clone --depth 1 -b ${DAP_TPL_BRANCH} ${DAP_TPL_REPO} cellframe-sdk/tools/dap_tpl
 
 COPY src/certs/ /src/cert-generator/
+COPY src/gdb/   /src/gdb-tool/
 
 RUN mkdir -p /tmp/sdk-build && cd /tmp/sdk-build && \
     cmake -DCMAKE_BUILD_TYPE=Release /src/cellframe-sdk >/dev/null 2>&1 && \
@@ -44,6 +50,12 @@ RUN mkdir -p /tmp/cert-build && cd /tmp/cert-build && \
           /src/cert-generator 2>&1 && \
     make -j$(nproc) cf-cert-generator 2>&1
 
+RUN mkdir -p /tmp/gdb-build && cd /tmp/gdb-build && \
+    cmake -DCELLFRAME_SDK_BUILD=/tmp/sdk-build \
+          -DCELLFRAME_SDK_SRC=/src/cellframe-sdk \
+          /src/gdb-tool 2>&1 && \
+    make -j$(nproc) dap-gdb-tool 2>&1
+
 # --- runtime stage ---
 FROM debian:bookworm-slim
 
@@ -52,6 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /tmp/cert-build/cf-cert-generator /usr/local/bin/
+COPY --from=builder /tmp/gdb-build/dap-gdb-tool       /usr/local/bin/
 COPY --from=builder /tmp/sdk-build/libcellframe_sdk.so /usr/local/lib/
 COPY --from=builder /tmp/sdk-build/dap-sdk/libdap-sdk.so /usr/local/lib/
 
@@ -59,4 +72,4 @@ RUN ldconfig
 
 WORKDIR /output
 
-ENTRYPOINT ["/usr/local/bin/cf-cert-generator"]
+ENTRYPOINT ["/bin/sh"]

@@ -27,7 +27,7 @@ from src.utils.i18n import _
 
 logger = get_logger(__name__)
 
-CERT_BUILDER_IMAGE = "cf-cert-builder:latest"
+CERT_BUILDER_IMAGE = "cf-tools:latest"
 
 
 class CertConfig(BaseModel):
@@ -51,7 +51,7 @@ class CertGenerator:
         """
         self.base_path = base_path
         self.certs_dir = certs_dir if certs_dir is not None else (base_path / "cache" / "certs")
-        self.dockerfile = base_path / "Dockerfile.cert-generator"
+        self.dockerfile = base_path / "Dockerfile.tools"
         
         self.certs_dir.mkdir(parents=True, exist_ok=True)
         
@@ -72,10 +72,13 @@ class CertGenerator:
                 tzinfo=timezone.utc
             )
 
-            src_dir = self.base_path / "src" / "certs"
-            if not src_dir.exists():
-                return False
-            mtimes = [f.stat().st_mtime for f in src_dir.iterdir() if f.is_file()]
+            mtimes: list[float] = []
+            for subdir in ("src/certs", "src/gdb"):
+                src_dir = self.base_path / subdir
+                if src_dir.exists():
+                    mtimes.extend(
+                        f.stat().st_mtime for f in src_dir.iterdir() if f.is_file()
+                    )
             if self.dockerfile.exists():
                 mtimes.append(self.dockerfile.stat().st_mtime)
             if not mtimes:

@@ -43,41 +43,40 @@ def _fixup_node_identity(cfg_dir: Path, data_dir: Path, role: str, node_id: int,
                 f.unlink()
         print_info(_("    [{}] removed donor private keys from var/lib/ca (role={})").format(svc_name, role))
 
-    net_cfg = cfg_dir / "network" / f"{net_name}.cfg"
-    if net_cfg.exists():
-        content = net_cfg.read_text()
-        content = _re.sub(r'(?m)^node-role\s*=\s*\S+', f'node-role={role}', content)
-        if role not in ("root",):
-            content = _re.sub(r'(?m)^events-sign-cert\s*=.*$', '#events-sign-cert=', content)
+    settings = network_mgr.topology.network_settings
+    base_ip_parts = settings.base_ip.split('.')
+    new_prefix = '.'.join(base_ip_parts[:3])
+    seed_re = _re.compile(r'(?m)^(seed_nodes_hosts\s*=\s*)\[([^\]]*)\]')
 
-        # Remap seed_nodes_hosts IPs to match the current shard subnet.
-        # Snapshot configs contain shard-0 IPs; other shards use shifted subnets.
-        settings = network_mgr.topology.network_settings
-        base_ip_parts = settings.base_ip.split('.')
-        new_prefix = '.'.join(base_ip_parts[:3])
+    def _remap_hosts(hosts_str):
+        remapped = []
+        for entry in hosts_str.split(','):
+            entry = entry.strip()
+            if not entry:
+                continue
+            ip_port = entry.split(':')
+            if len(ip_port) == 2:
+                old_octets = ip_port[0].split('.')
+                remapped.append(f"{new_prefix}.{old_octets[3]}:{ip_port[1]}")
+            else:
+                remapped.append(entry)
+        return '[' + ','.join(remapped) + ']'
 
-        def _remap_hosts(hosts_str):
-            remapped = []
-            for entry in hosts_str.split(','):
-                entry = entry.strip()
-                if not entry:
-                    continue
-                ip_port = entry.split(':')
-                if len(ip_port) == 2:
-                    old_octets = ip_port[0].split('.')
-                    remapped.append(f"{new_prefix}.{old_octets[3]}:{ip_port[1]}")
-                else:
-                    remapped.append(entry)
-            return '[' + ','.join(remapped) + ']'
-
-        content = _re.sub(
-            r'(?m)^(seed_nodes_hosts\s*=\s*)\[([^\]]*)\]',
-            lambda m: m.group(1) + _remap_hosts(m.group(2)),
-            content,
-        )
-
-        net_cfg.write_text(content)
-        print_info(_("    [{}] patched network config: role={}").format(svc_name, role))
+    net_dir = cfg_dir / "network"
+    if net_dir.is_dir():
+        for net_cfg in net_dir.glob("*.cfg"):
+            content = net_cfg.read_text()
+            is_primary = (net_cfg.name == f"{net_name}.cfg")
+            if is_primary:
+                content = _re.sub(r'(?m)^node-role\s*=\s*\S+', f'node-role={role}', content)
+                if role not in ("root",):
+                    content = _re.sub(r'(?m)^events-sign-cert\s*=.*$', '#events-sign-cert=', content)
+            content = seed_re.sub(
+                lambda m: m.group(1) + _remap_hosts(m.group(2)),
+                content,
+            )
+            net_cfg.write_text(content)
+        print_info(_("    [{}] patched network configs: role={}").format(svc_name, role))
 
 
 def _provision_docker_compose(compose_mgr, docker_compose, print_info, print_success, print_warning, print_error):

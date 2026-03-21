@@ -308,50 +308,49 @@ class NetworkManager:
         """Adapt snapshot data for the current shard subnet.
 
         Snapshot data originates from the genesis shard (shard-0).  In parallel
-        mode every shard uses a shifted subnet, so:
-          1. Remap ``seed_nodes_hosts`` IPs in network configs.
-          2. Wipe ``global_db`` — it caches peer addresses that point at shard-0
-             IPs.  Connecting to unreachable IPs on a different Docker subnet
-             hits the Linux TCP SYN timeout (~127 s) which races with the
-             ``tx_create`` wait.  With a clean GDB the node discovers peers
-             exclusively through the (already remapped) seed_nodes within
-             seconds.  Chain data and the ledger are rebuilt from on-disk files.
+        mode every shard uses a shifted subnet, so we remap
+        ``seed_nodes_hosts`` IPs in **all** network configs (not just the
+        primary network).  Nodes may be configured for multiple networks
+        (e.g. ``vpntest`` + ``stagenet``); leaving any config un-remapped
+        causes TCP SYN hangs to unreachable shard-0 IPs.
+
+        GDB is intentionally preserved: the balancer requires the node list
+        stored there to return peers (HTTP 204 otherwise).  Stale shard-0 IPs
+        in GDB entries are corrected by nodes re-registering on startup.
         """
         import re as _re
-        import shutil as _shutil
 
         settings = self.topology.network_settings
         base_ip_parts = settings.base_ip.split('.')
         new_prefix = '.'.join(base_ip_parts[:3])
-        net_name = self.topology.network.name
 
         cache_dir = self.paths_config.get('cache_dir', 'cache')
         configs_cache = (self.base_path / cache_dir / 'configs').resolve()
-        data_cache = (self.base_path / cache_dir / 'data').resolve()
+
+        seed_re = _re.compile(r'(?m)^(seed_nodes_hosts\s*=\s*)\[([^\]]*)\]')
+
+        def _remap(hosts_str):
+            remapped = []
+            for entry in hosts_str.split(','):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                ip_port = entry.split(':')
+                if len(ip_port) == 2:
+                    old_octets = ip_port[0].split('.')
+                    remapped.append(f"{new_prefix}.{old_octets[3]}:{ip_port[1]}")
+                else:
+                    remapped.append(entry)
+            return '[' + ','.join(remapped) + ']'
 
         patched = 0
-        gdb_wiped = 0
         for node in node_configs:
-            net_cfg = configs_cache / f"node{node.node_id}" / "network" / f"{net_name}.cfg"
-            if net_cfg.exists():
+            net_dir = configs_cache / f"node{node.node_id}" / "network"
+            if not net_dir.is_dir():
+                continue
+            for net_cfg in net_dir.glob("*.cfg"):
                 content = net_cfg.read_text()
-
-                def _remap(hosts_str):
-                    remapped = []
-                    for entry in hosts_str.split(','):
-                        entry = entry.strip()
-                        if not entry:
-                            continue
-                        ip_port = entry.split(':')
-                        if len(ip_port) == 2:
-                            old_octets = ip_port[0].split('.')
-                            remapped.append(f"{new_prefix}.{old_octets[3]}:{ip_port[1]}")
-                        else:
-                            remapped.append(entry)
-                    return '[' + ','.join(remapped) + ']'
-
-                new_content = _re.sub(
-                    r'(?m)^(seed_nodes_hosts\s*=\s*)\[([^\]]*)\]',
+                new_content = seed_re.sub(
                     lambda m: m.group(1) + _remap(m.group(2)),
                     content,
                 )
@@ -359,16 +358,94 @@ class NetworkManager:
                     net_cfg.write_text(new_content)
                     patched += 1
 
-            gdb_dir = data_cache / f"node{node.node_id}" / "lib" / "global_db"
-            if gdb_dir.exists():
-                _shutil.rmtree(gdb_dir)
-                gdb_dir.mkdir(parents=True, exist_ok=True)
-                gdb_wiped += 1
-
-        if patched or gdb_wiped:
+        if patched:
             logger.info("remapped_seed_nodes_for_shard",
-                       new_prefix=new_prefix, patched_nodes=patched,
-                       gdb_wiped=gdb_wiped)
+                       new_prefix=new_prefix, patched_files=patched)
+
+    def _fix_stale_node_list(self, node_configs) -> None:
+        """Overwrite stale IPs in ``nodes.list`` BEFORE starting containers.
+
+        Runs ``dap-gdb-tool node-rehost`` directly on the GDB files on disk.
+        Node addresses are read from ``node-addr.dcert`` via ``dap-cert``.
+        Everything happens in a single ``docker run`` — no running nodes,
+        no CLI sockets, no network cycling required.
+        """
+        import subprocess
+        from ..certs.generator import CertGenerator, CERT_BUILDER_IMAGE
+
+        tools_image = CERT_BUILDER_IMAGE
+        cg = CertGenerator(self.base_path)
+        if not cg.build_docker_image():
+            logger.error("gdb_tool_image_not_available")
+            return
+
+        cache_dir = self.paths_config.get('cache_dir', 'cache')
+        cache_path = (self.base_path / cache_dir).resolve()
+        net_name = self.topology.network.name
+        settings = self.topology.network_settings
+        base_ip_parts = settings.base_ip.split('.')
+
+        volumes: list[str] = []
+        ip_map: dict[int, str] = {}
+
+        for nc in node_configs:
+            data_path = cache_path / "data" / f"node{nc.node_id}"
+            volumes.extend(["-v", f"{data_path}:/nodes/node{nc.node_id}"])
+            ip_map[nc.node_id] = (
+                f"{'.'.join(base_ip_parts[:3])}"
+                f".{int(base_ip_parts[3]) + nc.node_id - 1}"
+            )
+
+        script_lines = ["set -e", ""]
+
+        for nc in node_configs:
+            script_lines.append(
+                f'ADDR_{nc.node_id}=$('
+                f'/usr/local/bin/dap-cert node-addr '
+                f'/nodes/node{nc.node_id}/lib/ca/node-addr.dcert 2>/dev/null'
+                f') || ADDR_{nc.node_id}=""'
+            )
+
+        script_lines.append("")
+
+        for target in node_configs:
+            gdb = f"/nodes/node{target.node_id}/lib/global_db"
+            for src in node_configs:
+                ip = ip_map[src.node_id]
+                script_lines.append(
+                    f'[ -n "$ADDR_{src.node_id}" ] && '
+                    f'/usr/local/bin/dap-gdb-tool '
+                    f'--driver mdbx --db-path {gdb} '
+                    f'node-rehost {net_name} "$ADDR_{src.node_id}" {ip} 8079 '
+                    f'|| true'
+                )
+
+        script = "\n".join(script_lines)
+
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "--entrypoint", "sh",
+        ] + volumes + [
+            tools_image,
+            "-c", script,
+        ]
+
+        try:
+            result = subprocess.run(
+                docker_cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode == 0:
+                ok_count = result.stdout.count("OK ")
+                logger.info("stale_node_list_fixed",
+                            nodes=len(node_configs),
+                            entries_updated=ok_count)
+            else:
+                logger.error("gdb_tool_failed",
+                             rc=result.returncode,
+                             stderr=result.stderr[-500:] if result.stderr else "")
+        except subprocess.TimeoutExpired:
+            logger.error("gdb_tool_timeout")
+        except Exception as exc:
+            logger.error("gdb_tool_exception", exc=str(exc))
 
     async def _restore_snapshots(self) -> None:
         """Restore clean_state or phase1 snapshot if available."""
@@ -491,6 +568,9 @@ class NetworkManager:
                        snapshot=clean_state_name,
                        note="Starting containers from clean_state snapshot")
             
+            # Fix stale node list in GDB BEFORE starting containers
+            self._fix_stale_node_list(node_configs)
+
             # Start ALL containers from restored clean_state
             all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
             logger.info("starting_all_containers_from_clean_state", services=all_services)
