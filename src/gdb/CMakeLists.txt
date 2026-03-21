@@ -1,74 +1,41 @@
 # GDB Tool for Cellframe Node E2E Testing
-# Direct GDB driver access — no network stack, no event loop
+# Direct B-tree access via dap-sdk (no cellframe-sdk dependency)
 cmake_minimum_required(VERSION 3.10)
 project(CellframeGdbTool C)
 
-if(NOT DEFINED CELLFRAME_SDK_BUILD)
-    set(CELLFRAME_SDK_BUILD "${CMAKE_CURRENT_SOURCE_DIR}/../../../../cellframe-sdk/build")
-endif()
-
-if(NOT DEFINED CELLFRAME_SDK_SRC)
-    set(CELLFRAME_SDK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../cellframe-sdk")
-endif()
-
 if(NOT DEFINED DAP_SDK_SRC)
-    set(DAP_SDK_SRC "${CELLFRAME_SDK_SRC}/dap-sdk")
+    set(DAP_SDK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../lib/dap-sdk")
 endif()
 
 if(NOT DEFINED DAP_SDK_BUILD)
-    set(DAP_SDK_BUILD "${CELLFRAME_SDK_BUILD}/dap-sdk")
+    set(DAP_SDK_BUILD "${CMAKE_CURRENT_SOURCE_DIR}/../../../../build/lib/dap-sdk")
 endif()
 
-message(STATUS "Cellframe SDK Build: ${CELLFRAME_SDK_BUILD}")
-message(STATUS "Cellframe SDK Source: ${CELLFRAME_SDK_SRC}")
 message(STATUS "DAP SDK Source: ${DAP_SDK_SRC}")
 message(STATUS "DAP SDK Build: ${DAP_SDK_BUILD}")
 
-include_directories(
-    # dap-sdk core (dap_common.h, dap_time.h, dap_list.h)
-    ${DAP_SDK_SRC}/core/include
-    ${DAP_SDK_SRC}/core/src
-    ${DAP_SDK_SRC}/core/src/unix
-    ${DAP_SDK_BUILD}/core
+add_definitions(-DDAP_OS_UNIX -DDAP_OS_LINUX)
 
-    # dap-sdk modular layout (fallback for different SDK tree shapes)
+add_executable(dap-gdb-tool dap-gdb-tool.c)
+
+target_include_directories(dap-gdb-tool PRIVATE
+    ${DAP_SDK_SRC}
     ${DAP_SDK_SRC}/module/core/include
     ${DAP_SDK_SRC}/module/core/src
     ${DAP_SDK_SRC}/module/core/src/unix
     ${DAP_SDK_BUILD}/module/core
-
-    # crypto (dap_sign.h, dap_guuid.h)
-    ${DAP_SDK_SRC}/crypto/include
     ${DAP_SDK_SRC}/module/crypto/include
-
-    # hash (uthash.h)
-    ${DAP_SDK_SRC}/3rdparty/uthash/src
+    ${DAP_SDK_SRC}/module/crypto/src/Kyber/crypto_kem/kyber512/optimized
     ${DAP_SDK_SRC}/module/hash/include
     ${DAP_SDK_SRC}/module/hash/table/include
-
-    # json-c (json.h)
-    ${DAP_SDK_SRC}/3rdparty/json-c
+    ${DAP_SDK_SRC}/module/math/include
     ${DAP_SDK_SRC}/module/json/include
-
-    # global-db (dap_global_db_driver.h, dap_global_db_pkt.h)
-    ${DAP_SDK_SRC}/global-db/include
-
-    # stream cluster (dap_stream_cluster.h — transitive dep of global_db_driver.h)
-    ${DAP_SDK_SRC}/net/stream/stream/include
+    ${DAP_SDK_SRC}/module/config/include
+    ${DAP_SDK_SRC}/module/io/include
+    ${DAP_SDK_SRC}/module/net/common/include
+    ${DAP_SDK_SRC}/module/cluster/include
+    ${DAP_SDK_SRC}/module/global-db/include
 )
 
-add_definitions(-DDAP_OS_UNIX -DDAP_OS_LINUX)
-
-link_directories(
-    ${CELLFRAME_SDK_BUILD}
-    ${DAP_SDK_BUILD}
-)
-
-add_executable(dap-gdb-tool dap-gdb-tool.c)
-
-target_link_libraries(dap-gdb-tool
-    cellframe_sdk
-    dap-sdk
-    pthread
-    m
-)
+target_link_directories(dap-gdb-tool PRIVATE ${DAP_SDK_BUILD})
+target_link_libraries(dap-gdb-tool PRIVATE dap-sdk pthread m)

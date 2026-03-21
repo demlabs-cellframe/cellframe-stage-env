@@ -415,7 +415,7 @@ class NetworkManager:
                 script_lines.append(
                     f'[ -n "$ADDR_{src.node_id}" ] && '
                     f'/usr/local/bin/dap-gdb-tool '
-                    f'--driver mdbx --db-path {gdb} '
+                    f'--db-path {gdb} '
                     f'node-rehost {net_name} "$ADDR_{src.node_id}" {ip} 8079 '
                     f'|| true'
                 )
