@@ -13,11 +13,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
     CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
-    NetworkWaitStep, DockerOpStep, SnapshotStep,
+    NetworkWaitStep, DockerOpStep, DockerExecStep, SnapshotStep, PlaywrightStep,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep, DpkgStep, CustomOperandStep,
     MetricStep, MetricsTableStep,
@@ -74,6 +75,57 @@ class RuntimeContext:
         """Set runtime variable."""
         self.variables[name] = value
         logger.debug(f"Set variable: {name} = {value}")
+
+    def save_output(self, output: str, save: Optional[str], save_regex: Optional[str] = None,
+                     save_map: Optional[Dict[str, Optional[str]]] = None) -> None:
+        """Save command output to variable(s) with optional regex extraction.
+
+        Args:
+            output: Raw command output.
+            save: Variable name to save to. If *None* and *save_map* is also
+                *None*, does nothing.
+            save_regex: Optional regex applied to *output* before saving to
+                *save*. First capturing group is stored; otherwise full match.
+            save_map: Optional dict ``{variable_name: regex_or_None}``.
+                For each entry the regex is applied to *output* and the result
+                is stored under *variable_name*. ``None`` regex means save the
+                full (stripped) output.
+        """
+        raw = output.strip() if output else ""
+
+        def _extract(match: re.Match) -> str:
+            """Return the first non-None capturing group, or the full match."""
+            if match.lastindex:
+                for i in range(1, match.lastindex + 1):
+                    if match.group(i) is not None:
+                        return match.group(i).strip()
+            return match.group(0).strip()
+
+        def _apply(var: str, pattern: Optional[str]) -> None:
+            if not pattern:
+                self.set_variable(var, raw)
+                logger.info("output_saved", variable=var,
+                             value_len=len(raw), regex="none")
+                return
+            m = re.search(pattern, raw, re.MULTILINE | re.DOTALL)
+            if m:
+                val = _extract(m)
+            else:
+                logger.warning("save_regex_no_match",
+                               variable=var, pattern=pattern,
+                               output_preview=raw[:200])
+                val = ""
+            self.set_variable(var, val)
+            logger.info("output_saved", variable=var,
+                         value_len=len(val), regex=pattern)
+
+        if save:
+            _apply(save, save_regex)
+
+        if save_map:
+            for var_name, pattern in save_map.items():
+                resolved_var = self.substitute(var_name) if var_name else var_name
+                _apply(resolved_var, pattern)
     
     def get_variable(self, name: str) -> Any:
         """Get runtime variable."""
@@ -157,7 +209,7 @@ class RuntimeContext:
 class ScenarioExecutor:
     """Execute test scenarios with full lifecycle management."""
     
-    def __init__(self, node_cli_path: str = "cellframe-node-cli", log_file: Optional[Path] = None, debug: bool = False, base_path: Optional[Path] = None, custom_templates_dirs=None):
+    def __init__(self, node_cli_path: str = "cellframe-node-cli", log_file: Optional[Path] = None, debug: bool = False, base_path: Optional[Path] = None, custom_templates_dirs=None, cache_dir: Optional[Path] = None):
         """
         Initialize executor.
         
@@ -167,6 +219,7 @@ class ScenarioExecutor:
             debug: Enable debug logging
             base_path: Base path to stage-env directory (for artifacts collection)
             custom_templates_dirs: List of paths to search for J2 config templates
+            cache_dir: Resolved cache directory (overrides global config; needed for shards)
         """
         self.node_cli_path = node_cli_path
         self.log_file = log_file
@@ -192,7 +245,7 @@ class ScenarioExecutor:
             CLIStepExecutor, RPCStepExecutor, PythonStepExecutor, PrintStepExecutor,
             BashStepExecutor, ToolStepExecutor, WaitStepExecutor,
             WaitForDatumStepExecutor, LoopStepExecutor,
-            NetworkWaitStepExecutor, DockerOpStepExecutor, SnapshotStepExecutor,
+            NetworkWaitStepExecutor, DockerOpStepExecutor, DockerExecStepExecutor, SnapshotStepExecutor,
             SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor,
             ConfigStepExecutor, DpkgStepExecutor
         )
@@ -226,6 +279,10 @@ class ScenarioExecutor:
             resolve_node_alias_callback=self._resolve_node_alias,
             wait_executor=self.wait_executor
         )
+        self.docker_exec_executor = DockerExecStepExecutor(
+            self.container_manager, log_file, debug,
+            resolve_node_alias_callback=self._resolve_node_alias,
+        )
         self.snapshot_executor = SnapshotStepExecutor(
             self.container_manager, log_file, debug, compose_manager=None,
             base_path=self.base_path if hasattr(self, 'base_path') else None,
@@ -252,12 +309,16 @@ class ScenarioExecutor:
             self.container_manager, log_file, debug,
             resolve_node_alias_callback=self._resolve_node_alias,
             custom_templates_dirs=self._custom_templates_dirs,
+            cache_dir=cache_dir,
         )
         self.dpkg_executor = DpkgStepExecutor(self.container_manager, log_file, debug)
 
         from .step.metrics import MetricStepExecutor, MetricsTableStepExecutor
         self.metric_executor = MetricStepExecutor(self.container_manager, log_file, debug)
         self.metrics_table_executor = MetricsTableStepExecutor(self.container_manager, log_file, debug)
+
+        from .step.playwright import PlaywrightStepExecutor
+        self.playwright_executor = PlaywrightStepExecutor(self.container_manager, log_file, debug)
 
         # Custom operand support
         self._operand_registry = OperandRegistry()
@@ -366,22 +427,31 @@ class ScenarioExecutor:
         return node_alias
     
     def _lookup_compose_node_id(self, service_name: str):
-        """Resolve NODE_ID from docker-compose.generated.yml for custom services."""
+        """Resolve NODE_ID from compose files for custom services.
+
+        Checks docker-compose.generated.yml first, then shard-specific
+        compose files used in parallel mode (docker-compose.shard-*.yml).
+        """
+        import yaml as _yaml
+        candidates = [self.base_path / "docker-compose.generated.yml"]
         try:
-            compose_file = self.base_path / "docker-compose.generated.yml"
-            if not compose_file.exists():
-                return None
-            import yaml
-            with open(compose_file) as f:
-                data = yaml.safe_load(f)
-            svc = (data or {}).get("services", {}).get(service_name)
-            if not svc:
-                return None
-            nid = svc.get("environment", {}).get("NODE_ID")
-            if nid is not None:
-                return int(nid)
+            candidates.extend(sorted(self.base_path.glob("docker-compose.shard-*.yml")))
         except Exception:
             pass
+        for compose_file in candidates:
+            try:
+                if not compose_file.exists():
+                    continue
+                with open(compose_file) as f:
+                    data = _yaml.safe_load(f)
+                svc = (data or {}).get("services", {}).get(service_name)
+                if not svc:
+                    continue
+                nid = svc.get("environment", {}).get("NODE_ID")
+                if nid is not None:
+                    return int(nid)
+            except Exception:
+                continue
         return None
 
     def _resolve_node_to_container(self, node: str) -> str:
@@ -630,7 +700,9 @@ class ScenarioExecutor:
                     # Try to find a running node container
                     try:
                         # Find first running node container using container manager
-                        containers = self.container_manager.docker_client.containers.list(filters={"name": "cellframe-stage-node-"})
+                        containers = self.container_manager.docker_client.containers.list(
+                            filters={"name": make_container_name("node-")}
+                        )
                         if containers:
                             container_name = containers[0].name
                             cache_file = Path(__file__).parent.parent.parent / ".cache" / "cli_commands.json"
@@ -696,7 +768,7 @@ class ScenarioExecutor:
         """Detect cellframe-node version and inject cf_version* variables into context."""
         try:
             containers = self.container_manager.docker_client.containers.list(
-                filters={"name": "cellframe-stage-node-"}
+                filters={"name": make_container_name("node-")}
             )
             if not containers:
                 logger.warning("no_containers_for_version_detection")
@@ -768,8 +840,12 @@ class ScenarioExecutor:
                 step_desc = f"MetricStep ({step.metric}={step.value})"
             elif isinstance(step, MetricsTableStep):
                 step_desc = f"MetricsTableStep ({step.metrics_table})"
+            elif isinstance(step, DockerExecStep):
+                step_desc = f"DockerExec ({step.docker_exec[:60]})"
             elif isinstance(step, CustomOperandStep):
                 step_desc = f"CustomOperand ({step.operand_name}.{step.operand_action})"
+            elif isinstance(step, PlaywrightStep):
+                step_desc = f"Playwright ({step.playwright} [{step.browser}])"
 
             logger.info(f"Step {i}/{len(steps)}: {step_desc}")
             
@@ -812,6 +888,8 @@ class ScenarioExecutor:
                 await self.loop_executor.execute(step, ctx, defaults)
             elif isinstance(step, NetworkWaitStep):
                 await self.network_wait_executor.execute(step, ctx)
+            elif isinstance(step, DockerExecStep):
+                await self.docker_exec_executor.execute(step, ctx)
             elif isinstance(step, DockerOpStep):
                 await self.docker_op_executor.execute(step, ctx)
             elif isinstance(step, SnapshotStep):
@@ -834,6 +912,8 @@ class ScenarioExecutor:
                 await self.metric_executor.execute(step, ctx)
             elif isinstance(step, MetricsTableStep):
                 await self.metrics_table_executor.execute(step, ctx)
+            elif isinstance(step, PlaywrightStep):
+                await self.playwright_executor.execute(step, ctx)
             elif isinstance(step, CustomOperandStep):
                 await self.custom_operand_executor.execute(step, ctx, defaults)
             else:
@@ -849,21 +929,26 @@ class ScenarioExecutor:
         return f"node{node_id}"
 
     def _lookup_compose_node_id_reverse(self, node_id: int):
-        """Reverse lookup: numeric NODE_ID → service name from compose file."""
+        """Reverse lookup: numeric NODE_ID -> service name from compose file."""
+        import yaml as _yaml
+        candidates = [self.base_path / "docker-compose.generated.yml"]
         try:
-            import yaml
-            compose_file = self.base_path / "docker-compose.generated.yml"
-            if not compose_file.exists():
-                logger.warning("compose_not_found_reverse", path=str(compose_file))
-                return None
-            with open(compose_file) as f:
-                data = yaml.safe_load(f)
-            for name, svc in (data or {}).get("services", {}).items():
-                env = svc.get("environment", {})
-                if isinstance(env, dict) and str(env.get("NODE_ID")) == str(node_id):
-                    return name
-        except Exception as e:
-            logger.warning("compose_reverse_lookup_failed", node_id=node_id, error=str(e))
+            candidates.extend(sorted(self.base_path.glob("docker-compose.shard-*.yml")))
+        except Exception:
+            pass
+        for compose_file in candidates:
+            try:
+                if not compose_file.exists():
+                    continue
+                with open(compose_file) as f:
+                    data = _yaml.safe_load(f)
+                for name, svc in (data or {}).get("services", {}).items():
+                    env = svc.get("environment", {})
+                    if isinstance(env, dict) and str(env.get("NODE_ID")) == str(node_id):
+                        return name
+            except Exception as e:
+                logger.warning("compose_reverse_lookup_failed",
+                               node_id=node_id, file=str(compose_file), error=str(e))
         return None
 
     def _create_exec_cli_for_waiter(self):

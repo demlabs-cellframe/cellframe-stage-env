@@ -127,11 +127,23 @@ class WaiterDispatcher:
         self.log_file = log_file
     
     def _extract_node_id(self, node_name: str) -> int:
-        """Extract node ID from node name."""
+        """Extract node ID from node name.
+
+        For non-standard service names (vpn-client-1, vpn-server-2, etc.)
+        the numeric suffix does NOT correspond to the compose NODE_ID.
+        We first try get_node_config_callback which knows the real mapping.
+        """
+        if self.get_node_config_callback:
+            try:
+                cfg = self.get_node_config_callback(node_name)
+                if cfg and hasattr(cfg, 'node_id'):
+                    return cfg.node_id
+            except Exception:
+                pass
+
         match = re.search(r'(?:node|root|master|full)-?(\d+)', node_name)
         if match:
             return int(match.group(1))
-        # Fallback: try to find any number
         match = re.search(r'(\d+)$', node_name)
         if match:
             return int(match.group(1))

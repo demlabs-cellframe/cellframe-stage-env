@@ -52,22 +52,44 @@ variables:
 
 ### На Уровне Сьюта (общие)
 ```yaml
-# suite_setup.yml
-suite_setup:
-  variables:
-    shared_var: value
+# suite.yml (descriptor)
+suite: "My Suite"
+variables:
+  shared_var: value
 ```
 
 Доступны во всех сценариях сьюта.
 
 ### Предопределённые (ScenarioGlobalContext)
 Автоматически доступны:
-- `{{first_root}}` - первая root нода
-- `{{first_master}}` - первая master нода
-- `{{all_nodes}}` - все ноды
-- `{{root_nodes}}` - все root ноды
-- `{{master_nodes}}` - все master ноды
-- `{{_active_nodes}}` - активные ноды (root + master)
+
+**Топология:**
+- `{{all_nodes}}` — список всех нод
+- `{{root_nodes}}` / `{{master_nodes}}` / `{{full_nodes}}` — по роли
+- `{{first_root}}` / `{{last_root}}` — первая/последняя root
+- `{{first_master}}` / `{{last_master}}` — первая/последняя master
+- `{{seed_nodes}}` / `{{validator_nodes}}` — seed/validator списки
+- `{{root_indices}}` / `{{master_indices}}` / `{{full_indices}}` / `{{all_indices}}`
+
+**Количества:**
+- `{{node_count}}` / `{{root_count}}` / `{{master_count}}` / `{{full_count}}`
+
+**Сеть:**
+- `{{network_name}}` / `{{topology_name}}` / `{{native_ticker}}`
+- `{{node_port}}` / `{{node_ip}}` / `{{node_ips}}`
+- `{{node_ip_root-1}}` / `{{node_ip_master-2}}` — IP конкретных нод
+
+**Per-node IP (авто-генерация):**
+- `{{node_ip_full-1}}` / `{{node_ip_full-2}}` — IP full-нод
+
+**Версия (авто-определяется из DEB):**
+- `{{cf_version}}` / `{{cf_version_major}}` / `{{cf_version_minor}}`
+
+**Внутренние:**
+- `{{_service_node_ids}}` — map имени сервиса в числовой ID ноды
+- `{{project_root}}` — абсолютный путь к корню проекта
+
+**CLI параметры** (`-P KEY=VALUE`) доступны как `{{KEY}}`.
 
 ## Лучшие Практики
 

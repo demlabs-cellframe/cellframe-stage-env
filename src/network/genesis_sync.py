@@ -14,6 +14,7 @@ import docker
 from .genesis_base import BaseGenesisManager
 from .models import NodeConfig
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 from ..monitoring.waiter.chain_waiters import (
     ChainDataPropagationWaiter,
     NetworkSyncWaiter,
@@ -63,7 +64,7 @@ class ChainSyncManager(BaseGenesisManager):
         try:
             # Step 1: Wait for datum to appear in mempool on first root node
             first_node = root_nodes[0]
-            container_name = f"cellframe-stage-node-{first_node.node_id}"
+            container_name = make_container_name(f"node-{first_node.node_id}")
             container = self.docker_client.containers.get(container_name)
             
             logger.debug("waiting_for_datum_in_mempool", node=f"node{first_node.node_id}", datum=datum_hash[:16])
@@ -142,7 +143,7 @@ class ChainSyncManager(BaseGenesisManager):
                        note="Starting mempool_proc on all root nodes")
             
             for node in root_nodes:
-                container_name = f"cellframe-stage-node-{node.node_id}"
+                container_name = make_container_name(f"node-{node.node_id}")
                 try:
                     node_container = self.docker_client.containers.get(container_name)
                     
@@ -304,7 +305,7 @@ class ChainSyncManager(BaseGenesisManager):
                 logger.info("collecting_node_logs_for_diagnostic", datum=datum_hash[:16])
                 for node in root_nodes[:3]:  # Check first 3 nodes
                     try:
-                        container = self.docker_client.containers.get(f"cellframe-stage-node-{node.node_id}")
+                        container = self.docker_client.containers.get(make_container_name(f"node-{node.node_id}"))
                         logs = container.logs(tail=300).decode('utf-8', errors='replace')
                         
                         # Filter logs for mempool_proc related messages
@@ -418,7 +419,7 @@ class ChainSyncManager(BaseGenesisManager):
         try:
             # Trigger sync on all nodes
             for node in nodes:
-                container_name = f"cellframe-stage-node-{node.node_id}"
+                container_name = make_container_name(f"node-{node.node_id}")
                 try:
                     container = self.docker_client.containers.get(container_name)
                     

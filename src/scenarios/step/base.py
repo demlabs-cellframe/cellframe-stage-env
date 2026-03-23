@@ -2,10 +2,19 @@
 Base step executor class.
 """
 
-from typing import Optional
+from typing import Optional, Union
 from pathlib import Path
 
 from ...docker.container import DockerContainerManager
+
+
+def resolve_timeout(val: Optional[Union[int, str]], ctx, default: int = 30) -> int:
+    """Resolve a timeout value that may contain a Jinja2 template variable."""
+    if val is None:
+        return default
+    if isinstance(val, str):
+        val = ctx.substitute(val)
+    return int(val)
 
 
 class StepExecutor:

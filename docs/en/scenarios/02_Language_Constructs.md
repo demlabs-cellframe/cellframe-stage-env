@@ -52,10 +52,11 @@ variables:
 ```yaml
 - for: i
   in: "range(3)"
-  eval: true
   steps:
     - print: "Iteration {{i}}"
 ```
+
+**Note:** String `in` values are automatically evaluated as Python expressions. No `eval: true` is needed (unlike `set` steps).
 
 ### for over variables
 ```yaml

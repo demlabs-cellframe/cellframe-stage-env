@@ -13,3 +13,4 @@ config/stage-env.cfg
 .cursorrules
 slc
 logs/
+docker-compose.shard-*.yml

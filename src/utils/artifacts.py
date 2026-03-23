@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import shutil
 from typing import List, Optional
 from src.utils.logger import get_logger
+from src.utils.project import get_project_name, make_container_name
 
 logger = get_logger(__name__)
 
@@ -147,7 +148,7 @@ class ArtifactsManager:
         
         for node_name in node_names:
             try:
-                container_name = f"cellframe-stage-{node_name}"
+                container_name = make_container_name(node_name)
                 container = docker_client.containers.get(container_name)
                 
                 # Get all logs
@@ -185,7 +186,7 @@ class ArtifactsManager:
         
         for node_name in node_names:
             try:
-                container_name = f"cellframe-stage-{node_name}"
+                container_name = make_container_name(node_name)
                 container = docker_client.containers.get(container_name)
                 is_running = container.status == "running"
                 
@@ -309,11 +310,9 @@ class ArtifactsManager:
         try:
             import docker
             client = docker.from_env()
-            project_name = "cellframe-stage"
-            
             containers = client.containers.list(
                 all=True,
-                filters={"label": f"com.docker.compose.project={project_name}"}
+                filters={"label": f"com.docker.compose.project={get_project_name()}"}
             )
             
             health_logs_dir = run_dir / "health-logs"

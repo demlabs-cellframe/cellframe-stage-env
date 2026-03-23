@@ -39,7 +39,6 @@ This cookbook contains proven solutions for the most common testing tasks. Copy,
 # Modern approach with for loop
 - for: i
   in: "range(5)"
-  eval: true
   steps:
     - cli: "wallet new -w wallet_{{i}}"
       save_wallet: "addr_{{i}}"
@@ -303,7 +302,6 @@ variables:
 test:
   - for: i
     in: "range({{wallet_count}})"
-    eval: true
     steps:
       - cli: "wallet new -w wallet_{{i}}"
         save_wallet: "addr_{{i}}"

@@ -27,7 +27,7 @@ from src.utils.i18n import _
 
 logger = get_logger(__name__)
 
-CERT_BUILDER_IMAGE = "cf-cert-builder:latest"
+CERT_BUILDER_IMAGE = "cf-tools:latest"
 
 
 class CertConfig(BaseModel):
@@ -41,41 +41,63 @@ class CertConfig(BaseModel):
 class CertGenerator:
     """Generate certificates for test network."""
     
-    def __init__(self, base_path: Path, certs_dir: Optional[Path] = None):
+    def __init__(self, base_path: Path, certs_dir: Optional[Path] = None,
+                 dap_sdk_branch: Optional[str] = None):
         """
         Initialize certificate generator.
         
         Args:
             base_path: Base path to stage-env directory
             certs_dir: Optional path to certificates directory (defaults to base_path/cache/certs)
+            dap_sdk_branch: Git branch of dap-sdk to build tools against
+                           (e.g. "release-5.8", "release-6.0").
+                           Defaults to "release-6.0".
         """
         self.base_path = base_path
         self.certs_dir = certs_dir if certs_dir is not None else (base_path / "cache" / "certs")
-        self.dockerfile = base_path / "Dockerfile.cert-generator"
+        self.dockerfile = base_path / "Dockerfile.tools"
+        self.project_root = base_path.parent.parent
+        self.dap_sdk_branch = dap_sdk_branch or "release-6.0"
         
         self.certs_dir.mkdir(parents=True, exist_ok=True)
         
         logger.info("cert_generator_initialized",
                    certs_dir=str(self.certs_dir),
+                   dap_sdk_branch=self.dap_sdk_branch,
                    docker_mode=True)
     
     def _image_needs_rebuild(self) -> bool:
-        """Check if the Docker image is older than local source files."""
+        """Check if the Docker image is older than local source files or SDK branch changed."""
         try:
             result = subprocess.run(
-                ["docker", "inspect", "--format", "{{.Created}}", CERT_BUILDER_IMAGE],
+                ["docker", "inspect", "--format",
+                 "{{.Created}}||{{index .Config.Labels \"dap.sdk.branch\"}}",
+                 CERT_BUILDER_IMAGE],
                 capture_output=True, text=True, check=True,
             )
+            parts = result.stdout.strip().split("||", 1)
+            created_raw = parts[0]
+            image_branch = parts[1] if len(parts) > 1 else ""
+
+            if image_branch != self.dap_sdk_branch:
+                logger.info("cert_builder_sdk_branch_changed",
+                            image_branch=image_branch,
+                            desired_branch=self.dap_sdk_branch)
+                return True
+
             from datetime import datetime, timezone
-            created_str = result.stdout.strip().split(".")[0]
+            created_str = created_raw.split(".")[0]
             image_ts = datetime.strptime(created_str, "%Y-%m-%dT%H:%M:%S").replace(
                 tzinfo=timezone.utc
             )
 
-            src_dir = self.base_path / "src" / "certs"
-            if not src_dir.exists():
-                return False
-            mtimes = [f.stat().st_mtime for f in src_dir.iterdir() if f.is_file()]
+            mtimes: list[float] = []
+            for subdir in ("src/certs", "src/gdb"):
+                src_dir = self.base_path / subdir
+                if src_dir.exists():
+                    mtimes.extend(
+                        f.stat().st_mtime for f in src_dir.iterdir() if f.is_file()
+                    )
             if self.dockerfile.exists():
                 mtimes.append(self.dockerfile.stat().st_mtime)
             if not mtimes:
@@ -94,14 +116,14 @@ class CertGenerator:
 
     def build_docker_image(self) -> bool:
         """
-        Build lightweight builder Docker image if needed.
+        Build the cf-tools Docker image if needed.
 
-        The image is self-contained: it clones its own SDK copies and
-        pre-builds cf-cert-generator during ``docker build``.  No host
-        SDK mounts are needed at runtime.
+        The image clones dap-sdk from remote (branch = ``self.dap_sdk_branch``)
+        and builds cf-cert-generator + dap-gdb-tool.  Tool sources are COPY'd
+        from the project tree; the SDK is NOT copied — it's always cloned fresh.
 
-        Automatically rebuilds when local source files in ``src/certs/``
-        are newer than the existing Docker image.
+        Automatically rebuilds when local source files in ``src/certs/`` or
+        ``src/gdb/`` are newer than the existing Docker image.
 
         Returns:
             True if image is ready
@@ -119,16 +141,19 @@ class CertGenerator:
         except subprocess.CalledProcessError:
             pass
 
-        logger.info("building_cert_builder_image")
-        print_info(_("Building certificate builder Docker image (self-contained, clones SDK)..."))
+        logger.info("building_cert_builder_image",
+                    dap_sdk_branch=self.dap_sdk_branch)
+        print_info(_("Building cf-tools image (SDK branch: {})...").format(
+            self.dap_sdk_branch))
 
         try:
             result = subprocess.run(
                 [
                     "docker", "build",
                     "-f", str(self.dockerfile),
+                    "--build-arg", f"DAP_SDK_BRANCH={self.dap_sdk_branch}",
                     "-t", CERT_BUILDER_IMAGE,
-                    str(self.dockerfile.parent),
+                    str(self.project_root),
                 ],
                 capture_output=True, text=True,
             )
@@ -139,8 +164,10 @@ class CertGenerator:
                 print_error(_("Failed to build builder image: {}").format(result.stderr))
                 return False
 
-            print_success(_("Certificate builder image built"))
-            logger.info("cert_builder_image_built")
+            print_success(_("cf-tools image built (SDK: {})").format(
+                self.dap_sdk_branch))
+            logger.info("cert_builder_image_built",
+                        dap_sdk_branch=self.dap_sdk_branch)
             return True
 
         except Exception as e:
@@ -616,16 +643,30 @@ class CertGenerator:
             return None
 
     def clean(self) -> None:
-        """Remove all generated certificates."""
+        """Remove all generated certificates.
+
+        Certificates may have been created inside Docker (owned by root),
+        so ``shutil.rmtree`` can fail with PermissionError.  Fall back to
+        ``docker run … rm -rf`` which runs as root inside the container.
+        """
         logger.info("cleaning_certificates")
-        
-        import shutil
-        
+
         if self.certs_dir.exists():
             print_info(_("Removing certificates..."))
-            shutil.rmtree(self.certs_dir)
+            try:
+                shutil.rmtree(self.certs_dir)
+            except PermissionError:
+                logger.warning("rmtree_permission_denied_fallback_docker",
+                               path=str(self.certs_dir))
+                subprocess.run(
+                    ["docker", "run", "--rm",
+                     "-v", f"{self.certs_dir.absolute()}:/certs",
+                     "alpine:latest", "rm", "-rf", "/certs/."],
+                    check=False,
+                )
+                shutil.rmtree(self.certs_dir, ignore_errors=True)
             self.certs_dir.mkdir(parents=True, exist_ok=True)
-        
+
         print_success(_("Certificates cleaned"))
         logger.info("certificates_cleaned")
 

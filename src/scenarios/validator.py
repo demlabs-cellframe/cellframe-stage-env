@@ -260,6 +260,8 @@ class ScenarioValidator:
         """Validate timeout values."""
         for step in self._get_steps(scenario.setup) + self._get_steps(scenario.test):
             if hasattr(step, 'timeout') and step.timeout:
+                if isinstance(step.timeout, str):
+                    continue
                 if step.timeout < 1:
                     report.add_issue(
                         "warning",

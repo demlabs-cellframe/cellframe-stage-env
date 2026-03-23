@@ -21,11 +21,13 @@ class ConfigStepExecutor(StepExecutor):
         debug=False,
         resolve_node_alias_callback=None,
         custom_templates_dirs=None,
+        cache_dir: Path = None,
     ):
         super().__init__(container_manager, log_file, debug)
         self.resolve_node_alias_callback = resolve_node_alias_callback
         self.base_path = container_manager.base_path
         self.custom_templates_dirs: List[Path] = [Path(d) for d in (custom_templates_dirs or [])]
+        self._cache_dir_override: Path = cache_dir
         
     def _lookup_node_id_from_compose(self, service_name: str):
         """Resolve NODE_ID for a custom compose service (e.g. cdb-node-1 → 9)."""
@@ -133,12 +135,31 @@ class ConfigStepExecutor(StepExecutor):
             f"(searched: {[str(d) for d in self.custom_templates_dirs]} + {self.base_path})"
         )
 
+    _TRUTHY = frozenset(('true', '1', 'yes'))
+
     async def execute(self, step: ConfigStep, ctx: RuntimeContext) -> None:
         """Execute config regeneration step."""
-        if isinstance(step.set, dict):
-            variables = {k: ctx.substitute(str(v)) for k, v in step.set.items()}
+        raw_set = step.set
+        if isinstance(raw_set, str):
+            raw_set = ctx.substitute_raw(raw_set)
+
+        if isinstance(raw_set, dict):
+            variables = {k: ctx.substitute(str(v)) for k, v in raw_set.items()}
+        elif isinstance(raw_set, str):
+            variables = self._parse_set_string(ctx.substitute(raw_set))
         else:
-            variables = self._parse_set_string(ctx.substitute(step.set))
+            variables = {}
+
+        if step.param_map:
+            for var_name, config_key in step.param_map.items():
+                val = ctx.variables.get(var_name, '')
+                if str(val).lower() in self._TRUTHY:
+                    variables[config_key] = 'true'
+
+            if not variables:
+                logger.info("config_param_map_noop", config=step.config,
+                           reason="no truthy params matched")
+                return
 
         config_path = ctx.substitute(step.config)
         template_path = ctx.substitute(step.template) if step.template else None
@@ -252,9 +273,12 @@ class ConfigStepExecutor(StepExecutor):
         from src.config.generator import ConfigGenerator
         
         config_loader = get_config_loader()
-        paths_config = config_loader.get_paths_config()
-        cache_dir_relative = paths_config.get('cache_dir', '../../cache')
-        cache_dir = (self.base_path / cache_dir_relative).resolve()
+        if self._cache_dir_override:
+            cache_dir = self._cache_dir_override
+        else:
+            paths_config = config_loader.get_paths_config()
+            cache_dir_relative = paths_config.get('cache_dir', '../../cache')
+            cache_dir = (self.base_path / cache_dir_relative).resolve()
         
         generator = ConfigGenerator(self.base_path, config_loader.config_path)
 
@@ -265,8 +289,8 @@ class ConfigStepExecutor(StepExecutor):
             )
             return
         
-        # Route 2: cfg.d snippets — direct INI write
-        if config_name.startswith("cellframe-node.cfg.d/"):
+        # Route 2: cfg.d snippets — direct INI write (any path containing .cfg.d/)
+        if '.cfg.d/' in config_name:
             self._write_ini_snippet(node_ids, config_name, variables, cache_dir)
             return
 
@@ -282,10 +306,14 @@ class ConfigStepExecutor(StepExecutor):
         variables: Dict[str, Any],
         cache_dir: Path,
     ):
-        """Write cfg.d INI snippet directly (no template)."""
-        snippet_name = config_name.split("/", 1)[1]
+        """Write cfg.d INI snippet directly (no template).
+        
+        Supports any path containing .cfg.d/, e.g.:
+          - cellframe-node.cfg.d/overrides.cfg
+          - network/vpntest.cfg.d/role.cfg
+        """
         for node_id in node_ids:
-            target = cache_dir / "configs" / f"node{node_id}" / "cellframe-node.cfg.d" / snippet_name
+            target = cache_dir / "configs" / f"node{node_id}" / config_name
             target.parent.mkdir(parents=True, exist_ok=True)
             lines = []
             current_section = None
@@ -299,7 +327,7 @@ class ConfigStepExecutor(StepExecutor):
                 else:
                     lines.append(f"{k}={v}")
             target.write_text("\n".join(lines) + "\n")
-            logger.info("config_snippet_written", node_id=node_id, file=snippet_name)
+            logger.info("config_snippet_written", node_id=node_id, file=config_name)
 
     async def _render_with_template(
         self,

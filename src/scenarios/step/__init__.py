@@ -16,11 +16,13 @@ from .wait_for_datum import WaitForDatumStepExecutor
 from .loop import LoopStepExecutor
 from .network_wait import NetworkWaitStepExecutor
 from .docker_op import DockerOpStepExecutor
+from .docker_exec import DockerExecStepExecutor
 from .snapshot import SnapshotStepExecutor
 from .control_flow import SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor
 from .config import ConfigStepExecutor
 from .dpkg import DpkgStepExecutor
 from .custom_operand import CustomOperandStepExecutor
+from .playwright import PlaywrightStepExecutor
 
 __all__ = [
     'StepExecutor',
@@ -35,6 +37,7 @@ __all__ = [
     'LoopStepExecutor',
     'NetworkWaitStepExecutor',
     'DockerOpStepExecutor',
+    'DockerExecStepExecutor',
     'SnapshotStepExecutor',
     'SetStepExecutor',
     'IfStepExecutor',
@@ -44,4 +47,5 @@ __all__ = [
     'ConfigStepExecutor',
     'DpkgStepExecutor',
     'CustomOperandStepExecutor',
+    'PlaywrightStepExecutor',
 ]

@@ -2,6 +2,202 @@
 
 > [Русская версия](CHANGELOG.ru.md)
 
+## [1.4] — 2026-03-17
+
+### New Features
+
+#### `docker_exec` Step
+
+Standalone step for executing commands inside Docker containers — a compact
+shorthand for `docker_op: exec` with full `save`/`save_regex`/`save_map` support:
+
+```yaml
+- docker_exec: "cat /opt/app/status.txt"
+  services: ["clientd-1", "clientd-2"]
+  expect: success
+  save: status_output
+  save_regex: "state=(\\w+)"
+```
+
+#### `save_regex` / `save_map` — Structured Output Extraction
+
+CLI, RPC, Bash, and docker_exec steps now support regex-based extraction:
+
+```yaml
+- cli: "net srv -net {{network_name}} dump"
+  node: node-1
+  save: raw_output
+  save_regex: "address:\\s+(\\S+)"
+  save_map:
+    order_hash: "hash:\\s+(0x[a-f0-9]+)"
+    price: "price:\\s+(\\d+\\.\\d+)"
+```
+
+Centralized via `RuntimeContext.save_output()` — supports first capture group
+or full match fallback, with warning on no-match.
+
+#### `wait: docker_exec` Polling
+
+Poll a command inside a Docker container until a condition is met:
+
+```yaml
+- wait: docker_exec
+  cmd: "test -S /opt/app/run/app.sock && echo ready"
+  services: ["clientd-1"]
+  contains: "ready"
+  timeout: 20
+  interval: 1
+```
+
+#### `build` / `devices` / `volumes` in `docker_compose_gen`
+
+Generated Docker Compose services now support custom image builds,
+device mappings, and volume mounts. The first generated service carries the
+full `build` definition; siblings reuse the image via `pull_policy: never`:
+
+```yaml
+docker_compose_gen:
+  - prefix: kelvpn-client
+    count: "{{client_count}}"
+    build:
+      context: ../docker
+      dockerfile: Dockerfile.client
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    volumes: ["../configs:/etc/app:ro"]
+    cap_add: [NET_ADMIN]
+    environment:
+      APP_MODE: client
+```
+
+`INSTANCE_ID` env var is automatically injected (1, 2, …N).
+
+#### `env_file` for Suites
+
+Suite descriptor supports `env_file` to inject environment variables
+into all provisioned nodes:
+
+```yaml
+env_file: .env.stage
+```
+
+#### `docker_devices` / `environment` in Node Specs
+
+`NodeComposeSpec` and `NodeComposeGenSpec` now accept `docker_devices`
+and `environment` fields, and `cap_add` supports a `docker_capabilities`
+YAML alias:
+
+```yaml
+node_compose:
+  vpn-server-1:
+    role: full
+    docker_capabilities: [NET_ADMIN, SYS_PTRACE]
+    docker_devices: ["/dev/net/tun:/dev/net/tun"]
+    environment:
+      VPN_MODE: server
+```
+
+#### `param_map` in `ConfigStep`
+
+Conditionally populate config keys from truthy scenario variables:
+
+```yaml
+- config: "cellframe-node.cfg.d/debug-overrides.cfg"
+  nodes: "{{_all_svc}}"
+  param_map:
+    DEBUG_REACTOR: "general.debug_reactor"
+    DEBUG_HTTP: "general.debug_http"
+```
+
+Only variables with truthy values (`"true"`, `"1"`, `"yes"`) generate
+entries. If none match, the step is silently skipped.
+
+#### Generalized `cfg.d` Paths
+
+Config step supports arbitrary `.cfg.d/` paths, not just
+`cellframe-node.cfg.d/`:
+
+```yaml
+- config: "network/vpntest.cfg.d/role.cfg"
+  nodes: ["node-1"]
+  set:
+    role: "master"
+```
+
+#### `--param` / `-P` CLI Option for `run_tests`
+
+Pass ad-hoc KEY=VALUE parameters from the command line directly
+into scenario variables:
+
+```bash
+stage_env.py run-tests tests/ -P vpn_client_count=5 -P debug=true
+```
+
+#### `--yes` / `-y` Flag for `start --clean`
+
+Skip the interactive confirmation prompt in CI pipelines:
+
+```bash
+stage_env.py start --clean --yes
+```
+
+#### Per-Role / Per-Node Docker Customizations
+
+New `[role_docker_*]` and `[node_docker_*]` sections in `stage-env.cfg`
+for declarative Docker configuration:
+
+```ini
+[role_docker_root]
+capabilities = NET_ADMIN,SYS_PTRACE
+devices = /dev/net/tun:/dev/net/tun
+environment = VPN_DEBUG=1
+
+[node_docker_3]
+capabilities = NET_RAW
+extra_config = {"privileged": true}
+```
+
+#### CI Pipeline Improvements
+
+- SIGTERM/SIGHUP handler — `finally` blocks run on pipeline cancellation
+- PID file moved to `/tmp/` — system-wide lock, writable without root
+- Temp config support — avoid writing to read-only `/opt/`
+- Path redirection to CI work directory
+
+### Bug Fixes
+
+- **Image build race** — build ALL missing images before `docker compose up`,
+  not just the first service; correctly detect `build` directives
+- **Zombie prevention** — `init: true` added to all Docker containers
+- **Monotonic timeouts** — `wait: cli` and `wait: bash` polling loops
+  use `time.monotonic()` with dynamic per-attempt timeouts instead of
+  accumulated `elapsed += interval`
+- **Template-variable timeouts** — `timeout: "{{var}}"` resolved via
+  `_resolve_timeout()` across all wait types
+- **curl fail-fast** — `-f` flag added to mirror_tester HTTP requests
+- **Absolute cache_dir** — normalized to relative path for Docker volumes
+- **Default base_http_port** — changed to 9079 to avoid collisions
+- **SnapshotManager init** — fixed constructor argument ordering bug
+- **Python 3.9 compatibility** — removed 3.10+ syntax constructs
+- **cfg.d routing** — any path containing `.cfg.d/` is handled as INI
+  snippet (not just `cellframe-node.cfg.d/`)
+
+### Stats
+
+- **24 files** changed
+- **+833 / −127** lines
+- **70 commits**
+
+---
+
+## [1.3] — 2026-03-11
+
+### Bug Fixes
+
+- **is_add_directly** — added `is_add_directly` parameter to `main.cfg.j2`
+  template for correct mainchain datum processing
+
+---
+
 ## [1.2] — 2026-03-04
 
 ### New Features

@@ -9,6 +9,7 @@ from typing import Callable, List
 from ..base import BaseWaiter
 from ...network.models import NodeConfig
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 
 logger = get_logger(__name__)
 
@@ -259,7 +260,7 @@ class NetworkSyncWaiter(BaseWaiter):
         sync_status = {}
         
         for node in self.nodes:
-            container_name = f"cellframe-stage-node-{node.node_id}"
+            container_name = make_container_name(f"node-{node.node_id}")
             try:
                 container = self.docker_client.containers.get(container_name)
                 

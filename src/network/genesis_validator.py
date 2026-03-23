@@ -13,6 +13,7 @@ import docker
 from .genesis_base import BaseGenesisManager
 from .models import NodeConfig
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 
 
 logger = get_logger(__name__)
@@ -181,7 +182,7 @@ class ValidatorManager(BaseGenesisManager):
         # Skip nodes that are crashed or not ready
         running_nodes = []
         for node in nodes:
-            container_name = f"cellframe-stage-node-{node.node_id}"
+            container_name = make_container_name(f"node-{node.node_id}")
             try:
                 container = self.docker_client.containers.get(container_name)
                 container.reload()
