@@ -770,6 +770,8 @@ def provision_suite_services(
                     env = dict(gen.environment)
                     env["INSTANCE_ID"] = str(i)
                     svc_def["environment"] = env
+                if gen.networks:
+                    svc_def["networks"] = dict(gen.networks)
                 if gen.packages:
                     svc_def["_gen_packages"] = gen.packages
                 suite_spec.docker_compose[svc_name] = svc_def
@@ -1616,6 +1618,8 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                         env = dict(gen.environment)
                                         env["INSTANCE_ID"] = str(i)
                                         svc_def["environment"] = env
+                                    if gen.networks:
+                                        svc_def["networks"] = dict(gen.networks)
                                     if gen.packages:
                                         svc_def["_gen_packages"] = gen.packages
                                     suite_spec.docker_compose[svc_name] = svc_def

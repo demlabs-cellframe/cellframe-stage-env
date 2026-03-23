@@ -129,6 +129,7 @@ class DockerComposeGenSpec(BaseModel):
     volumes: List[str] = Field(default_factory=list, description="Volume mounts (host:container[:mode])")
     privileged: bool = Field(False, description="Run container in privileged mode")
     environment: Dict[str, Any] = Field(default_factory=dict, description="Environment variables")
+    networks: Optional[Dict[str, Any]] = Field(None, description="Docker networks to attach (e.g. {vpntest: {}})")
 
 
 class NodePackageSourceConfig(BaseModel):
