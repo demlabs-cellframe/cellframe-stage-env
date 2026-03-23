@@ -3,8 +3,9 @@ Network wait step executor.
 """
 
 from ...utils.logger import get_logger
+from ...utils.project import get_project_name
 from ...monitoring import MonitoringManager
-from .base import StepExecutor
+from .base import StepExecutor, resolve_timeout
 from ..schema import NetworkWaitStep
 from ..executor import ScenarioExecutionError, RuntimeContext
 
@@ -82,40 +83,36 @@ class NetworkWaitStepExecutor(StepExecutor):
         # Substitute variables
         network_name = ctx.substitute(step.network)
         wait_state = ctx.substitute(step.wait_network)
+        timeout = resolve_timeout(step.timeout, ctx, default=120)
         
         try:
             if wait_state == "online":
-                # Use NodeStateManager.wait_for_nodes_online for multiple nodes
                 from ...network.node_states import NodeStateManager
                 state_manager = NodeStateManager(
                     docker_client=self.container_manager.docker_client,
-                    project_name="cellframe-stage",
+                    project_name=get_project_name(),
                     cli_path=self.node_cli_path,
                     network_name=network_name
                 )
-                # Convert node IDs to NodeConfig objects
                 if not self.get_node_config_callback:
                     raise RuntimeError("get_node_config_callback not set for NetworkWaitStepExecutor")
                 node_configs = [self.get_node_config_callback(node_id) for node_id in resolved_nodes]
-                await state_manager.wait_for_nodes_online(node_configs, timeout=step.timeout)
+                await state_manager.wait_for_nodes_online(node_configs, timeout=timeout)
                 
             elif wait_state == "offline":
-                # Use NodeStateManager.wait_for_nodes_offline for multiple nodes
                 from ...network.node_states import NodeStateManager
                 state_manager = NodeStateManager(
                     docker_client=self.container_manager.docker_client,
-                    project_name="cellframe-stage",
+                    project_name=get_project_name(),
                     cli_path=self.node_cli_path,
                     network_name=network_name
                 )
-                # Convert node IDs to NodeConfig objects
                 if not self.get_node_config_callback:
                     raise RuntimeError("get_node_config_callback not set for NetworkWaitStepExecutor")
                 node_configs = [self.get_node_config_callback(node_id) for node_id in resolved_nodes]
-                await state_manager.wait_for_nodes_offline(node_configs, timeout=step.timeout)
+                await state_manager.wait_for_nodes_offline(node_configs, timeout=timeout)
                 
             elif wait_state == "links_connecting":
-                # Use NetworkConsensusMonitor.wait_for_links_connecting_state
                 from ...monitoring.network_consensus import NetworkConsensusMonitor
                 nodes_dict = {node_id: None for node_id in resolved_nodes}
                 monitor = NetworkConsensusMonitor(
@@ -123,10 +120,9 @@ class NetworkWaitStepExecutor(StepExecutor):
                     node_cli_path=self.node_cli_path,
                     network_name=network_name
                 )
-                await monitor.wait_for_links_connecting_state(timeout=float(step.timeout))
+                await monitor.wait_for_links_connecting_state(timeout=float(timeout))
                 
             elif wait_state == "links_established":
-                # Use NetworkConsensusMonitor
                 from ...monitoring.network_consensus import NetworkConsensusMonitor
                 nodes_dict = {node_id: None for node_id in resolved_nodes}
                 monitor = NetworkConsensusMonitor(
@@ -134,16 +130,15 @@ class NetworkWaitStepExecutor(StepExecutor):
                     node_cli_path=self.node_cli_path,
                     network_name=network_name
                 )
-                await monitor.wait_for_links_established(timeout=float(step.timeout))
+                await monitor.wait_for_links_established(timeout=float(timeout))
                 
             elif wait_state == "sync_complete":
-                # Use NetworkSyncCompletionWaiter
                 from ...monitoring.waiters import NetworkSyncCompletionWaiter
                 waiter = NetworkSyncCompletionWaiter(
                     node_cli_path=self.node_cli_path,
                     network=network_name
                 )
-                await waiter.wait_for_sync_complete(resolved_nodes, timeout=step.timeout)
+                await waiter.wait_for_sync_complete(resolved_nodes, timeout=timeout)
             else:
                 raise ScenarioExecutionError(
                     f"Unknown network wait state: {wait_state}",

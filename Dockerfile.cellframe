@@ -402,7 +402,8 @@ RUN set -x && \
         echo "Installed $EXTRA_INSTALLED extra package(s), fixing dependencies..." && \
         apt-get update -qq 2>&1 || true && \
         DEBIAN_FRONTEND=noninteractive apt-get install -f -y -qq 2>&1 || true && \
-        DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>&1 || true; \
+        DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>&1 || true && \
+        ldconfig; \
     fi
 
 # Copy modular configs to disable production networks

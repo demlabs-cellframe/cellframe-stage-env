@@ -25,10 +25,10 @@ class PythonStepExecutor(StepExecutor):
             # Execute Python code
             exec(step.python, namespace)
             
-            # If save is specified and result is in namespace
-            if step.save and 'result' in namespace:
-                ctx.set_variable(step.save, namespace['result'])
-                logger.debug("python_step_saved", variable=step.save, value=namespace['result'])
+            if (step.save or step.save_map) and 'result' in namespace:
+                output = str(namespace['result']) if not isinstance(namespace['result'], str) else namespace['result']
+                resolved_save = ctx.substitute(step.save) if step.save else None
+                ctx.save_output(output, resolved_save, step.save_regex, step.save_map)
                 
         except Exception as e:
             raise ScenarioExecutionError(

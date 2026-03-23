@@ -7,7 +7,7 @@ from typing import Any, Dict
 import httpx
 
 from ...utils.logger import get_logger
-from .base import StepExecutor
+from .base import StepExecutor, resolve_timeout
 from ..schema import RPCStep
 from ..executor import RuntimeContext
 
@@ -34,14 +34,15 @@ class RPCStepExecutor(StepExecutor):
             "id": 1
         }
         
-        async with httpx.AsyncClient(timeout=step.timeout) as client:
+        timeout = resolve_timeout(step.timeout, ctx, default=30)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, json=payload)
             result = response.json()
         
-        # Save result if requested
-        if step.save:
-            ctx.set_variable(step.save, result)
-            logger.debug("rpc_step_saved", variable=step.save)
+        if step.save or step.save_map:
+            output = str(result) if not isinstance(result, str) else result
+            resolved_save = ctx.substitute(step.save) if step.save else None
+            ctx.save_output(output, resolved_save, step.save_regex, step.save_map)
         
         return result
 

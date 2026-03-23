@@ -28,6 +28,7 @@ import docker
 
 from ..scenarios.schema import DatumStatus
 from ..utils.logger import get_logger
+from ..utils.project import get_project_name, make_container_name
 from ..utils.i18n import _
 
 logger = get_logger(__name__)
@@ -837,18 +838,19 @@ class DatumMonitor:
         try:
             # Get all containers for the project (assuming default project name 'cellframe-stage')
             # We look for containers with names starting with cellframe-stage-node-
+            _node_prefix = make_container_name("node-")
             containers = self.docker_client.containers.list(
-                filters={"name": "cellframe-stage-node-"}
+                filters={"name": _node_prefix}
             )
             
             for container in containers:
                 try:
                     # Extract node ID from name
                     name = container.name
-                    if not name.startswith("cellframe-stage-node-"):
+                    if not name.startswith(_node_prefix):
                         continue
                         
-                    node_id_str = name.replace("cellframe-stage-node-", "")
+                    node_id_str = name.replace(_node_prefix, "")
                     if not node_id_str.isdigit():
                         continue
                         
@@ -895,7 +897,7 @@ class DatumMonitor:
             Container name (e.g., "cellframe-stage-node-1")
         """
         # Already a full container name
-        if node.startswith("cellframe-stage-"):
+        if node.startswith(f"{get_project_name()}-"):
             return node
             
         # Ensure topology map is built
@@ -931,4 +933,4 @@ class DatumMonitor:
                 f"Node must be in format 'root-N', 'master-N', or 'nodeN' where N is a valid index."
             )
         
-        return f"cellframe-stage-node-{node_num}"
+        return make_container_name(f"node-{node_num}")

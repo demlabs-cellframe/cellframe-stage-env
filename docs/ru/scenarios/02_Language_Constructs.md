@@ -52,10 +52,11 @@ variables:
 ```yaml
 - for: i
   in: "range(3)"
-  eval: true
   steps:
     - print: "Iteration {{i}}"
 ```
+
+**Примечание:** Строковые значения `in` автоматически вычисляются как Python-выражения. `eval: true` не нужен (в отличие от `set` шагов).
 
 ### for по переменным
 ```yaml

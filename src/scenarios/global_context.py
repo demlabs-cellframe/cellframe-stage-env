@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 import docker
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 
 logger = get_logger(__name__)
 
@@ -122,7 +123,7 @@ class ScenarioGlobalContext:
         container_names = []
         for node in node_configs:
             # node.node_id is numeric (1, 2, 3, ...)
-            container_names.append(f"cellframe-stage-node-{node.node_id}")
+            container_names.append(make_container_name(f"node-{node.node_id}"))
         
         # Wait for IPs if requested
         if wait_for_ips:
@@ -140,7 +141,7 @@ class ScenarioGlobalContext:
             
             # Collect IPs from waiter cache
             for node in node_configs:
-                container_name = f"cellframe-stage-node-{node.node_id}"
+                container_name = make_container_name(f"node-{node.node_id}")
                 node_key = f"node{node.node_id}"
                 
                 try:
@@ -160,7 +161,7 @@ class ScenarioGlobalContext:
         else:
             # Direct IP collection without waiting
             for node in node_configs:
-                container_name = f"cellframe-stage-node-{node.node_id}"
+                container_name = make_container_name(f"node-{node.node_id}")
                 node_key = f"node{node.node_id}"
                 
                 try:

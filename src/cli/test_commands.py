@@ -7,10 +7,11 @@ import asyncio
 import typer
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Callable
+from typing import Optional, List, Dict, Callable
 
 from .common import print_info, print_success, print_error, print_warning
 from src.utils.i18n import _
+from src.utils.project import get_project_name, make_container_name
 
 
 def _fixup_node_identity(cfg_dir: Path, data_dir: Path, role: str, node_id: int,
@@ -29,21 +30,62 @@ def _fixup_node_identity(cfg_dir: Path, data_dir: Path, role: str, node_id: int,
     import shutil as _shutil
 
     ca_dir = data_dir / "lib" / "ca"
+    net_name = network_mgr.topology.network.name
     if ca_dir.exists():
         for f in ca_dir.iterdir():
+            if role == "root" and f.name.startswith(f"{net_name}.root.pvt."):
+                continue
+            # Keep the first root signing cert for all nodes: needed for
+            # order creation (-cert) and receipt signing on VPN servers.
+            if f.name == f"{net_name}.root.pvt.0.dcert":
+                continue
             if f.name == "node-addr.dcert" or ".pvt." in f.name:
                 f.unlink()
-        print_info(_("    [{}] removed donor private keys from var/lib/ca").format(svc_name))
+        print_info(_("    [{}] removed donor private keys from var/lib/ca (role={})").format(svc_name, role))
 
-    net_name = network_mgr.topology.network.name
-    net_cfg = cfg_dir / "network" / f"{net_name}.cfg"
-    if net_cfg.exists():
-        content = net_cfg.read_text()
-        content = _re.sub(r'(?m)^node-role\s*=\s*\S+', f'node-role={role}', content)
-        if role not in ("root",):
-            content = _re.sub(r'(?m)^events-sign-cert\s*=.*$', '#events-sign-cert=', content)
-        net_cfg.write_text(content)
-        print_info(_("    [{}] patched network config: role={}").format(svc_name, role))
+    settings = network_mgr.topology.network_settings
+    base_ip_parts = settings.base_ip.split('.')
+    new_prefix = '.'.join(base_ip_parts[:3])
+    seed_re = _re.compile(r'(?m)^(seed_nodes_hosts\s*=\s*)\[([^\]]*)\]')
+
+    def _remap_hosts(hosts_str):
+        remapped = []
+        for entry in hosts_str.split(','):
+            entry = entry.strip()
+            if not entry:
+                continue
+            ip_port = entry.split(':')
+            if len(ip_port) == 2:
+                old_octets = ip_port[0].split('.')
+                remapped.append(f"{new_prefix}.{old_octets[3]}:{ip_port[1]}")
+            else:
+                remapped.append(entry)
+        return '[' + ','.join(remapped) + ']'
+
+    net_dir = cfg_dir / "network"
+    if net_dir.is_dir():
+        for net_cfg in net_dir.glob("*.cfg"):
+            content = net_cfg.read_text()
+            is_primary = (net_cfg.name == f"{net_name}.cfg")
+            if is_primary:
+                content = _re.sub(r'(?m)^node-role\s*=\s*\S+', f'node-role={role}', content)
+                if role not in ("root",):
+                    content = _re.sub(r'(?m)^events-sign-cert\s*=.*$', '#events-sign-cert=', content)
+            old_seeds = seed_re.findall(content)
+            content = seed_re.sub(
+                lambda m: m.group(1) + _remap_hosts(m.group(2)),
+                content,
+            )
+            new_seeds = seed_re.findall(content)
+            if old_seeds != new_seeds:
+                import structlog as _sl
+                _sl.get_logger().info("fixup_seed_remap",
+                                      svc=svc_name, cfg=net_cfg.name,
+                                      prefix=new_prefix,
+                                      old=[s[1] for s in old_seeds],
+                                      new=[s[1] for s in new_seeds])
+            net_cfg.write_text(content)
+        print_info(_("    [{}] patched network configs: role={}").format(svc_name, role))
 
 
 def _provision_docker_compose(compose_mgr, docker_compose, print_info, print_success, print_warning, print_error):
@@ -84,8 +126,13 @@ def _provision_docker_compose(compose_mgr, docker_compose, print_info, print_suc
             deferred_svcs.update(group_svcs[1:])
 
     start_first = [s for s in svc_names if s not in deferred_svcs]
+    has_buildable = any(
+        isinstance(clean_services.get(s), dict) and 'build' in clean_services[s]
+        for s in start_first
+    )
     try:
-        compose_mgr.up(services=start_first, detach=True, wait=False, no_build=True)
+        compose_mgr.up(services=start_first, detach=True, wait=False,
+                       no_build=not has_buildable)
         print_success(_("  Started: {}").format(', '.join(start_first)))
     except Exception as e:
         print_error(_("  Failed to start docker_compose services: {}").format(e))
@@ -150,7 +197,7 @@ def _commit_and_clone_prototypes(compose_mgr, clone_map, print_info, print_warni
             continue
 
         container.reload()
-        tag = f"prototype-{prototype}"
+        tag = f"prototype-{compose_mgr.project_name}-{prototype}"
         try:
             container.commit(repository=tag)
         except Exception as e:
@@ -166,7 +213,27 @@ def _commit_and_clone_prototypes(compose_mgr, clone_map, print_info, print_warni
         compose_mgr.set_service_images(image_map)
 
 
-def _provision_node_compose(network_mgr, node_compose, base_path, config_loader, print_info, print_success, print_warning, print_error, suite_variables=None):
+def _regenerate_plugins_cfg(cfg_dir, role, config_loader, print_info, svc_name):
+    """Regenerate plugins.cfg for a cloned node using the suite's [plugins] config."""
+    try:
+        plugins_cfg = config_loader.get_plugins_config()
+    except Exception:
+        plugins_cfg = {'enabled': False, 'enabled_roles': [], 'enabled_nodes': []}
+
+    enabled = plugins_cfg['enabled']
+    if not enabled and plugins_cfg['enabled_roles']:
+        enabled = role in plugins_cfg['enabled_roles']
+
+    cfg_d = cfg_dir / "cellframe-node.cfg.d"
+    cfg_d.mkdir(parents=True, exist_ok=True)
+    (cfg_d / "plugins.cfg").write_text(
+        f"[plugins]\nenabled={'true' if enabled else 'false'}\n"
+    )
+    if enabled:
+        print_info(f"    plugins enabled for {svc_name} (role={role})")
+
+
+def _provision_node_compose(network_mgr, node_compose, base_path, config_loader, print_info, print_success, print_warning, print_error, suite_variables=None, suite_env=None):
     """
     Provision additional cellframe nodes declared in suite.node_compose.
 
@@ -175,6 +242,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
 
     Args:
         node_compose: Dict[str, NodeComposeSpec] — keys are service names
+        suite_env: suite-level env vars from env_file (applied to all nodes)
     """
     import ipaddress
     import re
@@ -186,7 +254,14 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
     settings = network_mgr.topology.network_settings
     base_ip = ipaddress.ip_address(settings.base_ip)
 
-    cache_dir = Path(config_loader.get_paths_config().get('cache_dir', '../../cache'))
+    # Prefer the (potentially shard-overridden) cache_dir from network_mgr
+    # over the global config_loader value, so each parallel shard uses its
+    # own isolated data/configs directories.
+    _raw_cache = network_mgr.paths_config.get(
+        'cache_dir',
+        config_loader.get_paths_config().get('cache_dir', '../../cache'),
+    )
+    cache_dir = Path(_raw_cache)
     if not cache_dir.is_absolute():
         cache_dir = (base_path / cache_dir).resolve()
 
@@ -197,6 +272,30 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
 
     compose_specs: list[dict] = []
     packages_to_install: dict[str, list[str]] = {}
+
+    # Collect donor node IDs that need to be stopped before cloning
+    # to avoid copying inconsistent MDBX files from a running process.
+    _donor_service_ids: set[str] = set()
+    for _svc, _spec in node_compose.items():
+        _src = _spec.source.strip().lower()
+        if _src == "genesis":
+            _dn = _find_donor_node(cache_dir, "configs")
+            if _dn:
+                _donor_service_ids.add(_dn.replace("node", ""))
+        elif _src.startswith("node-"):
+            _m = re.match(r'node-(\d+)', _src)
+            if _m:
+                _donor_service_ids.add(_m.group(1))
+
+    _stopped_donors: list[str] = []
+    if _donor_service_ids:
+        _donor_svcs = [f"node-{did}" for did in sorted(_donor_service_ids)]
+        try:
+            network_mgr.compose.stop(services=_donor_svcs)
+            _stopped_donors = _donor_svcs
+            print_info(_("  Stopped donors for safe clone: {}").format(", ".join(_donor_svcs)))
+        except Exception:
+            pass
 
     for svc_name, spec in node_compose.items():
         node_id = spec.id if spec.id is not None else next_auto_id
@@ -226,6 +325,10 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
         }
         if spec.cap_add:
             node_spec_dict['cap_add'] = list(spec.cap_add)
+        if spec.docker_devices:
+            node_spec_dict['docker_devices'] = list(spec.docker_devices)
+        if spec.environment:
+            node_spec_dict['environment'] = dict(spec.environment)
         compose_specs.append(node_spec_dict)
 
         cfg_dir = cache_dir / "configs" / f"node{node_id}"
@@ -289,18 +392,16 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
             )
 
         if freshly_cloned:
-            # 5.x: chain MDBX copied from a live donor may be corrupt; wipe chains
-            # but keep global_db (contains node list needed for balancer bootstrap)
-            _stage_cfg = config_loader.load_stage_config()
-            _gver = _stage_cfg.get('genesis_version', '')
-            if not _gver.startswith('v6'):
-                import subprocess as _sp
-                for mdbx_subdir in ("lib/network",):
-                    mdbx_dir = data_dir / mdbx_subdir
-                    if mdbx_dir.is_dir():
-                        _sp.run(["sudo", "rm", "-rf", str(mdbx_dir)], check=True, capture_output=True)
-                        _sp.run(["sudo", "mkdir", "-p", str(mdbx_dir)], check=True, capture_output=True)
-                        print_info(_("    mdbx_wipe: {} for {}").format(mdbx_subdir, svc_name))
+            # Donor was stopped before cloning → data files are consistent.
+            # Only remove stale MDBX lock files (they reference the donor's
+            # PID). Keep chain data intact so the cloned node starts with a
+            # full chain and does not need prolonged P2P sync.
+            import subprocess as _sp
+            _sp.run(
+                ["sudo", "find", str(data_dir), "-name", "mdbx.lck", "-delete"],
+                capture_output=True,
+            )
+            print_info(_("    mdbx_lck_cleanup for {}").format(svc_name))
 
         if freshly_cloned and spec.regenerate_cert:
             import glob as _glob
@@ -309,6 +410,8 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                 for cert_file in _glob.glob(str(ca_dir / "node-addr*")):
                     Path(cert_file).unlink(missing_ok=True)
                 print_info(_("    regenerate_cert: removed node-addr certs for {}").format(svc_name))
+
+        _regenerate_plugins_cfg(cfg_dir, spec.role, config_loader, print_info, svc_name)
 
         if spec.config_overrides:
             cfg_d = cfg_dir / "cellframe-node.cfg.d"
@@ -387,6 +490,14 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
 
         print_info(_("  {}  id={} role={} {}:{}").format(svc_name, node_id, spec.role, ip_addr, http_port))
 
+    # Restart donor nodes that were stopped for safe cloning
+    if _stopped_donors:
+        try:
+            network_mgr.compose.up(services=_stopped_donors, detach=True, wait=False, no_build=True)
+            print_info(_("  Restarted donors: {}").format(", ".join(_stopped_donors)))
+        except Exception:
+            pass
+
     if not compose_specs:
         return
 
@@ -398,7 +509,11 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
         network_mgr.compose.add_extra_node_services(
             compose_specs,
             network_settings=stage_config,
-            cache_dir_relative=str(Path(config_loader.get_paths_config().get('cache_dir', '../../cache'))),
+            cache_dir_relative=str(Path(network_mgr.paths_config.get(
+                'cache_dir',
+                config_loader.get_paths_config().get('cache_dir', '../../cache'),
+            ))),
+            suite_env=suite_env,
         )
     except Exception as e:
         print_error(_("  Failed to provision node_compose: {}").format(e))
@@ -528,16 +643,485 @@ def _find_donor_node(cache_dir: Path, subdir: str) -> Optional[str]:
     return None
 
 
+def provision_suite_services(
+    suite_spec, network_mgr, suite_path: Path, base_path: Path,
+    common_root: Path, fallback_common, config_loader,
+    suite_variables=None, project_root=None,
+):
+    """Merge includes, expand generators, provision node_compose & docker_compose.
+
+    Mutates *suite_spec* in place and returns ``(topology_vars, suite_env)``.
+    Extracted so that both sequential and parallel runners can reuse it.
+    """
+    import re as _re
+    import yaml as _yaml
+    from ..scenarios.schema import (
+        SuiteDescriptor, NodeComposeSpec, NodeComposeGenSpec, DockerComposeGenSpec,
+    )
+
+    suite_env = None
+
+    if not isinstance(suite_spec, SuiteDescriptor):
+        return {}, suite_env
+
+    # --- Merge includes (variables, *_compose, *_compose_gen) ---------------
+    if network_mgr and suite_spec.includes:
+        def _merge_inc(inc_data: dict):
+            iv = inc_data.get("variables")
+            if iv and isinstance(iv, dict):
+                merged = dict(iv)
+                merged.update(suite_spec.variables)
+                suite_spec.variables = merged
+            for key, cls in [("node_compose", NodeComposeSpec)]:
+                raw = inc_data.get(key)
+                if raw and isinstance(raw, dict):
+                    for k, v in raw.items():
+                        if k not in suite_spec.node_compose:
+                            suite_spec.node_compose[k] = cls(**(v if isinstance(v, dict) else {}))
+            for raw_list, target, cls in [
+                (inc_data.get("node_compose_gen"), suite_spec.node_compose_gen, NodeComposeGenSpec),
+                (inc_data.get("docker_compose_gen"), suite_spec.docker_compose_gen, DockerComposeGenSpec),
+            ]:
+                if raw_list and isinstance(raw_list, list):
+                    for entry in raw_list:
+                        target.append(cls(**(entry if isinstance(entry, dict) else {})))
+            dc = inc_data.get("docker_compose")
+            if dc and isinstance(dc, dict):
+                for k, v in dc.items():
+                    if k not in suite_spec.docker_compose:
+                        suite_spec.docker_compose[k] = v
+            dcf = inc_data.get("docker_compose_files")
+            if dcf and isinstance(dcf, list):
+                for f in dcf:
+                    if f not in suite_spec.docker_compose_files:
+                        suite_spec.docker_compose_files.append(f)
+
+        for inc_entry in suite_spec.includes:
+            if isinstance(inc_entry, dict):
+                _merge_inc(inc_entry)
+                continue
+            for search_dir in [suite_path, common_root]:
+                inc_full = (search_dir / inc_entry).resolve()
+                if inc_full.exists():
+                    with open(inc_full) as _f:
+                        _merge_inc(_yaml.safe_load(_f) or {})
+                    break
+
+    # --- Generator expansion ------------------------------------------------
+    variables = suite_spec.variables or {}
+
+    def _resolve_count(raw, label):
+        c = raw
+        if isinstance(c, str):
+            c = _re.sub(r'\{\{(\w+)\}\}', lambda m: str(variables.get(m.group(1), m.group(0))), c)
+            try:
+                c = int(c)
+            except ValueError:
+                return None
+        return int(c)
+
+    for gen in suite_spec.docker_compose_gen:
+        count = _resolve_count(gen.count, f"docker_compose_gen '{gen.prefix}'")
+        if count is None:
+            continue
+        gen_image_tag = None
+        resolved_build = None
+        if gen.build:
+            gen_image_tag = f"{gen.prefix}:stage-latest"
+            resolved_build = dict(gen.build)
+            if 'context' in resolved_build:
+                ctx = Path(resolved_build['context'])
+                if not ctx.is_absolute():
+                    resolved_build['context'] = str((suite_path / ctx).resolve())
+        resolved_volumes = None
+        if gen.volumes:
+            resolved_volumes = []
+            for vol in gen.volumes:
+                parts = vol.split(':')
+                host_path = Path(parts[0])
+                if not host_path.is_absolute():
+                    parts[0] = str((suite_path / host_path).resolve())
+                resolved_volumes.append(':'.join(parts))
+        for i in range(1, count + 1):
+            svc_name = f"{gen.prefix}-{i}"
+            if svc_name not in suite_spec.docker_compose:
+                svc_def = {
+                    "container_name": make_container_name(svc_name),
+                    "hostname": svc_name,
+                    "command": gen.command or ["sleep", "infinity"],
+                    "restart": gen.restart,
+                }
+                if resolved_build:
+                    if i == 1:
+                        svc_def["build"] = dict(resolved_build)
+                    svc_def["image"] = gen_image_tag
+                    svc_def["pull_policy"] = "never"
+                else:
+                    svc_def["image"] = gen.image
+                if gen.cap_add:
+                    svc_def["cap_add"] = list(gen.cap_add)
+                if gen.devices:
+                    svc_def["devices"] = list(gen.devices)
+                if resolved_volumes:
+                    svc_def["volumes"] = list(resolved_volumes)
+                if gen.privileged:
+                    svc_def["privileged"] = True
+                if gen.environment:
+                    env = dict(gen.environment)
+                    env["INSTANCE_ID"] = str(i)
+                    svc_def["environment"] = env
+                if gen.networks:
+                    svc_def["networks"] = dict(gen.networks)
+                if gen.packages:
+                    svc_def["_gen_packages"] = gen.packages
+                suite_spec.docker_compose[svc_name] = svc_def
+
+    for gen in suite_spec.node_compose_gen:
+        count = _resolve_count(gen.count, f"node_compose_gen '{gen.prefix}'")
+        if count is None:
+            continue
+        for i in range(1, count + 1):
+            svc_name = f"{gen.prefix}-{i}"
+            if svc_name not in suite_spec.node_compose:
+                suite_spec.node_compose[svc_name] = NodeComposeSpec(
+                    role=gen.role, source=gen.source, packages=gen.packages,
+                    cap_add=list(gen.cap_add), docker_devices=list(gen.docker_devices),
+                    environment=dict(gen.environment), config_overrides=gen.config_overrides,
+                    setup=gen.setup, regenerate_cert=gen.regenerate_cert,
+                )
+
+    # --- env_file -----------------------------------------------------------
+    if suite_spec.env_file:
+        env_path = suite_path / suite_spec.env_file
+        if env_path.is_file():
+            suite_env = {}
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    k, v = line.split('=', 1)
+                    suite_env[k.strip()] = v.strip()
+
+    # --- Provision node_compose ---------------------------------------------
+    if network_mgr and suite_spec.node_compose:
+        _provision_node_compose(
+            network_mgr, suite_spec.node_compose, base_path,
+            config_loader, print_info, print_success, print_warning, print_error,
+            suite_variables=suite_spec.variables, suite_env=suite_env,
+        )
+
+    # --- Merge compose files ------------------------------------------------
+    if network_mgr and suite_spec.docker_compose_files:
+        for dcf_rel in suite_spec.docker_compose_files:
+            dcf_path = Path(base_path) / dcf_rel
+            network_mgr.compose.merge_compose_file(dcf_path)
+
+    # --- Provision docker_compose -------------------------------------------
+    if network_mgr and suite_spec.docker_compose:
+        clean_dc = _provision_docker_compose(
+            network_mgr.compose, suite_spec.docker_compose,
+            print_info, print_success, print_warning, print_error,
+        )
+        network_mgr.docker_compose = clean_dc
+
+    # --- Topology vars ------------------------------------------------------
+    topology_vars = {}
+    if network_mgr:
+        from ..scenarios.global_context import ScenarioGlobalContext
+        gc = ScenarioGlobalContext(
+            network_name=network_mgr.topology.network.name,
+            topology_name=network_mgr.topology_name,
+            native_ticker=getattr(network_mgr.topology.network, 'native_ticker', 'TCELL'),
+            node_port=getattr(network_mgr.topology.network_settings, 'node_port', 8079),
+        )
+        node_configs = network_mgr.generate_node_configs()
+        gc.set_static_node_info(node_configs)
+        gc.collect_node_ips(node_configs, wait_for_ips=False)
+        if suite_spec.node_compose:
+            for svc_name in suite_spec.node_compose:
+                ncfg = network_mgr.nodes.get(svc_name)
+                if ncfg and ncfg.ip_address:
+                    gc.add_extra_node_ip(svc_name, ncfg.ip_address)
+        topology_vars = gc.to_dict()
+        if project_root:
+            topology_vars['project_root'] = str(project_root)
+        _svc_ids = {}
+        for _svc, _ncfg in network_mgr.nodes.items():
+            if not _svc.startswith('node'):
+                _svc_ids[_svc] = _ncfg.node_id
+        if _svc_ids:
+            topology_vars['_service_node_ids'] = _svc_ids
+
+    return topology_vars, suite_env
+
+
+def _discover_suites(test_dirs, filter_pattern=None):
+    """Discover all suites from test directories.
+
+    Returns a list of dicts with keys:
+      suite_key, suite_path, descriptor, scenarios, test_type
+    """
+    from ..scenarios.schema import SuiteDescriptor
+
+    all_suites = []
+    for test_dir in test_dirs:
+        test_path = Path(test_dir).resolve()
+        if not test_path.exists():
+            continue
+
+        yml_files = list(test_path.glob("**/*.yml")) + list(test_path.glob("**/*.yaml"))
+        if not yml_files:
+            continue
+
+        suites: Dict[str, dict] = {}
+        standalone: List[Path] = []
+
+        external_suite = test_path.parent / f"{test_path.name}.yml"
+        if test_path.is_dir() and external_suite.exists():
+            suites["."] = {"descriptor": external_suite, "scenarios": [], "path": test_path}
+
+        for yml_file in yml_files:
+            parent_dir = yml_file.parent
+            file_stem = yml_file.stem
+
+            matching_dir = parent_dir / file_stem
+            if matching_dir.exists() and matching_dir.is_dir():
+                suite_key = str(matching_dir.relative_to(test_path))
+                if suite_key not in suites:
+                    suites[suite_key] = {"descriptor": yml_file, "scenarios": [], "path": matching_dir}
+                continue
+
+            if file_stem == "suite":
+                suite_key = str(parent_dir.relative_to(test_path))
+                if suite_key not in suites:
+                    suites[suite_key] = {"descriptor": yml_file, "scenarios": [], "path": parent_dir}
+                continue
+
+            suite_found = False
+            for potential_suite_dir in [parent_dir] + list(parent_dir.parents):
+                if potential_suite_dir == test_path:
+                    if "." in suites:
+                        suites["."]["scenarios"].append(yml_file)
+                        suite_found = True
+                    break
+                suite_name = potential_suite_dir.name
+                ext_desc = potential_suite_dir.parent / f"{suite_name}.yml"
+                int_desc = potential_suite_dir / "suite.yml"
+                descriptor_file = ext_desc if ext_desc.exists() else (int_desc if int_desc.exists() else None)
+                if descriptor_file:
+                    suite_key = str(potential_suite_dir.relative_to(test_path))
+                    if suite_key not in suites:
+                        suites[suite_key] = {"descriptor": descriptor_file, "scenarios": [], "path": potential_suite_dir}
+                    suites[suite_key]["scenarios"].append(yml_file)
+                    suite_found = True
+                    break
+
+            if not suite_found:
+                standalone.append(yml_file)
+
+        for suite_key, info in suites.items():
+            scenarios = info["scenarios"]
+            if filter_pattern:
+                scenarios = [f for f in scenarios if filter_pattern.lower() in f.name.lower()]
+                if not scenarios:
+                    continue
+            all_suites.append({
+                "suite_key": suite_key,
+                "suite_path": info["path"],
+                "descriptor": info["descriptor"],
+                "scenarios": scenarios,
+                "test_type": test_path.name,
+            })
+
+    return all_suites
+
+
+def _run_parallel_suites(
+    test_dirs,
+    base_path: Path,
+    config_path,
+    run_dir_base: Path,
+    debug_mode: bool,
+    topology_name: str,
+    cli_params: Dict[str, str],
+    filter_pattern,
+    max_workers: int,
+    network_mgr,
+    stop_after: bool,
+):
+    """Orchestrate parallel suite execution.
+
+    Discovers suites, assigns shards, launches worker processes via
+    ``multiprocessing.Pool``, collects and prints results.
+    """
+    import multiprocessing
+    import time
+    from ..config.manager import get_config_loader
+    from ..parallel.worker import run_suite_in_shard, SuiteTask, SuiteResult
+    from ..parallel.shard import ShardContext
+    from ..monitoring.manager import MonitoringManager
+
+    suites = _discover_suites(test_dirs, filter_pattern)
+    if not suites:
+        print_warning(_("No suites discovered — nothing to run in parallel"))
+        return
+
+    print_info(_("\n⚡ Parallel mode: {} suite(s) discovered").format(len(suites)))
+    for i, s in enumerate(suites):
+        print_info(_("   [shard {}] {} ({} scenarios)").format(i, s["suite_key"], len(s["scenarios"])))
+
+    if max_workers <= 0:
+        max_workers = min(len(suites), max(1, multiprocessing.cpu_count() // 2))
+    max_workers = min(max_workers, len(suites))
+    print_info(_("   Workers: {}").format(max_workers))
+
+    # Build shard_settings from the base topology
+    config_loader = get_config_loader()
+    topology = config_loader.load_topology(topology_name)
+    settings = topology.network_settings
+    paths_config = config_loader.get_paths_config()
+
+    shard_settings = {
+        "_base_project": get_project_name(),
+        "_base_subnet": settings.subnet,
+        "_base_ip": settings.base_ip,
+        "_base_http_port": settings.base_http_port,
+        "_base_rpc_port": settings.base_rpc_port,
+        "_base_p2p_port": settings.base_p2p_port,
+        "_base_cf_port": settings.base_cf_port,
+        "_base_cache_dir": paths_config.get("cache_dir", "../../cache"),
+    }
+
+    tasks = []
+    for i, s in enumerate(suites):
+        tasks.append((
+            i,  # shard_id
+            SuiteTask(
+                suite_key=s["suite_key"],
+                suite_dir=s["suite_path"],
+                descriptor_path=s["descriptor"],
+                scenario_files=s["scenarios"],
+                test_type=s["test_type"],
+            ),
+            base_path,
+            config_path,
+            run_dir_base,
+            debug_mode,
+            topology_name,
+            cli_params,
+            shard_settings,
+        ))
+
+    # ------------------------------------------------------------------
+    # Ensure genesis snapshot exists before launching parallel shards.
+    # If the snapshot is already there (normal case after `./stage-env start`),
+    # we just stop the base network and proceed.
+    # If it's missing, we run genesis on a dedicated shard-0 first.
+    # ------------------------------------------------------------------
+    import asyncio as _aio
+    base_cache = (base_path / paths_config.get("cache_dir", "../../cache")).resolve()
+    snapshot_name = config_loader.get_suite_isolation_config().get(
+        "snapshot_name", "clean_state"
+    )
+    snap_backend = None
+    if network_mgr and network_mgr.snapshot_manager.snapshot:
+        snap_backend = network_mgr.snapshot_manager.snapshot
+
+    snapshot_exists = False
+    if snap_backend:
+        snapshot_exists = snap_backend.exists(snapshot_name)
+    else:
+        snapshot_exists = (
+            (base_cache / "snapshots" / f"{snapshot_name}.sqfs").exists()
+            or (base_cache / "snapshots" / snapshot_name).is_dir()
+        )
+
+    if not snapshot_exists:
+        print_info(_("  No genesis snapshot '{}' found — running genesis shard first...").format(snapshot_name))
+        from ..network.manager import NetworkManager as _NM
+
+        genesis_mgr = _NM(base_path, topology_name=topology_name, config_path=config_path)
+        genesis_mgr.keep_running = False
+        try:
+            _aio.run(genesis_mgr.start(rebuild=False, wait_ready=True))
+            print_success(_("  Genesis completed, snapshot created"))
+        finally:
+            try:
+                _aio.run(genesis_mgr.stop(remove_volumes=False))
+            except Exception:
+                pass
+    else:
+        print_info(_("  Genesis snapshot '{}' found — skipping genesis").format(snapshot_name))
+
+    # Stop the base network (may still be running from `./stage-env start`)
+    if network_mgr:
+        try:
+            _aio.run(network_mgr.stop(remove_volumes=False))
+        except Exception:
+            pass
+
+    t0 = time.monotonic()
+    results: List[SuiteResult] = []
+
+    with multiprocessing.Pool(processes=max_workers) as pool:
+        results = pool.starmap(run_suite_in_shard, tasks)
+
+    elapsed = time.monotonic() - t0
+
+    # Aggregate & print
+    total_passed = sum(r.passed for r in results)
+    total_failed = sum(r.failed for r in results)
+    total_scenarios = sum(r.total for r in results)
+    all_scenario_results = []
+    for r in results:
+        all_scenario_results.extend(r.scenario_results)
+
+    print_info(f"\n{'═' * 60}")
+    print_info(_("⚡ Parallel Test Summary ({} shards, {:.0f}s)").format(len(results), elapsed))
+    print_info(f"{'═' * 60}")
+    print_info(_("Total scenarios: {}").format(total_scenarios))
+    if total_passed:
+        print_success(_("✅ Passed: {}").format(total_passed))
+    if total_failed:
+        print_error(_("❌ Failed: {}").format(total_failed))
+
+    for r in results:
+        status_icon = "✅" if r.failed == 0 and not r.error else "❌"
+        print_info(_("  {} [shard] {} — {}/{} passed ({:.1f}s)").format(
+            status_icon, r.suite_key, r.passed, r.total, r.duration_seconds))
+        if r.error:
+            print_error(_("    Shard error: {}").format(r.error[:200]))
+
+    passed_list = [r for r in all_scenario_results if r.get("status") == "passed"]
+    failed_list = [r for r in all_scenario_results if r.get("status") in ("failed", "error")]
+    if failed_list:
+        print_info("")
+        print_error(_("❌ Failed scenarios ({}):").format(len(failed_list)))
+        for r in failed_list:
+            print_error(_("   ✗ {} — {}").format(r.get("name", "?"), r.get("error", "—")[:200]))
+
+    print_info(f"{'═' * 60}")
+
+    # Cleanup
+    MonitoringManager.reset_instance()
+
+    if total_failed > 0 or any(r.error for r in results):
+        raise typer.Exit(1)
+
+
 def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callable[[], Optional[Path]]):
     """Register test execution commands."""
     
     @app.command()
     def run_tests(
         test_dirs: List[str] = typer.Argument(..., help="Test scenario directories to run"),
-        parallel: bool = typer.Option(False, "--parallel", "-p", help="Run tests in parallel (not yet implemented)"),
+        parallel: bool = typer.Option(True, "--parallel/--sequential", help="Run suites in parallel (each in isolated Docker project)"),
+        workers: int = typer.Option(0, "--workers", "-j", help="Max parallel workers (0 = auto, based on CPU count)"),
         filter: Optional[str] = typer.Option(None, "--filter", "-k", help="Filter tests by pattern"),
         start_network: bool = typer.Option(True, "--start-network/--no-start-network", help="Start network before tests"),
         stop_after: bool = typer.Option(True, "--stop-after/--keep-running", help="Stop network after tests"),
+        params: Optional[List[str]] = typer.Option(None, "--param", "-P", help="Pass KEY=VALUE params to scenarios (repeatable)"),
     ):
         """🧪 Run YAML test scenarios from specified directories."""
         
@@ -553,6 +1137,16 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         import docker
         from src.utils.logger import logger
         
+        cli_params: Dict[str, str] = {}
+        if params:
+            for p in params:
+                if '=' not in p:
+                    print_error(_("Invalid param format '{}', expected KEY=VALUE").format(p))
+                    raise typer.Exit(1)
+                k, v = p.split('=', 1)
+                cli_params[k.strip()] = v.strip()
+            print_info(_("CLI params: {}").format(cli_params))
+
         _dir_suffix = _("y") if len(test_dirs) == 1 else _("ies")
         print_info(_("Running tests from {} director{}:").format(len(test_dirs), _dir_suffix))
         for test_dir in test_dirs:
@@ -606,8 +1200,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                 
                 # Parse CLI help from first node container
                 async def _init_cli_parser():
-                    # Use node1 container for parsing
-                    container_name = "cellframe-stage-node-1"
+                    container_name = make_container_name("node-1")
                     success = await cli_parser.parse_cli_help(container_name, use_cache=True)
                     return success
                 
@@ -640,7 +1233,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             cli_parser = get_cli_parser(cache_file=cache_file)
             
             async def _init_cli_parser():
-                container_name = "cellframe-stage-node-1"
+                container_name = make_container_name("node-1")
                 success = await cli_parser.parse_cli_help(container_name, use_cache=True)
                 return success
             
@@ -682,8 +1275,27 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             print_info(_("🔍 Monitoring services initialized"))
         except Exception as e:
             print_warning(_("Failed to initialize monitoring: {}").format(e))
+
+        # ============================================================
+        # PARALLEL MODE
+        # ============================================================
+        if parallel:
+            _run_parallel_suites(
+                test_dirs=test_dirs,
+                base_path=base_path,
+                config_path=get_config_path(),
+                run_dir_base=run_dir_base,
+                debug_mode=debug_mode,
+                topology_name="default",
+                cli_params=cli_params,
+                filter_pattern=filter,
+                max_workers=workers,
+                network_mgr=network_mgr,
+                stop_after=stop_after,
+            )
+            return
         
-        # Main test execution loop
+        # Main test execution loop (sequential)
         try:
             for test_dir in test_dirs:
                 test_path = Path(test_dir).resolve()
@@ -915,6 +1527,11 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 for k, v in dc_raw.items():
                                     if k not in suite_spec.docker_compose:
                                         suite_spec.docker_compose[k] = v
+                            dcf_raw = inc_data.get("docker_compose_files")
+                            if dcf_raw and isinstance(dcf_raw, list):
+                                for f in dcf_raw:
+                                    if f not in suite_spec.docker_compose_files:
+                                        suite_spec.docker_compose_files.append(f)
 
                         for inc_entry in suite_spec.includes:
                             if isinstance(inc_entry, dict):
@@ -953,22 +1570,56 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             count = _resolve_count(gen.count, f"docker_compose_gen '{gen.prefix}'")
                             if count is None:
                                 continue
+                            gen_image_tag = None
+                            resolved_build = None
+                            if gen.build:
+                                gen_image_tag = f"{gen.prefix}:stage-latest"
+                                resolved_build = dict(gen.build)
+                                if 'context' in resolved_build:
+                                    ctx = Path(resolved_build['context'])
+                                    if not ctx.is_absolute():
+                                        resolved_build['context'] = str((suite_path / ctx).resolve())
+
+                            resolved_volumes = None
+                            if gen.volumes:
+                                resolved_volumes = []
+                                for vol in gen.volumes:
+                                    parts = vol.split(':')
+                                    host_path = Path(parts[0])
+                                    if not host_path.is_absolute():
+                                        parts[0] = str((suite_path / host_path).resolve())
+                                    resolved_volumes.append(':'.join(parts))
+
                             for i in range(1, count + 1):
                                 svc_name = f"{gen.prefix}-{i}"
                                 if svc_name not in suite_spec.docker_compose:
                                     svc_def: dict = {
-                                        "image": gen.image,
-                                        "container_name": f"cellframe-stage-{svc_name}",
+                                        "container_name": make_container_name(svc_name),
                                         "hostname": svc_name,
                                         "command": gen.command or ["sleep", "infinity"],
                                         "restart": gen.restart,
                                     }
+                                    if resolved_build:
+                                        if i == 1:
+                                            svc_def["build"] = dict(resolved_build)
+                                        svc_def["image"] = gen_image_tag
+                                        svc_def["pull_policy"] = "never"
+                                    else:
+                                        svc_def["image"] = gen.image
                                     if gen.cap_add:
                                         svc_def["cap_add"] = list(gen.cap_add)
+                                    if gen.devices:
+                                        svc_def["devices"] = list(gen.devices)
+                                    if resolved_volumes:
+                                        svc_def["volumes"] = list(resolved_volumes)
                                     if gen.privileged:
                                         svc_def["privileged"] = True
                                     if gen.environment:
-                                        svc_def["environment"] = dict(gen.environment)
+                                        env = dict(gen.environment)
+                                        env["INSTANCE_ID"] = str(i)
+                                        svc_def["environment"] = env
+                                    if gen.networks:
+                                        svc_def["networks"] = dict(gen.networks)
                                     if gen.packages:
                                         svc_def["_gen_packages"] = gen.packages
                                     suite_spec.docker_compose[svc_name] = svc_def
@@ -987,10 +1638,29 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                         source=gen.source,
                                         packages=gen.packages,
                                         cap_add=list(gen.cap_add),
+                                        docker_devices=list(gen.docker_devices),
+                                        environment=dict(gen.environment),
                                         config_overrides=gen.config_overrides,
                                         setup=gen.setup,
                                         regenerate_cert=gen.regenerate_cert,
                                     )
+
+                    # --- Load suite-level env_file --------------------------------
+                    suite_env: Optional[Dict[str, str]] = None
+                    if isinstance(suite_spec, SuiteDescriptor) and suite_spec.env_file:
+                        env_path = suite_path / suite_spec.env_file
+                        if env_path.is_file():
+                            suite_env = {}
+                            for line in env_path.read_text().splitlines():
+                                line = line.strip()
+                                if not line or line.startswith('#'):
+                                    continue
+                                if '=' in line:
+                                    k, v = line.split('=', 1)
+                                    suite_env[k.strip()] = v.strip()
+                            print_info(_("📄 Loaded {} env vars from {}").format(len(suite_env), suite_spec.env_file))
+                        else:
+                            print_warning(_("⚠️ env_file not found: {}").format(env_path))
 
                     # --- Provision cellframe nodes from node_compose ----------
                     # MUST run before docker_compose: node_compose services get
@@ -1003,7 +1673,17 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             network_mgr, suite_spec.node_compose, base_path,
                             config_loader, print_info, print_success, print_warning, print_error,
                             suite_variables=suite_spec.variables,
+                            suite_env=suite_env,
                         )
+
+                    # --- Merge external docker-compose files -------------------
+                    if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.docker_compose_files:
+                        from pathlib import Path as _Path
+                        for dcf_rel in suite_spec.docker_compose_files:
+                            dcf_path = _Path(base_path) / dcf_rel
+                            print_info(_("📎 Merging compose file: {}").format(dcf_rel))
+                            network_mgr.compose.merge_compose_file(dcf_path)
+                            print_success(_("  Merged: {}").format(dcf_path.name))
 
                     # --- Provision docker_compose services ---------------------
                     if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.docker_compose:
@@ -1040,6 +1720,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 _svc_ids[_svc] = _ncfg.node_id
                         if _svc_ids:
                             topology_vars['_service_node_ids'] = _svc_ids
+
+                    if cli_params:
+                        topology_vars.update(cli_params)
 
                     # Execute suite-level setup (includes + setup steps).
                     # Includes always run — each include decides internally whether
@@ -1099,7 +1782,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                     _client = docker.from_env()
                                     _containers = _client.containers.list(
                                         all=True,
-                                        filters={"label": "com.docker.compose.project=cellframe-stage"}
+                                        filters={"label": f"com.docker.compose.project={get_project_name()}"}
                                     )
                                     _logs_dir = suite_dir / "node-logs"
                                     for _ctr in _containers:
@@ -1399,7 +2082,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         print_info(_("\n📦 Collecting suite artifacts for {}...").format(suite_relative_path))
                         try:
                             client = docker.from_env()
-                            project_name = "cellframe-stage"
+                            project_name = get_project_name()
                             
                             containers = client.containers.list(
                                 all=True,

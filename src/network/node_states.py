@@ -10,12 +10,13 @@ Provides intelligent waiting for node state transitions:
 import asyncio
 import json
 import re
-from typing import List, Set
+from typing import List, Optional, Set
 from enum import Enum
 
 import docker
 
 from src.utils.logger import get_logger
+from src.utils.project import get_project_name
 from .models import NodeConfig
 
 
@@ -49,7 +50,7 @@ class NodeStateManager:
     def __init__(
         self,
         docker_client: docker.DockerClient,
-        project_name: str = "cellframe-stage",
+        project_name: Optional[str] = None,
         cli_path: str = "cellframe-node-cli",
         network_name: str = "stagenet"
     ):
@@ -63,7 +64,7 @@ class NodeStateManager:
             network_name: Network name for CLI commands
         """
         self.docker_client = docker_client
-        self.project_name = project_name
+        self.project_name = project_name if project_name is not None else get_project_name()
         self.cli_path = cli_path
         self.network_name = network_name
     

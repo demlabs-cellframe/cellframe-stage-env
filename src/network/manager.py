@@ -22,6 +22,7 @@ from ..monitoring.health import HealthChecker, HealthStatus
 from ..monitoring.network_consensus import NetworkConsensusMonitor
 from src.utils.logger import get_logger
 from src.utils.artifacts import ArtifactsManager
+from src.utils.project import get_project_name
 from ..snapshots.manager import SnapshotManager, SnapshotMode
 from .models import NodeConfig
 from .genesis import GenesisInitializer
@@ -49,7 +50,12 @@ class NetworkManager:
         
         # Keep containers running after tests (for debugging)
         self.keep_running = False
-        
+
+        # prepare()/start() phase tracking
+        self._prepared = False
+        self._snapshot_clean_state_restored = False
+        self._snapshot_phase1_restored = False
+
         # Docker-compose services from suite descriptor
         self.docker_compose: Dict[str, Any] = {}
         
@@ -67,7 +73,7 @@ class NetworkManager:
         # Docker compose manager
         self.compose = DockerComposeManager(
             base_path,
-            project_name="cellframe-stage",
+            project_name=get_project_name(),
             network_name=self.topology.network.name
         )
         
@@ -245,6 +251,294 @@ class NetworkManager:
 
         return default_dir
 
+    def _sdk_branch_for_tools(self) -> str:
+        """Derive dap-sdk git branch from genesis version (v5.8 -> release-5.8)."""
+        ver = self._genesis_version_dir
+        if ver and ver.startswith("v"):
+            return f"release-{ver[1:]}"
+        return "release-6.0"
+
+    async def prepare(self, rebuild: bool = False) -> None:
+        """Restore snapshot, generate configs and compose — but do NOT start containers.
+
+        After calling ``prepare()`` the host data directories contain
+        consistent, static data that can be safely cloned by
+        ``_provision_node_compose``.  Call ``start()`` afterwards to
+        bring the containers up.
+        """
+        logger.info("preparing_network",
+                   topology=self.topology_name,
+                   rebuild=rebuild)
+
+        try:
+            self.compose.down(volumes=False, remove_images=False)
+        except Exception:
+            pass
+        self.compose.cleanup_stale_resources()
+
+        await self._restore_snapshots()
+
+        if not self.nodes:
+            node_configs = self.generate_node_configs()
+        else:
+            node_configs = list(self.nodes.values())
+
+        snapshot_restored = self._snapshot_clean_state_restored or self._snapshot_phase1_restored
+        if not snapshot_restored:
+            self.config_generator.generate_all(self.topology, node_configs, force=rebuild)
+        else:
+            self._remap_seed_nodes_for_shard(node_configs)
+
+        cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
+        node_source_config = self.config_loader.get_node_source_config()
+        settings = self.topology.network_settings
+        self.compose.generate_compose_for_nodes(
+            node_configs,
+            build_type=node_source_config.get('build_type', 'debug') if node_source_config else 'debug',
+            cache_dir_relative=cache_dir_relative,
+            node_source_config=node_source_config,
+            network_settings={
+                'subnet': settings.subnet,
+                'base_ip': settings.base_ip,
+            },
+            extra_services=self.docker_compose or None,
+        )
+        if rebuild:
+            self.compose.build(no_cache=rebuild)
+
+        self._prepared = True
+
+    def _default_phase1_name(self) -> str:
+        return f"phase1_zerochain_genesis_{self.topology.network.name}"
+
+    def _remap_seed_nodes_for_shard(self, node_configs) -> None:
+        """Adapt snapshot data for the current shard subnet.
+
+        Snapshot data originates from the genesis shard (shard-0).  In parallel
+        mode every shard uses a shifted subnet, so we remap
+        ``seed_nodes_hosts`` IPs in **all** network configs (not just the
+        primary network).  Nodes may be configured for multiple networks
+        (e.g. ``vpntest`` + ``stagenet``); leaving any config un-remapped
+        causes TCP SYN hangs to unreachable shard-0 IPs.
+
+        GDB is intentionally preserved: the balancer requires the node list
+        stored there to return peers (HTTP 204 otherwise).  Stale shard-0 IPs
+        in GDB entries are corrected by nodes re-registering on startup.
+        """
+        import re as _re
+
+        settings = self.topology.network_settings
+        base_ip_parts = settings.base_ip.split('.')
+        new_prefix = '.'.join(base_ip_parts[:3])
+
+        cache_dir = self.paths_config.get('cache_dir', 'cache')
+        configs_cache = (self.base_path / cache_dir / 'configs').resolve()
+
+        seed_re = _re.compile(r'(?m)^(seed_nodes_hosts\s*=\s*)\[([^\]]*)\]')
+
+        def _remap(hosts_str):
+            remapped = []
+            for entry in hosts_str.split(','):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                ip_port = entry.split(':')
+                if len(ip_port) == 2:
+                    old_octets = ip_port[0].split('.')
+                    remapped.append(f"{new_prefix}.{old_octets[3]}:{ip_port[1]}")
+                else:
+                    remapped.append(entry)
+            return '[' + ','.join(remapped) + ']'
+
+        patched = 0
+        for node in node_configs:
+            net_dir = configs_cache / f"node{node.node_id}" / "network"
+            if not net_dir.is_dir():
+                continue
+            for net_cfg in net_dir.glob("*.cfg"):
+                content = net_cfg.read_text()
+                new_content = seed_re.sub(
+                    lambda m: m.group(1) + _remap(m.group(2)),
+                    content,
+                )
+                if new_content != content:
+                    net_cfg.write_text(new_content)
+                    patched += 1
+
+        if patched:
+            logger.info("remapped_seed_nodes_for_shard",
+                       new_prefix=new_prefix, patched_files=patched)
+
+    def _regenerate_plugins_after_restore(self, node_configs) -> None:
+        """Regenerate plugins.cfg for all nodes after snapshot restore.
+
+        plugins.cfg depends on the runtime [plugins] config section, not on the
+        snapshot contents.  A snapshot created by a different config (e.g. node
+        base tests without [plugins] enabled=true) would leave plugins disabled.
+        """
+        cache_dir = self.paths_config.get('cache_dir', 'cache')
+        configs_cache = (self.base_path / cache_dir / 'configs').resolve()
+
+        for node in node_configs:
+            node_cfg_d = configs_cache / f"node{node.node_id}" / "cellframe-node.cfg.d"
+            node_cfg_d.mkdir(parents=True, exist_ok=True)
+            self.config_generator._generate_plugins_config(node_cfg_d, node)
+
+    async def _purge_nodes_list_before_snapshot(self, node_configs) -> None:
+        """Delete all entries from ``<net>.nodes.list`` via CLI before snapshot.
+
+        This ensures shards restored from this snapshot don't inherit
+        stale IPs — they will use ``seed_nodes_hosts`` from config instead.
+        """
+        import re
+        import subprocess
+        from ..utils.project import make_container_name
+
+        net_name = self.topology.network.name
+        group = f"{net_name}.nodes.list"
+        first_node = node_configs[0]
+        container = make_container_name(f"node-{first_node.node_id}")
+
+        try:
+            result = subprocess.run(
+                ["docker", "exec", container, "sh", "-c",
+                 f"cellframe-node-cli global_db get_keys -group {group}"],
+                capture_output=True, text=True, timeout=15)
+            if result.returncode != 0 or "No data" in result.stdout:
+                logger.info("nodes_list_already_empty", group=group)
+                return
+
+            keys = re.findall(r'key:\s+(\S+)', result.stdout)
+            deleted = 0
+            for key in keys:
+                try:
+                    subprocess.run(
+                        ["docker", "exec", container, "sh", "-c",
+                         f"cellframe-node-cli global_db delete -group {group} -key {key}"],
+                        capture_output=True, text=True, timeout=10)
+                    deleted += 1
+                except Exception:
+                    pass
+            logger.info("nodes_list_purged_before_snapshot",
+                       group=group, deleted=deleted, total_keys=len(keys))
+        except Exception as exc:
+            logger.warning("nodes_list_purge_failed", error=str(exc),
+                          note="Shards may have stale IPs in GDB")
+
+    def _fix_stale_node_list(self, node_configs) -> None:
+        """Overwrite stale IPs in ``nodes.list`` BEFORE starting containers.
+
+        Runs ``cf-cert-generator --read-addr`` and ``dap-gdb-tool node-rehost``
+        directly on the GDB files on disk.  Everything happens in a single
+        ``docker run`` — no running nodes, no CLI sockets required.
+        """
+        import subprocess
+        from ..certs.generator import CertGenerator, CERT_BUILDER_IMAGE
+
+        tools_image = CERT_BUILDER_IMAGE
+        sdk_branch = self._sdk_branch_for_tools()
+        cg = CertGenerator(self.base_path, dap_sdk_branch=sdk_branch)
+        if not cg.build_docker_image():
+            logger.error("gdb_tool_image_not_available")
+            return
+
+        cache_dir = self.paths_config.get('cache_dir', 'cache')
+        cache_path = (self.base_path / cache_dir).resolve()
+        net_name = self.topology.network.name
+        settings = self.topology.network_settings
+        base_ip_parts = settings.base_ip.split('.')
+
+        volumes: list[str] = []
+        ip_map: dict[int, str] = {}
+
+        for nc in node_configs:
+            data_path = cache_path / "data" / f"node{nc.node_id}"
+            volumes.extend(["-v", f"{data_path}:/nodes/node{nc.node_id}"])
+            ip_map[nc.node_id] = (
+                f"{'.'.join(base_ip_parts[:3])}"
+                f".{int(base_ip_parts[3]) + nc.node_id - 1}"
+            )
+
+        script_lines = ["set -e", ""]
+
+        for nc in node_configs:
+            script_lines.append(
+                f'ADDR_{nc.node_id}=$('
+                f'/usr/local/bin/cf-cert-generator --read-addr '
+                f'/nodes/node{nc.node_id}/lib/ca/node-addr.dcert 2>/dev/null'
+                f' | tail -1) || ADDR_{nc.node_id}=""'
+            )
+
+        script_lines.append("")
+
+        for target in node_configs:
+            gdb = f"/nodes/node{target.node_id}/lib/global_db"
+            for src in node_configs:
+                ip = ip_map[src.node_id]
+                script_lines.append(
+                    f'[ -n "$ADDR_{src.node_id}" ] && '
+                    f'/usr/local/bin/dap-gdb-tool '
+                    f'--db-path {gdb} '
+                    f'node-rehost {net_name} "$ADDR_{src.node_id}" {ip} 8079 '
+                    f'|| true'
+                )
+
+        script = "\n".join(script_lines)
+
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "--entrypoint", "sh",
+        ] + volumes + [
+            tools_image,
+            "-c", script,
+        ]
+
+        try:
+            result = subprocess.run(
+                docker_cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode == 0:
+                ok_count = result.stdout.count("OK ")
+                logger.info("stale_node_list_fixed",
+                            nodes=len(node_configs),
+                            entries_updated=ok_count)
+            else:
+                logger.error("gdb_tool_failed",
+                             rc=result.returncode,
+                             stderr=result.stderr[-500:] if result.stderr else "")
+        except subprocess.TimeoutExpired:
+            logger.error("gdb_tool_timeout")
+        except Exception as exc:
+            logger.error("gdb_tool_exception", exc=str(exc))
+
+    async def _restore_snapshots(self) -> None:
+        """Restore clean_state or phase1 snapshot if available."""
+        self._snapshot_clean_state_restored = False
+        self._snapshot_phase1_restored = False
+
+        clean_state_name = self.suite_isolation_config.get('snapshot_name', 'clean_state')
+        phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', self._default_phase1_name())
+
+        if self.snapshot_manager.mode == SnapshotMode.DISABLED:
+            self._clean_node_data()
+            return
+
+        _snap = self.snapshot_manager.snapshot
+
+        if _snap.exists(clean_state_name):
+            if await self.snapshot_manager.restore_snapshot(clean_state_name):
+                self._snapshot_clean_state_restored = True
+                return
+        if _snap.exists(phase1_snapshot_name):
+            if await self.snapshot_manager.restore_snapshot(phase1_snapshot_name):
+                self._snapshot_phase1_restored = True
+                return
+            raise RuntimeError(
+                f"Snapshot restore failed for '{phase1_snapshot_name}'. "
+                "Run './clean.sh' to remove root-owned files and try again."
+            )
+
+        self._clean_node_data()
+
     async def start(
         self,
         rebuild: bool = False,
@@ -260,122 +554,57 @@ class NetworkManager:
         logger.info("starting_network",
                    topology=self.topology_name,
                    rebuild=rebuild)
-        
-        # Stop previous environment FIRST (keep volumes - they contain certs!)
-        logger.info("stopping_previous_environment")
-        try:
-            self.compose.down(volumes=False, remove_images=False)
-            logger.info("previous_environment_stopped")
-        except Exception as e:
-            logger.debug("no_previous_environment", error=str(e))
-        
-        # Clean up any remaining stale resources
-        self.compose.cleanup_stale_resources()
-        
-        # =================================================================
-        # SNAPSHOT RESTORE LOGIC (Priority: clean_state > phase1 > fresh)
-        # =================================================================
-        # 1. Check for clean_state snapshot (full genesis completed)
-        # 2. If not found, check for phase1 snapshot (only zerochain genesis)
-        # 3. If neither found, start fresh
-        
-        clean_state_name = self.suite_isolation_config.get('snapshot_name', 'clean_state')
-        phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', 'phase1_zerochain_genesis')
-        
-        clean_state_restored = False
-        phase1_snapshot_exists = False
-        
-        if self.snapshot_manager.mode != SnapshotMode.DISABLED:
-            _snap = self.snapshot_manager.snapshot
 
-            # PRIORITY 1: Check for clean_state snapshot (full genesis)
-            if _snap.exists(clean_state_name):
-                logger.info("clean_state_snapshot_found",
-                           name=clean_state_name,
-                           note="Full genesis snapshot exists - restoring")
-                restore_result = await self.snapshot_manager.restore_snapshot(clean_state_name)
-                if restore_result:
-                    logger.info("clean_state_restored_successfully",
-                               name=clean_state_name,
-                               note="Skipping ALL genesis phases")
-                    clean_state_restored = True
-                else:
-                    logger.warning("clean_state_restore_failed_trying_phase1",
-                                  name=clean_state_name)
-            
-            # PRIORITY 2: Check for phase1 snapshot (only if clean_state not restored)
-            if not clean_state_restored and _snap.exists(phase1_snapshot_name):
-                logger.info("phase1_snapshot_found_restoring",
-                           name=phase1_snapshot_name,
-                           mode=self.snapshot_manager.mode.value)
-                restore_result = await self.snapshot_manager.restore_snapshot(phase1_snapshot_name)
-                if restore_result:
-                    logger.info("phase1_snapshot_restored_successfully",
-                               name=phase1_snapshot_name,
-                               note="Will run Phase 2 to complete genesis")
-                    phase1_snapshot_exists = True
-                else:
-                    logger.error("phase1_snapshot_restore_failed",
-                                 name=phase1_snapshot_name,
-                                 hint="Run './clean.sh' to fix permission issues, then retry")
-                    raise RuntimeError(
-                        f"Snapshot restore failed for '{phase1_snapshot_name}'. "
-                        "This is usually caused by permission issues with Docker files. "
-                        "Run './clean.sh' to remove root-owned files and try again."
-                    )
-            
-            # PRIORITY 3: No snapshots - clean data for fresh start
-            if not clean_state_restored and not phase1_snapshot_exists:
-                logger.info("no_snapshots_found_cleaning_data_for_fresh_start")
-                self._clean_node_data()
-        else:
-            # Snapshot manager disabled - clean data
-            logger.info("snapshot_system_disabled_cleaning_data")
-            self._clean_node_data()
+        if not getattr(self, '_prepared', False):
+            # Full legacy path — stop, restore, config, compose
+            logger.info("stopping_previous_environment")
+            try:
+                self.compose.down(volumes=False, remove_images=False)
+                logger.info("previous_environment_stopped")
+            except Exception as e:
+                logger.debug("no_previous_environment", error=str(e))
+            self.compose.cleanup_stale_resources()
         
-        # Generate node configurations
-        if not self.nodes:
-            node_configs = self.generate_node_configs()
-        else:
-            node_configs = list(self.nodes.values())
-        
-        # CRITICAL: Skip config generation if ANY snapshot was restored
-        # Configs are restored from snapshot and should NOT be regenerated
-        # Regeneration would overwrite static_genesis_event and fee_addr from snapshot
-        snapshot_restored = clean_state_restored or phase1_snapshot_exists
-        if not snapshot_restored:
-            # Generate configuration files and certificates
-            logger.info("generating_configs_and_certs")
-            self.config_generator.generate_all(
-                self.topology,
+        if not getattr(self, '_prepared', False):
+            # Full legacy path — snapshot restore + config/compose generation
+            await self._restore_snapshots()
+
+            if not self.nodes:
+                node_configs = self.generate_node_configs()
+            else:
+                node_configs = list(self.nodes.values())
+
+            snapshot_restored = self._snapshot_clean_state_restored or self._snapshot_phase1_restored
+            if not snapshot_restored:
+                self.config_generator.generate_all(self.topology, node_configs, force=rebuild)
+            else:
+                self._remap_seed_nodes_for_shard(node_configs)
+                self._regenerate_plugins_after_restore(node_configs)
+
+            cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
+            node_source_config = self.config_loader.get_node_source_config()
+            settings = self.topology.network_settings
+            self.compose.generate_compose_for_nodes(
                 node_configs,
-                force=rebuild
+                build_type=node_source_config.get('build_type', 'debug') if node_source_config else 'debug',
+                cache_dir_relative=cache_dir_relative,
+                node_source_config=node_source_config,
+                network_settings={
+                    'subnet': settings.subnet,
+                    'base_ip': settings.base_ip,
+                },
+                extra_services=self.docker_compose or None,
             )
+            if rebuild:
+                self.compose.build(no_cache=rebuild)
         else:
-            logger.info("skipping_config_generation_after_snapshot_restore",
-                       note="Configs restored from snapshot - preserving static_genesis_event and fee_addr")
-        
-        # Generate dynamic docker-compose.yml for all nodes
-        logger.info("generating_docker_compose")
-        cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
-        node_source_config = self.config_loader.get_node_source_config()
-        settings = self.topology.network_settings
-        self.compose.generate_compose_for_nodes(
-            node_configs, 
-            build_type=node_source_config.get('build_type', 'debug') if node_source_config else 'debug',
-            cache_dir_relative=cache_dir_relative,
-            node_source_config=node_source_config,
-            network_settings={
-                'subnet': settings.subnet,
-                'base_ip': settings.base_ip,
-            },
-            extra_services=self.docker_compose or None
-        )
-        
-        # Build images if requested
-        if rebuild:
-            logger.info("rebuilding_images")
-            self.compose.build(no_cache=rebuild)
+            # prepare() already ran — just re-read state
+            node_configs = list(self.nodes.values())
+
+        clean_state_name = self.suite_isolation_config.get('snapshot_name', 'clean_state')
+        phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', self._default_phase1_name())
+        clean_state_restored = getattr(self, '_snapshot_clean_state_restored', False)
+        phase1_snapshot_exists = getattr(self, '_snapshot_phase1_restored', False)
         
         # Separate nodes by role for phased startup
         root_nodes = [n for n in node_configs if n.role == 'root']
@@ -403,10 +632,13 @@ class NetworkManager:
                        snapshot=clean_state_name,
                        note="Starting containers from clean_state snapshot")
             
+            # Fix stale node list in GDB BEFORE starting containers
+            self._fix_stale_node_list(node_configs)
+
             # Start ALL containers from restored clean_state
             all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
             logger.info("starting_all_containers_from_clean_state", services=all_services)
-            self.compose.up(services=all_services, detach=True, wait=False, no_build=True)
+            self.compose.up(services=all_services, detach=True, wait=False, no_build=False)
             
             # Wait for all nodes to come online
             await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
@@ -600,7 +832,7 @@ class NetworkManager:
                                            note="Squashfs snapshot captures all mounted directories automatically")
                                 
                                 # Create snapshot of phase1 state (with GDB data preserved)
-                                phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', 'phase1_zerochain_genesis')
+                                phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', self._default_phase1_name())
                                 phase1_meta = {}
                                 if emission_hash:
                                     phase1_meta["emission_hash"] = emission_hash
@@ -877,7 +1109,7 @@ class NetworkManager:
             logger.info("getting_emission_hash_after_snapshot_restore")
             import re
             emission_hash = None
-            phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', 'phase1_zerochain_genesis')
+            phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', self._default_phase1_name())
             snapshot_meta = self.snapshot_manager.get_snapshot_metadata(phase1_snapshot_name)
             if snapshot_meta and snapshot_meta.get('emission_hash'):
                 emission_hash = snapshot_meta['emission_hash']
@@ -1111,7 +1343,7 @@ class NetworkManager:
             if not self.compose.are_services_running(master_full_services):
                 logger.info("starting_remaining_nodes_after_phase2_skip", services=master_full_services)
                 all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
-                self.compose.up(services=all_services, detach=True, wait=False, no_build=True)
+                self.compose.up(services=all_services, detach=True, wait=False, no_build=False)
                 await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
         else:
             logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
@@ -1218,7 +1450,7 @@ class NetworkManager:
                     import docker
                     docker_client = docker.from_env()
                     for container in docker_client.containers.list(all=True):
-                        if "cellframe-stage-node" in container.name:
+                        if f"{self.compose.project_name}-node" in container.name:
                             log_path = f"/tmp/{container.name}.log"
                             try:
                                 with open(log_path, "wb") as f:
@@ -1494,9 +1726,9 @@ class NetworkManager:
             try:
                 # Convert node_name to container name (node1 -> node-1)
                 if node_name.startswith('node'):
-                    container_name = f"cellframe-stage-node-{node_name[4:]}"
+                    container_name = f"{self.compose.project_name}-node-{node_name[4:]}"
                 else:
-                    container_name = f"cellframe-stage-{node_name}"
+                    container_name = f"{self.compose.project_name}-{node_name}"
                 
                 container = self.compose.client.containers.get(container_name)
                 network_name = self.topology.network.name
@@ -1744,7 +1976,7 @@ class NetworkManager:
                    services=node_services)
         self.compose.up(
             services=node_services,
-            detach=True, wait=False, no_build=True,
+            detach=True, wait=False, no_build=False,
         )
         
         startup_timeout = self.timeouts.get('startup', 600)
@@ -1827,7 +2059,7 @@ class NetworkManager:
             crashed_containers = []
             
             for node in master_nodes:
-                container_name = f"cellframe-stage-node-{node.node_id}"
+                container_name = f"{self.compose.project_name}-node-{node.node_id}"
                 try:
                     container = self.compose.client.containers.get(container_name)
                     container.reload()
@@ -1887,7 +2119,7 @@ class NetworkManager:
         # Timeout reached - check final status
         failed_nodes = []
         for node in master_nodes:
-            container_name = f"cellframe-stage-node-{node.node_id}"
+            container_name = f"{self.compose.project_name}-node-{node.node_id}"
             try:
                 container = self.compose.client.containers.get(container_name)
                 container.reload()

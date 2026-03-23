@@ -8,6 +8,7 @@ from typing import Callable
 
 from ..base import BaseWaiter
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 
 logger = get_logger(__name__)
 
@@ -171,7 +172,7 @@ class DAGEventWaiter(BaseWaiter):
                 import docker
                 docker_client = docker.from_env()
                 logger.info("collecting_actual_node_logs", datum=self.datum_hash[:16])
-                container = docker_client.containers.get(f"cellframe-stage-node-{self.node_id}")
+                container = docker_client.containers.get(make_container_name(f"node-{self.node_id}"))
                 # Get last 500 lines of logs (increased from 100)
                 logs = container.logs(tail=500).decode('utf-8', errors='replace')
                 

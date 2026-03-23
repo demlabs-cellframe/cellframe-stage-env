@@ -36,7 +36,6 @@
 ```yaml
 - for: i
   in: "range(5)"
-  eval: true
   steps:
     - print: "Iteration {{i}}, node: {{node_list[i]}}"
 ```

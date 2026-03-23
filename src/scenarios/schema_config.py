@@ -34,9 +34,21 @@ class ConfigStep(BaseModel):
         set:
           enabled: "true"
           net: "{{network_name}}"
+
+      # param_map: conditionally populate set from scenario variables.
+      # Each key is a scenario variable name, value is the config key
+      # (section.key for cfg.d snippets).  Only variables whose value
+      # is truthy ("true"/"1"/"yes") produce an entry.
+      - config: "cellframe-node.cfg.d/debug-overrides.cfg"
+        nodes: "{{_all_svc}}"
+        param_map:
+          DEBUG_REACTOR: "general.debug_reactor"
+          DEBUG_HTTP: "general.debug_http"
+          DEBUG_STREAM: "stream.debug_more"
     """
     config: str = Field(..., description="Config path — relative name or absolute path with {{node_id}} placeholder")
     nodes: Union[str, List[str]] = Field(..., description="Target node(s)")
     set: Union[Dict[str, Any], str] = Field(default_factory=dict, description="Variables to inject (Dict or 'k=v, k2=v')")
     template: Optional[str] = Field(None, description="Path to J2 template (absolute or relative to project root)")
     deploy: Optional[str] = Field(None, description="Deploy mode: 'container' to write directly into running Docker container")
+    param_map: Optional[Dict[str, str]] = Field(None, description="Map scenario variables to config keys; only truthy vars are written")

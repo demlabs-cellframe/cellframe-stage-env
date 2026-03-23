@@ -466,6 +466,17 @@ class SquashfsSnapshot(BaseSnapshot):
                     )
                     await proc.communicate()
             
+            # Remove stale MDBX lock files — restored from snapshot they
+            # reference PIDs that no longer exist and block new processes.
+            if data_path.exists():
+                proc = await asyncio.create_subprocess_exec(
+                    "sudo", "find", str(data_path),
+                    "-name", "mdbx.lck", "-delete",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+
             logger.info("squashfs_restore_complete", name=name)
             return True
             

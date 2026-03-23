@@ -5,11 +5,12 @@ Handles graceful node shutdown, GDB flush verification, and restart operations.
 """
 
 import asyncio
-from typing import List
+from typing import List, Optional
 
 import docker
 
 from src.utils.logger import get_logger
+from src.utils.project import get_project_name
 
 
 logger = get_logger(__name__)
@@ -25,14 +26,14 @@ class NodeLifecycleManager:
     - Health checks during lifecycle transitions
     """
     
-    def __init__(self, project_name: str = "cellframe-stage"):
+    def __init__(self, project_name: Optional[str] = None):
         """
         Initialize node lifecycle manager.
         
         Args:
             project_name: Docker Compose project name
         """
-        self.project_name = project_name
+        self.project_name = project_name if project_name is not None else get_project_name()
         self.docker_client = docker.from_env()
     
     async def graceful_shutdown_with_gdb_flush(

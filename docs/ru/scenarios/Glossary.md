@@ -116,12 +116,19 @@ check:
 - cli: token_decl -token TEST -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs test_cert
   node: node1                    # Нода для выполнения (default: node1)
   save: full_output              # Сохранить весь вывод
+  save_regex: "hash:\s+(\w+)"   # Извлечь через regex (первая capture group)
+  save_map:                      # Извлечь несколько значений через regex
+    order_hash: "hash:\s+(0x[a-f0-9]+)"
+    price: "price:\s+(\d+\.\d+)"
   save_hash: tx_hash             # Извлечь и валидировать hash (0x[hex])
   save_wallet: my_address        # Извлечь и валидировать wallet address (base58 + checksum)
   save_node: node_addr           # Извлечь node address (0x::формат)
+  save_token: ticker             # Извлечь тикер токена
+  save_to: raw_output            # Сохранить сырой вывод
   wait: 3s                       # Ожидание после команды
   expect: success                # Ожидаемый результат (success/error/any)
-  contains: "SUCCESS"            # Проверить что вывод содержит строку
+  contains: "SUCCESS"            # Проверить что вывод содержит строку (поддерживает regex)
+  not_contains: "ERROR"          # Строка которой НЕ должно быть (fails if found)
   timeout: 30                    # Таймаут команды (секунды)
 ```
 
@@ -160,6 +167,9 @@ check:
 - tool: cert create test_cert sig_dil
   node: node1
   save: cert_result
+  save_regex: "hash:\s+(\w+)"   # Извлечь через regex (первая capture group)
+  save_map:                      # Извлечь несколько значений через regex
+    key: "pattern"
   expect: success
   timeout: 30
 ```
@@ -174,10 +184,15 @@ JSON-RPC вызов к ноде.
   params: []                     # RPC параметры (список)
   node: node1
   save: rpc_result
+  save_regex: "addr:\s+(\S+)"   # Извлечь через regex (первая capture group)
+  save_map:                      # Извлечь несколько значений через regex
+    key: "pattern"
   wait: 1s
   expect: success
   timeout: 30
 ```
+
+**Примечание:** `rpc` НЕ поддерживает `contains`/`not_contains` (в отличие от `cli`).
 
 **Endpoint:** `http://<node_ip>:8545` (base_rpc_port из конфига)
 
@@ -358,11 +373,69 @@ Docker операции: `start`, `stop`, `restart`, `pause`, `unpause`, `logs`,
   save: pid_output
 ```
 
+### DockerExecStep
+Выполнение команды внутри Docker контейнера. Компактная замена `docker_op: exec`.
+
+```yaml
+- docker_exec: "cf-vpn-clientd-ctl status 2>&1"
+  services: ["clientd-1"]     # Обязательно: целевые сервисы
+  save: _status
+  save_regex: "State:\s+(\d+)"
+  save_map:
+    state: "State:\s+(\d+)"
+  expect: success              # success | error | any
+  timeout: 300                 # Default: 300s
+```
+
+### DpkgStep
+Установка/удаление DEB пакетов.
+
+```yaml
+- dpkg: install
+  package: "{{vpn_deb}}"
+  services: ["clientd-1"]
+  fix_deps: true
+
+- dpkg: remove
+  package: "package-name"
+  services: ["node-1"]
+```
+
+### MetricStep / MetricsTableStep
+Запись и отображение метрик.
+
+```yaml
+- metric: throughput
+  value: "{{_iperf_throughput}}"
+  unit: Mbps
+  group: vpn_load
+  tags: { client: vpn-client-1 }
+
+- metrics_table: vpn_load
+  title: "VPN Throughput"
+  format: text                     # text (default) | markdown
+  columns: [tag:client, value, unit]
+```
+
 ### SnapshotStep
-Операции со snapshots.
+Операции со snapshots (`create`, `restore`, `verify`, `delete`).
 
 ```yaml
 - snapshot: create
+  name: before_emission
+  is_base: true
+  stop_containers: true
+  restart_after: true
+  clone_images: { src_svc: [target1] }
+  wait_ready: true
+  wait_ready_timeout: 90
+  wait_ready_check: "vpn_cdb version"
+
+- snapshot: verify
+  name: cdb_ready
+  save: has_snapshot           # True/False
+
+- snapshot: restore
   name: before_emission
 ```
 
@@ -770,21 +843,27 @@ setup:
 | CLIStep | CLI команда | `cli: command` |
 | ToolStep | Tool команда | `tool: command` |
 | RPCStep | JSON-RPC вызов | `rpc: method` |
-| WaitStep | Простое ожидание | `wait: 5s` |
+| WaitStep | Простое/polling ожидание | `wait: 5s` или `wait: cli` |
 | WaitForDatumStep | Умное ожидание датума | `wait_for_datum: hash` |
+| NetworkWaitStep | Ожидание сети | `wait_network: online` |
 | PythonStep | Python код | `python: \|` |
 | BashStep | Bash скрипт | `bash: \|` |
+| DockerExecStep | Exec в контейнере | `docker_exec: cmd` |
+| DockerOpStep | Docker операции | `docker_op: restart` |
+| DpkgStep | Установка/удаление .deb | `dpkg: install` |
+| ConfigStep | Изменение конфига | `config: path set:` |
+| SnapshotStep | Работа со snapshot | `snapshot: create` |
+| MetricStep | Запись метрики | `metric: name` |
+| MetricsTableStep | Отображение метрик | `metrics_table: group` |
+| PrintStep | Отладочный вывод | `print: "message"` |
 | LoopStep | Повторение N раз | `loop: 5` |
 | ForStep | Итерация по списку | `for: var in: list` |
 | IfStep | Условие | `if: condition then:` |
 | WhileStep | Цикл с условием | `while: condition` |
 | SwitchStep | Switch/case | `switch: var cases:` |
 | SetStep | Установка переменной | `set: var value:` |
-| ConfigStep | Изменение конфига | `config: path set:` |
-| NetworkWaitStep | Ожидание сети | `wait_network: online` |
-| DockerOpStep | Docker операции | `docker_op: restart` |
-| SnapshotStep | Работа со snapshot | `snapshot: create` |
 | StepGroup | Группа с defaults | `group: name` |
+| CustomOperandStep | Пользовательский операнд | `operand: action` |
 
 ### Типы проверок - краткая таблица
 
@@ -804,6 +883,6 @@ setup:
 - **Реальные сценарии** - Изучите `tests/stage-env/scenarios/genesis/` для продвинутых паттернов
 ---
 
-**Версия:** 2.1  
-**Обновлено:** 2025-12-23  
+**Версия:** 2.2  
+**Обновлено:** 2026-03-17  
 **Язык:** Русский | [English](../../en/scenarios/Glossary.md)

@@ -1,122 +1,8 @@
 # Тест-Сьюты
 
-## Структура Сьюта
+## Формат Suite Descriptor
 
-```yaml
-# suite_setup.yml
-suite_name: Token Tests
-suite_description: Комплексное тестирование токенов
-
-suite_setup:
-  variables:
-    network_name: stagenet
-    native_ticker: TCELL
-    
-  steps:
-    - cli: "wallet new -w shared_wallet"
-      save_wallet: suite_wallet
-    # Доступно во всех сценариях
-
-scenarios:
-  - token/001_token_decl.yml
-  - token/002_token_emit.yml
-  - token/003_tx_create.yml
-```
-
-## Переменные Сьюта
-
-### Определение
-```yaml
-suite_setup:
-  variables:
-    shared_var: value
-    api_key: "secret"
-```
-
-### Использование в Сценариях
-```yaml
-# Любой сценарий в сьюте
-test:
-  - cli: "wallet info -w {{suite_wallet}}"
-  - print: "API: {{api_key}}"
-```
-
-### Видимость
-- Доступны во всех сценариях сьюта
-- Не могут быть переопределены в сценариях
-- Имеют приоритет над глобальными переменными
-
-## Жизненный Цикл Сьюта
-
-1. Парсинг suite_setup.yml
-2. Выполнение suite_setup шагов
-3. Сохранение переменных сьюта
-4. Для каждого сценария:
-   - Загрузка сценария
-   - Слияние переменных сьюта
-   - Выполнение сценария
-   - Сбор результатов
-5. Генерация отчёта по сьюту
-
-## Конфигурация Сьюта
-
-### Топология Сети
-```yaml
-suite_setup:
-  network:
-    topology: custom
-    root_nodes: 3
-    master_nodes: 3
-    validators: 2
-```
-
-### Пакеты
-```yaml
-suite_setup:
-  packages:
-    - name: vim
-      nodes: all
-    - name: tcpdump
-      nodes: [node1, node2]
-```
-
-### Файлы
-```yaml
-suite_setup:
-  files:
-    - src: config.txt
-      dst: /opt/config.txt
-      nodes: all
-    - src: script.sh
-      dst: /tmp/script.sh
-      nodes: [node1]
-      mode: "755"
-```
-
-## Продвинутые Паттерны
-
-### Общий Setup
-```yaml
-suite_setup:
-  steps:
-    # Создать кошельки для всех тестов
-    - for: i
-      in: "range(5)"
-      eval: true
-      steps:
-        - cli: "wallet new -w wallet{{i}}"
-          save_wallet: "wallet{{i}}_addr"
-```
-
-### Shared Resources
-```yaml
-suite_setup:
-  variables:
-    shared_token: MYTOKEN
-    
-  steps:
-    - cli: "token_decl -t {{shared_token}}"
-      save_hash: token_hash
+Тестовые сьюты используют YAML-дескриптор с полем `suite:`. Дескриптор определяет общие метаданные, переменные, includes, setup-шаги и список сценариев.
     - cli: "token_emit -t {{shared_token}}"
       save_hash: emission_hash
 ```
@@ -290,6 +176,34 @@ includes:
       vpn_client_count: 5
   - ../common/vpn_nodes.yml
 ```
+
+---
+
+## docker_compose_gen — Параметрическая Генерация Сервисов
+
+Генерация нескольких не-cellframe контейнеров по шаблону:
+
+```yaml
+docker_compose_gen:
+  - prefix: clientd
+    count: "{{clientd_count}}"     # int или {{переменная}}
+    image: "debian:bookworm-slim"  # Игнорируется при наличии build
+    build:
+      context: ../docker
+      dockerfile: Dockerfile.clientd
+      args: { BUILD_TYPE: Release }
+    command: ["sleep", "infinity"]
+    restart: "unless-stopped"
+    packages: "iperf3 curl"        # apt пакеты
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    volumes: ["../configs:/etc/app:ro"]
+    privileged: false
+    environment:
+      APP_MODE: client
+```
+
+Первый сервис получает полное `build` определение; остальные используют образ через `pull_policy: never`. `INSTANCE_ID` переменная окружения инжектится автоматически (1, 2, …N).
 
 ---
 

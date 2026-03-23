@@ -108,7 +108,7 @@ class MirrorTester:
             
             start_time = time.time()
             process = await asyncio.create_subprocess_exec(
-                "curl", "-s", "-o", "/dev/null", "-w", "%{time_total}",
+                "curl", "-sf", "-o", "/dev/null", "-w", "%{time_total}",
                 "--max-time", str(self.timeout), test_url,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE

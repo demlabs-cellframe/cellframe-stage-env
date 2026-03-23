@@ -588,7 +588,6 @@ class ConfigLoader:
             'auto_create_on_startup': True,
             'snapshot_name': 'clean_state',
             'genesis_stage': 'full',
-            'phase1_snapshot_name': 'phase1_zerochain_genesis',
             'auto_cleanup': True,
             'keep_snapshot_count': 5,
             'snapshots_dir': '../../cache/snapshots',
@@ -862,5 +861,55 @@ class ConfigLoader:
             result['enabled_nodes'] = [int(n.strip()) for n in nodes.split(',') if n.strip()]
 
         logger.debug("plugins_config_loaded", **result)
+        return result
+
+    def get_docker_customizations(self) -> Dict[str, Dict[str, Any]]:
+        """Parse ``[role_docker_*]`` and ``[node_docker_*]`` sections.
+
+        Returns a dict keyed by section name (e.g. ``role_docker_root``,
+        ``node_docker_3``) with sub-keys:
+        - ``capabilities``: List[str]
+        - ``devices``: List[str]
+        - ``environment``: Dict[str, str]
+        - ``extra_config``: Dict[str, Any]  (raw JSON)
+        """
+        config_file = self.custom_config_path or (self.config_dir / "stage-env.cfg")
+        if not config_file.exists():
+            return {}
+
+        config = configparser.ConfigParser()
+        config.read(config_file)
+
+        result: Dict[str, Dict[str, Any]] = {}
+        for section in config.sections():
+            if not (section.startswith('role_docker_') or section.startswith('node_docker_')):
+                continue
+            entry: Dict[str, Any] = {}
+            if config.has_option(section, 'capabilities'):
+                raw = config.get(section, 'capabilities')
+                entry['capabilities'] = [c.strip() for c in raw.split(',') if c.strip()]
+            if config.has_option(section, 'devices'):
+                raw = config.get(section, 'devices')
+                entry['devices'] = [d.strip() for d in raw.split(',') if d.strip()]
+            if config.has_option(section, 'environment'):
+                raw = config.get(section, 'environment')
+                env: Dict[str, str] = {}
+                for pair in raw.split(','):
+                    pair = pair.strip()
+                    if '=' in pair:
+                        k, v = pair.split('=', 1)
+                        env[k.strip()] = v.strip()
+                entry['environment'] = env
+            if config.has_option(section, 'extra_config'):
+                import json
+                try:
+                    entry['extra_config'] = json.loads(config.get(section, 'extra_config'))
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            if entry:
+                result[section] = entry
+
+        if result:
+            logger.debug("docker_customizations_loaded", sections=list(result.keys()))
         return result
 

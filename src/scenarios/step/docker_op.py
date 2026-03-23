@@ -5,6 +5,7 @@ Docker operation step executor.
 import subprocess
 
 from ...utils.logger import get_logger
+from ...utils.project import make_container_name
 from .base import StepExecutor
 from ..schema import DockerOpStep, WaitStep
 from ..executor import ScenarioExecutionError, RuntimeContext
@@ -110,7 +111,7 @@ class DockerOpStepExecutor(StepExecutor):
                     
                     # Map docker service names to container names
                     # node-1 -> cellframe-stage-node-1
-                    container_names = [f"cellframe-stage-{svc}" for svc in services]
+                    container_names = [make_container_name(svc) for svc in services]
                     
                     logger.info("waiting_for_container_ips", containers=container_names)
                     
@@ -139,9 +140,8 @@ class DockerOpStepExecutor(StepExecutor):
                     logger.info(f"Logs for {svc} (last {tail} lines):\n{log_output}")
                     all_output.append(log_output)
                 combined = "\n".join(all_output)
-                if step.save:
-                    ctx.set_variable(step.save, combined)
-                    logger.info(f"Saved logs output to variable '{step.save}'")
+                if step.save or step.save_map:
+                    ctx.save_output(combined, step.save, step.save_regex, step.save_map)
             elif operation == "exec":
                 if not step.command:
                     raise ScenarioExecutionError("Command required for 'exec' operation", step=step)
@@ -160,9 +160,8 @@ class DockerOpStepExecutor(StepExecutor):
                         )
                     all_output.append(output)
                 combined = "\n".join(all_output)
-                if step.save:
-                    ctx.set_variable(step.save, combined)
-                    logger.info(f"Saved exec output to variable '{step.save}'")
+                if step.save or step.save_map:
+                    ctx.save_output(combined, step.save, step.save_regex, step.save_map)
             else:
                 raise ScenarioExecutionError(f"Unknown Docker operation: {operation}", step=step)
             
@@ -205,7 +204,7 @@ class DockerOpStepExecutor(StepExecutor):
                 container = parts[0]
                 # Convert node-1 to cellframe-stage-node-1
                 if container.startswith('node-'):
-                    container = f"cellframe-stage-{container}"
+                    container = make_container_name(container)
                 return container, parts[1]
             return None, path
         
