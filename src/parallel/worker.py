@@ -231,6 +231,7 @@ def _run_suite_sync(
             debug=debug_mode,
             base_path=base_path,
             custom_templates_dirs=custom_templates_dirs,
+            cache_dir=shard_cache,
         )
         executor.load_operands(
             common_root / "operands",
@@ -283,6 +284,7 @@ def _run_suite_sync(
                 debug=debug_mode,
                 base_path=base_path,
                 custom_templates_dirs=custom_templates_dirs,
+                cache_dir=shard_cache,
             )
             executor.load_operands(
                 common_root / "operands",

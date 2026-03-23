@@ -825,7 +825,9 @@ class ConfigGenerator:
         from src.config.manager import get_config_loader
         try:
             plugins_cfg = get_config_loader().get_plugins_config()
-        except Exception:
+        except Exception as exc:
+            logger.warning("plugins_config_load_failed",
+                           error=str(exc), node_id=node.node_id)
             plugins_cfg = {'enabled': False, 'enabled_roles': [], 'enabled_nodes': []}
         
         enabled = plugins_cfg['enabled']
@@ -838,8 +840,9 @@ class ConfigGenerator:
         plugins_file.write_text(
             f"[plugins]\nenabled={'true' if enabled else 'false'}\n"
         )
-        logger.debug("plugins_config_generated",
-                     node_id=node.node_id, role=node.role, enabled=enabled)
+        logger.info("plugins_config_generated",
+                    node_id=node.node_id, role=node.role, enabled=enabled,
+                    plugins_cfg=plugins_cfg, path=str(plugins_file))
     
     def _generate_node_snippet(
         self,

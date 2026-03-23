@@ -27,7 +27,8 @@ class PythonStepExecutor(StepExecutor):
             
             if (step.save or step.save_map) and 'result' in namespace:
                 output = str(namespace['result']) if not isinstance(namespace['result'], str) else namespace['result']
-                ctx.save_output(output, step.save, step.save_regex, step.save_map)
+                resolved_save = ctx.substitute(step.save) if step.save else None
+                ctx.save_output(output, resolved_save, step.save_regex, step.save_map)
                 
         except Exception as e:
             raise ScenarioExecutionError(

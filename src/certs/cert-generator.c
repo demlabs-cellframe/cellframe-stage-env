@@ -29,6 +29,9 @@
 #include "dap_enc_base58.h"
 #include "dap_sign.h"
 #include "dap_hash.h"
+#ifndef DAP_SDK_PRE_6
+#include "dap_hash_compat.h"
+#endif
 
 /* === Inline Node Address Generation (from dap_stream.h - avoids heavy deps) === */
 
@@ -51,7 +54,12 @@ static inline dap_node_addr_t dap_node_addr_from_cert(dap_cert_t *a_cert)
     dap_node_addr_t l_ret = { .uint64 = 0 };
     if (!a_cert) return l_ret;
     dap_hash_fast_t l_hash;
+#ifdef DAP_SDK_PRE_6
     if (!dap_cert_get_pkey_hash(a_cert, &l_hash))
+#else
+    if (!dap_cert_get_pkey_hash(a_cert, DAP_HASH_TYPE_SHA3_256,
+                                (byte_t *)&l_hash, sizeof(l_hash)))
+#endif
         dap_node_addr_from_hash(&l_hash, &l_ret);
     return l_ret;
 }
@@ -74,7 +82,7 @@ static inline void s_sdk_deinit(void) { dap_enc_key_deinit(); }
 static inline int s_sdk_init(void) {
     return dap_sdk_init_with_app_name("cf-cert-generator", DAP_SDK_MODULE_CRYPTO);
 }
-static inline void s_sdk_deinit(void) { s_sdk_deinit(); }
+static inline void s_sdk_deinit(void) { dap_sdk_deinit(); }
 #endif
 
 /* === Constants === */
@@ -662,12 +670,18 @@ int main(int argc, char *argv[]) {
     int node_count = 0;
     int root_count = 2;  /* Default: 2 ROOT nodes */
     
+    /* Suppress log output for --read-addr before SDK init */
+    int quiet_mode = (argc >= 3 && strcmp(argv[1], "--read-addr") == 0);
+    if (quiet_mode)
+        dap_log_level_set(L_CRITICAL + 1);
+
     /* Initialize DAP SDK (core + crypto) — sets up common, enc, cert, sign */
     if (s_sdk_init() != 0) {
         fprintf(stderr, "Fatal: SDK init failed\n");
         return DAP_CERT_GEN_RET_ERROR;
     }
-    dap_log_level_set(L_DEBUG);
+    if (!quiet_mode)
+        dap_log_level_set(L_DEBUG);
     
     debug_if(s_debug_more, L_NOTICE, "=== Initializing DAP Certificate Generator ===");
 
@@ -680,12 +694,33 @@ int main(int argc, char *argv[]) {
         return ret;
     }
 
+    /* --read-addr mode: read node address from existing .dcert file */
+    if (argc >= 3 && strcmp(argv[1], "--read-addr") == 0) {
+        dap_log_level_set(L_CRITICAL + 1);
+        const char *cert_path = argv[2];
+        dap_cert_t *cert = dap_cert_file_load(cert_path);
+        if (!cert) {
+            fprintf(stderr, "Failed to load certificate: %s\n", cert_path);
+            _exit(DAP_CERT_GEN_RET_ERROR);
+        }
+        dap_node_addr_t addr = dap_node_addr_from_cert(cert);
+        char *addr_str = dap_node_addr_to_str(addr);
+        if (addr_str && addr.uint64 != 0) {
+            printf("%s\n", addr_str);
+            fflush(stdout);
+            _exit(DAP_CERT_GEN_RET_SUCCESS);
+        }
+        _exit(DAP_CERT_GEN_RET_ERROR);
+    }
+
     /* Parse command line arguments */
     if (argc < 4) {
         log_it(L_ERROR, "Usage: %s <output_dir> <node_count> <network_name> [network_id] [root_count]", argv[0]);
         log_it(L_ERROR, "       %s --single <output_dir> [cert_name]  # generate one cert, print address", argv[0]);
+        log_it(L_ERROR, "       %s --read-addr <cert_path>            # read node address from .dcert", argv[0]);
         log_it(L_ERROR, "Example: %s /certs 6 stagenet 0x1234 2  # 6 nodes, 2 ROOT, 4 MASTER", argv[0]);
         log_it(L_ERROR, "Example: %s --single /tmp/mynode node-addr  # single cert → ADDR:XXXX::YYYY::...", argv[0]);
+        log_it(L_ERROR, "Example: %s --read-addr /path/to/node-addr.dcert  # → 80C4::5AC6::1583::B52C", argv[0]);
         s_sdk_deinit();
         return DAP_CERT_GEN_RET_ERROR;
     }

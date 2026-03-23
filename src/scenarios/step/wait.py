@@ -410,8 +410,14 @@ class WaitStepExecutor(StepExecutor):
                 )
                 output = result.get("stdout", "")
                 cli_stderr = result.get("stderr", "")
+                cli_rc = result.get("returncode", None)
                 if cli_stderr:
                     logger.debug(f"  wait: cli stderr: {cli_stderr[:300]}")
+                if not output and (cli_stderr or cli_rc):
+                    logger.warning(
+                        f"  wait: cli empty stdout, rc={cli_rc}, "
+                        f"stderr={cli_stderr[:200] if cli_stderr else '(none)'}"
+                    )
                 last_output = output
                 output_lower = output.lower()
 
@@ -441,8 +447,9 @@ class WaitStepExecutor(StepExecutor):
                         f"({elapsed:.0f}s)"
                     )
                     if step.save or step.save_map:
+                        resolved_save = ctx.substitute(step.save) if step.save else None
                         ctx.save_output(
-                            output, step.save, step.save_regex, step.save_map
+                            output, resolved_save, step.save_regex, step.save_map
                         )
                     ctx.add_result("wait", True, {
                         "type": "cli", "attempts": attempt, "elapsed": elapsed
@@ -462,6 +469,8 @@ class WaitStepExecutor(StepExecutor):
             f"wait: cli timeout after {real_elapsed:.0f}s/{timeout}s ({attempt} attempts). "
             f"cmd='{cmd}' contains={expected!r} not_contains={unexpected!r}"
         )
+        if last_output:
+            logger.error(f"  wait: cli last_output: {last_output[:500]}")
         if getattr(step, "optional", False):
             logger.warning(f"⚠️ {msg} (optional, continuing)")
             ctx.add_result("wait", False, {"type": "cli", "timeout": True})
@@ -512,8 +521,8 @@ class WaitStepExecutor(StepExecutor):
             attempt += 1
             bash_timeout = min(30, max(5, timeout - elapsed))
             try:
-                result = await self.container_manager.exec_command(
-                    command=["bash", "-c", script],
+                result = await self.container_manager.exec_bash_command(
+                    script=script,
                     node=node,
                     timeout=int(bash_timeout),
                 )
@@ -549,8 +558,9 @@ class WaitStepExecutor(StepExecutor):
                             f"({elapsed:.0f}s)"
                         )
                         if step.save or step.save_map:
+                            resolved_save = ctx.substitute(step.save) if step.save else None
                             ctx.save_output(
-                                output, step.save, step.save_regex, step.save_map
+                                output, resolved_save, step.save_regex, step.save_map
                             )
                         ctx.add_result("wait", True, {
                             "type": "bash", "attempts": attempt, "elapsed": elapsed
@@ -691,8 +701,9 @@ class WaitStepExecutor(StepExecutor):
                             f"attempts ({elapsed:.0f}s)"
                         )
                         if step.save or step.save_map:
+                            resolved_save = ctx.substitute(step.save) if step.save else None
                             ctx.save_output(
-                                merged, step.save, step.save_regex, step.save_map
+                                merged, resolved_save, step.save_regex, step.save_map
                             )
                         ctx.add_result("wait", True, {
                             "type": "docker_exec", "attempts": attempt,

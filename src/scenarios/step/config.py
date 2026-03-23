@@ -21,11 +21,13 @@ class ConfigStepExecutor(StepExecutor):
         debug=False,
         resolve_node_alias_callback=None,
         custom_templates_dirs=None,
+        cache_dir: Path = None,
     ):
         super().__init__(container_manager, log_file, debug)
         self.resolve_node_alias_callback = resolve_node_alias_callback
         self.base_path = container_manager.base_path
         self.custom_templates_dirs: List[Path] = [Path(d) for d in (custom_templates_dirs or [])]
+        self._cache_dir_override: Path = cache_dir
         
     def _lookup_node_id_from_compose(self, service_name: str):
         """Resolve NODE_ID for a custom compose service (e.g. cdb-node-1 → 9)."""
@@ -271,9 +273,12 @@ class ConfigStepExecutor(StepExecutor):
         from src.config.generator import ConfigGenerator
         
         config_loader = get_config_loader()
-        paths_config = config_loader.get_paths_config()
-        cache_dir_relative = paths_config.get('cache_dir', '../../cache')
-        cache_dir = (self.base_path / cache_dir_relative).resolve()
+        if self._cache_dir_override:
+            cache_dir = self._cache_dir_override
+        else:
+            paths_config = config_loader.get_paths_config()
+            cache_dir_relative = paths_config.get('cache_dir', '../../cache')
+            cache_dir = (self.base_path / cache_dir_relative).resolve()
         
         generator = ConfigGenerator(self.base_path, config_loader.config_path)
 

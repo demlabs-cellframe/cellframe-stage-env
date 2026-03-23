@@ -43,8 +43,11 @@ if(DAP_SDK_PRE_6)
     target_compile_definitions(cf-cert-generator PRIVATE DAP_SDK_PRE_6)
 endif()
 
+# SDK 5.x: flat layout (core/, crypto/, 3rdparty/, io/)
+# SDK 6.x: module/ layout (module/core/, module/crypto/, module/hash/)
 target_include_directories(cf-cert-generator PRIVATE
     ${DAP_SDK_SRC}
+    # 5.x paths
     ${DAP_SDK_SRC}/core/include
     ${DAP_SDK_SRC}/core/src
     ${DAP_SDK_SRC}/core/src/unix
@@ -55,6 +58,17 @@ target_include_directories(cf-cert-generator PRIVATE
     ${DAP_SDK_SRC}/3rdparty/json-c
     ${DAP_SDK_BUILD}/core/json-c
     ${DAP_SDK_SRC}/io/include
+    # 6.x paths
+    ${DAP_SDK_SRC}/module/core/include
+    ${DAP_SDK_SRC}/module/core/src
+    ${DAP_SDK_SRC}/module/core/src/unix
+    ${DAP_SDK_BUILD}/module/core
+    ${DAP_SDK_SRC}/module/crypto/include
+    ${DAP_SDK_SRC}/module/crypto/src/Kyber/crypto_kem/kyber512/optimized
+    ${DAP_SDK_SRC}/module/hash/include
+    ${DAP_SDK_SRC}/module/math/include
+    ${DAP_SDK_SRC}/module/json/include
+    ${DAP_SDK_SRC}/module/io/include
 )
 
 target_link_directories(cf-cert-generator PRIVATE ${DAP_SDK_BUILD})

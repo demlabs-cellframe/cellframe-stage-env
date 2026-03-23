@@ -36,10 +36,13 @@ WORKDIR /src
 
 RUN git clone --depth 1 --branch ${DAP_SDK_BRANCH} ${DAP_SDK_REPO} /src/dap-sdk
 
+COPY tools/dap_tpl/             /src/dap-sdk/module/test/dap_tpl/
 COPY tools/stage-env/src/certs/ /src/cert-generator/
 COPY tools/stage-env/src/gdb/   /src/gdb-tool/
 
-# Build SDK — auto-detect whether CELLFRAME_MODULES is needed (6.0+) or not (5.x)
+# Build SDK — detect build system generation (5.x vs 6.0+) and produce libdap-sdk.a
+#   5.x: uses CELLFRAME_MODULES, produces individual .a archives
+#   6.0+: uses DAPSDK_MODULES, may produce libdap-sdk.so (shared) → we need static objects
 RUN mkdir -p /tmp/sdk-build && cd /tmp/sdk-build && \
     if grep -q CELLFRAME_MODULES /src/dap-sdk/CMakeLists.txt; then \
         cmake -DCMAKE_BUILD_TYPE=Release \
@@ -50,17 +53,23 @@ RUN mkdir -p /tmp/sdk-build && cd /tmp/sdk-build && \
     else \
         cmake -DCMAKE_BUILD_TYPE=Release \
               -DBUILD_DAP_SDK_TESTS=OFF \
+              -DBUILD_SHARED=OFF -DBUILD_STATIC=ON \
+              -DINSTALL_DAP_SDK=OFF \
+              -DBUILD_WITH_GDB_DRIVER_MDBX=ON \
               /src/dap-sdk; \
     fi && \
     cmake --build . -j$(nproc) && \
-    if [ ! -f libdap-sdk.a ] && [ ! -f libdap-sdk.so ]; then \
-        find . \( -name "*.c.o" -o -name "*.S.o" \) -print0 | xargs -0 ar rcs libdap-sdk.a && \
-        for xlib in $(find /tmp/sdk-build -name "libdap-XKCP*.a" -o -name "libmdbx*.a" 2>/dev/null | grep -v '\.build'); do \
-            tmpd=$(mktemp -d) && \
-            (cd "$tmpd" && ar x "$xlib" && ar rcs /tmp/sdk-build/libdap-sdk.a *.o) && \
-            rm -rf "$tmpd"; \
-        done; \
-    fi
+    if [ ! -f libdap-sdk.a ]; then \
+        find . \( -name "*.c.o" -o -name "*.S.o" \) -print0 | xargs -0 ar rcs libdap-sdk.a; \
+    fi && \
+    for xlib in $(find /tmp/sdk-build -maxdepth 5 \
+        \( -name "libdap-XKCP*.a" -o -name "libmdbx*.a" \
+           -o -name "libdap_crypto_kyber512.a" -o -name "libdap_core_unix.a" \) \
+        -not -path "*/static/*" 2>/dev/null); do \
+        tmpd=$(mktemp -d) && \
+        (cd "$tmpd" && ar x "$xlib" && ar rcs /tmp/sdk-build/libdap-sdk.a *.o) && \
+        rm -rf "$tmpd"; \
+    done
 
 # Detect SDK features by inspecting built library
 RUN HAS_SDK_INIT=OFF && \
@@ -78,29 +87,32 @@ RUN . /tmp/sdk-features.env && \
           /src/cert-generator 2>&1 && \
     cmake --build . -j$(nproc) 2>&1
 
-# Build dap-gdb-tool (optional — may not compile against older SDK versions)
+# Build dap-gdb-tool (required — sharding depends on it)
 RUN . /tmp/sdk-features.env && \
     mkdir -p /tmp/gdb-build && cd /tmp/gdb-build && \
     cmake -DDAP_SDK_SRC=/src/dap-sdk \
           -DDAP_SDK_BUILD=/tmp/sdk-build \
           -DDAP_HAS_SDK_INIT=$DAP_HAS_SDK_INIT \
           /src/gdb-tool 2>&1 && \
-    cmake --build . -j$(nproc) 2>&1 || \
-    echo "WARNING: dap-gdb-tool build skipped (SDK lacks required GDB API)"
+    cmake --build . -j$(nproc) 2>&1
 
 # Stage all built binaries
 RUN mkdir -p /tools && \
     cp /tmp/cert-build/cf-cert-generator /tools/ && \
-    (cp /tmp/gdb-build/dap-gdb-tool /tools/ 2>/dev/null || true)
+    cp /tmp/gdb-build/dap-gdb-tool /tools/
 
 # --- runtime stage ---
 FROM debian:bookworm-slim
+
+ARG DAP_SDK_BRANCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /tools/ /usr/local/bin/
+
+LABEL dap.sdk.branch="${DAP_SDK_BRANCH}"
 
 WORKDIR /output
 

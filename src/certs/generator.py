@@ -67,14 +67,26 @@ class CertGenerator:
                    docker_mode=True)
     
     def _image_needs_rebuild(self) -> bool:
-        """Check if the Docker image is older than local source files."""
+        """Check if the Docker image is older than local source files or SDK branch changed."""
         try:
             result = subprocess.run(
-                ["docker", "inspect", "--format", "{{.Created}}", CERT_BUILDER_IMAGE],
+                ["docker", "inspect", "--format",
+                 "{{.Created}}||{{index .Config.Labels \"dap.sdk.branch\"}}",
+                 CERT_BUILDER_IMAGE],
                 capture_output=True, text=True, check=True,
             )
+            parts = result.stdout.strip().split("||", 1)
+            created_raw = parts[0]
+            image_branch = parts[1] if len(parts) > 1 else ""
+
+            if image_branch != self.dap_sdk_branch:
+                logger.info("cert_builder_sdk_branch_changed",
+                            image_branch=image_branch,
+                            desired_branch=self.dap_sdk_branch)
+                return True
+
             from datetime import datetime, timezone
-            created_str = result.stdout.strip().split(".")[0]
+            created_str = created_raw.split(".")[0]
             image_ts = datetime.strptime(created_str, "%Y-%m-%dT%H:%M:%S").replace(
                 tzinfo=timezone.utc
             )

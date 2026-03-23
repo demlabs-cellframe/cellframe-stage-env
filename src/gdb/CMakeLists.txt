@@ -16,17 +16,18 @@ message(STATUS "DAP SDK Build: ${DAP_SDK_BUILD}")
 
 add_definitions(-DDAP_OS_UNIX -DDAP_OS_LINUX)
 
-# Detect SDK version by checking for dap_sdk.h (unified init, present in 6.0+)
-# AND dap_global_db_btree.h (btree cursor API, only in custom builds)
-if(NOT EXISTS "${DAP_SDK_SRC}/dap_sdk.h")
-    message(STATUS "No dap_sdk.h — legacy SDK detected")
+# Detect which GDB API to use by checking actual headers.
+# Check both flat layout (5.x: global-db/) and module layout (6.x: module/global-db/)
+if(EXISTS "${DAP_SDK_SRC}/global-db/include/dap_global_db_btree.h" OR
+   EXISTS "${DAP_SDK_SRC}/module/global-db/include/dap_global_db_btree.h")
+    message(STATUS "GDB API: B-tree cursor (dap_global_db_btree.h)")
     set(DAP_SDK_PRE_6 ON)
-elseif(EXISTS "${DAP_SDK_SRC}/global-db/include/dap_global_db_btree.h")
-    message(STATUS "Detected dap_global_db_btree.h — btree API")
-    set(DAP_SDK_PRE_6 ON)
-else()
-    message(STATUS "Detected DAP SDK 6+ (driver API)")
+elseif(EXISTS "${DAP_SDK_SRC}/global-db/include/dap_global_db_driver.h" OR
+       EXISTS "${DAP_SDK_SRC}/module/global-db/include/dap_global_db_driver.h")
+    message(STATUS "GDB API: Driver-level (dap_global_db_driver.h)")
     set(DAP_SDK_PRE_6 OFF)
+else()
+    message(FATAL_ERROR "No supported GDB API found in ${DAP_SDK_SRC}")
 endif()
 
 add_executable(dap-gdb-tool dap-gdb-tool.c)
@@ -35,9 +36,11 @@ if(DAP_SDK_PRE_6)
     target_compile_definitions(dap-gdb-tool PRIVATE DAP_SDK_PRE_6)
 endif()
 
-# Include paths — common core + version-specific
+# SDK 5.x: flat layout (core/, crypto/, global-db/, net/)
+# SDK 6.x: module layout (module/core/, module/crypto/, module/global-db/)
 target_include_directories(dap-gdb-tool PRIVATE
     ${DAP_SDK_SRC}
+    # 5.x paths
     ${DAP_SDK_SRC}/core/include
     ${DAP_SDK_SRC}/core/src
     ${DAP_SDK_SRC}/core/src/unix
@@ -49,9 +52,23 @@ target_include_directories(dap-gdb-tool PRIVATE
     ${DAP_SDK_BUILD}/core/json-c
     ${DAP_SDK_SRC}/io/include
     ${DAP_SDK_SRC}/global-db/include
+    # 6.x paths
+    ${DAP_SDK_SRC}/module/core/include
+    ${DAP_SDK_SRC}/module/core/src
+    ${DAP_SDK_SRC}/module/core/src/unix
+    ${DAP_SDK_BUILD}/module/core
+    ${DAP_SDK_SRC}/module/crypto/include
+    ${DAP_SDK_SRC}/module/crypto/src/Kyber/crypto_kem/kyber512/optimized
+    ${DAP_SDK_SRC}/module/hash/include
+    ${DAP_SDK_SRC}/module/math/include
+    ${DAP_SDK_SRC}/module/json/include
+    ${DAP_SDK_SRC}/module/io/include
+    ${DAP_SDK_SRC}/module/global-db/include
+    ${DAP_SDK_SRC}/module/cluster/include
+    ${DAP_SDK_SRC}/module/net/common/include
 )
 
-# 6.x needs net/stream headers for dap_global_db_driver.h -> dap_stream_cluster.h
+# 5.x driver path needs net/stream headers (dap_global_db_driver.h → dap_stream_cluster.h)
 if(NOT DAP_SDK_PRE_6)
     target_include_directories(dap-gdb-tool PRIVATE
         ${DAP_SDK_SRC}/net/stream/stream/include

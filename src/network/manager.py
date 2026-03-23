@@ -369,13 +369,68 @@ class NetworkManager:
             logger.info("remapped_seed_nodes_for_shard",
                        new_prefix=new_prefix, patched_files=patched)
 
+    def _regenerate_plugins_after_restore(self, node_configs) -> None:
+        """Regenerate plugins.cfg for all nodes after snapshot restore.
+
+        plugins.cfg depends on the runtime [plugins] config section, not on the
+        snapshot contents.  A snapshot created by a different config (e.g. node
+        base tests without [plugins] enabled=true) would leave plugins disabled.
+        """
+        cache_dir = self.paths_config.get('cache_dir', 'cache')
+        configs_cache = (self.base_path / cache_dir / 'configs').resolve()
+
+        for node in node_configs:
+            node_cfg_d = configs_cache / f"node{node.node_id}" / "cellframe-node.cfg.d"
+            node_cfg_d.mkdir(parents=True, exist_ok=True)
+            self.config_generator._generate_plugins_config(node_cfg_d, node)
+
+    async def _purge_nodes_list_before_snapshot(self, node_configs) -> None:
+        """Delete all entries from ``<net>.nodes.list`` via CLI before snapshot.
+
+        This ensures shards restored from this snapshot don't inherit
+        stale IPs — they will use ``seed_nodes_hosts`` from config instead.
+        """
+        import re
+        import subprocess
+        from ..utils.project import make_container_name
+
+        net_name = self.topology.network.name
+        group = f"{net_name}.nodes.list"
+        first_node = node_configs[0]
+        container = make_container_name(f"node-{first_node.node_id}")
+
+        try:
+            result = subprocess.run(
+                ["docker", "exec", container, "sh", "-c",
+                 f"cellframe-node-cli global_db get_keys -group {group}"],
+                capture_output=True, text=True, timeout=15)
+            if result.returncode != 0 or "No data" in result.stdout:
+                logger.info("nodes_list_already_empty", group=group)
+                return
+
+            keys = re.findall(r'key:\s+(\S+)', result.stdout)
+            deleted = 0
+            for key in keys:
+                try:
+                    subprocess.run(
+                        ["docker", "exec", container, "sh", "-c",
+                         f"cellframe-node-cli global_db delete -group {group} -key {key}"],
+                        capture_output=True, text=True, timeout=10)
+                    deleted += 1
+                except Exception:
+                    pass
+            logger.info("nodes_list_purged_before_snapshot",
+                       group=group, deleted=deleted, total_keys=len(keys))
+        except Exception as exc:
+            logger.warning("nodes_list_purge_failed", error=str(exc),
+                          note="Shards may have stale IPs in GDB")
+
     def _fix_stale_node_list(self, node_configs) -> None:
         """Overwrite stale IPs in ``nodes.list`` BEFORE starting containers.
 
-        Runs ``dap-gdb-tool node-rehost`` directly on the GDB files on disk.
-        Node addresses are read from ``node-addr.dcert`` via ``dap-cert``.
-        Everything happens in a single ``docker run`` — no running nodes,
-        no CLI sockets, no network cycling required.
+        Runs ``cf-cert-generator --read-addr`` and ``dap-gdb-tool node-rehost``
+        directly on the GDB files on disk.  Everything happens in a single
+        ``docker run`` — no running nodes, no CLI sockets required.
         """
         import subprocess
         from ..certs.generator import CertGenerator, CERT_BUILDER_IMAGE
@@ -409,9 +464,9 @@ class NetworkManager:
         for nc in node_configs:
             script_lines.append(
                 f'ADDR_{nc.node_id}=$('
-                f'/usr/local/bin/dap-cert node-addr '
+                f'/usr/local/bin/cf-cert-generator --read-addr '
                 f'/nodes/node{nc.node_id}/lib/ca/node-addr.dcert 2>/dev/null'
-                f') || ADDR_{nc.node_id}=""'
+                f' | tail -1) || ADDR_{nc.node_id}=""'
             )
 
         script_lines.append("")
@@ -524,6 +579,7 @@ class NetworkManager:
                 self.config_generator.generate_all(self.topology, node_configs, force=rebuild)
             else:
                 self._remap_seed_nodes_for_shard(node_configs)
+                self._regenerate_plugins_after_restore(node_configs)
 
             cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
             node_source_config = self.config_loader.get_node_source_config()

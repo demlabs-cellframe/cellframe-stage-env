@@ -71,10 +71,19 @@ def _fixup_node_identity(cfg_dir: Path, data_dir: Path, role: str, node_id: int,
                 content = _re.sub(r'(?m)^node-role\s*=\s*\S+', f'node-role={role}', content)
                 if role not in ("root",):
                     content = _re.sub(r'(?m)^events-sign-cert\s*=.*$', '#events-sign-cert=', content)
+            old_seeds = seed_re.findall(content)
             content = seed_re.sub(
                 lambda m: m.group(1) + _remap_hosts(m.group(2)),
                 content,
             )
+            new_seeds = seed_re.findall(content)
+            if old_seeds != new_seeds:
+                import structlog as _sl
+                _sl.get_logger().info("fixup_seed_remap",
+                                      svc=svc_name, cfg=net_cfg.name,
+                                      prefix=new_prefix,
+                                      old=[s[1] for s in old_seeds],
+                                      new=[s[1] for s in new_seeds])
             net_cfg.write_text(content)
         print_info(_("    [{}] patched network configs: role={}").format(svc_name, role))
 
@@ -202,6 +211,26 @@ def _commit_and_clone_prototypes(compose_mgr, clone_map, print_info, print_warni
 
     if image_map:
         compose_mgr.set_service_images(image_map)
+
+
+def _regenerate_plugins_cfg(cfg_dir, role, config_loader, print_info, svc_name):
+    """Regenerate plugins.cfg for a cloned node using the suite's [plugins] config."""
+    try:
+        plugins_cfg = config_loader.get_plugins_config()
+    except Exception:
+        plugins_cfg = {'enabled': False, 'enabled_roles': [], 'enabled_nodes': []}
+
+    enabled = plugins_cfg['enabled']
+    if not enabled and plugins_cfg['enabled_roles']:
+        enabled = role in plugins_cfg['enabled_roles']
+
+    cfg_d = cfg_dir / "cellframe-node.cfg.d"
+    cfg_d.mkdir(parents=True, exist_ok=True)
+    (cfg_d / "plugins.cfg").write_text(
+        f"[plugins]\nenabled={'true' if enabled else 'false'}\n"
+    )
+    if enabled:
+        print_info(f"    plugins enabled for {svc_name} (role={role})")
 
 
 def _provision_node_compose(network_mgr, node_compose, base_path, config_loader, print_info, print_success, print_warning, print_error, suite_variables=None, suite_env=None):
@@ -381,6 +410,8 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                 for cert_file in _glob.glob(str(ca_dir / "node-addr*")):
                     Path(cert_file).unlink(missing_ok=True)
                 print_info(_("    regenerate_cert: removed node-addr certs for {}").format(svc_name))
+
+        _regenerate_plugins_cfg(cfg_dir, spec.role, config_loader, print_info, svc_name)
 
         if spec.config_overrides:
             cfg_d = cfg_dir / "cellframe-node.cfg.d"

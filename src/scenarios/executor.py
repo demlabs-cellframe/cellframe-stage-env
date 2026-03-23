@@ -124,7 +124,8 @@ class RuntimeContext:
 
         if save_map:
             for var_name, pattern in save_map.items():
-                _apply(var_name, pattern)
+                resolved_var = self.substitute(var_name) if var_name else var_name
+                _apply(resolved_var, pattern)
     
     def get_variable(self, name: str) -> Any:
         """Get runtime variable."""
@@ -208,7 +209,7 @@ class RuntimeContext:
 class ScenarioExecutor:
     """Execute test scenarios with full lifecycle management."""
     
-    def __init__(self, node_cli_path: str = "cellframe-node-cli", log_file: Optional[Path] = None, debug: bool = False, base_path: Optional[Path] = None, custom_templates_dirs=None):
+    def __init__(self, node_cli_path: str = "cellframe-node-cli", log_file: Optional[Path] = None, debug: bool = False, base_path: Optional[Path] = None, custom_templates_dirs=None, cache_dir: Optional[Path] = None):
         """
         Initialize executor.
         
@@ -218,6 +219,7 @@ class ScenarioExecutor:
             debug: Enable debug logging
             base_path: Base path to stage-env directory (for artifacts collection)
             custom_templates_dirs: List of paths to search for J2 config templates
+            cache_dir: Resolved cache directory (overrides global config; needed for shards)
         """
         self.node_cli_path = node_cli_path
         self.log_file = log_file
@@ -307,6 +309,7 @@ class ScenarioExecutor:
             self.container_manager, log_file, debug,
             resolve_node_alias_callback=self._resolve_node_alias,
             custom_templates_dirs=self._custom_templates_dirs,
+            cache_dir=cache_dir,
         )
         self.dpkg_executor = DpkgStepExecutor(self.container_manager, log_file, debug)
 

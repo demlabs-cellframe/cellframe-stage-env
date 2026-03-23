@@ -44,9 +44,10 @@ class ToolStepExecutor(StepExecutor):
         self._log_to_file("\n" + "=" * 70 + "\n")
         
         if step.save or step.save_map:
-            ctx.save_output(result["stdout"], step.save, step.save_regex, step.save_map)
-            if step.save:
-                self._log_to_file(f"✓ Saved to variable: {step.save}")
+            resolved_save = ctx.substitute(step.save) if step.save else None
+            ctx.save_output(result["stdout"], resolved_save, step.save_regex, step.save_map)
+            if resolved_save:
+                self._log_to_file(f"✓ Saved to variable: {resolved_save}")
         
         # Check expectation
         if step.expect == "success" and result["returncode"] != 0:

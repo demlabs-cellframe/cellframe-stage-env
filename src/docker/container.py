@@ -405,11 +405,13 @@ class DockerContainerManager:
             }
         
         # Container is running - execute command
-        # Use shell mode to ensure proper argument passing through docker exec
+        # Use shell mode to ensure proper argument passing through docker exec.
+        # stdbuf forces line-buffered stdout so output is flushed before exit;
+        # without it, a crash during cleanup loses buffered printf output.
         import shlex
         cmd_args = command.split()
         cli_cmd_quoted = " ".join(shlex.quote(arg) for arg in cmd_args)
-        shell_cmd = f"{self.node_cli_path} {cli_cmd_quoted}"
+        shell_cmd = f"stdbuf -oL {self.node_cli_path} {cli_cmd_quoted}"
         
         full_cmd = [
             "docker", "exec", container_name,

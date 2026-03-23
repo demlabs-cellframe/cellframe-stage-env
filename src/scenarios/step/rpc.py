@@ -41,7 +41,8 @@ class RPCStepExecutor(StepExecutor):
         
         if step.save or step.save_map:
             output = str(result) if not isinstance(result, str) else result
-            ctx.save_output(output, step.save, step.save_regex, step.save_map)
+            resolved_save = ctx.substitute(step.save) if step.save else None
+            ctx.save_output(output, resolved_save, step.save_regex, step.save_map)
         
         return result
 
