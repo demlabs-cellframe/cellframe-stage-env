@@ -276,7 +276,15 @@ class DockerComposeManager:
         if not node_template:
             raise ValueError("No x-cf-node-template found in docker-compose.yml")
         
-        # Override network config from stage-env.cfg (template has defaults)
+        # Replace template networks with the actual project network.
+        # The template may define a default network (e.g. "stagenet") that
+        # conflicts with the actual network name and subnet.
+        template_networks = set(compose_data.get('networks', {}).keys())
+        for old_net in template_networks:
+            if old_net != self.network_name:
+                del compose_data['networks'][old_net]
+                logger.debug("template_network_removed", name=old_net)
+
         if network_settings:
             subnet = network_settings.get('subnet')
             if subnet:
