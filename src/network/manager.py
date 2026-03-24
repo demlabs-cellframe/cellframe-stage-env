@@ -255,7 +255,10 @@ class NetworkManager:
         """Derive dap-sdk git branch from genesis version (v5.8 -> release-5.8)."""
         ver = self._genesis_version_dir
         if ver and ver.startswith("v"):
-            return f"release-{ver[1:]}"
+            suffix = ver[1:]
+            if suffix.endswith(".x"):
+                suffix = suffix[:-2] + ".0"
+            return f"release-{suffix}"
         return "release-6.0"
 
     async def prepare(self, rebuild: bool = False) -> None:
@@ -1347,6 +1350,14 @@ class NetworkManager:
                 await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
         else:
             logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
+            master_services = [f"node-{n.node_id}" for n in master_nodes]
+            if not self.compose.are_services_running(master_services):
+                logger.info("starting_master_nodes_for_phase2", services=master_services)
+                self.compose.up(services=master_services, detach=True, wait=False)
+                await self.state_manager.wait_for_nodes_online(
+                    root_nodes + master_nodes,
+                    timeout=self.timeouts.get('startup', 600))
+                logger.info("master_nodes_online_for_phase2")
         
         try:
             if skip_phase2:

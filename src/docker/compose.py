@@ -536,6 +536,7 @@ class DockerComposeManager:
                 'NETWORK_NAME': self.network_name,
                 'DAP_DEBUG': '1',
                 'CELLFRAME_DEBUG': '1',
+                'DEBUG_GDB': '1',
             }
             if network_settings:
                 env['DOCKER_SUBNET'] = network_settings.get('subnet', '172.20.0.0/16')

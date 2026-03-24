@@ -8,6 +8,7 @@ that suites execute in fully isolated Docker Compose projects.
 """
 
 import os
+from pathlib import Path
 
 DEFAULT_PROJECT_NAME = "cellframe-stage"
 _ENV_KEY = "CELLFRAME_STAGE_PROJECT"
@@ -35,3 +36,25 @@ def make_container_name(service: str) -> str:
 def set_project_name(name: str) -> None:
     """Override the project name for the current process."""
     os.environ[_ENV_KEY] = name
+
+
+def find_common_root(suite_path: Path, fallback: Path) -> Path:
+    """Derive ``common_root`` from suite location by walking up to find ``common/``.
+
+    Starting from *suite_path* (directory containing the suite descriptor),
+    walk up at most 4 levels looking for a **real** (non-symlink) ``common/``
+    sub-directory.  Returns the first ancestor that contains it, so that
+    ``common_root / "common/defaults.yml"`` resolves naturally.
+
+    Falls back to *fallback* when nothing is found.
+    """
+    current = suite_path.resolve()
+    for _ in range(4):
+        candidate = current / "common"
+        if candidate.is_dir() and not candidate.is_symlink():
+            return current
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return fallback

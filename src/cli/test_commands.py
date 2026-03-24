@@ -11,7 +11,7 @@ from typing import Optional, List, Dict, Callable
 
 from .common import print_info, print_success, print_error, print_warning
 from src.utils.i18n import _
-from src.utils.project import get_project_name, make_container_name
+from src.utils.project import get_project_name, make_container_name, find_common_root
 
 
 def _fixup_node_identity(cfg_dir: Path, data_dir: Path, role: str, node_id: int,
@@ -1392,12 +1392,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     suite_scenarios = suite_info['scenarios']
                     
                     # Parse suite descriptor to get metadata
-                    # common_root: use project's tests/e2e/ for cross-suite common includes
+                    # common_root: walk up from suite dir to find the nearest real common/ directory
                     paths_config = get_config_loader().get_paths_config()
                     project_root = (base_path / paths_config.get('project_root', '../..')).resolve()
-                    common_root = project_root / "tests" / "e2e"
-                    if not common_root.exists():
-                        common_root = base_path / "tests"
+                    common_root = find_common_root(
+                        Path(suite_path), fallback=base_path / "tests"
+                    )
                     # fallback: stage-env integration scenarios (e.g. common/networks/single_node.yml)
                     fallback_common = (base_path / "tests" / "integration" / "scenarios").resolve()
                     if not fallback_common.exists():

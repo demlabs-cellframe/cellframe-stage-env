@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.utils.project import set_project_name
+from src.utils.project import set_project_name, find_common_root
 
 
 @dataclass
@@ -172,9 +172,9 @@ def _run_suite_sync(
 
     paths_config = config_loader.get_paths_config()
     project_root = (base_path / paths_config.get("project_root", "../..")).resolve()
-    common_root = project_root / "tests" / "e2e"
-    if not common_root.exists():
-        common_root = base_path / "tests"
+    common_root = find_common_root(
+        task.suite_dir, fallback=base_path / "tests"
+    )
     fallback_common = (base_path / "tests" / "integration" / "scenarios").resolve()
     if not fallback_common.exists():
         fallback_common = None
