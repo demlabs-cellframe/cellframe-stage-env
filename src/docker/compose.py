@@ -813,6 +813,19 @@ class DockerComposeManager:
             logger.info("docker_compose_service_added", name=svc_name)
 
         if added:
+            top_nets = compose_data.setdefault('networks', {})
+            for svc_config in services.values():
+                if not isinstance(svc_config, dict):
+                    continue
+                svc_nets = svc_config.get('networks')
+                if isinstance(svc_nets, dict):
+                    for net_name in svc_nets:
+                        if net_name not in top_nets:
+                            top_nets[net_name] = {'driver': 'bridge'}
+                elif isinstance(svc_nets, list):
+                    for net_name in svc_nets:
+                        if net_name not in top_nets:
+                            top_nets[net_name] = {'driver': 'bridge'}
             with open(self.compose_file, 'w') as f:
                 yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
             logger.info("docker_compose_services_written", count=added)

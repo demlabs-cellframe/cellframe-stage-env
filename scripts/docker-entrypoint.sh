@@ -27,10 +27,16 @@ if ldd /opt/cellframe-node/bin/cellframe-node 2>/dev/null | grep -q libasan; the
 fi
 
 cleanup() {
+    echo "=== ENTRYPOINT: received signal, cleanup started (NODE_PID=$NODE_PID) ==="
     if [ -n "$NODE_PID" ]; then
-        kill -TERM "$NODE_PID" 2>/dev/null
+        # When running under GDB, NODE_PID is GDB's PID.
+        # kill -TERM on GDB itself makes GDB interrupt `run` and quit
+        # WITHOUT forwarding SIGTERM to cellframe-node.
+        # Send SIGTERM directly to all cellframe-node processes.
+        pkill -TERM -x cellframe-node 2>/dev/null || kill -TERM "$NODE_PID" 2>/dev/null
         wait "$NODE_PID" 2>/dev/null
     fi
+    echo "=== ENTRYPOINT: cleanup finished, exiting 0 ==="
     exit 0
 }
 trap cleanup SIGTERM SIGINT SIGHUP SIGQUIT
@@ -49,18 +55,38 @@ set confirm off
 handle SIGPIPE nostop noprint pass
 handle SIGTERM nostop noprint pass
 run -D 5
+printf "\n=== GDB: inferior stopped/exited ===\n"
+info inferiors
 printf "\n=== CRASH BACKTRACE ===\n"
 thread apply all bt full
 printf "\n=== END BACKTRACE ===\n"
 quit
 GDBEOF
-    gdb -q -x "$GDB_INIT" /opt/cellframe-node/bin/cellframe-node </dev/null &
+    GDB_LOG="/tmp/gdb-output-${NODE_ID}.log"
+    gdb -q -x "$GDB_INIT" /opt/cellframe-node/bin/cellframe-node </dev/null 2>&1 | tee "$GDB_LOG" &
 else
     /opt/cellframe-node/bin/cellframe-node -D 5 &
 fi
 NODE_PID=$!
+echo "=== ENTRYPOINT: child started, NODE_PID=$NODE_PID, waiting... ==="
 wait "$NODE_PID"
 EXIT_CODE=$?
+
+echo "=== ENTRYPOINT: wait returned, EXIT_CODE=$EXIT_CODE, NODE_PID=$NODE_PID ==="
+
+GDB_LOG="/tmp/gdb-output-${NODE_ID}.log"
+if [ -f "$GDB_LOG" ]; then
+    echo "=== GDB OUTPUT (exit info) ==="
+    grep -E "exited|signal|killed|stopped|Inferior|Program" "$GDB_LOG" 2>/dev/null || echo "(no exit info found)"
+    echo "=== END GDB OUTPUT ==="
+fi
+
+NODE_LOG="/opt/cellframe-node/var/log/cellframe-node.log"
+if [ -f "$NODE_LOG" ]; then
+    echo "=== LAST 200 LINES OF NODE LOG ==="
+    tail -200 "$NODE_LOG"
+    echo "=== END NODE LOG ==="
+fi
 
 if [ $EXIT_CODE -ne 0 ]; then
     echo "=== NODE EXITED ABNORMALLY (exit_code=$EXIT_CODE, node_id=$NODE_ID) ==="
@@ -70,6 +96,8 @@ if [ $EXIT_CODE -ne 0 ]; then
     else
         echo "No core dump at $CRASH_DIR/core"
     fi
+else
+    echo "=== NODE EXITED NORMALLY (exit_code=0, node_id=$NODE_ID) — THIS IS UNEXPECTED ==="
 fi
 
 exit $EXIT_CODE

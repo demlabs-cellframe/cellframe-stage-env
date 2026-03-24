@@ -425,50 +425,70 @@ class DockerContainerManager:
                     command_split=cmd_args,
                     shell_cmd=shell_cmd,
                     full_cmd_list=full_cmd)
-        
-        process = await asyncio.create_subprocess_exec(
-            *full_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=timeout
+
+        max_cli_retries = 3
+        for cli_attempt in range(max_cli_retries):
+            process = await asyncio.create_subprocess_exec(
+                *full_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
-            
-            return {
-                "stdout": stdout.decode('utf-8', errors='replace'),
-                "stderr": stderr.decode('utf-8', errors='replace'),
-                "returncode": process.returncode
-            }
-        except asyncio.TimeoutError:
-            logger.warning("exec_cli_timeout",
-                         container=container_name,
-                         command=command[:100],
-                         timeout=timeout)
-            process.kill()
-            partial_out = ""
-            partial_err = ""
+
             try:
                 stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=3
+                    process.communicate(),
+                    timeout=timeout
                 )
-                partial_out = stdout.decode('utf-8', errors='replace')
-                partial_err = stderr.decode('utf-8', errors='replace')
-                if partial_out or partial_err:
-                    logger.warning("exec_cli_timeout_partial_output",
+
+                out_str = stdout.decode('utf-8', errors='replace')
+                err_str = stderr.decode('utf-8', errors='replace')
+
+                if not out_str.strip() and process.returncode != 0 and cli_attempt < max_cli_retries - 1:
+                    logger.debug("exec_cli_empty_retry",
                                  container=container_name,
-                                 stdout=partial_out[:500],
-                                 stderr=partial_err[:500])
-            except Exception:
-                pass
-            return {
-                "stdout": partial_out,
-                "stderr": f"TIMEOUT after {timeout}s: {partial_err}",
-                "returncode": -1
-            }
+                                 attempt=cli_attempt + 1,
+                                 returncode=process.returncode,
+                                 stderr=err_str[:200])
+                    await asyncio.sleep(0.3 * (cli_attempt + 1))
+                    continue
+
+                return {
+                    "stdout": out_str,
+                    "stderr": err_str,
+                    "returncode": process.returncode
+                }
+            except asyncio.TimeoutError:
+                logger.warning("exec_cli_timeout",
+                             container=container_name,
+                             command=command[:100],
+                             timeout=timeout)
+                process.kill()
+                partial_out = ""
+                partial_err = ""
+                try:
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(), timeout=3
+                    )
+                    partial_out = stdout.decode('utf-8', errors='replace')
+                    partial_err = stderr.decode('utf-8', errors='replace')
+                    if partial_out or partial_err:
+                        logger.warning("exec_cli_timeout_partial_output",
+                                     container=container_name,
+                                     stdout=partial_out[:500],
+                                     stderr=partial_err[:500])
+                except Exception:
+                    pass
+                return {
+                    "stdout": partial_out,
+                    "stderr": f"TIMEOUT after {timeout}s: {partial_err}",
+                    "returncode": -1
+                }
+
+        return {
+            "stdout": "",
+            "stderr": f"CLI retries exhausted ({max_cli_retries})",
+            "returncode": -1
+        }
     
     async def exec_bash_command(
         self,
