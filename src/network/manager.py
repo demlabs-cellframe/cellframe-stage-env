@@ -307,7 +307,7 @@ class NetworkManager:
             extra_services=self.docker_compose or None,
         )
         if rebuild:
-            self.compose.build(no_cache=rebuild)
+            self.compose.build(no_cache=False)
 
         self._prepared = True
 
@@ -599,7 +599,7 @@ class NetworkManager:
                 extra_services=self.docker_compose or None,
             )
             if rebuild:
-                self.compose.build(no_cache=rebuild)
+                self.compose.build(no_cache=False)
         else:
             # prepare() already ran — just re-read state
             node_configs = list(self.nodes.values())

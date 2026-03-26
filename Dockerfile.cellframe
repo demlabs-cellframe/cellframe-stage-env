@@ -445,7 +445,7 @@ RUN set +e && \
 
 # Install Python dependencies for testing (CF20 compatible)
 # Use --break-system-packages for Debian 12+ pip restrictions
-RUN pip3 install --break-system-packages requests pycryptodome
+RUN pip3 install --break-system-packages --timeout 120 --retries 10 requests pycryptodome
 
 # Note: Test plugins can be installed dynamically via YAML scenarios using the 'packages' section
 # This allows flexible plugin installation per test scenario
