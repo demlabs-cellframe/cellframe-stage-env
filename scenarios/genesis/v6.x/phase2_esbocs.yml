@@ -18,16 +18,18 @@ setup:
     value: "root_nodes + master_nodes"
     eval: true
   
-  # Enable seed_mode on ALL root and master nodes via CLI (no restart needed)
-  - group: Enable seed_mode for main chain
-    steps:
-      - for: _node
-        in: "{{_active_nodes}}"
-        steps:
-          - cli: "chain seed -chain main on"
-            node: "{{_node}}"
-            save_to: _seed_mode_result
-          - print: "seed_mode on {{_node}}: {{_seed_mode_result}}"
+  # Enable seed_mode via cfg.d snippet + restart (SDK 6.0 has no CLI toggle)
+  - config: "cellframe-node.cfg.d/seed-mode.cfg"
+    nodes: "{{_active_nodes}}"
+    set:
+      general.seed_mode: "true"
+
+  - docker_op: restart
+    services: "{{_active_nodes}}"
+
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 120
 
   - wait: global_db_sync
     node: "{{first_root}}"
@@ -166,21 +168,18 @@ test:
       static_genesis_block: "{{genesis_block_hash}}"
       is_static_genesis_block: "true"
   
-  # Disable seed_mode on seed nodes via CLI
-  - group: Disable seed_mode for main chain
-    steps:
-      - for: _node
-        in: "{{seed_nodes}}"
-        steps:
-          - cli: "chain seed -chain main off"
-            node: "{{_node}}"
+  # Disable seed_mode via cfg.d snippet (applied at next restart)
+  - config: "cellframe-node.cfg.d/seed-mode.cfg"
+    nodes: "{{seed_nodes}}"
+    set:
+      general.seed_mode: "false"
 
   - docker_op: restart
     services: "{{all_nodes}}"
 
   - wait_network: online
     nodes: "{{_active_nodes}}"
-    timeout: 60
+    timeout: 120
 
   - wait: global_db_sync
     node: "{{first_root}}"
