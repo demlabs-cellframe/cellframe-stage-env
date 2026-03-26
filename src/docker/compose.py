@@ -866,13 +866,23 @@ class DockerComposeManager:
         with open(self.compose_file) as f:
             compose_data = yaml.safe_load(f) or {}
 
+        source_dir = compose_file_path.resolve().parent
+
         added_svc = 0
         for svc_name, svc_config in (external.get('services') or {}).items():
             if svc_name in compose_data.get('services', {}):
                 logger.debug("merge_compose_service_exists", service=svc_name)
                 continue
-            if isinstance(svc_config, dict) and 'networks' not in svc_config:
-                svc_config['networks'] = [self.network_name]
+            if isinstance(svc_config, dict):
+                if 'networks' not in svc_config:
+                    svc_config['networks'] = [self.network_name]
+                build = svc_config.get('build')
+                if isinstance(build, dict) and 'context' in build:
+                    ctx = Path(build['context'])
+                    if not ctx.is_absolute():
+                        build['context'] = str((source_dir / ctx).resolve())
+                elif isinstance(build, str) and not Path(build).is_absolute():
+                    svc_config['build'] = str((source_dir / build).resolve())
             compose_data.setdefault('services', {})[svc_name] = svc_config
             added_svc += 1
             logger.info("merge_compose_service_added", name=svc_name,
