@@ -409,7 +409,7 @@ class DockerContainerManager:
         # stdbuf forces line-buffered stdout so output is flushed before exit;
         # without it, a crash during cleanup loses buffered printf output.
         import shlex
-        cmd_args = command.split()
+        cmd_args = shlex.split(command)
         cli_cmd_quoted = " ".join(shlex.quote(arg) for arg in cmd_args)
         shell_cmd = f"stdbuf -oL {self.node_cli_path} {cli_cmd_quoted}"
         

@@ -541,16 +541,18 @@ class ScenarioExecutor:
             if step.timeout == 30:  # Default value
                 step.timeout = defaults.timeout
         
-        # Special handling for WaitForDatumStep timeouts
+        # Special handling for WaitForDatumStep timeouts:
+        # Only apply the global timeout default when the step uses Pydantic
+        # schema defaults, meaning the user did NOT explicitly set them in YAML.
         if isinstance(step, WaitForDatumStep) and defaults.timeout:
-            # Apply timeout to all WaitForDatumStep timeout fields if they have default values
-            if step.timeout_total == 300:
+            fields_info = step.model_fields_set if hasattr(step, 'model_fields_set') else set()
+            if 'timeout_total' not in fields_info and step.timeout_total == 300:
                 step.timeout_total = defaults.timeout
-            if step.timeout_mempool == 60:
+            if 'timeout_mempool' not in fields_info and step.timeout_mempool == 60:
                 step.timeout_mempool = defaults.timeout
-            if step.timeout_verification == 120:
+            if 'timeout_verification' not in fields_info and step.timeout_verification == 120:
                 step.timeout_verification = defaults.timeout
-            if step.timeout_in_blocks == 180:
+            if 'timeout_in_blocks' not in fields_info and step.timeout_in_blocks == 180:
                 step.timeout_in_blocks = defaults.timeout
         
         return step
