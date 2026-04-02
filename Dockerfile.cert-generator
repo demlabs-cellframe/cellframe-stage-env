@@ -4,7 +4,7 @@
 # Uses DAP SDK crypto for post-quantum certificate generation
 #
 # Usage:
-#   docker build -f tests/stage-env/Dockerfile.cert-generator -t cf-cert-generator:latest .
+#   docker build -f tools/stage-env/Dockerfile.cert-generator -t cf-cert-generator:latest .
 #   docker run --rm -v $(pwd)/certs:/output cf-cert-generator:latest /output 6 stagenet 0x1234
 #
 FROM debian:bookworm-slim AS builder
@@ -21,10 +21,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /project
 
-# Copy cellframe-sdk source
+# Copy cellframe-sdk and dap-sdk sources
 COPY cellframe-sdk /project/cellframe-sdk
-# cellframe-sdk's dap-sdk has no uthash in tree; use repo root dap-sdk uthash so build finds uthash.h
-COPY dap-sdk/3rdparty/uthash /project/cellframe-sdk/dap-sdk/3rdparty/uthash
+COPY dap-sdk /project/dap-sdk
 
 # Clean any host CMake artifacts
 RUN find /project/cellframe-sdk -name "CMakeCache.txt" -delete && \
@@ -37,7 +36,7 @@ RUN cmake -DCMAKE_BUILD_TYPE=Release .. && \
     make -j$(nproc) cellframe_sdk
 
 # Copy and build cert-generator
-COPY tests/stage-env/src/certs /project/cert-generator
+COPY tools/stage-env/src/certs /project/cert-generator
 WORKDIR /project/cert-generator/build
 RUN cmake -DCELLFRAME_SDK_BUILD=/project/cellframe-sdk/build \
           -DCELLFRAME_SDK_SRC=/project/cellframe-sdk \

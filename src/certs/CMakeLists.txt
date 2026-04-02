@@ -21,34 +21,19 @@ message(STATUS "DAP SDK Source: ${DAP_SDK_SRC}")
 # Definitions
 add_definitions(-DDAP_OS_UNIX -DDAP_OS_LINUX)
 
-# Include directories - comprehensive for cellframe_sdk
+# Auto-discover all include directories from dap-sdk modules
+file(GLOB_RECURSE DAP_SDK_INCLUDE_DIRS LIST_DIRECTORIES true "${DAP_SDK_SRC}/module/*/include")
+# Also pick up cellframe-sdk module includes
+file(GLOB_RECURSE CF_SDK_INCLUDE_DIRS LIST_DIRECTORIES true "${CELLFRAME_SDK_SRC}/modules/*/include")
+
 include_directories(
-    # Core (new path under module/)
-    ${DAP_SDK_SRC}/module/core/include
+    ${DAP_SDK_INCLUDE_DIRS}
+    ${CF_SDK_INCLUDE_DIRS}
+    # Platform-specific and generated headers
     ${DAP_SDK_SRC}/module/core/src
     ${DAP_SDK_SRC}/module/core/src/unix
     ${CELLFRAME_SDK_BUILD}/dap-sdk/module/core
-    
-    # JSON module
-    ${DAP_SDK_SRC}/module/json/include
-    
-    # Crypto
-    ${DAP_SDK_SRC}/module/crypto/include
-    ${DAP_SDK_SRC}/module/crypto/src/Kyber/crypto_kem/kyber512/optimized
-    
-    # 3rdparty
-    ${DAP_SDK_SRC}/3rdparty/uthash/src
-    ${DAP_SDK_SRC}/3rdparty/json-c
     ${CELLFRAME_SDK_BUILD}/dap-sdk/module/core/json-c
-    
-    # I/O
-    ${DAP_SDK_SRC}/module/io/include
-    
-    # Net common
-    ${DAP_SDK_SRC}/module/net/common/include
-    
-    # Chain common (for dap_chain_addr_t)
-    ${CELLFRAME_SDK_SRC}/modules/common/include
 )
 
 # Link directories

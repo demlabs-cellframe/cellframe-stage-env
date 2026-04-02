@@ -708,10 +708,13 @@ class NetworkManager:
                     node_id=root_node.node_id
                 )
                 
-                # Read fee_addr from main.cfg
-                fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(
-                    node_id=root_node.node_id
-                )
+                # Read fee_addr from main.cfg (may not exist in phase1 snapshot)
+                try:
+                    fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(
+                        node_id=root_node.node_id
+                    )
+                except RuntimeError:
+                    fee_addr = None
                 
                 break  # Only need to check first node
             
