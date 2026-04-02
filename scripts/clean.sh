@@ -8,10 +8,9 @@ set -e
 
 # Resolve actual script location (following symlinks)
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-# Navigate from scripts/ up to tests/
-TESTS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-STAGE_ENV_DIR="$TESTS_DIR/stage-env"
-TESTING_DIR="$TESTS_DIR/testing"
+STAGE_ENV_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$STAGE_ENV_DIR/../.." && pwd)"
+CACHE_DIR="$PROJECT_ROOT/cache"
 
 # Colors
 RED='\033[0;31m'
@@ -61,11 +60,10 @@ done
 # Confirmation
 if [ "$FORCE" = false ]; then
     echo "This will delete:"
-    echo "  - stage-env/cache (configs, data, certs, crash-artifacts)"
-    echo "  - testing/snapshots"
-    echo "  - testing/artifacts"
-    echo "  - testing/cache (configs, data, certs)"
-    echo "  - testing/logs"
+    echo "  - cache/configs, cache/data, cache/certs, cache/crash-artifacts"
+    echo "  - cache/snapshots"
+    echo "  - cache/artifacts"
+    echo "  - cache/logs"
     echo "  - All cellframe-stage Docker containers"
     echo "  - All cellframe-stage Docker networks"
     echo "  - All cf-node Docker images"
@@ -137,57 +135,40 @@ info "Removing dangling Docker volumes..."
 docker volume prune -f 2>/dev/null || true
 success "Dangling volumes removed"
 
-# Clean stage-env cache
-info "Cleaning stage-env cache..."
-if [ -d "$STAGE_ENV_DIR/cache" ]; then
+# Clean cache directory (configs, data, certs, crash-artifacts)
+info "Cleaning cache..."
+if [ -d "$CACHE_DIR" ]; then
     # Some files may be owned by root (from Docker), use sudo if needed
-    sudo rm -rf "$STAGE_ENV_DIR/cache/configs" 2>/dev/null || rm -rf "$STAGE_ENV_DIR/cache/configs" 2>/dev/null || true
-    sudo rm -rf "$STAGE_ENV_DIR/cache/data" 2>/dev/null || rm -rf "$STAGE_ENV_DIR/cache/data" 2>/dev/null || true
-    sudo rm -rf "$STAGE_ENV_DIR/cache/certs" 2>/dev/null || rm -rf "$STAGE_ENV_DIR/cache/certs" 2>/dev/null || true
-    sudo rm -rf "$STAGE_ENV_DIR/cache/crash-artifacts" 2>/dev/null || rm -rf "$STAGE_ENV_DIR/cache/crash-artifacts" 2>/dev/null || true
-    # Keep cellframe-packages (downloaded packages cache)
-    success "stage-env/cache cleaned"
+    sudo rm -rf "$CACHE_DIR/configs" 2>/dev/null || rm -rf "$CACHE_DIR/configs" 2>/dev/null || true
+    sudo rm -rf "$CACHE_DIR/data" 2>/dev/null || rm -rf "$CACHE_DIR/data" 2>/dev/null || true
+    sudo rm -rf "$CACHE_DIR/certs" 2>/dev/null || rm -rf "$CACHE_DIR/certs" 2>/dev/null || true
+    sudo rm -rf "$CACHE_DIR/crash-artifacts" 2>/dev/null || rm -rf "$CACHE_DIR/crash-artifacts" 2>/dev/null || true
+    success "cache cleaned (configs, data, certs, crash-artifacts)"
 else
-    warning "stage-env/cache not found"
+    warning "cache directory not found: $CACHE_DIR"
 fi
 
-# Clean stage-env artifacts
-info "Cleaning stage-env artifacts..."
-if [ -d "$STAGE_ENV_DIR/artifacts" ]; then
-    rm -rf "$STAGE_ENV_DIR/artifacts"/* 2>/dev/null || true
-    success "stage-env/artifacts cleaned"
-fi
-
-# Clean testing snapshots
-info "Cleaning testing snapshots..."
-if [ -d "$TESTING_DIR/snapshots" ]; then
-    sudo rm -rf "$TESTING_DIR/snapshots"/* 2>/dev/null || rm -rf "$TESTING_DIR/snapshots"/* 2>/dev/null || true
-    success "testing/snapshots cleaned"
+# Clean snapshots
+info "Cleaning snapshots..."
+if [ -d "$CACHE_DIR/snapshots" ]; then
+    sudo rm -rf "$CACHE_DIR/snapshots"/* 2>/dev/null || rm -rf "$CACHE_DIR/snapshots"/* 2>/dev/null || true
+    success "cache/snapshots cleaned"
 else
-    warning "testing/snapshots not found"
+    warning "cache/snapshots not found"
 fi
 
-# Clean testing artifacts
-info "Cleaning testing artifacts..."
-if [ -d "$TESTING_DIR/artifacts" ]; then
-    rm -rf "$TESTING_DIR/artifacts"/* 2>/dev/null || true
-    success "testing/artifacts cleaned"
+# Clean artifacts
+info "Cleaning artifacts..."
+if [ -d "$CACHE_DIR/artifacts" ]; then
+    rm -rf "$CACHE_DIR/artifacts"/* 2>/dev/null || true
+    success "cache/artifacts cleaned"
 fi
 
-# Clean testing cache
-info "Cleaning testing cache..."
-if [ -d "$TESTING_DIR/cache" ]; then
-    sudo rm -rf "$TESTING_DIR/cache/configs" 2>/dev/null || rm -rf "$TESTING_DIR/cache/configs" 2>/dev/null || true
-    sudo rm -rf "$TESTING_DIR/cache/data" 2>/dev/null || rm -rf "$TESTING_DIR/cache/data" 2>/dev/null || true
-    sudo rm -rf "$TESTING_DIR/cache/certs" 2>/dev/null || rm -rf "$TESTING_DIR/cache/certs" 2>/dev/null || true
-    success "testing/cache cleaned"
-fi
-
-# Clean testing logs
-info "Cleaning testing logs..."
-if [ -d "$TESTING_DIR/logs" ]; then
-    rm -rf "$TESTING_DIR/logs"/* 2>/dev/null || true
-    success "testing/logs cleaned"
+# Clean logs
+info "Cleaning logs..."
+if [ -d "$CACHE_DIR/logs" ]; then
+    rm -rf "$CACHE_DIR/logs"/* 2>/dev/null || true
+    success "cache/logs cleaned"
 fi
 
 # Clean generated compose file
