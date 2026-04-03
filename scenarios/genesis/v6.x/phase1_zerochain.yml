@@ -289,18 +289,16 @@ test:
     node: "{{first_root}}"
     save_wallet: fee_addr
   
-  # Enable seed_mode via cfg.d snippet + restart (SDK 6.0 has no CLI toggle)
-  - config: "cellframe-node.cfg.d/seed-mode.cfg"
-    nodes: "{{seed_nodes}}"
-    set:
-      general.seed_mode: "true"
-
-  - docker_op: restart
-    services: "{{seed_nodes}}"
-
-  - wait_network: online
-    nodes: "{{root_nodes}}"
-    timeout: 120
+  # Enable seed_mode on seed nodes via CLI (no restart needed)
+  - group: Enable seed_mode on seed nodes
+    steps:
+      - for: _seed_node
+        in: "{{seed_nodes}}"
+        steps:
+          - cli: "chain seed -chain zerochain on"
+            node: "{{_seed_node}}"
+            save_to: _seed_mode_result
+          - print: "seed_mode on {{_seed_node}}: {{_seed_mode_result}}"
 
   - wait: global_db_sync
     nodes: "{{root_nodes}}"
@@ -387,11 +385,14 @@ test:
       static_genesis_event: "{{genesis_event_hash}}"
       is_static_genesis_event: "true"
   
-  # Disable seed_mode via cfg.d snippet (restart happens later with static_genesis_event)
-  - config: "cellframe-node.cfg.d/seed-mode.cfg"
-    nodes: "{{seed_nodes}}"
-    set:
-      general.seed_mode: "false"
+  # Disable seed_mode on seed nodes via CLI
+  - group: Disable seed_mode on seed nodes
+    steps:
+      - for: _seed_node
+        in: "{{seed_nodes}}"
+        steps:
+          - cli: "chain seed -chain zerochain off"
+            node: "{{_seed_node}}"
   
   - group: Create stake orders for validators
     steps:
