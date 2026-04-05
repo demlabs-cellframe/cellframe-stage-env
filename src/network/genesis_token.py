@@ -565,7 +565,7 @@ class TokenGenesisManager(BaseGenesisManager):
                 
                 exit_code_mempool, stdout_mempool, _ = self._exec_cli(
                     first_master.node_id,
-                    f"mempool_list -net {self.network_name} -chain main",
+                    f"mempool list -net {self.network_name} -chain main",
                     check_output=False
                 )
                 

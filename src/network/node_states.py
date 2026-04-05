@@ -174,10 +174,17 @@ class NodeStateManager:
                                elapsed=f"{elapsed:.1f}s",
                                note="Waiting for node to reach ONLINE state")
                 
-                if state in [NodeState.ONLINE, NodeState.LINKS_CONNECTING, 
-                            NodeState.LINKS_ESTABLISHED]:
+                is_full_node = getattr(node, 'role', '').lower() == 'full'
+                if state == NodeState.ONLINE:
                     nodes_online.add(node.node_id)
                     logger.debug("node_online", node_id=node.node_id, state=state.value)
+                elif is_full_node and state not in (NodeState.OFFLINE,):
+                    nodes_online.add(node.node_id)
+                    logger.debug("full_node_accepted", node_id=node.node_id, state=state.value)
+                elif not is_full_node and state in (
+                    NodeState.SYNC_CHAINS, NodeState.SYNC_GDB
+                ):
+                    pass
                 elif state == NodeState.UNKNOWN:
                     # DIAGNOSTIC: If state is UNKNOWN, try to get more info
                     logger.debug("node_state_unknown_during_wait",

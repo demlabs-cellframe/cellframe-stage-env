@@ -64,7 +64,7 @@ class FirstBlockWaiter(BaseWaiter):
             try:
                 exit_code_mp, stdout_mp, _ = self.exec_cli(
                     1,
-                    f"mempool_list -net {self.network_name} -chain {self.chain_name}",
+                    f"mempool list -net {self.network_name} -chain {self.chain_name}",
                     check_output=False
                 )
                 logger.info("mempool_check",

@@ -82,13 +82,10 @@ setup:
   - docker_op: restart
     services: "{{all_nodes}}"
   
-  - wait_network: online
-    nodes: "{{root_nodes}}"
-    timeout: 120
-
+  - wait: 10s
 
 test:
-  # Get ALL node addresses dynamically
+  # Get ALL node addresses dynamically (works without ONLINE state)
   - group: Get node addresses
     steps:
       - for: node_idx
@@ -132,42 +129,38 @@ test:
           - cli: "node dump"
             node: "{{_node_name}}"
             save_node: "{{_addr_var}}"
-  
-  # Build validators_addrs dynamically from master node addresses
+
+  # Build validators_addrs and authorized_nodes_addrs from collected addresses
   - set: validators_addrs_str
     value: "join_vars_bracket('master_addr_', master_count)"
     eval: true
   
-  # Build authorized_nodes_addrs from root node addresses
   - set: authorized_nodes_str
     value: "join_vars_bracket('root_addr_', root_count)"
     eval: true
   
-  # Set validators_addrs on ALL nodes
+  # Set authorized_nodes_addrs BEFORE restart so nodes know who has ROOT role
   - config: "{{network_name}}/main"
     nodes: "{{all_nodes}}"
     set:
       validators_addrs: "{{validators_addrs_str}}"
   
-  # Set authorized_nodes_addrs in ZEROCHAIN config
   - config: "{{network_name}}/zerochain"
     nodes: "{{all_nodes}}"
     set:
       authorized_nodes_addrs: "{{authorized_nodes_str}}"
-  
-  # Build active nodes list (root + master)
+
   - set: _active_nodes
     value: "root_nodes + master_nodes"
     eval: true
-  
+
+  # Restart so nodes pick up authorized_nodes_addrs (required for node add)
   - docker_op: restart
     services: "{{_active_nodes}}"
   
-  - wait_network: online
-    nodes: "{{_active_nodes}}"
-    timeout: 60
-  
-  # Add all nodes to nodelist dynamically
+  - wait: 15s
+
+  # Now nodes are authorized — populate GDB node lists so balancer works
   - group: Add all nodes to nodelist
     steps:
       - for: _target_node_idx
@@ -190,7 +183,7 @@ test:
               - set: _add_host
                 value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
                 eval: true
-              - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
+              - cli: "node add -addr {{_add_addr}} -host {{_add_host}}:{{node_port}}"
                 node: "{{_target_node}}"
                 contains: "successfully"
           
@@ -206,7 +199,7 @@ test:
               - set: _add_host
                 value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
                 eval: true
-              - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
+              - cli: "node add -addr {{_add_addr}} -host {{_add_host}}:{{node_port}}"
                 node: "{{_target_node}}"
                 contains: "successfully"
           
@@ -222,7 +215,7 @@ test:
               - set: _add_host
                 value: "get_var_dict('node_ip').get('node' + str(node_idx), '')"
                 eval: true
-              - cli: "node add -addr {{_add_addr}} -host {{_add_host}}"
+              - cli: "node add -addr {{_add_addr}} -host {{_add_host}}:{{node_port}}"
                 node: "{{_target_node}}"
                 contains: "successfully"
   
@@ -238,7 +231,23 @@ test:
         not_contains: "No records"
         save_to: "_node_list_{{_verify_node_idx}}"
       - print: "Node list on {{_verify_node}} verified"
-  
+
+  # Enable seed_mode on seed nodes for DAG event acceptance
+  - group: Enable seed_mode on seed nodes
+    steps:
+      - for: _seed_node
+        in: "{{seed_nodes}}"
+        steps:
+          - cli: "chain seed -chain zerochain on"
+            node: "{{_seed_node}}"
+            save_to: _seed_mode_result
+          - print: "seed_mode on {{_seed_node}}: {{_seed_mode_result}}"
+
+  # GDB now populated — balancer will return nodes — wait for online
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 120
+
   # Create wallets dynamically for all nodes
   - group: Create wallets
     defaults:
@@ -288,21 +297,10 @@ test:
   - cli: "wallet info -w {{network_name}}_root_0"
     node: "{{first_root}}"
     save_wallet: fee_addr
-  
-  # Enable seed_mode on seed nodes via CLI (no restart needed)
-  - group: Enable seed_mode on seed nodes
-    steps:
-      - for: _seed_node
-        in: "{{seed_nodes}}"
-        steps:
-          - cli: "chain seed -chain zerochain on"
-            node: "{{_seed_node}}"
-            save_to: _seed_mode_result
-          - print: "seed_mode on {{_seed_node}}: {{_seed_mode_result}}"
 
   - wait: global_db_sync
     nodes: "{{root_nodes}}"
-    timeout: 180
+    timeout: 120
  
   # Verify network is fully connected
   - cli: "net get status"

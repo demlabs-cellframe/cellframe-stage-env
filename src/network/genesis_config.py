@@ -661,6 +661,12 @@ class GenesisConfigManager(BaseGenesisManager):
                 validators_addrs_from_config = existing_config['esbocs']['validators_addrs'].strip()
                 existing_main_params['validators_addrs'] = validators_addrs_from_config
                 existing_main_params['auth_certs_prefix'] = existing_config['esbocs']['auth_certs_prefix'].strip()
+                # PoS (default): must match ConfigGenerator initial main.cfg (poa_mode=false).
+                # Do not flip to PoA on regeneration — that breaks srv_stake / delegated validators.
+                _raw_poa = existing_config['esbocs'].get('poa_mode', 'false')
+                existing_main_params['poa_mode'] = (
+                    str(_raw_poa).strip().lower() if _raw_poa is not None else 'false'
+                )
                 
                 # CRITICAL: If validators_addrs is empty in config, re-collect from certificates
                 # This handles the case where config was generated before certificates were ready
@@ -706,9 +712,9 @@ class GenesisConfigManager(BaseGenesisManager):
         # IMPORTANT: SDK check in dap_chain_cs_esbocs.c line 298:
         #   if (!l_validators_count || l_node_addrs_count < l_validators_count) return -2;
         # SDK REQUIRES: validators_addrs must contain AT LEAST min_validators_count addresses
-        # 
-        # PoA mode is implicit when validators_addrs is specified in config
-        # validators_addrs already contains master node addresses (set during initial config generation)
+        #
+        # poa_mode is independent: false => PoS (validators from stake/delegation);
+        # true => PoA (validators_addrs list is authoritative).
         if 'validators_addrs' not in existing_main_params:
             raise RuntimeError(
                 f"CRITICAL: validators_addrs not found in existing_main_params! "
@@ -745,7 +751,7 @@ class GenesisConfigManager(BaseGenesisManager):
             'validators_addrs': validators_addrs_value,  # Keep for zerochain compatibility
             'mainchain_validators_addrs': validators_addrs_value,  # CRITICAL: Master validators for mainchain
             'min_validators_count': min_validators_count,  # CRITICAL: Set based on validators_addrs
-            'poa_mode': 'true',  # CRITICAL: Always use PoA mode (validators specified in config)
+            'poa_mode': existing_main_params.get('poa_mode', 'false'),
             'fee_addr': fee_addr if fee_addr else '',  # Use preserved fee_addr or empty string
             'genesis_mode': 'false',  # Disable genesis mode after genesis
         }
