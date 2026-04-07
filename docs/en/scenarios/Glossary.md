@@ -13,7 +13,6 @@ Comprehensive description of all YAML scenario language features. Use as referen
 5. [Defaults System](#defaults-system)
 6. [Data Extraction](#data-extraction)
 7. [Suite System](#suite-system)
-8. [Suite System](#suite-system)
 
 ---
 
@@ -117,12 +116,19 @@ Execute `cellframe-node-cli` command.
 - cli: token_decl -token TEST -total_supply 1000000 -decimals 18 -signs_total 1 -signs_emission 1 -certs test_cert
   node: node1                    # Node to execute on (default: node1)
   save: full_output              # Save entire output
+  save_regex: "hash:\s+(\w+)"   # Extract via regex (first capture group)
+  save_map:                      # Extract multiple values via regex
+    order_hash: "hash:\s+(0x[a-f0-9]+)"
+    price: "price:\s+(\d+\.\d+)"
   save_hash: tx_hash             # Extract and validate hash (0x[hex])
   save_wallet: my_address        # Extract and validate CF wallet address 
   save_node: node_addr           # Extract node address (AAAA::BBBB:::CCCC::DDDD format)
+  save_token: ticker             # Extract token ticker
+  save_to: raw_output            # Save raw output
   wait: 3s                       # Wait after command
   expect: success                # Expected result (success/error/any)
-  contains: "SUCCESS"            # Verify output contains string
+  contains: "SUCCESS"            # Verify output contains string (supports regex)
+  not_contains: "ERROR"          # Unexpected substring (fails if found)
   timeout: 30                    # Command timeout (seconds)
 ```
 
@@ -161,6 +167,9 @@ Execute `cellframe-node-tool` command.
 - tool: cert create test_cert sig_dil
   node: node1
   save: cert_result
+  save_regex: "hash:\s+(\w+)"   # Extract via regex (first capture group)
+  save_map:                      # Extract multiple values via regex
+    key: "pattern"
   expect: success
   timeout: 30
 ```
@@ -175,10 +184,15 @@ JSON-RPC call to node.
   params: []                     # RPC parameters (list)
   node: node1
   save: rpc_result
+  save_regex: "addr:\s+(\S+)"   # Extract via regex (first capture group)
+  save_map:                      # Extract multiple values via regex
+    key: "pattern"
   wait: 1s
   expect: success
   timeout: 30
 ```
+
+**Note:** `rpc` does NOT support `contains`/`not_contains` (unlike `cli`).
 
 **Endpoint:** `http://<node_ip>:8545` (base_rpc_port from config)
 
@@ -292,7 +306,7 @@ Loop while condition is true.
 
 ```yaml
 - while: ctx.get_variable('retry_count') < 3
-  max_iterations: 100           # Safety limit
+  max_loops: 100                # Safety limit
   steps:
     - cli: net get status
       save: status
@@ -341,27 +355,95 @@ Wait for network state.
 ```
 
 ### DockerOpStep
-Docker operations (start/stop/restart).
+Docker operations: `start`, `stop`, `restart`, `pause`, `unpause`, `logs`, `exec`, `cp`.
 
 ```yaml
 - docker_op: restart
   services: ["node-1", "node-2"]
   detach: true
+
+- docker_op: logs
+  services: "node-1"
+  tail: 50
+  save: node_logs
+
+- docker_op: exec
+  services: "node-1"
+  command: "pgrep cellframe-node"
+  save: pid_output
+```
+
+### DockerExecStep
+Execute command inside Docker container(s). Compact shorthand for `docker_op: exec`.
+
+```yaml
+- docker_exec: "cf-vpn-clientd-ctl status 2>&1"
+  services: ["clientd-1"]     # Required: target services
+  save: _status
+  save_regex: "State:\s+(\d+)"
+  save_map:
+    state: "State:\s+(\d+)"
+  expect: success              # success | error | any
+  timeout: 300                 # Default: 300s
+```
+
+### DpkgStep
+Install or remove DEB packages.
+
+```yaml
+- dpkg: install
+  package: "{{vpn_deb}}"
+  services: ["clientd-1"]
+  fix_deps: true               # apt-get -f install
+
+- dpkg: remove
+  package: "package-name"
+  services: ["node-1"]
+```
+
+### MetricStep / MetricsTableStep
+Record and display performance metrics.
+
+```yaml
+- metric: throughput
+  value: "{{_iperf_throughput}}"
+  unit: Mbps
+  group: vpn_load
+  tags: { client: vpn-client-1 }
+
+- metrics_table: vpn_load
+  title: "VPN Throughput"
+  format: text                     # text (default) | markdown
+  columns: [tag:client, value, unit]
 ```
 
 ### SnapshotStep
-Snapshot operations.
+Snapshot operations (`create`, `restore`, `verify`, `delete`).
 
 ```yaml
 - snapshot: create
   name: before_emission
+  is_base: true
+  stop_containers: true
+  restart_after: true
+  clone_images: { src_svc: [target1] }
+  wait_ready: true
+  wait_ready_timeout: 90
+  wait_ready_check: "vpn_cdb version"
+
+- snapshot: verify
+  name: cdb_ready
+  save: has_snapshot           # True/False
+
+- snapshot: restore
+  name: before_emission
 ```
 
 ### StepGroup
-Group steps with local defaults.
+Group steps with local defaults. The display name can be set with either `group:` or `name:` key.
 
 ```yaml
-- group: "Wallet Operations"
+- group: "Wallet Operations"  # 'name:' is also accepted
   defaults:
     node: node2
     wait: 1s
@@ -761,21 +843,27 @@ setup:
 | CLIStep | CLI command | `cli: command` |
 | ToolStep | Tool command | `tool: command` |
 | RPCStep | JSON-RPC call | `rpc: method` |
-| WaitStep | Simple wait | `wait: 5s` |
+| WaitStep | Simple/polling wait | `wait: 5s` or `wait: cli` |
 | WaitForDatumStep | Smart datum wait | `wait_for_datum: hash` |
+| NetworkWaitStep | Wait for network | `wait_network: online` |
 | PythonStep | Python code | `python: \|` |
 | BashStep | Bash script | `bash: \|` |
+| DockerExecStep | Exec in container | `docker_exec: cmd` |
+| DockerOpStep | Docker operations | `docker_op: restart` |
+| DpkgStep | Install/remove .deb | `dpkg: install` |
+| ConfigStep | Config update | `config: path set:` |
+| SnapshotStep | Snapshot ops | `snapshot: create` |
+| MetricStep | Record metric | `metric: name` |
+| MetricsTableStep | Display metrics | `metrics_table: group` |
+| PrintStep | Debug output | `print: "message"` |
 | LoopStep | Repeat N times | `loop: 5` |
 | ForStep | Iterate list | `for: var in: list` |
 | IfStep | Conditional | `if: condition then:` |
 | WhileStep | While loop | `while: condition` |
 | SwitchStep | Switch/case | `switch: var cases:` |
 | SetStep | Set variable | `set: var value:` |
-| ConfigStep | Config update | `config: path set:` |
-| NetworkWaitStep | Wait for network | `wait_network: online` |
-| DockerOpStep | Docker operations | `docker_op: restart` |
-| SnapshotStep | Snapshot ops | `snapshot: create` |
 | StepGroup | Group with defaults | `group: name` |
+| CustomOperandStep | Custom operand | `operand: action` |
 
 ### Check Type Quick Reference
 
@@ -793,10 +881,8 @@ setup:
 - **[Tutorial](Tutorial.md)** - Step-by-step guide (7 lessons)
 - **[Cookbook](Cookbook.md)** - Ready recipes for common tasks
 - **Real scenarios** - Study `tests/stage-env/scenarios/genesis/` for advanced patterns
-- **[SLC Modules](../../../../../.context/modules/testing/)** - Complete technical reference
-
 ---
 
-**Version:** 2.1  
-**Last Updated:** 2025-12-23  
+**Version:** 2.2  
+**Last Updated:** 2026-03-17  
 **Language:** English | [Русский](../../ru/scenarios/Glossary.md)

@@ -39,7 +39,6 @@ This cookbook contains proven solutions for the most common testing tasks. Copy,
 # Modern approach with for loop
 - for: i
   in: "range(5)"
-  eval: true
   steps:
     - cli: "wallet new -w wallet_{{i}}"
       save_wallet: "addr_{{i}}"
@@ -175,7 +174,7 @@ Properly apply configuration changes.
 ```yaml
 - config: "{{network_name}}/main"
   set:
-    is_add_directly: "true"
+    fee_addr: "{{fee_addr}}"
 - docker_op: restart  # ❌ Config NOT reloaded!
 ```
 
@@ -184,7 +183,7 @@ Properly apply configuration changes.
 - config: "{{network_name}}/main"
   nodes: "{{_active_nodes}}"
   set:
-    is_add_directly: "true"
+    fee_addr: "{{fee_addr}}"
 
 # Use stop + start instead of restart
 - docker_op: stop
@@ -241,7 +240,7 @@ test:
   # Verify block created
   - cli: "block list -chain main"
     node: "{{first_master}}"
-    expect_output: "have blocks: [1-9]"
+    contains: "have blocks: [1-9]"
   
   - print: "✓ Genesis block created and synced!"
 ```
@@ -303,7 +302,6 @@ variables:
 test:
   - for: i
     in: "range({{wallet_count}})"
-    eval: true
     steps:
       - cli: "wallet new -w wallet_{{i}}"
         save_wallet: "addr_{{i}}"
@@ -343,7 +341,7 @@ test:
 
 ### Recipe 12: Python Data Processing
 
-Process CLI output with Python.
+Extract data from CLI output using native helpers.
 
 ```yaml
 name: Parse and Analyze
@@ -352,20 +350,17 @@ description: Extract data from CLI output
 test:
   - cli: "wallet list"
     save_to: wallet_list
-  
-  - python: |
-      import re
-      output = ctx.get_variable('wallet_list')
-      
-      # Extract all wallet addresses
-      addresses = re.findall(r'(Wkoj\w+)', output)
-      
-      # Save for later use
-      ctx.set_variable('wallet_addresses', addresses)
-      ctx.set_variable('wallet_count', len(addresses))
-  
+
+  - set: wallet_addresses
+    value: "find_all(wallet_list, r'(Wkoj\\w+)')"
+    eval: true
+
+  - set: wallet_count
+    value: "len(wallet_addresses)"
+    eval: true
+
   - print: "Found {{wallet_count}} wallets"
-  
+
   - for: addr
     in: "{{wallet_addresses}}"
     steps:
@@ -392,7 +387,7 @@ test:
     save_hash: token_hash
   
   # Save snapshot
-  - snapshot: save
+  - snapshot: create
     name: with_token
   
   # Do destructive test

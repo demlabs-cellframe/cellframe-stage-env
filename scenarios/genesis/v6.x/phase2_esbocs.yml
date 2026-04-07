@@ -1,0 +1,210 @@
+name: PHASE 2 - ESBocs Genesis
+description: Create mainchain genesis block from emission (dynamic topology)
+
+includes:
+  - common/set_net_default.yml
+
+network:
+  topology: default
+  name: "{{network_name}}"
+
+setup:
+  # NOTE: When running as part of genesis flow (via manager.py), 
+  # containers are already running from phase1.
+  # snapshot: restore is only needed when running phase2 standalone.
+  
+  # Build active nodes list (root + master)
+  - set: _active_nodes
+    value: "root_nodes + master_nodes"
+    eval: true
+  
+  # Enable seed_mode on ALL root and master nodes via CLI (no restart needed)
+  - group: Enable seed_mode for main chain
+    steps:
+      - for: _node
+        in: "{{_active_nodes}}"
+        steps:
+          - cli: "chain seed -chain main on"
+            node: "{{_node}}"
+            save_to: _seed_mode_result
+          - print: "seed_mode on {{_node}}: {{_seed_mode_result}}"
+
+  - wait: global_db_sync
+    node: "{{first_root}}"
+    timeout: 60
+  
+  # Get fee_addr from first root wallet
+  # This wallet was created in phase1 and exists in the snapshot
+  - cli: "wallet info -w {{network_name}}_root_0"
+    node: "{{first_root}}"
+    save_wallet: fee_addr
+
+test:
+  - group: Verify network connectivity and emission on root
+    description: Ensure root nodes have emission and network is ready
+    steps:
+      # Verify network is online on root node
+      - cli: "net get status"
+        node: "{{first_root}}"
+        contains: "NET_STATE_ONLINE"
+      
+      # Verify emission is in ledger on root node (added in Phase 1)
+      - cli: "ledger list coins"
+        node: "{{first_root}}"
+        contains: "{{native_ticker}}"
+      
+      # Debug: Check zerochain events count on root
+      - cli: "dag event list -chain zerochain"
+        node: "{{first_root}}"
+        save_to: _dag_events_output
+      
+      - print: "Root node zerochain events: {{_dag_events_output}}"
+  
+  - group: Wait for master nodes to sync chain data
+    description: Trigger chain sync and wait for network sync completion
+    steps:
+      - cli: "net go sync"
+        node: "{{first_master}}"
+
+      - wait: network_sync
+        nodes: "{{_active_nodes}}"
+        timeout: 120
+
+      - wait: global_db_sync
+        nodes: "{{_active_nodes}}"
+        timeout: 60
+
+      # Debug: Check zerochain events on master after sync
+      - cli: "dag event list -chain zerochain"
+        node: "{{first_master}}"
+        save_to: _master_dag_events
+      
+      - print: "Master node zerochain events: {{_master_dag_events}}"
+      
+      # Check if emission is in ledger on master node
+      - cli: "ledger list coins"
+        node: "{{first_master}}"
+        save_to: _master_ledger_coins
+      
+      - print: "Master ledger coins: {{_master_ledger_coins}}"
+  
+  - group: Force chain sync if needed
+    description: Ensure chains are synced from root to master
+    steps:
+      # Force sync on master node to get latest data from root
+      - cli: "net go sync"
+        node: "{{first_master}}"
+      
+      - wait: global_db_sync
+        nodes: "{{_active_nodes}}"
+        timeout: 60
+
+      # Verify emission is now in ledger on master
+      - cli: "ledger list coins"
+        node: "{{first_master}}"
+        contains: "{{native_ticker}}"
+      
+      - print: "✓ Emission synced to master node ledger"
+  
+  - group: Genesis Block - Create from emission
+    defaults:
+      node: "{{first_root}}"
+      cli:
+        chain: "main"
+        token: "{{native_ticker}}"
+    steps:
+      - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert {{network_name}}.root.pvt.0"
+        save_hash: mainchain_genesis_tx
+      
+      - cli: "mempool proc_all"
+
+      - wait: global_db_sync
+        nodes: "{{_active_nodes}}"
+        timeout: 60
+
+      # Debug: Show mempool status on master
+      - cli: "mempool list -chain main"
+        node: "{{first_master}}"
+        save_to: _master_mempool_status
+      
+      - print: "Master mempool: {{_master_mempool_status}}"
+      
+      # ARCHITECTURE NOTE:
+      # - Genesis TX is created on ROOT node 
+      # - TX is synced to MASTER nodes via Global DB mempool cluster
+      # - MASTER nodes have proc_chains=[main] configured, so they auto-process main chain
+      # - When master node processes genesis TX:
+      #   1. Verify emission exists in ledger (synced via net go sync)
+      #   2. Create genesis block via ESBocs consensus
+      #   3. Sync genesis block to all nodes via Global DB
+      # - ROOT node has seed_mode enabled via CLI, so it will ACCEPT genesis block when synced
+      
+      # Wait for ESBocs consensus to create genesis block
+      - wait: block_created
+        node: "{{first_master}}"
+        chain: "main"
+        min_blocks: 1
+        timeout: 180
+
+      # Check if genesis block was created
+      - cli: "block list"
+        node: "{{first_master}}"
+        save_to: _master_blocks_status
+      
+      - print: "Master blocks status: {{_master_blocks_status}}"
+      
+  
+  - cli: "block list -chain main"
+    node: "{{first_master}}"
+    save_hash: genesis_block_hash
+  
+  # Configure static genesis block BEFORE restart
+  # This ensures nodes will load the genesis block from config after restart
+  - config: "{{network_name}}/main"
+    nodes: "{{_active_nodes}}"
+    set:
+      static_genesis_block: "{{genesis_block_hash}}"
+      is_static_genesis_block: "true"
+  
+  # Disable seed_mode on seed nodes via CLI
+  - group: Disable seed_mode for main chain
+    steps:
+      - for: _node
+        in: "{{seed_nodes}}"
+        steps:
+          - cli: "chain seed -chain main off"
+            node: "{{_node}}"
+
+  - docker_op: restart
+    services: "{{all_nodes}}"
+
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 60
+
+  - wait: global_db_sync
+    node: "{{first_root}}"
+    timeout: 60
+  
+  # Configure fee_addr in main.cfg 
+  # SDK will automatically load it from config on node startup
+  - config: "{{network_name}}/main"
+    nodes: "{{_active_nodes}}"
+    set:
+      fee_addr: "{{fee_addr}}"
+
+check:
+  - cli: "net get status"
+    node: "{{first_master}}"
+    contains: "NET_STATE_ONLINE"
+  
+  - cli: "block list -chain main"
+    node: "{{first_root}}"
+    contains: "have blocks:"
+  
+  - cli: "token list"
+    node: "{{first_root}}"
+    contains: "tokens:"
+
+# NOTE: Snapshot creation is handled by manager.py after genesis flow completes.
+# teardown with snapshot: create would be used for standalone phase execution.

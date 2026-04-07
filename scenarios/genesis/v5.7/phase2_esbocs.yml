@@ -36,10 +36,6 @@ setup:
     node: "{{first_root}}"
     timeout: 60
   
-  # NOTE: Keep auth_certs_number_verify=1 during setup phase
-  # Master nodes need to sync 1-signature emission events from root nodes
-  # We'll restore auth_certs_number_verify=2 AFTER chain sync completes
-  
   # Get fee_addr from first root wallet
   # This wallet was created in phase1 and exists in the snapshot
   - cli: "wallet info -w {{network_name}}_root_0"
@@ -68,17 +64,16 @@ test:
       - print: "Root node zerochain events: {{_dag_events_output}}"
   
   - group: Wait for master nodes to sync
-    description: Wait for chain data propagation from root to master
+    description: Wait for ledger propagation via Global DB
     steps:
       # Wait for Global DB sync on first root (ensures GDB is ready)
       - wait: global_db_sync
         node: "{{first_root}}"
         timeout: 60
       
-      # Wait for network to stabilize and chains to start syncing
-      # NOTE: Ledger cache is LOCAL (not synced via GDB)
-      # Master nodes must sync zerochain chain files from root nodes
-      - wait: "120s"
+      # Wait for network to stabilize and ledger cache to propagate
+      # Ledger cache is synced via Global DB groups
+      - wait: "60s"
       
       # Verify network is online on first master
       - cli: "net get status"
@@ -100,34 +95,15 @@ test:
       
       - print: "Master ledger coins: {{_master_ledger_coins}}"
   
-  - group: Force chain sync from root to master
-    description: Ensure zerochain data is synced from root to master nodes
+  - group: Force chain sync if needed
+    description: Ensure chains are synced from root to master
     steps:
-      # CRITICAL: Master nodes need to sync zerochain chain data from root nodes
-      # The ledger cache is LOCAL (not synced via GDB), so emission data
-      # is only available after syncing the zerochain chain files
-      
-      # Force FULL sync on ALL master nodes to get zerochain data from roots
-      # Use -mode all to force complete resync from atom 0 (not incremental)
-      - cli: "net go sync -mode all"
+      # Force sync on master node to get latest data from root
+      - cli: "net go sync"
         node: "{{first_master}}"
       
-      - cli: "net go sync -mode all"
-        node: "node-5"
-      
-      - cli: "net go sync -mode all"
-        node: "node-6"
-      
-      # Wait for chain sync to complete (zerochain sync takes time)
-      # Chain sync is slower than GDB sync because it transfers chain cell files
-      - wait: "90s"
-      
-      # Verify zerochain is synced on master - check events count
-      - cli: "dag event list -chain zerochain"
-        node: "{{first_master}}"
-        save_to: _master_dag_after_sync
-      
-      - print: "Master zerochain after sync: {{_master_dag_after_sync}}"
+      # Wait for sync to complete (60s for ASAN builds)
+      - wait: "60s"
       
       # Verify emission is now in ledger on master
       - cli: "ledger list coins"
@@ -135,15 +111,6 @@ test:
         contains: "{{native_ticker}}"
       
       - print: "✓ Emission synced to master node ledger"
-      
-      # Now restore proper consensus settings for ALL nodes
-      # Phase1 used auth_certs_number_verify=1 for single-node genesis
-      # After sync, restore to N/2+1 for proper network operations
-      - config: "{{network_name}}/zerochain"
-        nodes: "{{_active_nodes}}"
-        section: "dag-poa"
-        set:
-          auth_certs_number_verify: "2"
   
   - group: Genesis Block - Create from emission
     defaults:
@@ -156,10 +123,10 @@ test:
         save_hash: mainchain_genesis_tx
       
       # Process mainchain genesis transaction on root
-      - cli: "mempool proc_all -chain main"
+      - cli: "mempool proc -datum {{mainchain_genesis_tx}}"
       
-      # Wait for mempool sync via Global DB
-      - wait: "30s"
+      # Wait for mempool sync via Global DB (60s for ASAN builds)
+      - wait: "60s"
       
       # Debug: Show mempool status on master
       - cli: "mempool list -chain main"
@@ -180,7 +147,8 @@ test:
       
       # Wait for ESBocs consensus to create genesis block
       # This includes: TX validation, consensus round, block signing, propagation
-      - wait: "120s"
+      # 180s to accommodate ASAN instrumentation overhead
+      - wait: "180s"
       
       # Check if genesis block was created
       - cli: "block list"
@@ -189,13 +157,13 @@ test:
       
       - print: "Master blocks status: {{_master_blocks_status}}"
       
-      # Additional wait if no blocks yet
-      - wait: "30s"
+      # Additional wait if no blocks yet (60s for ASAN builds)
+      - wait: "60s"
       
       # Verify block was created and synced to master node
       - cli: "block list"
         node: "{{first_master}}"
-        expect_output: "have blocks: [1-9]"
+        contains: "have blocks: [1-9]"
   
   - cli: "block list -chain main"
     node: "{{first_master}}"
@@ -236,15 +204,15 @@ test:
 check:
   - cli: "net get status"
     node: "{{first_master}}"
-    expect_output: "NET_STATE_ONLINE"
+    contains: "NET_STATE_ONLINE"
   
   - cli: "block list -chain main"
     node: "{{first_root}}"
-    expect_output: "have blocks:"
+    contains: "have blocks:"
   
   - cli: "token list"
     node: "{{first_root}}"
-    expect_output: "tokens:"
+    contains: "tokens:"
 
 # NOTE: Snapshot creation is handled by manager.py after genesis flow completes.
 # teardown with snapshot: create would be used for standalone phase execution.

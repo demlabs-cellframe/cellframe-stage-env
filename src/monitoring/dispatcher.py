@@ -9,6 +9,7 @@ This module handles:
 - Parameter defaults (poll_interval, timeouts)
 - Waiter instantiation with proper dependencies
 - Execution and result handling
+- Automatic notify-server integration with polling fallback
 """
 
 import re
@@ -41,6 +42,8 @@ class WaiterConfig:
         "global_db_sync": 2.0,
         "cli_ready": 0.5,
         "block_created": 3.0,
+        "network_sync": 5.0,
+        "chain_data_propagation": 5.0,
         "default": 2.0,
     }
     
@@ -48,6 +51,33 @@ class WaiterConfig:
     def get_poll_interval(cls, waiter_type: str) -> float:
         """Get poll interval for waiter type."""
         return cls.POLL_INTERVALS.get(waiter_type, cls.POLL_INTERVALS["default"])
+
+
+WAITER_NOTIFY_MAP: Dict[str, str] = {
+    "network_online": "NetInfo",
+    "sync_complete": "NetInfo",
+    "wallet_balance": "WalletInfo",
+    "datum_in_mempool": "MempoolEvent",
+    "datum_in_chain": "ChainEvent",
+    "block_created": "ChainEvent",
+    "emission_in_ledger": "LedgerTxEvent",
+    "transaction_processed": "MempoolEvent",
+    "global_db_sync": "GDBEvent",
+    "delegations_synced": "StakeEvent",
+}
+"""Maps waiter types to their notify-server ``class`` value.
+
+Single-node waiters with definitive ``notify_matches()`` complete directly.
+Multi-node waiters (``global_db_sync``, ``delegations_synced``) use
+hint_only mode — a notification triggers ``check()`` across all nodes
+rather than completing the waiter.
+GDBEvent and StakeEvent are available in SDK >= 5.8; on 5.7 falls back
+to polling."""
+
+HINT_ONLY_WAITER_TYPES = {"global_db_sync", "delegations_synced", "block_created"}
+"""Waiter types that use hint_only mode for notify (multi-node waiters)."""
+
+NOTIFY_PORT = 8080
 
 
 class WaiterDispatcher:
@@ -97,11 +127,23 @@ class WaiterDispatcher:
         self.log_file = log_file
     
     def _extract_node_id(self, node_name: str) -> int:
-        """Extract node ID from node name."""
+        """Extract node ID from node name.
+
+        For non-standard service names (vpn-client-1, vpn-server-2, etc.)
+        the numeric suffix does NOT correspond to the compose NODE_ID.
+        We first try get_node_config_callback which knows the real mapping.
+        """
+        if self.get_node_config_callback:
+            try:
+                cfg = self.get_node_config_callback(node_name)
+                if cfg and hasattr(cfg, 'node_id'):
+                    return cfg.node_id
+            except Exception:
+                pass
+
         match = re.search(r'(?:node|root|master|full)-?(\d+)', node_name)
         if match:
             return int(match.group(1))
-        # Fallback: try to find any number
         match = re.search(r'(\d+)$', node_name)
         if match:
             return int(match.group(1))
@@ -118,6 +160,36 @@ class WaiterDispatcher:
         if not self.get_node_config_callback:
             raise RuntimeError("get_node_config_callback not set")
         return [self.get_node_config_callback(n) for n in nodes]
+
+    def _get_container_ip(self, node_id: int) -> Optional[str]:
+        """Resolve container IP for notify server connection."""
+        if not self.docker_client:
+            return None
+        container_name = f"cellframe-stage-node-{node_id}"
+        try:
+            container = self.docker_client.containers.get(container_name)
+            networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+            return next(
+                (net["IPAddress"] for net in networks.values()
+                 if net.get("IPAddress")),
+                None,
+            )
+        except Exception:
+            return None
+
+    def _try_enable_notify(self, waiter, waiter_type: str, node_id: int) -> None:
+        """Enable notify on *waiter* if supported and reachable."""
+        notify_class = WAITER_NOTIFY_MAP.get(waiter_type)
+        if not notify_class:
+            return
+        if not hasattr(waiter, "notify_matches"):
+            return
+        ip = self._get_container_ip(node_id)
+        if ip:
+            hint_only = waiter_type in HINT_ONLY_WAITER_TYPES
+            waiter.enable_notify(ip, notify_class, hint_only=hint_only)
+            logger.debug("notify_enabled", waiter=waiter_type, ip=ip,
+                         notify_class=notify_class, hint_only=hint_only)
     
     async def execute_datum_finalized(
         self,
@@ -208,7 +280,8 @@ class WaiterDispatcher:
             chain=chain,
             poll_interval=poll_interval
         )
-        
+
+        self._try_enable_notify(waiter, "datum_in_mempool", node_id)
         await waiter.wait(timeout=timeout)
         
         return {"status": "success", "hash": datum_hash, "node": node}
@@ -244,7 +317,20 @@ class WaiterDispatcher:
         
         # Build waiter based on type
         waiter = self._build_waiter(waiter_type, waiter_class, params, poll_interval)
-        
+
+        if waiter_type in WAITER_NOTIFY_MAP:
+            node_name = params.get("node")
+            if not node_name:
+                nodes_list = params.get("nodes", [])
+                if nodes_list:
+                    node_name = nodes_list[0]
+            if node_name:
+                try:
+                    node_id = self._extract_node_id(node_name)
+                    self._try_enable_notify(waiter, waiter_type, node_id)
+                except Exception:
+                    pass
+
         # Execute waiter
         await waiter.wait(timeout=timeout)
         
@@ -284,7 +370,7 @@ class WaiterDispatcher:
         # Handle waiters that need node configs
         if waiter_type in ["delegations_synced", "stake_service_ready", "cli_ready", 
                           "gdb_sync_complete", "global_db_sync", "first_block", "esbocs_consensus_active",
-                          "block_created"]:
+                          "block_created", "network_sync", "chain_data_propagation"]:
             node_configs = self._get_node_configs(nodes)
             
             if waiter_type == "delegations_synced":
@@ -310,14 +396,15 @@ class WaiterDispatcher:
                     poll_interval=poll_interval
                 )
             elif waiter_type == "global_db_sync":
-                # GlobalDBNodeListSyncWaiter supports single node or multiple nodes
                 if not node_configs:
                     raise ValueError(f"global_db_sync waiter requires at least one node")
                 return waiter_class(
                     exec_cli=exec_cli,
-                    nodes=node_configs,  # Pass all nodes (supports multi-node sync check)
+                    nodes=node_configs,
                     network_name=network,
-                    poll_interval=poll_interval
+                    poll_interval=poll_interval,
+                    group=params.get("group"),
+                    key=params.get("key"),
                 )
             elif waiter_type == "block_created":
                 # BlockCreatedWaiter takes single node, chain, and min_blocks
@@ -357,6 +444,22 @@ class WaiterDispatcher:
                     poll_interval=poll_interval,
                     stake_service_waiter_factory=create_stake_waiter
                 )
+            elif waiter_type == "network_sync":
+                return waiter_class(
+                    exec_cli=exec_cli,
+                    docker_client=self.docker_client,
+                    nodes=node_configs,
+                    network_name=network,
+                    poll_interval=poll_interval
+                )
+            elif waiter_type == "chain_data_propagation":
+                return waiter_class(
+                    exec_cli=exec_cli,
+                    nodes=node_configs,
+                    network_name=network,
+                    chain_name=params.get("chain", "zerochain"),
+                    poll_interval=poll_interval
+                )
         
         # Handle waiters that need docker client
         if waiter_type == "master_containers_running":
@@ -368,7 +471,8 @@ class WaiterDispatcher:
             )
         
         # Handle single-node waiters
-        if waiter_type in ["wallet_balance", "datum_in_chain", "emission_in_ledger"]:
+        if waiter_type in ["wallet_balance", "datum_in_chain", "emission_in_ledger",
+                           "transaction_processed"]:
             if not node:
                 raise ValueError(f"node required for {waiter_type}")
             
@@ -398,6 +502,15 @@ class WaiterDispatcher:
                     exec_cli=exec_cli,
                     node_id=node_id,
                     emission_hash=params.get("emission_hash") or params.get("datum"),
+                    network_name=network,
+                    chain=params.get("chain", "zerochain"),
+                    poll_interval=poll_interval
+                )
+            elif waiter_type == "transaction_processed":
+                return waiter_class(
+                    exec_cli=exec_cli,
+                    node_id=node_id,
+                    tx_hash=params.get("tx_hash") or params.get("hash"),
                     network_name=network,
                     chain=params.get("chain", "zerochain"),
                     poll_interval=poll_interval

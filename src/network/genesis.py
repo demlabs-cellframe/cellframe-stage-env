@@ -14,6 +14,7 @@ import docker
 import time
 
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 from .models import NodeConfig
 from .genesis_base import BaseGenesisManager
 from .genesis_config import GenesisConfigManager
@@ -88,7 +89,7 @@ class GenesisInitializer(BaseGenesisManager):
         Example:
             exit_code, stdout, stderr = self._exec_cli(1, "node list -net stagenet")
         """
-        container_name = f"cellframe-stage-node-{node_id}"
+        container_name = make_container_name(f"node-{node_id}")
         
         try:
             container = self.docker_client.containers.get(container_name)
@@ -246,7 +247,7 @@ class GenesisInitializer(BaseGenesisManager):
         
         # For each root node, add all other root nodes to its nodelist
         for current in root_node_data:
-            container_name = f"cellframe-stage-node-{current['node'].node_id}"
+            container_name = make_container_name(f"node-{current['node'].node_id}")
             
             try:
                 container = self.docker_client.containers.get(container_name)

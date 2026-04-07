@@ -13,7 +13,7 @@ Direct instantiation of ConfigLoader is deprecated - use global manager instead.
 import json
 import configparser
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from jinja2 import Environment, FileSystemLoader, Template
@@ -405,6 +405,14 @@ class ConfigLoader:
         paths = {
             'cache_dir': 'cache',
             'artifacts_dir': 'artifacts',
+            'cellframe_sdk_path': 'cellframe-sdk',
+            'dap_sdk_path': 'dap-sdk',
+            'tools_base_url': 'https://pub.cellframe.net',
+            'node_var_subdirs': 'log, lib/ca, lib/global_db, lib/wallet, lib/network',
+            'cellframe_sdk_git': 'https://gitlab.demlabs.net/cellframe/cellframe-sdk.git',
+            'dap_sdk_git': 'https://gitlab.demlabs.net/dap/dap-sdk.git',
+            'sdk_git_branch': 'master',
+            'custom_templates_dir': '',
         }
         
         if not config_file.exists():
@@ -470,7 +478,7 @@ class ConfigLoader:
         if config.has_section('paths') and config.has_option('paths', 'artifacts_dir'):
             artifacts['artifacts_dir'] = config.get('paths', 'artifacts_dir')
         else:
-            artifacts['artifacts_dir'] = '../testing/artifacts'
+            artifacts['artifacts_dir'] = '../../cache/artifacts'
         
         logger.debug("artifacts_config_loaded", **artifacts)
         return artifacts
@@ -580,10 +588,9 @@ class ConfigLoader:
             'auto_create_on_startup': True,
             'snapshot_name': 'clean_state',
             'genesis_stage': 'full',
-            'phase1_snapshot_name': 'phase1_zerochain_genesis',
             'auto_cleanup': True,
             'keep_snapshot_count': 5,
-            'snapshots_dir': '../testing/snapshots',
+            'snapshots_dir': '../../cache/snapshots',
         }
         
         if not config_file.exists():
@@ -684,6 +691,8 @@ class ConfigLoader:
                 node_source['repository_branch'] = config.get('node_source', 'branch')
             if config.has_option('node_source', 'build_type'):
                 node_source['build_type'] = config.get('node_source', 'build_type')
+            elif config.has_option('build', 'build_type'):
+                node_source['build_type'] = config.get('build', 'build_type')
             if config.has_option('node_source', 'checksum'):
                 node_source['checksum'] = config.get('node_source', 'checksum')
             if config.has_option('node_source', 'headers'):
@@ -718,12 +727,12 @@ class ConfigLoader:
         
         # Try relative paths from stage-env directory
         if not build_dir or not build_dir.exists():
-            # stage-env is typically in cellframe-node/tests/stage-env/
-            # test_build is in cellframe-node/test_build/
+            paths_config = self.get_paths_config()
+            project_root = (self.base_path / paths_config.get('project_root', '../..')).resolve()
             candidates = [
-                self.config_dir.parent.parent / "test_build",  # ../../test_build
-                self.config_dir.parent / "test_build",          # ../test_build
-                Path.cwd() / "test_build",                      # ./test_build
+                project_root / "test_build",
+                self.config_dir.parent / "test_build",
+                Path.cwd() / "test_build",
             ]
             for candidate in candidates:
                 if candidate.exists():
@@ -758,134 +767,149 @@ class ConfigLoader:
                    build_dir=str(build_dir))
         
         return node_source
-    
-    def get_node_version(self) -> Optional[str]:
+
+    def get_extra_packages(self) -> List[Dict[str, str]]:
         """
-        Extract version from the node package name based on source type.
-        
-        Package name formats:
-        - cellframe-node-6.0-LOCALBUILD1-dbg-amd64.deb -> "6.0"
-        - cellframe-node-5.2.123-amd64.deb -> "5.2"
-        - cellframe-node-latest.deb -> None (unknown)
-        
+        Load extra DEB packages to install alongside cellframe-node.
+
+        Reads [extra_packages] section from stage-env.cfg.
+        Keys starting with 'local_' are resolved as local file paths.
+        Keys starting with 'url_' are treated as download URLs.
+
         Returns:
-            Major.minor version string (e.g., "6.0", "5.2") or None if unknown
+            List of dicts: [{'type': 'local', 'path': '/abs/path.deb'}, ...]
         """
-        import re
-        from urllib.parse import urlparse
-        
-        node_source = self.get_node_source_config()
-        source_type = node_source.get('type', 'local')
-        
-        if source_type == 'url':
-            url = node_source.get('url')
-            if not url:
-                logger.debug("no_url_for_version_detection")
-                return None
-            package_name = Path(urlparse(url).path).name
-        else:
-            local_path = node_source.get('local_path')
-            if not local_path:
-                logger.debug("no_local_path_for_version_detection")
-                return None
-            package_name = Path(local_path).name
-        
-        # Pattern: cellframe-node-X.Y... where X.Y is major.minor
-        # Examples:
-        #   cellframe-node-6.0-LOCALBUILD1-dbg-amd64.deb
-        #   cellframe-node-5.2.345-amd64.deb
-        #   cellframe-node-5.0-amd64.deb
-        match = re.search(r'cellframe-node-(\d+\.\d+)', package_name)
-        
-        if match:
-            version = match.group(1)
-            logger.info("node_version_detected", 
-                       package_name=package_name, 
-                       version=version)
-            return version
-        
-        logger.warning("could_not_detect_version_from_package",
-                      package_name=package_name)
-        return None
-    
-    def get_genesis_scenario_path(self, scenario_name: str) -> str:
+        from pathlib import Path
+
+        config_file = self.custom_config_path or (self.config_dir / "stage-env.cfg")
+        if not config_file.exists():
+            return []
+
+        config = configparser.ConfigParser()
+        config.read(config_file)
+
+        if not config.has_section('extra_packages'):
+            return []
+
+        packages = []
+        paths_config = self.get_paths_config()
+        project_root = (self.base_path / paths_config.get('project_root', '../..')).resolve()
+
+        for key, value in config.items('extra_packages'):
+            value = value.strip()
+            if not value or value.startswith('#'):
+                continue
+
+            if key.startswith('local'):
+                pkg_path = Path(value)
+                if not pkg_path.is_absolute():
+                    pkg_path = project_root / value
+                resolved = pkg_path.resolve() if '*' not in str(pkg_path) else None
+                if resolved and resolved.exists():
+                    packages.append({'type': 'local', 'path': str(resolved)})
+                    logger.info("extra_package_local", key=key, path=str(resolved))
+                elif '*' in str(pkg_path):
+                    import glob as _glob
+                    matched = sorted(_glob.glob(str(pkg_path)))
+                    if matched:
+                        picked = matched[-1]
+                        packages.append({'type': 'local', 'path': picked})
+                        logger.info("extra_package_glob", key=key, pattern=str(pkg_path), resolved=picked)
+                    else:
+                        logger.warning("extra_package_glob_no_match", key=key, pattern=str(pkg_path))
+                else:
+                    logger.warning("extra_package_not_found", key=key, path=str(pkg_path))
+            elif key.startswith('url'):
+                packages.append({'type': 'url', 'url': value})
+                logger.info("extra_package_url", key=key, url=value)
+
+        return packages
+
+    def get_plugins_config(self) -> Dict[str, Any]:
         """
-        Get path to genesis scenario based on detected node version.
-        
-        Search order:
-        1. Version-specific path: genesis/{detected_version}/{scenario_name}
-        2. Default path: genesis/{scenario_name}  
-        3. Auto-detect: find any version subdirectory with the scenario
-        
-        Args:
-            scenario_name: Scenario filename (e.g., "phase1_zerochain.yml")
-            
+        Load [plugins] configuration.
+
         Returns:
-            Path relative to scenarios directory (e.g., "genesis/6.0/phase1_zerochain.yml")
-            
-        Raises:
-            FileNotFoundError: If scenario not found in any location
+            Dict with plugins settings:
+            - enabled: bool (global default)
+            - enabled_roles: list of roles where plugins are enabled
+            - enabled_nodes: list of node IDs where plugins are enabled
         """
-        # scenarios/ is at stage-env root level, not under config/
-        # config_dir is stage-env/config/, so go up one level
-        stage_env_dir = self.config_dir.parent
-        scenarios_dir = stage_env_dir / "scenarios"
-        genesis_dir = scenarios_dir / "genesis"
-        
-        version = self.get_node_version()
-        
-        # 1. Try version-specific path first
-        if version:
-            version_path = f"genesis/{version}/{scenario_name}"
-            full_path = scenarios_dir / version_path
-            
-            if full_path.exists():
-                logger.info("using_version_specific_genesis_scenario",
-                          version=version,
-                          scenario=version_path)
-                return version_path
-            else:
-                logger.warning("version_specific_scenario_not_found",
-                             version=version,
-                             scenario=scenario_name,
-                             tried_path=str(full_path))
-        
-        # 2. Try default path (genesis/{scenario_name})
-        default_path = f"genesis/{scenario_name}"
-        if (scenarios_dir / default_path).exists():
-            logger.info("using_default_genesis_scenario", scenario=default_path)
-            return default_path
-        
-        # 3. Auto-detect: find any version subdirectory with the scenario
-        if genesis_dir.exists():
-            # Get version subdirectories (e.g., "5.0", "6.0")
-            version_dirs = sorted(
-                [d for d in genesis_dir.iterdir() 
-                 if d.is_dir() and d.name[0].isdigit()],
-                key=lambda d: d.name,
-                reverse=True  # Prefer newest version
-            )
-            
-            for ver_dir in version_dirs:
-                candidate = ver_dir / scenario_name
-                if candidate.exists():
-                    found_path = f"genesis/{ver_dir.name}/{scenario_name}"
-                    logger.warning("auto_detected_genesis_scenario",
-                                 detected_version=ver_dir.name,
-                                 scenario=found_path,
-                                 note="Version not detected from package, using auto-detected scenario")
-                    return found_path
-        
-        # No scenario found anywhere
-        available_versions = []
-        if genesis_dir.exists():
-            available_versions = [d.name for d in genesis_dir.iterdir() 
-                                 if d.is_dir() and d.name[0].isdigit()]
-        
-        raise FileNotFoundError(
-            f"Genesis scenario '{scenario_name}' not found. "
-            f"Detected version: {version or 'unknown'}. "
-            f"Available version directories: {available_versions or 'none'}. "
-            f"Searched paths: genesis/{version}/{scenario_name}, genesis/{scenario_name}"
-        )
+        result = {
+            'enabled': False,
+            'enabled_roles': [],
+            'enabled_nodes': [],
+        }
+
+        config_file = self.custom_config_path or (self.config_dir / "stage-env.cfg")
+        if not config_file.exists():
+            return result
+
+        config = configparser.ConfigParser()
+        config.read(config_file)
+
+        if not config.has_section('plugins'):
+            return result
+
+        if config.has_option('plugins', 'enabled'):
+            result['enabled'] = config.getboolean('plugins', 'enabled')
+        if config.has_option('plugins', 'enabled_roles'):
+            roles = config.get('plugins', 'enabled_roles')
+            result['enabled_roles'] = [r.strip() for r in roles.split(',') if r.strip()]
+        if config.has_option('plugins', 'enabled_nodes'):
+            nodes = config.get('plugins', 'enabled_nodes')
+            result['enabled_nodes'] = [int(n.strip()) for n in nodes.split(',') if n.strip()]
+
+        logger.debug("plugins_config_loaded", **result)
+        return result
+
+    def get_docker_customizations(self) -> Dict[str, Dict[str, Any]]:
+        """Parse ``[role_docker_*]`` and ``[node_docker_*]`` sections.
+
+        Returns a dict keyed by section name (e.g. ``role_docker_root``,
+        ``node_docker_3``) with sub-keys:
+        - ``capabilities``: List[str]
+        - ``devices``: List[str]
+        - ``environment``: Dict[str, str]
+        - ``extra_config``: Dict[str, Any]  (raw JSON)
+        """
+        config_file = self.custom_config_path or (self.config_dir / "stage-env.cfg")
+        if not config_file.exists():
+            return {}
+
+        config = configparser.ConfigParser()
+        config.read(config_file)
+
+        result: Dict[str, Dict[str, Any]] = {}
+        for section in config.sections():
+            if not (section.startswith('role_docker_') or section.startswith('node_docker_')):
+                continue
+            entry: Dict[str, Any] = {}
+            if config.has_option(section, 'capabilities'):
+                raw = config.get(section, 'capabilities')
+                entry['capabilities'] = [c.strip() for c in raw.split(',') if c.strip()]
+            if config.has_option(section, 'devices'):
+                raw = config.get(section, 'devices')
+                entry['devices'] = [d.strip() for d in raw.split(',') if d.strip()]
+            if config.has_option(section, 'environment'):
+                raw = config.get(section, 'environment')
+                env: Dict[str, str] = {}
+                for pair in raw.split(','):
+                    pair = pair.strip()
+                    if '=' in pair:
+                        k, v = pair.split('=', 1)
+                        env[k.strip()] = v.strip()
+                entry['environment'] = env
+            if config.has_option(section, 'extra_config'):
+                import json
+                try:
+                    entry['extra_config'] = json.loads(config.get(section, 'extra_config'))
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            if entry:
+                result[section] = entry
+
+        if result:
+            logger.debug("docker_customizations_loaded", sections=list(result.keys()))
+        return result
 

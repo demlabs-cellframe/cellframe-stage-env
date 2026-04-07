@@ -19,13 +19,13 @@ Usage:
 """
 
 import asyncio
-import json
 from typing import Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
 from enum import Enum
 
 from ..utils.logger import get_logger
+from ..utils.project import make_container_name
 
 logger = get_logger(__name__)
 
@@ -373,15 +373,13 @@ class NetworkConsensusMonitor:
             state.unique_chain_states = len(unique_states)
             state.all_chains_synced = len(unique_states) == 1
         
-        # Overall readiness:
-        # - All nodes online
-        # - Most nodes have full node list (allow 1-2 late joiners to sync)
-        # NOTE: chains_synced check removed - with active ESBocs, nodes will have
-        # different block counts as validators produce blocks. Chain sync is natural.
-        min_nodes_with_full_list = max(1, self.expected_node_count - 2)  # Allow up to 2 nodes still syncing
+        # Overall readiness: all nodes online and most have full node list.
+        # Full nodes may bootstrap slowly via the balancer in v5.x, so we
+        # tolerate up to 1 node without a complete list during initial startup.
+        min_ready = max(self.expected_node_count - 1, 1)
         state.ready = (
             state.all_nodes_online and
-            state.nodes_with_full_list >= min_nodes_with_full_list
+            state.nodes_with_full_list >= min_ready
         )
         
         return state
@@ -424,41 +422,15 @@ class NetworkConsensusMonitor:
                         f"net -net {self.network_name} get status"
                     )
                     
-                    active = None
-                    required = None
+                    # Parse YAML to get active and required links
+                    import re
+                    active_match = re.search(r'active:\s*(\d+)', net_status)
+                    required_match = re.search(r'required:\s*(\d+)', net_status)
                     
-                    # Try JSON parsing first (new CLI format)
-                    try:
-                        output_stripped = net_status.strip()
-                        if output_stripped.startswith('[') or output_stripped.startswith('{'):
-                            data = json.loads(output_stripped)
-                            # Handle array format: [{"status": {...}}]
-                            if isinstance(data, list) and len(data) > 0:
-                                data = data[0]
-                            # Extract links from JSON: status.links.active/required
-                            if isinstance(data, dict):
-                                links = None
-                                if 'status' in data and 'links' in data['status']:
-                                    links = data['status']['links']
-                                elif 'links' in data:
-                                    links = data['links']
-                                if links and isinstance(links, dict):
-                                    active = links.get('active')
-                                    required = links.get('required')
-                    except (json.JSONDecodeError, KeyError, TypeError):
-                        pass  # Fall back to text parsing
-                    
-                    # Fallback: Parse text/YAML format
-                    if active is None or required is None:
-                        import re
-                        active_match = re.search(r'active:\s*(\d+)', net_status)
-                        required_match = re.search(r'required:\s*(\d+)', net_status)
-                        if active_match:
-                            active = int(active_match.group(1))
-                        if required_match:
-                            required = int(required_match.group(1))
-                    
-                    if active is not None and required is not None:
+                    if active_match and required_match:
+                        active = int(active_match.group(1))
+                        required = int(required_match.group(1))
+                        
                         if active >= required:
                             ready_count += 1
                             logger.debug("node_links_established",
@@ -841,18 +813,18 @@ class NetworkConsensusMonitor:
         # Convert node_id to container name: node1 -> node-1, root-1 -> node-1, etc.
         if node_id.startswith('node'):
             node_number = node_id[4:]  # Extract number from "node1"
-            container_name = f"cellframe-stage-node-{node_number}"
+            container_name = make_container_name(f"node-{node_number}")
         elif node_id.startswith('root-'):
             # root-1 -> node-1, root-2 -> node-2, etc.
             node_number = node_id.split('-')[1]
-            container_name = f"cellframe-stage-node-{node_number}"
+            container_name = make_container_name(f"node-{node_number}")
         elif node_id.startswith('master-'):
             # master-1 -> node-4, master-2 -> node-5, etc. (in default topology)
             master_idx = int(node_id.split('-')[1])
             node_number = str(master_idx + 3)
-            container_name = f"cellframe-stage-node-{node_number}"
+            container_name = make_container_name(f"node-{node_number}")
         else:
-            container_name = f"cellframe-stage-{node_id}"
+            container_name = make_container_name(node_id)
         
         try:
             container = self.docker_client.containers.get(container_name)

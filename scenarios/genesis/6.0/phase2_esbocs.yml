@@ -147,6 +147,7 @@ test:
     set:
       static_genesis_block: "{{genesis_block_hash}}"
       is_static_genesis_block: "true"
+      fee_addr: "{{fee_addr}}"
   
   - config: "{{network_name}}/zerochain"
     nodes: "{{root_nodes}}"

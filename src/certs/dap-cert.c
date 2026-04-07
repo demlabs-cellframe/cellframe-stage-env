@@ -221,7 +221,7 @@ static int s_cmd_addr(int argc, char **argv)
 /**
  * @brief Command: node-addr - Extract short node address from certificate
  * Usage: dap-cert node-addr <cert_path>
- * @details Extracts dap_stream_node_addr_t (short format like 3FDA::0325::3A71::2C74)
+ * @details Extracts dap_cluster_node_addr_t (short format like 3FDA::0325::3A71::2C74)
  *          This is the format needed for authorized_nodes_addrs in chain config
  */
 static int s_cmd_node_addr(int argc, char **argv)
@@ -237,8 +237,8 @@ static int s_cmd_node_addr(int argc, char **argv)
         return DAP_CERT_ERROR;
     }
     
-    /* Extract node address (dap_stream_node_addr_t) */
-    dap_stream_node_addr_t l_node_addr = dap_stream_node_addr_from_cert(l_cert);
+    /* Extract node address (dap_cluster_node_addr_t) */
+    dap_cluster_node_addr_t l_node_addr = dap_cluster_node_addr_from_cert(l_cert);
     
     dap_cert_delete(l_cert);
     
@@ -249,7 +249,7 @@ static int s_cmd_node_addr(int argc, char **argv)
     }
     
     /* Convert to string format (short address) */
-    const char *l_addr_str = dap_stream_node_addr_to_str_static(l_node_addr);
+    const char *l_addr_str = dap_cluster_node_addr_to_str(l_node_addr);
     if (!l_addr_str) {
         log_it(L_ERROR, "Failed to convert node address to string");
         return DAP_CERT_ERROR;

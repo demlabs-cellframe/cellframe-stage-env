@@ -2,11 +2,10 @@
 Cellframe-node-tool command step executor.
 """
 
-import re
 from typing import Any, Dict
 
 from ...utils.logger import get_logger
-from .base import StepExecutor
+from .base import StepExecutor, resolve_timeout
 from ..schema import ToolStep
 from ..executor import ScenarioExecutionError, RuntimeContext
 
@@ -18,14 +17,14 @@ class ToolStepExecutor(StepExecutor):
     
     async def execute(self, step: ToolStep, ctx: RuntimeContext) -> Dict[str, Any]:
         """Execute cellframe-node-tool command step."""
-        # Substitute variables in tool command
         tool_cmd = ctx.substitute(step.tool)
+        node = ctx.substitute(step.node) if step.node else step.node
         
-        # Execute via container manager
+        timeout = resolve_timeout(step.timeout, ctx, default=30)
         result = await self.container_manager.exec_tool_command(
             tool_cmd=tool_cmd,
-            node=step.node,
-            timeout=step.timeout
+            node=node,
+            timeout=timeout
         )
         
         # Log tool execution
@@ -34,7 +33,7 @@ class ToolStepExecutor(StepExecutor):
         self._log_to_file("=" * 70)
         self._log_to_file(f"Node: {step.node}")
         self._log_to_file(f"Command: cellframe-node-tool {tool_cmd}")
-        self._log_to_file(f"Timeout: {step.timeout}s")
+        self._log_to_file(f"Timeout: {timeout}s")
         self._log_to_file(f"Expected: {step.expect}")
         self._log_to_file("\n--- Tool Response ---")
         self._log_to_file(f"Exit Code: {result['returncode']}\n")
@@ -44,28 +43,11 @@ class ToolStepExecutor(StepExecutor):
             self._log_to_file(f"Stderr:\n{result['stderr']}")
         self._log_to_file("\n" + "=" * 70 + "\n")
         
-        stdout = (result.get("stdout") or "").strip()
-
-        # Save hash if requested (e.g. wallet pkey show outputs "0x..." on a line)
-        if step.save_hash and stdout:
-            hash_match = re.search(r"0x[0-9a-fA-F]{64}", stdout)
-            if hash_match:
-                variable_name = ctx.substitute(step.save_hash)
-                ctx.set_variable(variable_name, hash_match.group(0))
-                self._log_to_file(f"✓ Saved hash to variable: {variable_name}")
-                logger.debug("tool_step_saved_hash", variable=variable_name)
-            else:
-                raise ScenarioExecutionError(
-                    "Failed to extract hash from tool output: no 0x[hex]{64} pattern found",
-                    step=f"cellframe-node-tool {tool_cmd}",
-                    context={"output": stdout[:500]}
-                )
-
-        # Save raw result if requested
-        if step.save:
-            ctx.set_variable(step.save, stdout)
-            self._log_to_file(f"✓ Saved to variable: {step.save}")
-            logger.debug("tool_step_saved", variable=step.save)
+        if step.save or step.save_map:
+            resolved_save = ctx.substitute(step.save) if step.save else None
+            ctx.save_output(result["stdout"], resolved_save, step.save_regex, step.save_map)
+            if resolved_save:
+                self._log_to_file(f"✓ Saved to variable: {resolved_save}")
         
         # Check expectation
         if step.expect == "success" and result["returncode"] != 0:

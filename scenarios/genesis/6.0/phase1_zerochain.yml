@@ -324,6 +324,12 @@ test:
     node: "{{first_root}}"
     save_wallet: fee_addr
   
+  # Write fee_addr to main.cfg so it persists across restarts/snapshots
+  - config: "{{network_name}}/main"
+    nodes: "{{all_nodes}}"
+    set:
+      fee_addr: "{{fee_addr}}"
+  
   # Enable seed_mode on seed nodes (root nodes)
   - config: "cellframe-node"
     nodes: "{{seed_nodes}}"

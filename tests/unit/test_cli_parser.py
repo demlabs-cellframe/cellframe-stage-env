@@ -81,7 +81,7 @@ class TestCLICommandParser:
         assert result.count("-net") == 1
     
     def test_apply_cli_defaults_ignores_unsupported_options(self):
-        """Test that unsupported options are ignored."""
+        """Test that unsupported options are skipped when available_options is populated."""
         parser = CLICommandParser()
         
         parser.commands = {
@@ -99,6 +99,24 @@ class TestCLICommandParser:
         
         assert "-net stagenet" in result
         assert "-unsupported_option" not in result
+    
+    def test_apply_cli_defaults_adds_all_when_unparsed(self):
+        """Test that all defaults are added when parser has no options for the command."""
+        parser = CLICommandParser()
+        
+        parser.commands = {}
+        parser._parsed = True
+        
+        cmd = "some_cmd -token TEST"
+        defaults = {
+            "net": "stagenet",
+            "chain": "zerochain",
+        }
+        
+        result = parser.apply_cli_defaults(cmd, defaults)
+        
+        assert "-net stagenet" in result
+        assert "-chain zerochain" in result
     
     def test_load_from_empty_cache_returns_false(self, tmp_path):
         """Test that empty cache is rejected."""

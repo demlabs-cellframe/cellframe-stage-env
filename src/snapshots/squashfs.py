@@ -8,6 +8,7 @@ overlay filesystem for writes. Provides maximum speed with minimal overhead.
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import os
 import stat
@@ -16,7 +17,7 @@ from typing import Dict, Any, Optional, List
 import subprocess
 
 from src.utils.logger import get_logger
-from .base import BaseSnapshot
+from .base import BaseSnapshot, SNAPSHOT_EXCLUDE_PATTERNS
 
 logger = get_logger(__name__)
 
@@ -137,16 +138,17 @@ class SquashfsSnapshot(BaseSnapshot):
         
         return False
     
-    async def create(self, name: str) -> bool:
+    async def create(self, name: str, extra_metadata: Optional[Dict[str, Any]] = None, clone_images: dict | None = None) -> bool:
         """
         Create squashfs snapshot including data and configs.
-        
+
         CRITICAL: Includes both data (cache/data/) and configs (cache/configs/)
         to preserve static_genesis_event and other genesis configuration.
-        
+
         Args:
             name: Snapshot name
-            
+            extra_metadata: Optional dict to store in {name}.metadata (e.g. emission_hash)
+
         Returns:
             True if snapshot created successfully
         """
@@ -181,11 +183,7 @@ class SquashfsSnapshot(BaseSnapshot):
             # Write exclude patterns to file
             # Exclude run/ directories (contain Unix sockets, symlinks and PID files that are runtime-specific)
             # CRITICAL: Must exclude entire run/ directory to prevent Unix socket files from being included
-            exclude_patterns = [
-                "*/run/",  # Exclude entire run/ directory first (most specific)
-                "*/run/node_cli",  # Explicitly exclude Unix socket files
-                "*/run/*.pid",  # Exclude PID files
-            ]
+            exclude_patterns = list(SNAPSHOT_EXCLUDE_PATTERNS)
             exclude_file.write_text('\n'.join(exclude_patterns))
             
             # Build mksquashfs command - pass source directories directly
@@ -234,7 +232,7 @@ class SquashfsSnapshot(BaseSnapshot):
                             error=stderr.decode())
                 return False
             
-            # Create metadata
+            # Create metadata (JSON sidecar next to .sqfs; include extra_metadata e.g. emission_hash)
             metadata = {
                 "name": name,
                 "type": "squashfs",
@@ -242,9 +240,10 @@ class SquashfsSnapshot(BaseSnapshot):
                 "size_bytes": snapshot_file.stat().st_size,
                 "includes_configs": configs_path.exists(),
             }
-            
+            if extra_metadata:
+                metadata.update(extra_metadata)
             metadata_file = self.snapshots_path / f"{name}.metadata"
-            metadata_file.write_text(str(metadata))
+            metadata_file.write_text(json.dumps(metadata, indent=2))
             
             logger.info("squashfs_create_complete",
                        name=name,
@@ -467,6 +466,17 @@ class SquashfsSnapshot(BaseSnapshot):
                     )
                     await proc.communicate()
             
+            # Remove stale MDBX lock files — restored from snapshot they
+            # reference PIDs that no longer exist and block new processes.
+            if data_path.exists():
+                proc = await asyncio.create_subprocess_exec(
+                    "sudo", "find", str(data_path),
+                    "-name", "mdbx.lck", "-delete",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+
             logger.info("squashfs_restore_complete", name=name)
             return True
             
@@ -522,7 +532,31 @@ class SquashfsSnapshot(BaseSnapshot):
             snapshots.append(snapshot_file.stem)
         
         return sorted(snapshots)
+
+    def load_metadata(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        Load snapshot metadata from {name}.metadata (JSON sidecar next to .sqfs).
+        Used by SnapshotManager.get_snapshot_metadata for emission_hash etc.
+        """
+        metadata_file = self.snapshots_path / f"{name}.metadata"
+        if not metadata_file.exists():
+            return None
+        try:
+            text = metadata_file.read_text().strip()
+            if not text:
+                return None
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                import ast
+                return ast.literal_eval(text)
+        except Exception as e:
+            logger.debug("squashfs_load_metadata_failed", name=name, error=str(e))
+            return None
     
+    def exists(self, name: str) -> bool:
+        return (self.snapshots_path / f"{name}.sqfs").exists()
+
     def get_info(self, name: str) -> Dict[str, Any]:
         """Get squashfs snapshot information."""
         snapshot_file = self.snapshots_path / f"{name}.sqfs"
@@ -539,13 +573,10 @@ class SquashfsSnapshot(BaseSnapshot):
             info["size_bytes"] = snapshot_file.stat().st_size
             info["created"] = snapshot_file.stat().st_mtime
         
-        # Read metadata if available
-        if metadata_file.exists():
-            try:
-                metadata = eval(metadata_file.read_text())
-                info.update(metadata)
-            except Exception:
-                pass
+        # Read metadata if available (JSON or legacy repr)
+        metadata = self.load_metadata(name)
+        if metadata:
+            info.update(metadata)
         
         return info
 

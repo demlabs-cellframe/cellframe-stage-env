@@ -39,7 +39,6 @@
 # Современный подход с for loop
 - for: i
   in: "range(5)"
-  eval: true
   steps:
     - cli: "wallet new -w wallet_{{i}}"
       save_wallet: "addr_{{i}}"
@@ -175,7 +174,7 @@ test:
 ```yaml
 - config: "{{network_name}}/main"
   set:
-    is_add_directly: "true"
+    fee_addr: "{{fee_addr}}"
 - docker_op: restart  # ❌ Конфиг НЕ перезагружен!
 ```
 
@@ -184,7 +183,7 @@ test:
 - config: "{{network_name}}/main"
   nodes: "{{_active_nodes}}"
   set:
-    is_add_directly: "true"
+    fee_addr: "{{fee_addr}}"
 
 # Используйте stop + start вместо restart
 - docker_op: stop
@@ -241,7 +240,7 @@ test:
   # Проверить создание блока
   - cli: "block list -chain main"
     node: "{{first_master}}"
-    expect_output: "have blocks: [1-9]"
+    contains: "have blocks: [1-9]"
   
   - print: "✓ Genesis блок создан и синхронизирован!"
 ```
@@ -303,7 +302,6 @@ variables:
 test:
   - for: i
     in: "range({{wallet_count}})"
-    eval: true
     steps:
       - cli: "wallet new -w wallet_{{i}}"
         save_wallet: "addr_{{i}}"
@@ -343,7 +341,7 @@ test:
 
 ### Рецепт 12: Обработка Данных в Python
 
-Обработка вывода CLI с помощью Python.
+Извлечение данных из вывода CLI нативными хелперами.
 
 ```yaml
 name: Парсинг и Анализ
@@ -352,20 +350,17 @@ description: Извлечение данных из вывода CLI
 test:
   - cli: "wallet list"
     save_to: wallet_list
-  
-  - python: |
-      import re
-      output = ctx.get_variable('wallet_list')
-      
-      # Извлечь все адреса кошельков
-      addresses = re.findall(r'(Wkoj\w+)', output)
-      
-      # Сохранить для последующего использования
-      ctx.set_variable('wallet_addresses', addresses)
-      ctx.set_variable('wallet_count', len(addresses))
-  
+
+  - set: wallet_addresses
+    value: "find_all(wallet_list, r'(Wkoj\\w+)')"
+    eval: true
+
+  - set: wallet_count
+    value: "len(wallet_addresses)"
+    eval: true
+
   - print: "Найдено {{wallet_count}} кошельков"
-  
+
   - for: addr
     in: "{{wallet_addresses}}"
     steps:
@@ -392,7 +387,7 @@ test:
     save_hash: token_hash
   
   # Сохранить snapshot
-  - snapshot: save
+  - snapshot: create
     name: with_token
   
   # Провести деструктивный тест

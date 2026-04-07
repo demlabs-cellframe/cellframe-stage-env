@@ -9,12 +9,14 @@ Provides intelligent waiting for node state transitions:
 
 import asyncio
 import json
-from typing import List, Set
+import re
+from typing import List, Optional, Set
 from enum import Enum
 
 import docker
 
 from src.utils.logger import get_logger
+from src.utils.project import get_project_name
 from .models import NodeConfig
 
 
@@ -31,6 +33,7 @@ class NodeState(Enum):
     ADDR_REQUEST = "NET_STATE_ADDR_REQUEST"
     SYNC_CHAINS = "NET_STATE_SYNC_CHAINS"
     SYNC_GDB = "NET_STATE_SYNC_GDB"
+    SYNC_ALL = "NET_STATE_SYNC_ALL"
     UNKNOWN = "UNKNOWN"
 
 
@@ -47,7 +50,7 @@ class NodeStateManager:
     def __init__(
         self,
         docker_client: docker.DockerClient,
-        project_name: str = "cellframe-stage",
+        project_name: Optional[str] = None,
         cli_path: str = "cellframe-node-cli",
         network_name: str = "stagenet"
     ):
@@ -61,7 +64,7 @@ class NodeStateManager:
             network_name: Network name for CLI commands
         """
         self.docker_client = docker_client
-        self.project_name = project_name
+        self.project_name = project_name if project_name is not None else get_project_name()
         self.cli_path = cli_path
         self.network_name = network_name
     
@@ -172,8 +175,7 @@ class NodeStateManager:
                                note="Waiting for node to reach ONLINE state")
                 
                 if state in [NodeState.ONLINE, NodeState.LINKS_CONNECTING, 
-                            NodeState.LINKS_ESTABLISHED, NodeState.SYNC_CHAINS,
-                            NodeState.SYNC_GDB]:
+                            NodeState.LINKS_ESTABLISHED]:
                     nodes_online.add(node.node_id)
                     logger.debug("node_online", node_id=node.node_id, state=state.value)
                 elif state == NodeState.UNKNOWN:
@@ -307,65 +309,83 @@ class NodeStateManager:
                              output_preview=output_str[:300],
                              note="Network status command returned error - network may not be initialized")
             
-            # Parse state from output
-            # CLI can return two formats:
-            # 1. JSON format (new): [{"status":{"states":{"current":"NET_STATE_ONLINE",...}}}]
-            # 2. Text format (legacy):
-            #      states:
-            #          current: NET_STATE_ONLINE
-            #          target: NET_STATE_ONLINE
-            
-            # Try JSON parsing first (new format)
+            # Try JSON format first (6.0+):
+            # [{"status":{"states":{"current":"NET_STATE_ONLINE","target":"NET_STATE_ONLINE"}}}]
             try:
-                # Strip any whitespace and try to parse as JSON
-                output_stripped = output_str.strip()
-                if output_stripped.startswith('[') or output_stripped.startswith('{'):
-                    data = json.loads(output_stripped)
-                    
-                    # Handle array format: [{"status": {...}}]
-                    if isinstance(data, list) and len(data) > 0:
-                        data = data[0]
-                    
-                    # Extract state from JSON structure
-                    # Path: status.states.current or states.current
-                    current_state_str = None
-                    if isinstance(data, dict):
-                        if 'status' in data and 'states' in data['status']:
-                            current_state_str = data['status']['states'].get('current')
-                        elif 'states' in data:
-                            current_state_str = data['states'].get('current')
-                    
-                    if current_state_str:
+                parsed = json.loads(output_str.strip())
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    item = parsed[0]
+                    current_str = None
+                    if isinstance(item, dict):
+                        status = item.get("status", item)
+                        states = status.get("states", {})
+                        current_str = states.get("current")
+                    if current_str:
                         for state in NodeState:
-                            if state.value == current_state_str:
-                                logger.debug("node_state_detected_json",
+                            if state.value == current_str:
+                                logger.debug("node_state_detected",
                                            node_id=node_id,
-                                           state=state.value)
+                                           state=state.value,
+                                           format="json")
                                 return state
-            except (json.JSONDecodeError, KeyError, TypeError) as e:
-                logger.debug("json_parse_attempt_failed",
-                           node_id=node_id,
-                           error=str(e),
-                           note="Falling back to text parsing")
+            except (json.JSONDecodeError, TypeError, KeyError):
+                pass
             
-            # Fallback: Text format parsing (legacy)
+            # Fall back to text format (5.x):
+            #   current: NET_STATE_ONLINE
             for line in output_str.split('\n'):
                 line_stripped = line.strip()
-                # Look for "current: NET_STATE_XXX" line
                 if line_stripped.startswith('current:'):
                     for state in NodeState:
                         if state.value in line_stripped:
-                            logger.debug("node_state_detected_text",
+                            logger.debug("node_state_detected",
                                        node_id=node_id,
-                                       state=state.value)
+                                       state=state.value,
+                                       format="text")
                             return state
-            
+
+            # Fallback 1: scan whole output for any NET_STATE_* token
+            for state in [NodeState.ONLINE, NodeState.SYNC_CHAINS,
+                          NodeState.LINKS_ESTABLISHED, NodeState.LINKS_CONNECTING,
+                          NodeState.LINKS_PREPARE, NodeState.OFFLINE]:
+                if state.value in output_str:
+                    logger.debug("node_state_detected",
+                               node_id=node_id,
+                               state=state.value,
+                               format="text_fallback")
+                    return state
+
+            # Fallback 2: v5.7 text format without explicit NET_STATE_*.
+            # Deduce state from structural indicators (links, chain sync).
+            links_match = re.search(r'links:\s*\n\s*active:\s*(\d+)', output_str)
+            has_active_links = links_match and int(links_match.group(1)) > 0
+            has_syncing = 'sync in process' in output_str.lower()
+            has_synced = bool(re.search(r'status:\s*synced', output_str))
+
+            if has_active_links:
+                if has_synced and not has_syncing:
+                    logger.debug("node_state_detected",
+                               node_id=node_id,
+                               state=NodeState.ONLINE.value,
+                               format="structural_heuristic")
+                    return NodeState.ONLINE
+                elif has_syncing:
+                    logger.debug("node_state_detected",
+                               node_id=node_id,
+                               state=NodeState.SYNC_CHAINS.value,
+                               format="structural_heuristic")
+                    return NodeState.SYNC_CHAINS
+                else:
+                    logger.debug("node_state_detected",
+                               node_id=node_id,
+                               state=NodeState.LINKS_ESTABLISHED.value,
+                               format="structural_heuristic")
+                    return NodeState.LINKS_ESTABLISHED
+
             logger.debug("state_not_parsed",
                        node_id=node_id,
-                       output_preview=output_str[:200],
-                       full_output=output_str[:500])
+                       output_preview=output_str[:200])
             
-            # DIAGNOSTIC: If we can't parse state, log full output for debugging
             if output_str:
                 logger.warning("failed_to_parse_node_state",
                              node_id=node_id,

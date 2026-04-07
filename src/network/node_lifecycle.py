@@ -5,11 +5,12 @@ Handles graceful node shutdown, GDB flush verification, and restart operations.
 """
 
 import asyncio
-from typing import List
+from typing import List, Optional
 
 import docker
 
 from src.utils.logger import get_logger
+from src.utils.project import get_project_name
 
 
 logger = get_logger(__name__)
@@ -25,14 +26,14 @@ class NodeLifecycleManager:
     - Health checks during lifecycle transitions
     """
     
-    def __init__(self, project_name: str = "cellframe-stage"):
+    def __init__(self, project_name: Optional[str] = None):
         """
         Initialize node lifecycle manager.
         
         Args:
             project_name: Docker Compose project name
         """
-        self.project_name = project_name
+        self.project_name = project_name if project_name is not None else get_project_name()
         self.docker_client = docker.from_env()
     
     async def graceful_shutdown_with_gdb_flush(
@@ -242,7 +243,7 @@ class NodeLifecycleManager:
     async def verify_gdb_files_exist(
         self,
         node_ids: List[int],
-        cache_path: str = "/home/naeper/work/cellframe-node/tests/testing/cache"
+        cache_path: str = None
     ) -> bool:
         """
         Verify GDB files exist on disk after shutdown.
@@ -255,6 +256,13 @@ class NodeLifecycleManager:
             True if all nodes have GDB files
         """
         from pathlib import Path
+        from ..config.manager import get_config_loader
+        
+        if cache_path is None:
+            config_loader = get_config_loader()
+            paths_config = config_loader.get_paths_config()
+            base_path = Path(__file__).parent.parent.parent
+            cache_path = str((base_path / paths_config.get('cache_dir', '../../cache')).resolve())
         
         logger.info("verifying_gdb_files_on_disk", nodes=len(node_ids))
         
@@ -304,9 +312,9 @@ class NodeLifecycleManager:
         Hard restart: Full container restart WITH config reload (stops → starts).
         
         This is used to apply config changes that require full node restart:
-        - seed_mode changes
         - static_genesis_block/event updates
         - Network topology changes
+        Note: seed_mode in 6.x is controlled via CLI, no restart needed.
         
         Process:
         1. Graceful shutdown with GDB flush (preserves node list, GDB state)
@@ -372,9 +380,9 @@ class NodeLifecycleManager:
         are always online to provide GDB sync for node list.
         
         Critical for scenarios where:
-        - All nodes need config reload (seed_mode, static_genesis_*)
+        - All nodes need config reload (static_genesis_*)
         - Node list must be preserved via GDB
-        - Simultaneous restart would cause empty node list → MDBX crash
+        - Simultaneous restart would cause empty node list
         
         Process:
         1. Restart first group → wait online

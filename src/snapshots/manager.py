@@ -1,12 +1,17 @@
 """
 Snapshot Manager - orchestrates different snapshot modes.
 
-Coordinates snapshot creation, restoration, and cleanup across all modes.
+Backend is selected automatically at startup:
+  squashfs  (mksquashfs + unsquashfs available)  — fastest
+  filesystem (rsync available)                    — fallback
+  recreate  (always available)                    — baseline
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import subprocess
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -28,92 +33,187 @@ class SnapshotMode(Enum):
     SQUASHFS = "squashfs"
 
 
+def _tool_available(name: str) -> bool:
+    try:
+        r = subprocess.run(
+            [name, "-version"] if name in ("mksquashfs", "unsquashfs") else [name, "--version"],
+            capture_output=True, timeout=5,
+        )
+        return r.returncode == 0 or r.stdout or r.stderr
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def detect_best_mode() -> SnapshotMode:
+    """Probe the host and return the best available snapshot backend."""
+    if _tool_available("mksquashfs") and _tool_available("unsquashfs"):
+        return SnapshotMode.SQUASHFS
+    if _tool_available("rsync"):
+        return SnapshotMode.FILESYSTEM
+    return SnapshotMode.RECREATE
+
+
 class SnapshotManager:
     """
     Manager for test environment snapshots.
-    
-    Provides fast environment restoration via different snapshot strategies:
-    - recreate: Full cleanup and rebuild (~40s, maximum isolation)
-    - filesystem: Directory copy using rsync (~3s, balanced)
-    - squashfs: Read-only image with overlay (~2s, maximum speed)
+
+    Provides fast environment restoration via different snapshot strategies.
+    The backend is chosen automatically unless explicitly disabled.
     """
     
     def __init__(
         self,
         base_path: Path,
-        mode: SnapshotMode = SnapshotMode.FILESYSTEM,
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
+        compose_manager=None,
+        *,
+        mode: SnapshotMode | None = None,
     ):
-        """
-        Initialize snapshot manager.
-        
-        Args:
-            base_path: Base path to stage-env directory
-            mode: Snapshot mode to use
-            config: Optional configuration dictionary
-        """
         self.base_path = base_path
-        self.mode = mode
         self.config = config or {}
+        self.compose_manager = compose_manager
+
+        if mode is not None:
+            self.mode = mode
+        else:
+            self.mode = detect_best_mode()
         
-        # Initialize snapshot handler based on mode
         self.snapshot: Optional[BaseSnapshot] = None
-        if mode != SnapshotMode.DISABLED:
+        if self.mode != SnapshotMode.DISABLED:
             self._initialize_handler()
         
         logger.info("snapshot_manager_initialized",
-                   mode=mode.value,
+                   mode=self.mode.value,
                    base_path=str(base_path),
-                   config=self.config)
+                   has_compose_manager=compose_manager is not None)
     
     def _initialize_handler(self):
-        """Initialize appropriate snapshot handler based on mode."""
         if self.mode == SnapshotMode.RECREATE:
             self.snapshot = RecreateSnapshot(self.base_path, self.config)
         elif self.mode == SnapshotMode.FILESYSTEM:
-            self.snapshot = FilesystemSnapshot(self.base_path, self.config)
+            self.snapshot = FilesystemSnapshot(
+                self.base_path, self.config,
+                compose_manager=self.compose_manager,
+            )
         elif self.mode == SnapshotMode.SQUASHFS:
             self.snapshot = SquashfsSnapshot(self.base_path, self.config)
         else:
             raise ValueError(f"Unknown snapshot mode: {self.mode}")
+
+    # ------------------------------------------------------------------
+    # Image metadata persistence (for clone_images across runs)
+    # ------------------------------------------------------------------
+
+    def _save_image_metadata(self, name: str, images: Dict[str, str]) -> None:
+        meta_file = self.snapshot.snapshots_path / f"{name}.images.json"
+        meta_file.write_text(json.dumps(images, indent=2))
+        logger.debug("image_metadata_saved", name=name, file=str(meta_file))
+
+    def _load_image_metadata(self, name: str) -> Dict[str, str]:
+        meta_file = self.snapshot.snapshots_path / f"{name}.images.json"
+        if not meta_file.exists():
+            return {}
+        try:
+            return json.loads(meta_file.read_text())
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning("image_metadata_load_failed", name=name, error=str(exc))
+            return {}
+
+    def _commit_and_clone(
+        self, name: str, clone_images: dict,
+    ) -> dict[str, str]:
+        """Docker-commit source containers and map clones (mode-agnostic)."""
+        images: dict[str, str] = {}
+        for source in clone_images:
+            container_name = f"cellframe-stage-{source}"
+            tag = f"prototype-{source}"
+            try:
+                import docker
+                client = docker.from_env()
+                ctr = client.containers.get(container_name)
+                ctr.commit(repository=tag, tag="latest")
+                images[source] = f"{tag}:latest"
+                logger.info("manager_docker_committed",
+                           service=source, image=f"{tag}:latest")
+            except Exception as e:
+                logger.warning("manager_docker_commit_failed",
+                              service=source, error=str(e))
+                continue
+
+        result = dict(images)
+        for source, targets in clone_images.items():
+            src_tag = images.get(source)
+            if not src_tag:
+                continue
+            if isinstance(targets, str):
+                targets = [targets]
+            for target in targets:
+                if target != source:
+                    result[target] = src_tag
+        return result
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
     
-    async def create_snapshot(self, name: str = "clean_state") -> bool:
+    async def create_snapshot(
+        self, name: str = "clean_state",
+        extra_metadata: Optional[Dict[str, Any]] = None,
+        clone_images: dict | None = None,
+    ) -> bool:
         """
         Create a snapshot of current environment state.
-        
+
         Args:
             name: Name for the snapshot
-            
+            extra_metadata: Optional dict to store in snapshot (e.g. emission_hash for phase1)
+            clone_images: Optional mapping {source_service: [target_services]}
+
         Returns:
             True if snapshot created successfully
         """
         if self.mode == SnapshotMode.DISABLED:
             logger.debug("snapshot_disabled_create_skipped")
             return True
-        
+
         logger.info("creating_snapshot", name=name, mode=self.mode.value)
-        
+
         try:
-            result = await self.snapshot.create(name)
+            result = await self.snapshot.create(name, extra_metadata=extra_metadata, clone_images=clone_images)
             if result:
                 logger.info("snapshot_created_successfully", name=name)
             else:
                 logger.error("snapshot_creation_failed", name=name)
-            return result
+                return False
+
+            if clone_images and self.compose_manager:
+                committed = self._commit_and_clone(name, clone_images)
+                if committed:
+                    self.compose_manager.set_service_images(committed)
+                    self._save_image_metadata(name, committed)
+                    logger.info("manager_clone_images_applied",
+                               count=len(committed))
+
+            logger.info("snapshot_created_successfully", name=name)
+            return True
         except Exception as e:
             logger.error("snapshot_creation_error", name=name, error=str(e))
             return False
-    
-    async def restore_snapshot(self, name: str = "clean_state") -> bool:
+
+    def get_snapshot_metadata(self, name: str) -> Optional[Dict[str, Any]]:
         """
-        Restore environment to snapshot state.
-        
-        Args:
-            name: Name of snapshot to restore
-            
+        Load snapshot metadata (e.g. emission_hash saved in phase1 snapshot).
+
         Returns:
-            True if restore successful
+            Metadata dict or None if not available / not supported by backend
         """
+        if self.mode == SnapshotMode.DISABLED or not self.snapshot:
+            return None
+        if hasattr(self.snapshot, "load_metadata"):
+            return self.snapshot.load_metadata(name)
+        return None
+
+    async def restore_snapshot(self, name: str = "clean_state") -> bool:
         if self.mode == SnapshotMode.DISABLED:
             logger.debug("snapshot_disabled_restore_skipped")
             return True
@@ -122,31 +222,27 @@ class SnapshotManager:
         
         try:
             result = await self.snapshot.restore(name)
-            if result:
-                logger.info("snapshot_restored_successfully", name=name)
-            else:
+            if not result:
                 logger.error("snapshot_restore_failed", name=name)
-            return result
+                return False
+
+            committed = self._load_image_metadata(name)
+            if committed and self.compose_manager:
+                self.compose_manager.set_service_images(committed)
+                logger.info("snapshot_images_restored",
+                           count=len(committed),
+                           services=list(committed.keys()))
+
+            logger.info("snapshot_restored_successfully", name=name)
+            return True
         except Exception as e:
             logger.error("snapshot_restore_error", name=name, error=str(e))
             return False
     
     async def delete_snapshot(self, name: str) -> bool:
-        """
-        Delete a snapshot.
-        
-        Args:
-            name: Name of snapshot to delete
-            
-        Returns:
-            True if deletion successful
-        """
         if self.mode == SnapshotMode.DISABLED:
-            logger.debug("snapshot_disabled_delete_skipped")
             return True
-        
         logger.info("deleting_snapshot", name=name)
-        
         try:
             result = await self.snapshot.delete(name)
             if result:
@@ -159,15 +255,8 @@ class SnapshotManager:
             return False
     
     async def list_snapshots(self) -> List[str]:
-        """
-        List available snapshots.
-        
-        Returns:
-            List of snapshot names
-        """
         if self.mode == SnapshotMode.DISABLED:
             return []
-        
         try:
             return await self.snapshot.list()
         except Exception as e:
@@ -175,32 +264,18 @@ class SnapshotManager:
             return []
     
     async def cleanup_old_snapshots(self, keep_count: int = 5) -> int:
-        """
-        Clean up old snapshots, keeping only the most recent ones.
-        
-        Args:
-            keep_count: Number of recent snapshots to keep
-            
-        Returns:
-            Number of snapshots deleted
-        """
         if self.mode == SnapshotMode.DISABLED:
             return 0
-        
         try:
             snapshots = await self.list_snapshots()
             if len(snapshots) <= keep_count:
                 return 0
-            
-            # Sort by name (assuming timestamp-based names)
             snapshots.sort()
             to_delete = snapshots[:-keep_count]
-            
             deleted = 0
             for name in to_delete:
                 if await self.delete_snapshot(name):
                     deleted += 1
-            
             logger.info("old_snapshots_cleaned", deleted=deleted, kept=keep_count)
             return deleted
         except Exception as e:
@@ -208,21 +283,10 @@ class SnapshotManager:
             return 0
     
     def get_snapshot_info(self, name: str) -> Optional[Dict[str, Any]]:
-        """
-        Get information about a specific snapshot.
-        
-        Args:
-            name: Snapshot name
-            
-        Returns:
-            Dictionary with snapshot info, or None if not found
-        """
         if self.mode == SnapshotMode.DISABLED:
             return None
-        
         try:
             return self.snapshot.get_info(name)
         except Exception as e:
             logger.error("snapshot_info_error", name=name, error=str(e))
             return None
-

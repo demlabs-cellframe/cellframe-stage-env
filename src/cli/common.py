@@ -4,6 +4,8 @@ Common utilities and helper functions for CLI commands.
 from pathlib import Path
 from typing import Optional
 from rich.console import Console
+
+from src.utils.i18n import _
 from rich.panel import Panel
 
 
@@ -66,8 +68,8 @@ def check_prerequisites() -> bool:
     
     # Check for docker
     if not shutil.which("docker"):
-        print_error("Missing required tool: docker")
-        print_info("Please install Docker")
+        print_error(_("Missing required tool: docker"))
+        print_info(_("Please install Docker"))
         return False
     
     # Check for docker compose (V2) or docker-compose (V1)
@@ -83,8 +85,8 @@ def check_prerequisites() -> bool:
             has_compose = True
     
     if not has_compose:
-        print_error("Missing Docker Compose")
-        print_info("Please install Docker Compose (either V1 or V2)")
+        print_error(_("Missing Docker Compose"))
+        print_info(_("Please install Docker Compose (either V1 or V2)"))
         return False
     
     return True

@@ -23,11 +23,11 @@ from pydantic import BaseModel
 
 from src.utils.logger import get_logger
 from src.utils.cli import run_command, print_info, print_success, print_error
+from src.utils.i18n import _
 
 logger = get_logger(__name__)
 
-# Docker image name for certificate generator
-CERT_GENERATOR_IMAGE = "cf-cert-generator:latest"
+CERT_BUILDER_IMAGE = "cf-tools:latest"
 
 
 class CertConfig(BaseModel):
@@ -41,79 +41,138 @@ class CertConfig(BaseModel):
 class CertGenerator:
     """Generate certificates for test network."""
     
-    def __init__(self, base_path: Path, certs_dir: Optional[Path] = None):
+    def __init__(self, base_path: Path, certs_dir: Optional[Path] = None,
+                 dap_sdk_branch: Optional[str] = None):
         """
         Initialize certificate generator.
         
         Args:
             base_path: Base path to stage-env directory
             certs_dir: Optional path to certificates directory (defaults to base_path/cache/certs)
+            dap_sdk_branch: Git branch of dap-sdk to build tools against
+                           (e.g. "release-5.8", "release-6.0").
+                           Defaults to "release-6.0".
         """
         self.base_path = base_path
         self.certs_dir = certs_dir if certs_dir is not None else (base_path / "cache" / "certs")
-        self.dockerfile = base_path / "Dockerfile.cert-generator"
+        self.dockerfile = base_path / "Dockerfile.tools"
+        self.project_root = base_path.parent.parent
+        self.dap_sdk_branch = dap_sdk_branch or "release-6.0"
         
         self.certs_dir.mkdir(parents=True, exist_ok=True)
         
         logger.info("cert_generator_initialized",
                    certs_dir=str(self.certs_dir),
+                   dap_sdk_branch=self.dap_sdk_branch,
                    docker_mode=True)
     
+    def _image_needs_rebuild(self) -> bool:
+        """Check if the Docker image is older than local source files or SDK branch changed."""
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "--format",
+                 "{{.Created}}||{{index .Config.Labels \"dap.sdk.branch\"}}",
+                 CERT_BUILDER_IMAGE],
+                capture_output=True, text=True, check=True,
+            )
+            parts = result.stdout.strip().split("||", 1)
+            created_raw = parts[0]
+            image_branch = parts[1] if len(parts) > 1 else ""
+
+            if image_branch != self.dap_sdk_branch:
+                logger.info("cert_builder_sdk_branch_changed",
+                            image_branch=image_branch,
+                            desired_branch=self.dap_sdk_branch)
+                return True
+
+            from datetime import datetime, timezone
+            created_str = created_raw.split(".")[0]
+            image_ts = datetime.strptime(created_str, "%Y-%m-%dT%H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+
+            mtimes: list[float] = []
+            for subdir in ("src/certs", "src/gdb"):
+                src_dir = self.base_path / subdir
+                if src_dir.exists():
+                    mtimes.extend(
+                        f.stat().st_mtime for f in src_dir.iterdir() if f.is_file()
+                    )
+            if self.dockerfile.exists():
+                mtimes.append(self.dockerfile.stat().st_mtime)
+            if not mtimes:
+                return False
+            max_mtime = max(mtimes)
+            src_ts = datetime.fromtimestamp(max_mtime, tz=timezone.utc)
+
+            if src_ts > image_ts:
+                logger.info("cert_builder_image_stale",
+                            image_created=image_ts.isoformat(),
+                            source_modified=src_ts.isoformat())
+                return True
+            return False
+        except Exception:
+            return False
+
     def build_docker_image(self) -> bool:
         """
-        Build Docker image for certificate generator if needed.
-        
+        Build the cf-tools Docker image if needed.
+
+        The image clones dap-sdk from remote (branch = ``self.dap_sdk_branch``)
+        and builds cf-cert-generator + dap-gdb-tool.  Tool sources are COPY'd
+        from the project tree; the SDK is NOT copied — it's always cloned fresh.
+
+        Automatically rebuilds when local source files in ``src/certs/`` or
+        ``src/gdb/`` are newer than the existing Docker image.
+
         Returns:
             True if image is ready
         """
-        # Check if image exists
         try:
             result = subprocess.run(
-                ["docker", "images", "-q", CERT_GENERATOR_IMAGE],
-                capture_output=True,
-                text=True,
-                check=True
+                ["docker", "images", "-q", CERT_BUILDER_IMAGE],
+                capture_output=True, text=True, check=True,
             )
-            
-            if result.stdout.strip():
-                logger.debug("cert_generator_image_exists")
+            if result.stdout.strip() and not self._image_needs_rebuild():
+                logger.debug("cert_builder_image_exists")
                 return True
+            if result.stdout.strip():
+                print_info(_("Certificate builder sources changed, rebuilding image..."))
         except subprocess.CalledProcessError:
             pass
-        
-        logger.info("building_cert_generator_image")
-        print_info("Building certificate generator Docker image...")
-        
+
+        logger.info("building_cert_builder_image",
+                    dap_sdk_branch=self.dap_sdk_branch)
+        print_info(_("Building cf-tools image (SDK branch: {})...").format(
+            self.dap_sdk_branch))
+
         try:
-            # Build Docker image from project root
-            project_root = self.base_path.parent.parent  # Go up from stage-env to project root
-            
             result = subprocess.run(
                 [
                     "docker", "build",
                     "-f", str(self.dockerfile),
-                    "-t", CERT_GENERATOR_IMAGE,
-                    str(project_root)
+                    "--build-arg", f"DAP_SDK_BRANCH={self.dap_sdk_branch}",
+                    "-t", CERT_BUILDER_IMAGE,
+                    str(self.project_root),
                 ],
-                capture_output=True,
-                text=True,
-                cwd=project_root
+                capture_output=True, text=True,
             )
-            
+
             if result.returncode != 0:
-                logger.error("image_build_failed", 
-                           stderr=result.stderr,
-                           stdout=result.stdout)
-                print_error(f"Failed to build image: {result.stderr}")
+                logger.error("builder_image_build_failed",
+                             stderr=result.stderr, stdout=result.stdout)
+                print_error(_("Failed to build builder image: {}").format(result.stderr))
                 return False
-            
-            print_success("Certificate generator image built")
-            logger.info("cert_generator_image_built")
+
+            print_success(_("cf-tools image built (SDK: {})").format(
+                self.dap_sdk_branch))
+            logger.info("cert_builder_image_built",
+                        dap_sdk_branch=self.dap_sdk_branch)
             return True
-            
+
         except Exception as e:
-            logger.error("image_build_exception", error=str(e))
-            print_error(f"Exception building image: {e}")
+            logger.error("builder_image_build_exception", error=str(e))
+            print_error(_("Exception building builder image: {}").format(e))
             return False
     
     def generate_node_cert(
@@ -207,6 +266,7 @@ class CertGenerator:
         network_name: str,
         node_count: int,
         root_count: int = 2,
+        network_id: str = "0x0000000000001234",
     ) -> dict:
         """
         Generate all certificates for network using Docker-based cf-cert-generator.
@@ -215,6 +275,7 @@ class CertGenerator:
             network_name: Network name (e.g., "stagenet")
             node_count: Total number of nodes
             root_count: Number of ROOT nodes (rest will be MASTER)
+            network_id: Network ID hex string
             
         Returns:
             Dict with generated certificate paths
@@ -223,56 +284,45 @@ class CertGenerator:
                    network=network_name,
                    nodes=node_count,
                    root_count=root_count,
-                   method="docker")
-        
-        print_info(f"Generating {node_count} node certificates using Docker...")
-        
-        # Ensure Docker image is built
+                   method="docker_self_contained")
+
+        print_info(_("Generating {} node certificates (self-contained Docker)...").format(node_count))
+
         if not self.build_docker_image():
-            raise RuntimeError("Failed to build certificate generator Docker image")
-        
-        # Network ID for stagenet
-        network_id = "0x1234"
-        
-        # Prepare output directory with correct permissions
+            raise RuntimeError("Failed to build certificate builder Docker image")
         self.certs_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Run certificate generator in Docker
-        # Mount certs directory as /output in container
+
+        uid, gid = os.getuid(), os.getgid()
+
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "--entrypoint", "sh",
+            "-v", f"{self.certs_dir.absolute()}:/output",
+            CERT_BUILDER_IMAGE,
+            "-c",
+            f"/usr/local/bin/cf-cert-generator /output {node_count} {network_name} {network_id} {root_count} && "
+            f"chown -R {uid}:{gid} /output",
+        ]
+
         try:
             logger.info("calling_docker_cert_generator",
-                       image=CERT_GENERATOR_IMAGE,
+                       image=CERT_BUILDER_IMAGE,
                        output_dir=str(self.certs_dir),
                        node_count=node_count,
                        network_name=network_name,
                        network_id=network_id)
-            
-            # Docker command: docker run --rm -v <host_path>:/output <image> /output <count> <network> <id> <root_count>
+
             result_proc = subprocess.run(
-                [
-                    "docker", "run",
-                    "--rm",  # Remove container after execution
-                    "-v", f"{self.certs_dir.absolute()}:/output",  # Mount certs directory
-                    "-u", f"{os.getuid()}:{os.getgid()}",  # Run as current user to avoid permission issues
-                    CERT_GENERATOR_IMAGE,
-                    "/output",  # output directory inside container
-                    str(node_count),  # number of nodes
-                    network_name,  # network name
-                    network_id,  # network ID
-                    str(root_count)  # number of ROOT nodes
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
+                docker_cmd,
+                capture_output=True, text=True, check=True,
             )
-            
+
             logger.info("cert_generator_docker_output", stdout=result_proc.stdout)
-            
             if result_proc.stderr:
                 logger.warning("cert_generator_docker_stderr", stderr=result_proc.stderr)
-            
+
         except subprocess.CalledProcessError as e:
-            print_error(f"Certificate generation failed: {e}")
+            print_error(_("Certificate generation failed: {}").format(e))
             logger.error("cert_generation_docker_failed",
                         returncode=e.returncode,
                         stdout=e.stdout,
@@ -309,7 +359,7 @@ class CertGenerator:
         with open(pki_config_file, "w") as f:
             json.dump(pki_config, f, indent=2)
         
-        print_success(f"Generated {len(result['nodes'])} node + {len(result['validators'])} validator certificates")
+        print_success(_("Generated {} node + {} validator certificates").format(len(result['nodes']), len(result['validators'])))
         logger.info("all_certificates_generated",
                    nodes=len(result["nodes"]),
                    validators=len(result["validators"]))
@@ -376,6 +426,9 @@ class CertGenerator:
                 
                 if self._is_private_cert(cert_name):
                     continue
+
+                if cert_name.startswith("node-addr"):
+                    continue
                 
                 normalized_name = self._normalize_cert_name(cert_name)
                 dest_file = shared_ca_dir / normalized_name
@@ -385,7 +438,11 @@ class CertGenerator:
                            cert=cert_name,
                            dest=str(dest_file))
         
-        print_success(f"Copied {copied_count} public certificates to shared CA")
+        for stale in shared_ca_dir.glob("node-addr*"):
+            stale.unlink(missing_ok=True)
+            logger.debug("removed_stale_node_addr_from_shared_ca", file=stale.name)
+
+        print_success(_("Copied {} public certificates to shared CA").format(copied_count))
         logger.info("certs_copied_to_shared_ca", count=copied_count)
     
     def copy_private_certs_to_node_data(
@@ -428,7 +485,7 @@ class CertGenerator:
                            cert=cert_file.name,
                            dest_name=normalized_name)
         
-        print_success(f"Copied private certificates to {node_count} node data directories")
+        print_success(_("Copied private certificates to {} node data directories").format(node_count))
         logger.info("private_certs_copied_to_nodes", count=node_count)
     
     def _generate_simple_cert(
@@ -545,17 +602,71 @@ class CertGenerator:
         
         return missing
     
+    def generate_single_node_cert(self, output_dir: Path, cert_name: str = "node-addr") -> Optional[str]:
+        """Generate a single node-addr certificate and return the node address.
+
+        Uses ``cf-cert-generator --single`` which prints ``ADDR:<hex>`` to stdout.
+
+        Returns:
+            Node address string (e.g. "A1B2::C3D4::E5F6::7890") or None on failure.
+        """
+        if not self.build_docker_image():
+            logger.error("cert_builder_image_not_available")
+            return None
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        uid, gid = os.getuid(), os.getgid()
+
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "--entrypoint", "sh",
+            "-v", f"{output_dir.absolute()}:/output",
+            CERT_BUILDER_IMAGE,
+            "-c",
+            f"/usr/local/bin/cf-cert-generator --single /output {cert_name}"
+            f" && chown -R {uid}:{gid} /output",
+        ]
+
+        try:
+            result = subprocess.run(docker_cmd, capture_output=True, text=True, check=True)
+            for line in result.stdout.splitlines():
+                if line.startswith("ADDR:"):
+                    addr = line[5:].strip()
+                    logger.info("single_cert_generated", cert_name=cert_name, addr=addr,
+                                output_dir=str(output_dir))
+                    return addr
+            logger.warning("single_cert_no_addr_in_output", stdout=result.stdout[:300])
+            return None
+        except subprocess.CalledProcessError as e:
+            logger.error("single_cert_generation_failed", rc=e.returncode,
+                         stderr=e.stderr[:300])
+            return None
+
     def clean(self) -> None:
-        """Remove all generated certificates."""
+        """Remove all generated certificates.
+
+        Certificates may have been created inside Docker (owned by root),
+        so ``shutil.rmtree`` can fail with PermissionError.  Fall back to
+        ``docker run … rm -rf`` which runs as root inside the container.
+        """
         logger.info("cleaning_certificates")
-        
-        import shutil
-        
+
         if self.certs_dir.exists():
-            print_info("Removing certificates...")
-            shutil.rmtree(self.certs_dir)
+            print_info(_("Removing certificates..."))
+            try:
+                shutil.rmtree(self.certs_dir)
+            except PermissionError:
+                logger.warning("rmtree_permission_denied_fallback_docker",
+                               path=str(self.certs_dir))
+                subprocess.run(
+                    ["docker", "run", "--rm",
+                     "-v", f"{self.certs_dir.absolute()}:/certs",
+                     "alpine:latest", "rm", "-rf", "/certs/."],
+                    check=False,
+                )
+                shutil.rmtree(self.certs_dir, ignore_errors=True)
             self.certs_dir.mkdir(parents=True, exist_ok=True)
-        
-        print_success("Certificates cleaned")
+
+        print_success(_("Certificates cleaned"))
         logger.info("certificates_cleaned")
 

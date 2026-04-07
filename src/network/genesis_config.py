@@ -58,7 +58,7 @@ class GenesisConfigManager(BaseGenesisManager):
                 return None
             
             # Parse event hash from output
-            hash_match = re.search(r'event\s+hash:\s*(0x[A-Fa-f0-9]{64})', stdout_str, re.IGNORECASE)
+            hash_match = re.search(r'event_hash:\s*(0x[A-Fa-f0-9]{64})', stdout_str, re.IGNORECASE)
             if hash_match:
                 genesis_hash = hash_match.group(1)
                 logger.info("genesis_event_found", chain=chain_name, hash=genesis_hash[:16])
@@ -365,7 +365,16 @@ class GenesisConfigManager(BaseGenesisManager):
         
         # Regenerate config from Jinja2 template with updated context
         from jinja2 import Template
-        template_path = self.base_path / "config" / "templates" / "base" / "cellframe-node.cfg.j2"
+        templates_dir = self.base_path / "config" / "templates"
+        template_path = None
+        for vdir in sorted(templates_dir.iterdir(), reverse=True):
+            candidate = vdir / "cellframe-node.cfg.j2"
+            if vdir.is_dir() and vdir.name.startswith("v") and candidate.exists():
+                template_path = candidate
+                break
+        if not template_path or not template_path.exists():
+            logger.error("cellframe_node_cfg_template_not_found", templates_dir=str(templates_dir))
+            return
         template_content = template_path.read_text()
         template = Template(template_content)
         
@@ -918,7 +927,7 @@ class GenesisConfigManager(BaseGenesisManager):
         if 'fee_addr' not in config['esbocs']:
             raise RuntimeError(f"fee_addr not found in [esbocs] section at {config_file}")
         
-        fee_addr = config['esbocs'].get('fee_addr', '').strip()
+        fee_addr = config['esbocs']['fee_addr'].strip()
         if not fee_addr:
             raise RuntimeError(f"fee_addr is empty in {config_file}")
         

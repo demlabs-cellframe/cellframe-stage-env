@@ -7,9 +7,9 @@ ensuring validation and user-friendly error messages.
 
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class NodeRole(str, Enum):
@@ -47,6 +47,90 @@ class DatumStatus(str, Enum):
 # ============================================================================
 # Network Configuration Models
 # ============================================================================
+
+class NodeComposeSpec(BaseModel):
+    """
+    Specification for dynamically provisioned cellframe node.
+
+    Used as values in SuiteDescriptor.node_compose dict, where the key
+    is the docker-compose service name (e.g. "vpn-server-1", "node-9").
+
+    The ``source`` field determines initialisation mode:
+      - "genesis"  (default) — restore from the suite's base genesis snapshot
+      - "node-N"   — clone configs+data from existing node N
+      - "fresh"    — empty dirs, only a base cellframe-node.cfg is copied
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: Optional[int] = Field(None, description="Internal node ID for IP/volume assignment (auto-assigned if omitted)")
+    role: str = Field("full", description="Node role: root, master, full")
+    source: str = Field("genesis", description="Init mode: 'genesis', 'node-<id>', or 'fresh'")
+    packages: Optional[str] = Field(None, description="Space-separated deb packages to install on this node")
+    cap_add: List[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices('cap_add', 'docker_capabilities'),
+        description="Linux capabilities (e.g. NET_ADMIN, SYS_PTRACE). YAML alias: docker_capabilities",
+    )
+    docker_devices: List[str] = Field(default_factory=list, description="Device mappings (e.g. /dev/net/tun:/dev/net/tun)")
+    environment: Dict[str, str] = Field(default_factory=dict, description="Extra environment variables for the container")
+    config_overrides: Dict[str, Any] = Field(default_factory=dict, description="Config overrides as {section: {key: value}}")
+    setup: Optional[List[Any]] = Field(None, description="Extra setup steps executed after the node is running")
+    regenerate_cert: bool = Field(False, description="Delete node-addr cert after cloning so the node gets a unique address on restart")
+
+
+class NodeComposeGenSpec(BaseModel):
+    """
+    Generator template for creating multiple NodeComposeSpec entries.
+
+    Expands ``prefix`` + count into entries like vpn-server-1, vpn-server-2, etc.
+    IDs are auto-assigned sequentially if not specified.
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    prefix: str = Field(..., description="Service name prefix (e.g. 'vpn-server' → vpn-server-1..N)")
+    count: Union[int, str] = Field(1, description="Number of nodes — int or '{{variable}}' resolved from suite variables")
+    role: str = Field("full", description="Node role: root, master, full")
+    source: str = Field("genesis", description="Init mode: 'genesis', 'node-<id>', or 'fresh'")
+    packages: Optional[str] = Field(None, description="Space-separated deb packages to install")
+    cap_add: List[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices('cap_add', 'docker_capabilities'),
+        description="Linux capabilities. YAML alias: docker_capabilities",
+    )
+    docker_devices: List[str] = Field(default_factory=list, description="Device mappings (e.g. /dev/net/tun:/dev/net/tun)")
+    environment: Dict[str, str] = Field(default_factory=dict, description="Extra environment variables for all generated containers")
+    config_overrides: Dict[str, Any] = Field(default_factory=dict)
+    setup: Optional[List[Any]] = Field(None, description="Extra setup steps per node")
+    regenerate_cert: bool = Field(False, description="Delete node-addr cert after cloning so each node gets a unique address")
+
+
+class DockerComposeGenSpec(BaseModel):
+    """Generator template for creating multiple docker-compose services.
+
+    Expands ``prefix`` + count into lightweight Docker containers
+    (no cellframe-node, no config/data volumes).
+
+    When ``build`` is provided the first generated service carries the full
+    build definition; siblings reuse the resulting image tag via
+    ``pull_policy: never``.
+    """
+    prefix: str = Field(..., description="Service name prefix (e.g. 'kelvpn-client' → kelvpn-client-1..N)")
+    count: Union[int, str] = Field(1, description="Number of containers — int or '{{variable}}'")
+    image: str = Field("debian:bookworm-slim", description="Docker image (ignored when build is set)")
+    build: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Docker-compose build config: {context, dockerfile, args, ...}",
+    )
+    command: Optional[List[str]] = Field(None, description="Container command (default: ['sleep', 'infinity'])")
+    restart: str = Field("unless-stopped", description="Restart policy")
+    packages: Optional[str] = Field(None, description="Space-separated apt packages to install on containers")
+    cap_add: List[str] = Field(default_factory=list, description="Linux capabilities (e.g. NET_ADMIN, SYS_PTRACE)")
+    devices: List[str] = Field(default_factory=list, description="Device mappings (e.g. /dev/net/tun:/dev/net/tun)")
+    volumes: List[str] = Field(default_factory=list, description="Volume mounts (host:container[:mode])")
+    privileged: bool = Field(False, description="Run container in privileged mode")
+    environment: Dict[str, Any] = Field(default_factory=dict, description="Environment variables")
+    networks: Optional[Dict[str, Any]] = Field(None, description="Docker networks to attach (e.g. {vpntest: {}})")
+
 
 class NodePackageSourceConfig(BaseModel):
     """Package source configuration for a node in YAML scenarios."""
@@ -179,6 +263,8 @@ class CLIStep(BaseModel):
     cli: str = Field(..., description="CLI command to execute")
     node: str = Field("node1", description="Node to execute on")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output (null regex = full output)")
     save_hash: Optional[str] = Field(None, description="Extract and save hash (0x[hex]) to variable")
     save_wallet: Optional[str] = Field(None, description="Extract and validate wallet address to variable")
     save_node: Optional[str] = Field(None, description="Extract node address (0x::format) to variable")
@@ -188,7 +274,7 @@ class CLIStep(BaseModel):
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
     contains: Optional[str] = Field(None, description="Expected substring in output")
     not_contains: Optional[str] = Field(None, description="Unexpected substring (fails if found)")
-    timeout: Optional[int] = Field(30, description="Command timeout in seconds")
+    timeout: Optional[Union[int, str]] = Field(30, description="Command timeout in seconds (can be template e.g. '{{var}}')")
     
     def get_extraction_info(self) -> List[str]:
         """
@@ -218,9 +304,11 @@ class RPCStep(BaseModel):
     params: List[Any] = Field(default_factory=list, description="RPC parameters")
     node: str = Field("node1", description="Node to call RPC on")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
     wait: Optional[str] = Field(None, description="Wait duration after call")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
-    timeout: Optional[int] = Field(30, description="RPC call timeout")
+    timeout: Optional[Union[int, str]] = Field(30, description="RPC call timeout (can be template e.g. '{{var}}')")
     
     class Config:
         use_enum_values = True
@@ -236,8 +324,32 @@ class WaitStep(BaseModel):
       - wait: finalized         # Wait for datum finalization (DAG/Block/None)
       - wait: network_online    # Wait for network state
       - wait: wallet_balance    # Wait for wallet balance condition
+      - wait: cli               # Poll CLI command until contains/not_contains matched
+        cmd: "ledger list coins"
+        node: "{{first_master}}"
+        contains: "{{native_ticker}}"
+        timeout: 120
+        interval: 5
+      - wait: bash              # Poll bash script on node until exit 0
+        script: "pgrep -f cellframe-node"
+        node: "{{first_root}}"
+        timeout: 60
+      - wait: python            # Poll python expression until truthy
+        script: "int(ctx.get('_block_count', 0)) > 0"
+        timeout: 30
+      - wait: docker_exec       # Poll command inside docker container(s)
+        cmd: "test -S /opt/cf-vpn-clientd/var/run/cf-vpn-clientd.sock"
+        services: ["clientd-1"]
+        contains: "ready"
+        timeout: 20
+        interval: 1
+      - wait: notify            # Wait for notification from notify server
+        node: "{{client_node}}"
+        notify_class: VpnClientState
+        contains: "connected"
+        timeout: 30
     """
-    wait: str = Field(..., description="Duration (e.g., '5s') or condition ('mempool', 'finalized', ...)")
+    wait: str = Field(..., description="Duration (e.g., '5s') or condition ('mempool', 'finalized', 'cli', 'bash', 'python', ...)")
     
     # Context parameters
     datum: Optional[str] = Field(None, description="Datum hash (for mempool/finalized)")
@@ -245,7 +357,28 @@ class WaitStep(BaseModel):
     nodes: Optional[Union[str, List[str]]] = Field(None, description="Target nodes list (can be template like '{{all_nodes}}')")
     network: Optional[str] = Field(None, description="Network name")
     chain: Optional[str] = Field(None, description="Chain name")
-    timeout: int = Field(60, description="Timeout in seconds")
+    timeout: Union[int, str] = Field(60, description="Timeout in seconds (can be template e.g. '{{var}}')")
+
+    # CLI polling parameters (for wait: cli)
+    cmd: Optional[str] = Field(None, description="CLI command to poll (for wait: cli)")
+    contains: Optional[str] = Field(None, description="Expected substring/regex in output (for wait: cli, wait: bash)")
+    not_contains: Optional[str] = Field(None, description="Unexpected substring in output (for wait: cli, wait: bash)")
+    interval: int = Field(5, ge=1, description="Seconds between polling attempts")
+    
+    # Script body (for wait: bash, wait: python)
+    script: Optional[str] = Field(None, description="Bash script or Python expression to poll")
+
+    # Docker exec polling (for wait: docker_exec) — uses 'cmd' for the command
+    services: Optional[Union[str, List[str]]] = Field(None, description="Docker services for docker_exec polling")
+    
+    # CLI polling parameters (for wait: cli)
+    cmd: Optional[str] = Field(None, description="CLI command to poll (for wait: cli)")
+    contains: Optional[str] = Field(None, description="Expected substring/regex in output (for wait: cli, wait: bash)")
+    not_contains: Optional[str] = Field(None, description="Unexpected substring in output (for wait: cli, wait: bash)")
+    interval: int = Field(5, ge=1, description="Seconds between polling attempts")
+    
+    # Script body (for wait: bash, wait: python)
+    script: Optional[str] = Field(None, description="Bash script or Python expression to poll")
     
     # Wallet balance parameters
     wallet: Optional[str] = Field(None, description="Wallet name (for wallet_balance)")
@@ -254,7 +387,19 @@ class WaitStep(BaseModel):
     
     # Block creation parameters
     min_blocks: Optional[int] = Field(None, description="Minimum number of blocks (for block_created)")
-    
+
+    # Notify server parameters (for wait: notify)
+    notify_class: Optional[str] = Field(None, description="Notification class filter, e.g. 'VpnClientState' (for wait: notify)")
+
+    # GlobalDB group sync parameters
+    group: Optional[str] = Field(None, description="GDB group name (for global_db_sync with specific group)")
+    key: Optional[str] = Field(None, description="GDB key to wait for in group (for global_db_sync)")
+
+    # Save output from polling (for wait: docker_exec, wait: bash, wait: cli)
+    save: Optional[str] = Field(None, description="Variable name to save last successful output to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} for multi-extraction")
+
     # Advanced options
     check_master: bool = Field(True, description="Check master nodes (for finalized)")
     expected_count: Optional[int] = Field(None, description="Expected count (for specific waiters)")
@@ -265,6 +410,8 @@ class PythonStep(BaseModel):
     """Execute Python code with access to context."""
     python: str = Field(..., description="Python code to execute")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
 
 
 class PrintStep(BaseModel):
@@ -277,8 +424,10 @@ class BashStep(BaseModel):
     bash: str = Field(..., description="Bash script to execute")
     node: Optional[str] = Field(None, description="Node to execute on (None = execute on host)")
     save: Optional[str] = Field(None, description="Variable name to save result to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
-    timeout: Optional[int] = Field(300, description="Script timeout in seconds")
+    timeout: Optional[Union[int, str]] = Field(300, description="Script timeout in seconds (can be template e.g. '{{var}}')")
     
     class Config:
         use_enum_values = True
@@ -289,9 +438,10 @@ class ToolStep(BaseModel):
     tool: str = Field(..., description="Tool command (e.g., 'cert create test_cert sig_dil')")
     node: str = Field("node1", description="Node to execute on")
     save: Optional[str] = Field(None, description="Variable name to save result to")
-    save_hash: Optional[str] = Field(None, description="Extract and save hash (0x[hex]) to variable")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
     expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
-    timeout: Optional[int] = Field(30, description="Command timeout in seconds")
+    timeout: Optional[Union[int, str]] = Field(30, description="Command timeout in seconds (can be template e.g. '{{var}}')")
     
     class Config:
         use_enum_values = True
@@ -307,7 +457,7 @@ class WaitForDatumStep(BaseModel):
     """Wait for datum to be processed through mempool → verification → blocks → propagation."""
     wait_for_datum: Union[str, List[str]] = Field(..., description="Datum hash(es) to monitor")
     node: str = Field("node1", description="Target node to check for datum")
-    network: str = Field("stagenet", description="Network name")
+    network: str = Field("{{network_name}}", description="Network name (Jinja2 template, resolved from context)")
     chain: str = Field("main", description="Chain name")
     check_master_nodes: bool = Field(True, description="Check master nodes for verification and blocks")
     timeout_total: int = Field(300, description="Total timeout in seconds")
@@ -319,29 +469,28 @@ class WaitForDatumStep(BaseModel):
 
 
 class WaitForTxStep(BaseModel):
-    """Wait for common transaction to complete: mempool → chain → block (success) or mempool → hole → no block (failure)."""
-    wait_for_tx: str = Field(..., description="Transaction hash for tracking in mempool & chains")
-    expected_status: Literal["success", "failure"] = Field(..., description="Expected outcome: 'success' (tx in chain) or 'failure' (tx rejected, status: hole)")
-    node: str = Field("node1", description="Target node for CLI checks")
-    network: str = Field("stagenet", description="Network name (default: stagenet)")
-    chain: str = Field("main", description="Chain name (default: main)")
-    description: Optional[str] = Field(None, description="Step description for logging")
-    timeout_per_stage: int = Field(120, description="Timeout per stage for the transaction to complete, in seconds")
-    check_interval: int = Field(5, description="Check interval in stages for the transaction tracking, in seconds")
+    """Wait for a transaction to be processed through mempool and reach the chain."""
+    wait_for_tx: str = Field(..., description="Transaction hash to wait for")
+    expected_status: str = Field("success", description="Expected status: 'success' or 'failure'")
+    node: Optional[str] = Field(None, description="Node to check on")
+    network: Optional[str] = Field(None, description="Network name")
+    chain: Optional[str] = Field(None, description="Chain name")
+    timeout_per_stage: int = Field(60, description="Timeout per verification stage in seconds")
+    check_interval: int = Field(2, description="Check interval in seconds")
 
 
 class NetworkWaitStep(BaseModel):
     """Wait for network state (online, offline, links_connecting, links_established, sync_complete)."""
     wait_network: str = Field(..., description="Network state to wait for: 'online', 'offline', 'links_connecting', 'links_established', 'sync_complete'")
     nodes: Union[str, List[str]] = Field(default_factory=lambda: ["root-1", "root-2", "root-3"], description="Nodes to check (can be template like '{{all_nodes}}')")
-    timeout: int = Field(120, description="Timeout in seconds")
-    network: str = Field("stagenet", description="Network name")
+    timeout: Union[int, str] = Field(120, description="Timeout in seconds (can be template e.g. '{{var}}')")
+    network: str = Field("{{network_name}}", description="Network name (Jinja2 template, resolved from context)")
     chain: Optional[str] = Field(None, description="Chain name (optional)")
 
 
 class DockerOpStep(BaseModel):
-    """Execute Docker operations (start, stop, restart, logs, exec, cp)."""
-    docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'logs', 'exec', 'cp'")
+    """Execute Docker operations (start, stop, restart, pause, unpause, logs, exec, cp)."""
+    docker_op: str = Field(..., description="Docker operation: 'start', 'stop', 'restart', 'pause', 'unpause', 'logs', 'exec', 'cp'")
     services: Optional[Union[str, List[str]]] = Field(None, description="Docker services to operate on (can be template like '{{all_nodes}}')")
     command: Optional[str] = Field(None, description="Command for 'exec' operation")
     detach: bool = Field(True, description="Run in detached mode (for start/restart)")
@@ -350,6 +499,49 @@ class DockerOpStep(BaseModel):
     # Fields for 'cp' operation
     src: Optional[str] = Field(None, description="Source path for 'cp' operation (format: 'node-1:/path' or '/host/path')")
     dst: Optional[str] = Field(None, description="Destination path for 'cp' operation (format: 'node-1:/path' or '/host/path')")
+    # Fields for 'logs' operation
+    tail: int = Field(100, description="Number of log lines from end (for 'logs' operation)")
+    # Common output field
+    save: Optional[str] = Field(None, description="Variable name to save command/logs output into")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving (first capture group or full match)")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} to extract multiple values from one output")
+
+
+class DockerExecStep(BaseModel):
+    """Shorthand for ``docker_op: exec``.
+
+    YAML::
+
+        - docker_exec: "cf-vpn-clientd-ctl status 2>&1"
+          services: ["clientd-1"]
+          save: _status
+          save_regex: "State:\\\\s*(\\\\d+)"
+    """
+    docker_exec: str = Field(..., description="Command to execute inside the container(s)")
+    services: Union[str, List[str]] = Field(..., description="Docker service(s) to run the command on")
+    save: Optional[str] = Field(None, description="Variable name to save output to")
+    save_regex: Optional[str] = Field(None, description="Regex to extract data from output before saving")
+    save_map: Optional[Dict[str, Optional[str]]] = Field(None, description="Map of {variable: regex} for multi-extraction")
+    expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
+    timeout: Optional[Union[int, str]] = Field(300, description="Command timeout in seconds (can be template e.g. '{{var}}')")
+
+    class Config:
+        use_enum_values = True
+
+
+class PlaywrightStep(BaseModel):
+    """Execute Playwright test spec in a browser runner container."""
+    playwright: str = Field(..., description="Spec file path relative to browser/ dir (e.g. 'auth.spec.ts')")
+    browser: str = Field("chromium", description="Browser project: chromium, firefox, webkit")
+    env: Dict[str, str] = Field(default_factory=dict, description="Environment variables passed to the spec")
+    save: Optional[Dict[str, str]] = Field(None, description="Map spec output keys to context variable names")
+    timeout: Union[int, str] = Field(120, description="Spec execution timeout in seconds (can be template e.g. '{{var}}')")
+    expect: ExpectResult = Field(ExpectResult.SUCCESS, description="Expected result")
+    headed: bool = Field(False, description="Run in headed mode (for local debugging via VNC)")
+    container: str = Field("playwright-runner", description="Docker service name for the Playwright runner")
+
+    class Config:
+        use_enum_values = True
 
 
 class SnapshotStep(BaseModel):
@@ -362,15 +554,34 @@ class SnapshotStep(BaseModel):
       - snapshot: restore
         name: phase1
         
+      - snapshot: verify
+        name: cdb_ready
+        save: has_cdb_snapshot    # saves True/False instead of raising
+        
       - snapshot: create
-        name: "{{topology_name}}"  # Base topology snapshot after all phases
+        name: "{{topology_name}}"
         is_base: true
     """
     snapshot: str = Field(..., description="Snapshot operation: 'create', 'restore', 'verify', 'delete'")
     name: str = Field(..., description="Snapshot name (supports templates like '{{topology_name}}')")
     is_base: bool = Field(False, description="Mark as base topology snapshot (used as default for suites)")
     nodes: Optional[Union[str, List[str]]] = Field(None, description="Nodes to include (optional, defaults to all)")
-    stop_containers: bool = Field(True, description="Stop containers before create (ensures consistent state)")
+    stop_containers: bool = Field(True, description="Stop containers before create (ensures consistent state for MDBX/GDB)")
+    restart_after: bool = Field(True, description="Restart containers after create when stop_containers is true")
+    save: Optional[str] = Field(None, description="Variable name to save result (verify: True/False; restore: True/False)")
+    regenerate_certs: bool = Field(False, description="Regenerate unique node-addr certificates after restore (prevents address collisions)")
+    clone_images: Optional[Dict[str, Any]] = Field(None, description="Clone committed image from prototype to other services: {source_svc: [target1, target2, ...]}")
+    wait_ready: Optional[Union[bool, List[str]]] = Field(
+        None,
+        description="Wait for cellframe nodes to be CLI-ready after restore. "
+                    "true = auto-detect nodes, list = specific service names"
+    )
+    wait_ready_timeout: int = Field(90, description="Timeout for readiness wait in seconds")
+    wait_ready_check: Optional[str] = Field(
+        None,
+        description="Custom CLI command to verify full readiness after basic CLI check "
+                    "(e.g. 'vpn_cdb version' to ensure plugin is loaded)"
+    )
 
 
 # ============================================================================
@@ -379,6 +590,9 @@ class SnapshotStep(BaseModel):
 
 from .schema_control_flow import SetStep, IfStep, WhileStep, ForStep, SwitchStep
 from .schema_config import ConfigStep
+from .schema_dpkg import DpkgStep
+from .schema_operand import CustomOperandStep
+from .schema_metrics import MetricStep, MetricsTableStep
 
 
 # ============================================================================
@@ -392,7 +606,7 @@ class CLICheck(BaseModel):
     contains: Optional[str] = Field(None, description="Expected substring")
     not_contains: Optional[str] = Field(None, description="Substring that should not be present")
     equals: Optional[str] = Field(None, description="Exact expected output")
-    timeout: Optional[int] = Field(30, description="Command timeout")
+    timeout: Optional[Union[int, str]] = Field(30, description="Command timeout (can be template e.g. '{{var}}')")
 
 
 class RPCCheck(BaseModel):
@@ -402,7 +616,7 @@ class RPCCheck(BaseModel):
     node: str = Field("node1", description="Node to call on")
     result_contains: Optional[Any] = Field(None, description="Expected value in result")
     result_equals: Optional[Any] = Field(None, description="Exact expected result")
-    timeout: Optional[int] = Field(30, description="RPC timeout")
+    timeout: Optional[Union[int, str]] = Field(30, description="RPC timeout (can be template e.g. '{{var}}')")
 
 
 class PythonCheck(BaseModel):
@@ -414,10 +628,10 @@ class BashCheck(BaseModel):
     """Verify condition using Bash script."""
     bash: str = Field(..., description="Bash script (exit 0 = success)")
     node: str = Field("node1", description="Node to execute on")
-    timeout: Optional[int] = Field(30, description="Script timeout")
+    timeout: Optional[Union[int, str]] = Field(30, description="Script timeout (can be template e.g. '{{var}}')")
 
 
-CheckSpec = Union[CLICheck, RPCCheck, PythonCheck, BashCheck, WaitForTxStep]
+CheckSpec = Union[CLICheck, RPCCheck, PythonCheck, BashCheck]
 
 
 # ============================================================================
@@ -429,7 +643,7 @@ class StepDefaults(BaseModel):
     node: Optional[str] = Field(None, description="Default node for all steps")
     wait: Optional[str] = Field(None, description="Default wait duration after each step")
     expect: Optional[ExpectResult] = Field(None, description="Default expected result")
-    timeout: Optional[int] = Field(None, description="Default timeout in seconds")
+    timeout: Optional[Union[int, str]] = Field(None, description="Default timeout in seconds (can be template e.g. '{{var}}')")
     cli: Optional[Dict[str, str]] = Field(None, description="Default CLI option prefixes (e.g., {'net': 'stagenet'})")
     
     class Config:
@@ -437,8 +651,20 @@ class StepDefaults(BaseModel):
 
 
 class StepGroup(BaseModel):
-    """Group of steps with shared defaults."""
-    name: Optional[str] = Field(None, alias="group", description="Group name for logging")
+    """Group of steps with shared defaults.
+
+    In YAML either ``name:`` or ``group:`` can be used for the display name::
+
+        - group: "Verify certs"
+          steps: [...]
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("name", "group"),
+        description="Group name for logging (YAML key: 'group' or 'name')",
+    )
     defaults: Optional[StepDefaults] = Field(None, description="Default parameters for this group")
     steps: List[Union["TestStep", "StepGroup"]] = Field(..., description="Steps in this group")
 
@@ -446,12 +672,16 @@ class StepGroup(BaseModel):
 # Update TestStep to include new step types
 # IMPORTANT: Order matters! Specific types must come before generic ones to ensure correct parsing.
 # NetworkWaitStep must come before WaitStep.
+# CustomOperandStep MUST be LAST — it is a catch-all populated by the parser's
+# pre-processing pass and will never appear in raw YAML directly.
 TestStep = Union[
-    NetworkWaitStep, WaitForDatumStep, WaitForTxStep, SnapshotStep, DockerOpStep,
+    NetworkWaitStep, WaitForDatumStep, WaitForTxStep, SnapshotStep, DockerExecStep, DockerOpStep, DpkgStep,
     CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
-    ConfigStep,
-    WaitStep 
+    ConfigStep, MetricStep, MetricsTableStep,
+    PlaywrightStep,
+    WaitStep,
+    CustomOperandStep,
 ]
 
 
@@ -499,9 +729,6 @@ class SuiteDescriptor(BaseModel):
     # Suite-specific metadata
     scenarios: List[str] = Field(default_factory=list, description="List of scenario files in this suite")
     
-    # Explicit execution order for scenarios (if specified, only these scenarios run in this order)
-    execution_order: List[str] = Field(default_factory=list, description="Explicit order of scenario execution (full filenames)")
-    
     # Optional network configuration for suite-level defaults
     network: Optional[NetworkConfig] = Field(None, description="Default network topology for suite")
     
@@ -509,21 +736,64 @@ class SuiteDescriptor(BaseModel):
     # Set to topology_name to restore from base topology snapshot
     restore_snapshot: Optional[str] = Field(None, description="Snapshot name to restore (supports '{{topology_name}}')")
     
-    # Optional includes for suite-level setup (executed once before all scenarios)
-    includes: List[str] = Field(default_factory=list, description="Common includes for all scenarios in suite")
-    
-    # Variables inherited by all scenarios in this suite
-    variables: Dict[str, Any] = Field(default_factory=dict, description="Variables inherited by scenarios")
-    
+    # Suite-level variables inherited by all scenarios (scenario variables take priority)
+    variables: Dict[str, Any] = Field(default_factory=dict, description="Variables inherited by all scenarios in suite")
+
+    # Path to an .env file (relative to suite YAML) whose key=value pairs are
+    # injected into every cellframe-node container's environment.  Per-node
+    # ``environment`` from node_compose/node_compose_gen takes priority.
+    env_file: Optional[str] = Field(None, description="Path to .env file (relative to suite dir) applied to all nodes")
+
+    # Ordered list of includes — file paths (str) or inline data blocks (dict).
+    # Inline blocks may contain ``variables``, ``node_compose``, ``node_compose_gen``
+    # and are processed in order, allowing variable overrides between file includes:
+    #   includes:
+    #     - ../common/vpn_defaults.yml
+    #     - variables: { vpn_client_count: 5 }
+    #     - ../common/vpn_nodes.yml
+    includes: List[Union[str, Dict[str, Any]]] = Field(default_factory=list, description="Includes: file paths or inline data blocks")
+
     # Optional setup steps for suite (executed once before all scenarios)
-    # Accepts flat list (like test) or SectionConfig for backward compatibility.
     setup: Optional[Union[List[TestStep], SectionConfig]] = Field(None, description="Suite-level setup steps")
+    
+    # Generator templates — expanded into node_compose entries before provisioning.
+    node_compose_gen: List[NodeComposeGenSpec] = Field(
+        default_factory=list,
+        description="Templates to generate multiple node_compose entries"
+    )
+
+    # Additional cellframe nodes provisioned dynamically for this suite.
+    # Keys are service names (e.g. "vpn-server-1"), values are NodeComposeSpec.
+    node_compose: Dict[str, NodeComposeSpec] = Field(
+        default_factory=dict,
+        description="Additional cellframe nodes to provision (key = service name)"
+    )
+
+    # Generator templates — expanded into docker_compose entries before provisioning.
+    docker_compose_gen: List[DockerComposeGenSpec] = Field(
+        default_factory=list,
+        description="Templates to generate multiple docker-compose services"
+    )
+
+    # External docker-compose files whose services/volumes/networks are merged
+    # into docker-compose.generated.yml.  Paths are relative to the suite file.
+    docker_compose_files: List[str] = Field(
+        default_factory=list,
+        description="External docker-compose files to merge (paths relative to suite file)"
+    )
+
+    # Arbitrary docker-compose services merged into the generated compose file.
+    # Each key is a service name, value is a docker-compose service definition.
+    docker_compose: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Docker-compose services to add (iperf, webservers, etc.)"
+    )
     
     @model_validator(mode='after')
     def normalize_setup(self) -> 'SuiteDescriptor':
-        """Normalize flat list to SectionConfig (same as TestScenario)."""
-        if self.setup is not None and isinstance(self.setup, list):
-            self.setup = SectionConfig(steps=self.setup)
+        """Normalize setup list to SectionConfig."""
+        if isinstance(self.setup, list):
+            self.setup = SectionConfig(steps=self.setup) if self.setup else None
         return self
     
     @property
@@ -547,8 +817,7 @@ class SuiteSetupScenario(BaseModel):
     # Network configuration (inherited from suite descriptor)
     network: Optional[NetworkConfig] = Field(None, description="Network topology")
     
-    # Includes for reusable configs
-    includes: List[str] = Field(default_factory=list, description="Paths to included YAML files")
+    includes: List[Union[str, Dict[str, Any]]] = Field(default_factory=list, description="Includes: file paths or inline data blocks")
     
     # Setup phase - this is what actually executes
     setup: Union[List[TestStep], SectionConfig] = Field(default_factory=list, description="Setup steps")
@@ -584,8 +853,7 @@ class TestScenario(BaseModel):
     tags: List[str] = Field(default_factory=list, description="Tags for categorization")
     version: str = Field("1.0", description="Version")
     
-    # Includes for reusable configs
-    includes: List[str] = Field(default_factory=list, description="Paths to included YAML files")
+    includes: List[Union[str, Dict[str, Any]]] = Field(default_factory=list, description="Includes: file paths or inline data blocks")
     
     # Network configuration (optional, defaults to 'default' topology)
     network: Optional[NetworkConfig] = Field(None, description="Network topology (default: topology='default')")

@@ -7,7 +7,7 @@ with user-friendly error messages.
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 
 import yaml
 from pydantic import ValidationError, BaseModel
@@ -46,19 +46,40 @@ class BaseScenarioParser:
     Provides reusable functionality for both suite and scenario parsing.
     """
     
-    def __init__(self, scenarios_root: Path, common_root: Optional[Path] = None):
+    def __init__(
+        self,
+        scenarios_root: Path,
+        common_root: Optional[Path] = None,
+        fallback_common_root: Optional[Path] = None,
+    ):
         """
         Initialize base parser.
-        
+
         Args:
             scenarios_root: Root directory for scenario/suite files
             common_root: Optional root directory for common includes
+            fallback_common_root: Optional extra root for includes (e.g. stage-env integration scenarios)
         """
         self.scenarios_root = Path(scenarios_root)
         self.common_root = Path(common_root) if common_root else self.scenarios_root
+        self.fallback_common_root = Path(fallback_common_root) if fallback_common_root else None
         self._loaded_files: Dict[Path, Dict[str, Any]] = {}
         # Pattern to match {{anything}} including complex expressions like {{map['key']}} or {{array[0]}}
         self._variable_pattern = re.compile(r'\{\{([^}]+)\}\}')
+
+        from .operand_registry import OperandRegistry
+        self._operand_registry = OperandRegistry()
+        for candidate in [
+            self.common_root / "operands",
+            self.common_root / "common" / "operands",
+            self.common_root / "scenarios" / "common" / "operands",
+        ]:
+            if candidate.is_dir():
+                self._operand_registry.load_directory(candidate)
+
+    @property
+    def operand_registry(self):
+        return self._operand_registry
     
     def _load_yaml_file(self, file_path: Path) -> Dict[str, Any]:
         """
@@ -111,31 +132,32 @@ class BaseScenarioParser:
         if not includes:
             return data
         
-        # Load all included files
+        # Load all included entries (file paths or inline data dicts)
         included_data: List[Dict[str, Any]] = []
-        for include_path in includes:
-            # Try multiple search paths:
-            # 1. Relative to current file directory
-            # 2. Relative to scenarios_root
-            # 3. Relative to common_root (for common includes)
-            # 4. Integration scenarios common directory (standard location)
+        for include_entry in includes:
+            if isinstance(include_entry, dict):
+                included_data.append(include_entry)
+                continue
+
             search_paths = [
-                (base_dir / include_path).resolve(),
-                (self.scenarios_root / include_path).resolve(),
-                (self.common_root / include_path).resolve(),
-                (self.common_root / "integration" / "scenarios" / include_path).resolve(),
+                (base_dir / include_entry).resolve(),
+                (self.scenarios_root / include_entry).resolve(),
+                (self.common_root / include_entry).resolve(),
+                (self.common_root / "integration" / "scenarios" / include_entry).resolve(),
             ]
-            
+            if self.fallback_common_root:
+                search_paths.append((self.fallback_common_root / include_entry).resolve())
+
             include_full = None
             for path in search_paths:
                 if path.exists():
                     include_full = path
                     break
-            
+
             if include_full is None:
                 raise ScenarioParseError(
-                    f"Included file not found: {include_path}\nSearched in:\n" +
-                    "\n".join(f"  - {p}" for p in search_paths),
+                    f"Included file not found: {include_entry}\nSearched in:\n"
+                    + "\n".join(f"  - {p}" for p in search_paths),
                     file_path=search_paths[0]
                 )
             
@@ -176,6 +198,49 @@ class BaseScenarioParser:
         
         return result
     
+    # ------------------------------------------------------------------
+    # Custom operand step transformation
+    # ------------------------------------------------------------------
+    _KNOWN_STEP_KEYS = frozenset({
+        "cli", "rpc", "wait", "wait_for_datum", "wait_network", "python",
+        "print", "bash", "tool", "loop", "docker_op", "snapshot", "dpkg",
+        "config", "set", "if", "while", "for", "switch", "name",
+        "metric", "metrics_table",
+        "operand_name", "deploy",
+    })
+
+    def _transform_operand_steps(self, data: Any) -> Any:
+        """Recursively rewrite custom-operand dicts into ``CustomOperandStep`` format."""
+        if isinstance(data, dict):
+            operand_key = self._detect_operand_key(data)
+            if operand_key is not None:
+                action_raw = str(data[operand_key])
+                params = {k: v for k, v in data.items() if k not in (operand_key, "description")}
+                defn = self._operand_registry.get(operand_key)
+                resolved_action, extra_args = defn.resolve_action(action_raw)
+                if extra_args is not None:
+                    params.setdefault("args", extra_args)
+                return {
+                    "operand_name": operand_key,
+                    "operand_action": resolved_action,
+                    "operand_params": params,
+                    "description": data.get("description"),
+                }
+            return {k: self._transform_operand_steps(v) for k, v in data.items()}
+        if isinstance(data, list):
+            return [self._transform_operand_steps(item) for item in data]
+        return data
+
+    def _detect_operand_key(self, step_dict: dict) -> Optional[str]:
+        """Return the operand name if *step_dict* looks like a custom-operand invocation."""
+        names = self._operand_registry.names
+        if not names:
+            return None
+        for key in step_dict:
+            if key in names and key not in self._KNOWN_STEP_KEYS:
+                return key
+        return None
+
     def _resolve_path(self, path: str) -> Path:
         """
         Resolve relative path to absolute path.
@@ -231,6 +296,10 @@ class ScenarioParser(BaseScenarioParser):
             if "includes" in raw_data:
                 raw_data = self._process_includes(raw_data, full_path.parent)
             
+            # Transform custom operand steps before Pydantic validation
+            if self._operand_registry.names:
+                raw_data = self._transform_operand_steps(raw_data)
+
             # Validate with Pydantic
             scenario = TestScenario(**raw_data)
             
@@ -360,7 +429,13 @@ class ScenarioParser(BaseScenarioParser):
                 raise ScenarioParseError(f"Undefined variable: {full_expr}")
             return str(variables[full_expr])
         
-        return self._variable_pattern.sub(replace_var, text)
+        result = self._variable_pattern.sub(replace_var, text)
+        MAX_DEPTH = 10
+        for _ in range(MAX_DEPTH):
+            if '{{' not in result:
+                break
+            result = self._variable_pattern.sub(replace_var, result)
+        return result
 
 
 class SuiteSetupParser(BaseScenarioParser):
@@ -368,7 +443,7 @@ class SuiteSetupParser(BaseScenarioParser):
     
     def load_suite_setup(
         self,
-        suite_includes: List[str],
+        suite_includes: List[Union[str, Dict[str, Any]]],
         suite_setup: Optional[Dict[str, Any]],
         suite_name: str,
         base_dir: Path
@@ -400,9 +475,13 @@ class SuiteSetupParser(BaseScenarioParser):
             # Process includes to merge setup steps
             merged_data = self._process_includes(suite_setup_data, base_dir)
             
+            # Transform custom operand steps before Pydantic validation
+            if self._operand_registry.names:
+                merged_data = self._transform_operand_steps(merged_data)
+
             # Create SuiteSetupScenario from merged data
             suite_setup_scenario = SuiteSetupScenario(**merged_data)
-            
+
             logger.info(f"Loaded suite setup for '{suite_name}' with {len(suite_includes)} includes")
             return suite_setup_scenario
             

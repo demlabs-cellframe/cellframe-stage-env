@@ -14,6 +14,7 @@ import docker
 from .genesis_base import BaseGenesisManager
 from .models import NodeConfig
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 
 
 logger = get_logger(__name__)
@@ -145,10 +146,8 @@ class NodeRegistrationManager(BaseGenesisManager):
                                   stderr=stderr)
                     return False
                 
-                # Parse target node address from both text and JSON formats:
-                # - Text: "Node addr: A1B2::C3D4::E5F6"
-                # - JSON: "current_addr": "A1B2::C3D4::E5F6"
-                addr_match = re.search(r'(?:"(?:current_|node_)?addr(?:ess)?":\s*"|Node addr:\s+)([0-9A-Fa-f:]+)', stdout_str)
+                # Parse target node address
+                addr_match = re.search(r'Node addr:\s+([0-9A-Fa-f:]+)', stdout_str)
                 if not addr_match:
                     logger.warning("skipping_registration_no_address",
                                   target=target_node.node_id,
@@ -292,7 +291,7 @@ class NodeRegistrationManager(BaseGenesisManager):
         for node in nodes:
             try:
                 # Check if container is running before attempting offline
-                container_name = f"cellframe-stage-node-{node.node_id}"
+                container_name = make_container_name(f"node-{node.node_id}")
                 try:
                     container = self.docker_client.containers.get(container_name)
                     container.reload()
@@ -332,7 +331,7 @@ class NodeRegistrationManager(BaseGenesisManager):
         for node in nodes:
             try:
                 # Check if container is running before attempting online
-                container_name = f"cellframe-stage-node-{node.node_id}"
+                container_name = make_container_name(f"node-{node.node_id}")
                 try:
                     container = self.docker_client.containers.get(container_name)
                     container.reload()

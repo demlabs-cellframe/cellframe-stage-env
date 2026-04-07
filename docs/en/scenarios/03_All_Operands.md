@@ -12,12 +12,16 @@ Execute CLI command with comprehensive extraction options.
 - cli: "command"              # Required: CLI command
   node: node1                 # Target node (default: node1)
   save: var                   # Save full output
+  save_regex: "hash:\s+(\w+)" # Extract via regex (first capture group)
+  save_map:                   # Extract multiple values via regex
+    order_hash: "hash:\s+(0x[a-f0-9]+)"
+    price: "price:\s+(\d+\.\d+)"
   save_hash: hash_var         # Extract 0x[hex] hash
   save_wallet: wallet_var     # Extract and validate wallet address
   save_node: node_var         # Extract node address (0x::format)
   save_token: token_var       # Extract token ticker
   save_to: output_var         # Save raw output
-  contains: "success"         # Expected substring
+  contains: "success"         # Expected substring (supports regex)
   not_contains: "error"       # Unexpected substring
   expect: success             # success | error | any
   wait: "5s"                  # Wait after command
@@ -32,9 +36,15 @@ JSON-RPC call.
   params: [arg1, arg2]        # RPC parameters
   node: node1                 # Target node
   save: result_var            # Save result
+  save_regex: "addr:\s+(\S+)" # Extract via regex
+  save_map:                   # Extract multiple values
+    key: "pattern"
   wait: "1s"                  # Wait after
   expect: success             # Expected result
+  timeout: 30                 # RPC call timeout
 ```
+
+**Note:** `rpc` does NOT support `contains`/`not_contains` (unlike `cli`).
 
 ### bash
 Execute bash script in container.
@@ -42,10 +52,13 @@ Execute bash script in container.
 ```yaml
 - bash: |
     cat /path/to/log | grep ERROR
-  node: node1
+  node: node1                  # None = execute on host
   save: errors
+  save_regex: "count:\s+(\d+)" # Extract via regex
+  save_map:                    # Extract multiple values
+    key: "pattern"
   expect: success
-  timeout: 30
+  timeout: 300                 # Default: 300s
 ```
 
 ### python
@@ -62,6 +75,9 @@ Execute Python with context access.
     val = ctx.get_variable('amount')
     result = val * 2
     ctx.set_variable('doubled', result)
+  save: result_var             # Save return value
+  save_regex: "pattern"        # Extract via regex
+  save_map: { key: "pattern" } # Extract multiple values
 ```
 
 ### print
@@ -70,6 +86,53 @@ Debug output with Jinja2 templating.
 ```yaml
 - print: "Value: {{variable}}"
 ```
+
+### docker_exec
+Execute command inside Docker container(s). Compact shorthand for `docker_op: exec`.
+
+```yaml
+- docker_exec: "cf-vpn-clientd-ctl status 2>&1"
+  services: ["clientd-1"]      # Required: target services
+  save: _status
+  save_regex: "State:\s+(\d+)" # Extract via regex
+  save_map:                    # Extract multiple values
+    state: "State:\s+(\d+)"
+    addr: "Addr:\s+(\S+)"
+  expect: success              # success | error | any
+  timeout: 300                 # Default: 300s
+```
+
+### dpkg
+Install or remove DEB packages on nodes.
+
+```yaml
+- dpkg: install
+  package: "{{vpn_common_deb}}"
+  services: ["clientd-1", "clientd-2"]
+  fix_deps: true               # Run apt-get -f install (install only)
+
+- dpkg: remove
+  package: "cellframe-plugin-vpn-client"
+  services: ["vpn-client-1"]
+```
+
+### metric / metrics_table
+Record and display performance metrics.
+
+```yaml
+- metric: throughput_vpn_client_1
+  value: "{{_iperf_throughput}}"
+  unit: Mbps
+  group: multi_client_load
+  tags: { client: vpn-client-1 }
+
+- metrics_table: multi_client_load
+  title: "Per-Client Throughput"
+  format: text                     # text (default) | markdown
+  columns: [tag:client, value, unit]
+```
+
+---
 
 ## Wait Operands
 
@@ -132,9 +195,76 @@ Wait for wallet balance condition.
   timeout: 60
 ```
 
+### wait: cli
+Poll CLI command until condition is met.
+
+```yaml
+- wait: cli
+  cmd: "srv_vpn_client status -net {{network_name}}"
+  node: vpn-client-1
+  contains: "connected"        # Substring or regex
+  not_contains: "error"
+  timeout: 30
+  interval: 3                  # Seconds between polls (default: 5)
+  save: _status                # Save last successful output
+  save_regex: "state:\s+(\w+)"
+  save_map: { key: "pattern" }
+  optional: true               # Timeout doesn't fail the test
+```
+
+### wait: bash
+Poll bash script until exit code 0.
+
+```yaml
+- wait: bash
+  script: "test -f /tmp/ready && echo ok"
+  node: vpn-server-1
+  contains: "ok"
+  timeout: 20
+  interval: 2
+```
+
+### wait: docker_exec
+Poll command inside Docker container until condition is met.
+
+```yaml
+- wait: docker_exec
+  cmd: "test -S /opt/cf-vpn-clientd/var/run/cf-vpn-clientd.sock && echo ready"
+  services: ["clientd-1"]
+  contains: "ready"
+  timeout: 20
+  interval: 1
+  save: _output
+  save_regex: "..."
+  save_map: {}
+```
+
+### wait: python
+Poll Python expression until truthy.
+
+```yaml
+- wait: python
+  script: "int(ctx.get('_block_count', 0)) > 0"
+  timeout: 30
+  interval: 5
+```
+
+### wait: notify
+Wait for notification from notify server.
+
+```yaml
+- wait: notify
+  node: "{{client_node}}"
+  notify_class: "VpnClientState"
+  contains: "connected"
+  timeout: 30
+```
+
 ### All Registered Waiters
 
 From WaitRegistry (28 total):
+- `mempool` - Datum in mempool
+- `finalized` - Datum/transaction finalized in chain
 - `network_online` - Network state online
 - `sync_complete` - Network sync complete
 - `dag_event` - DAG event processing
@@ -203,12 +333,38 @@ Wait for network state.
 ## Control Flow
 
 ### set
-Set/compute variable.
+Set/compute variable. Variable name supports `{{}}` substitution.
 
 ```yaml
 - set: var_name
   value: "{{expression}}"
   eval: true  # Evaluate as Python
+```
+
+**Available helper functions** (with `eval: true`):
+
+| Function | Description |
+|----------|-------------|
+| `regex_extract(text, pattern, group=1)` | First regex match (string) |
+| `find_all(text, pattern)` | All regex matches (list) |
+| `concat(*args)` | String concatenation |
+| `join_vars(prefix, count, sep)` | Join variables by prefix |
+| `get_var(name, default)` | Get variable by dynamic name |
+| `get_var_dict(name)` | Get dict variable |
+
+```yaml
+# Extract all serial keys from CLI output
+- set: _serials
+  value: "find_all(raw_output, r'[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}')"
+  eval: true
+
+# Dynamic variable name in for-loop
+- for: _i
+  in: "range(1, len(_serials) + 1)"
+  steps:
+    - set: "serial_{{_i}}"
+      value: "_serials[_i - 1]"
+      eval: true
 ```
 
 ### if
@@ -232,20 +388,21 @@ Iterate over list.
   steps:
     - print: "{{item}}"
 
-# With range
+# With range (string `in` is auto-evaluated)
 - for: i
   in: "range(5)"
-  eval: true
   steps:
     - print: "Iteration {{i}}"
 ```
+
+**Note:** String `in` values are automatically evaluated as Python expressions. No `eval: true` is needed (unlike `set` steps).
 
 ### while
 Loop while condition true.
 
 ```yaml
 - while: "{{condition}}"
-  max_iterations: 10
+  max_loops: 10
   steps:
     - cli: "check something"
 ```
@@ -274,7 +431,7 @@ Simple counter loop.
 ```
 
 ### group
-Group steps with defaults.
+Group steps with defaults. Both `group:` and `name:` are accepted as the display name key.
 
 ```yaml
 - group: Group Name
@@ -289,15 +446,39 @@ Group steps with defaults.
 ## Network Operations
 
 ### docker_op
-Docker operations.
+Docker operations on containers.
 
-**Operations:** start, stop, restart, down
+**Operations:** `start`, `stop`, `restart`, `pause`, `unpause`, `logs`, `exec`, `cp`
 
 ```yaml
 - docker_op: restart
   services: "{{nodes}}"
   wait_for_ip: true  # For start/restart
+
+- docker_op: pause
+  services: "node-1"  # Freeze container (simulates network loss)
+
+- docker_op: unpause
+  services: "node-1"  # Resume frozen container
+
+- docker_op: logs
+  services: "node-1"
+  tail: 50           # last N lines (default 100)
+  save: node1_logs   # save output to variable
+
+- docker_op: exec
+  services: "node-1"
+  command: "cat /opt/cellframe-node/var/log/cellframe-node.log | tail -20"
+  save: exec_output        # save stdout to variable
+  save_regex: "pattern"    # Extract via regex
+  save_map: { k: "re" }   # Extract multiple values
+
+- docker_op: cp
+  src: "node-1:/opt/cellframe-node/var/log/cellframe-node.log"
+  dst: "/tmp/node1.log"    # Copy file from container to host
 ```
+
+**Note:** For simple `exec` operations, prefer the [`docker_exec`](#docker_exec) shorthand.
 
 ### config
 Modify node configuration.
@@ -313,24 +494,38 @@ Modify node configuration.
 **Important:** Use `stop` + `start` after config, not `restart`!
 
 ### snapshot
-Save/restore network state.
+Create/restore/verify/delete network state snapshots.
 
 ```yaml
-- snapshot: save
+- snapshot: create
   name: snapshot_name
+  is_base: true                # Mark as base topology snapshot
+  stop_containers: true        # Stop before create (consistent state)
+  restart_after: true          # Restart after create
+  regenerate_certs: false      # Unique node-addr certs after restore
+  clone_images: { src: [t1] }  # Clone committed image from prototype
+  wait_ready: true             # Wait for nodes to be CLI-ready
+  wait_ready_timeout: 90
+  wait_ready_check: "vpn_cdb version"  # Custom readiness CLI check
 
 - snapshot: restore
   name: snapshot_name
+
+- snapshot: verify
+  name: cdb_ready
+  save: has_snapshot           # True/False instead of raising
+
+- snapshot: delete
+  name: old_snapshot
 ```
 
 ## Special Steps
 
 ### StepGroup
-Group with metadata.
+Group steps under a shared label and optional defaults. Both `group:` and `name:` keys are accepted.
 
 ```yaml
-- group: Group Name
-  description: Optional description
+- group: Group Name     # 'name:' also works
   defaults:
     node: node1
   steps:

@@ -38,6 +38,15 @@ ARG BUILD_TYPE=debug
 ARG REPOSITORY_URL=
 ARG REPOSITORY_BRANCH=master
 ARG BUILD_JOBS=0
+ARG DEBIAN_MIRROR=
+
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+        sed -i '/debian-security/!s|http://deb.debian.org/debian|'"$DEBIAN_MIRROR"'|g' \
+            /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+        sed -i '/debian-security/!s|http://deb.debian.org/debian|'"$DEBIAN_MIRROR"'|g' \
+            /etc/apt/sources.list 2>/dev/null || true; \
+        echo "Builder: using Debian mirror $DEBIAN_MIRROR"; \
+    fi
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -105,11 +114,15 @@ ARG PACKAGE_URL=
 ARG REPOSITORY_URL=
 ARG REPOSITORY_BRANCH=master
 ARG DEBIAN_MIRROR=
+ARG TOOLS_BASE_URL=https://pub.cellframe.net
 
-# Note: Debian Trixie (testing) is not available on most mirrors yet
-# Skip mirror substitution for Trixie - use official repos only
-# The DEBIAN_MIRROR argument is accepted but ignored for Trixie compatibility
-RUN echo "Using official Debian Trixie repositories (mirrors not supported yet)"
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+        sed -i '/debian-security/!s|http://deb.debian.org/debian|'"$DEBIAN_MIRROR"'|g' \
+            /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+        sed -i '/debian-security/!s|http://deb.debian.org/debian|'"$DEBIAN_MIRROR"'|g' \
+            /etc/apt/sources.list 2>/dev/null || true; \
+        echo "Runtime: using Debian mirror $DEBIAN_MIRROR"; \
+    fi
 
 # Install required packages (matching tests-in-docker for compatibility)
 # Runtime dependencies for cellframe-node
@@ -144,6 +157,7 @@ RUN apt-get update && apt-get install -y \
     debconf-utils \
     libpq-dev \
     faketime \
+    iperf3 \
     && \
     # Install version-specific packages with fallbacks
     (apt-get -y install libjson-c5 || apt-get -y install libjson-c6 || apt-get -y install libjson-c-dev || true) && \
@@ -153,8 +167,8 @@ RUN apt-get update && apt-get install -y \
     # Install libasan conditionally (version differs between systems)
     (apt-get -y install libasan8 || apt-get -y install libasan6 || apt-get -y install libasan5 || true) \
     && \
-    # Install debug tools only for debug builds
-    if [ "$BUILD_TYPE" = "debug" ]; then \
+    # Install debug tools for debug and asan builds
+    if [ "$BUILD_TYPE" = "debug" ] || [ "$BUILD_TYPE" = "asan" ]; then \
         apt-get install -y htop strace gdb valgrind vim nano; \
     fi && \
     rm -rf /var/lib/apt/lists/*
@@ -278,7 +292,7 @@ RUN set -x && \
             elif [ "$CELLFRAME_VERSION" = "latest" ]; then \
                 # For latest version, get the most recent available for current architecture
                 echo "Fetching latest version for architecture: $ARCH" && \
-                LATEST_VERSION=$(wget -qO- http://pub.cellframe.net/linux/cellframe-node/master/ | \
+                LATEST_VERSION=$(wget -qO- ${TOOLS_BASE_URL}/linux/cellframe-node/master/ | \
                                 grep -oP "cellframe-node-\K[0-9]+\.[0-9]+-[0-9]+(?=${PACKAGE_SUFFIX}-${ARCH}\.deb)" | \
                                 sort -V | tail -1); \
                 if [ -z "$LATEST_VERSION" ]; then \
@@ -286,11 +300,11 @@ RUN set -x && \
                     echo "FAIL FAST: Check package availability or use specific version" && \
                     exit 1; \
                 fi && \
-                DOWNLOAD_URL="http://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-${LATEST_VERSION}${PACKAGE_SUFFIX}-${ARCH}.deb" && \
+                DOWNLOAD_URL="${TOOLS_BASE_URL}/linux/cellframe-node/master/cellframe-node-${LATEST_VERSION}${PACKAGE_SUFFIX}-${ARCH}.deb" && \
                 ACTUAL_VERSION="$LATEST_VERSION"; \
             else \
                 # Use specific version for current architecture
-                DOWNLOAD_URL="http://pub.cellframe.net/linux/cellframe-node/master/cellframe-node-${CELLFRAME_VERSION}${PACKAGE_SUFFIX}-${ARCH}.deb" && \
+                DOWNLOAD_URL="${TOOLS_BASE_URL}/linux/cellframe-node/master/cellframe-node-${CELLFRAME_VERSION}${PACKAGE_SUFFIX}-${ARCH}.deb" && \
                 ACTUAL_VERSION="$CELLFRAME_VERSION"; \
             fi && \
             \
@@ -366,7 +380,31 @@ RUN set -x && \
         echo "ERROR: Package files not found after installation"; \
         exit 1; \
     fi && \
-    rm /tmp/cellframe-node.deb
+    rm /tmp/cellframe-node.deb && \
+    \
+    # Install extra packages (plugins, tools, etc.) from packages/ directory
+    EXTRA_INSTALLED=0 && \
+    for pkg in /tmp/packages/*.deb; do \
+        [ ! -f "$pkg" ] && continue; \
+        BASENAME="$(basename "$pkg")"; \
+        [ "$BASENAME" = "$LOCAL_PACKAGE_NAME" ] && continue; \
+        echo "Installing extra package: $BASENAME" && \
+        set +e && \
+        DEBIAN_FRONTEND=noninteractive dpkg -i --force-depends --force-confold "$pkg" 2>&1; \
+        PKG_EXIT=$?; \
+        set -e && \
+        if [ "$PKG_EXIT" -ne 0 ]; then \
+            echo "Extra package $BASENAME had install errors (exit $PKG_EXIT), will fix later"; \
+        fi && \
+        EXTRA_INSTALLED=$((EXTRA_INSTALLED + 1)); \
+    done && \
+    if [ "$EXTRA_INSTALLED" -gt 0 ]; then \
+        echo "Installed $EXTRA_INSTALLED extra package(s), fixing dependencies..." && \
+        apt-get update -qq 2>&1 || true && \
+        DEBIAN_FRONTEND=noninteractive apt-get install -f -y -qq 2>&1 || true && \
+        DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>&1 || true && \
+        ldconfig; \
+    fi
 
 # Copy modular configs to disable production networks
 # Using cellframe-node.cfg.d/ approach - proper modular configuration

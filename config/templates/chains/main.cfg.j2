@@ -25,9 +25,6 @@ is_celled=false
 # Static genesis block hash (filled dynamically during network initialization)
 is_static_genesis_block={{ is_static_genesis_block | default('false', true) }}
 static_genesis_block={{ static_genesis_block | default('', true) }}
-# Direct ledger addition mode (production default: false)
-# Genesis blocks are processed via ESBocs consensus with seed_mode=true
-is_add_directly={{ is_add_directly | default('false', true) }}
 
 [esbocs]
 consensus_debug={{ consensus_debug | default('true', true) }}

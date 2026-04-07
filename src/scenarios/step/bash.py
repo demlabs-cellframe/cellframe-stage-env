@@ -6,7 +6,7 @@ import asyncio
 from typing import Any, Dict
 
 from ...utils.logger import get_logger
-from .base import StepExecutor
+from .base import StepExecutor, resolve_timeout
 from ..schema import BashStep
 from ..executor import ScenarioExecutionError, RuntimeContext
 
@@ -18,28 +18,30 @@ class BashStepExecutor(StepExecutor):
     
     async def execute(self, step: BashStep, ctx: RuntimeContext) -> Dict[str, Any]:
         """Execute Bash script step."""
-        # Substitute variables in bash script
         script = ctx.substitute(step.bash)
         
-        # If node is specified, execute in container; otherwise execute on host
-        if step.node:
-            # Substitute variables in node name
-            node = ctx.substitute(step.node)
-            # Execute in container via container manager
-            result = await self.container_manager.exec_bash_command(
-                script=script,
-                node=node,
-                timeout=step.timeout
+        timeout = resolve_timeout(step.timeout, ctx, default=300)
+        try:
+            if step.node:
+                node = ctx.substitute(step.node)
+                result = await self.container_manager.exec_bash_command(
+                    script=script,
+                    node=node,
+                    timeout=timeout
+                )
+            else:
+                logger.info("executing_bash_on_host", script_preview=script[:100])
+                result = await self._exec_on_host(script, timeout)
+        except asyncio.TimeoutError:
+            raise ScenarioExecutionError(
+                f"Bash step timed out after {timeout}s",
+                step=script[:200],
+                context={"timeout": timeout, "node": getattr(step, 'node', None)}
             )
-        else:
-            # Execute on HOST (not in container) - for docker commands etc.
-            logger.info("executing_bash_on_host", script_preview=script[:100])
-            result = await self._exec_on_host(script, step.timeout)
         
-        # Save result if requested
-        if step.save:
-            ctx.set_variable(step.save, result["stdout"])
-            logger.debug("bash_step_saved", variable=step.save)
+        if step.save or step.save_map:
+            var_name = ctx.substitute(step.save) if step.save else None
+            ctx.save_output(result["stdout"], var_name, step.save_regex, step.save_map)
         
         # Check expectation
         if step.expect == "success" and result["returncode"] != 0:

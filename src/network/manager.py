@@ -12,7 +12,7 @@ Manages the lifecycle of test network:
 import asyncio
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import traceback
 
 from ..config.loader import NetworkTopology
@@ -22,6 +22,7 @@ from ..monitoring.health import HealthChecker, HealthStatus
 from ..monitoring.network_consensus import NetworkConsensusMonitor
 from src.utils.logger import get_logger
 from src.utils.artifacts import ArtifactsManager
+from src.utils.project import get_project_name
 from ..snapshots.manager import SnapshotManager, SnapshotMode
 from .models import NodeConfig
 from .genesis import GenesisInitializer
@@ -49,6 +50,14 @@ class NetworkManager:
         
         # Keep containers running after tests (for debugging)
         self.keep_running = False
+
+        # prepare()/start() phase tracking
+        self._prepared = False
+        self._snapshot_clean_state_restored = False
+        self._snapshot_phase1_restored = False
+
+        # Docker-compose services from suite descriptor
+        self.docker_compose: Dict[str, Any] = {}
         
         # CLI path for node commands
         self.node_cli_path = "cellframe-node-cli"
@@ -64,7 +73,7 @@ class NetworkManager:
         # Docker compose manager
         self.compose = DockerComposeManager(
             base_path,
-            project_name="cellframe-stage",
+            project_name=get_project_name(),
             network_name=self.topology.network.name
         )
         
@@ -105,27 +114,18 @@ class NetworkManager:
         artifacts_config = self.config_loader.get_artifacts_config()
         self.artifacts_manager = ArtifactsManager(base_path, artifacts_config)
         
-        # Initialize snapshot manager for suite isolation
         suite_isolation_config = self.config_loader.get_suite_isolation_config()
-        snapshot_mode_str = suite_isolation_config.get('mode', 'filesystem')
-        
-        # Convert mode string to enum
-        try:
-            snapshot_mode = SnapshotMode(snapshot_mode_str)
-        except ValueError:
-            logger.warning("invalid_snapshot_mode",
-                          mode=snapshot_mode_str,
-                          fallback="filesystem")
-            snapshot_mode = SnapshotMode.FILESYSTEM
-        
-        # Pass full config including cache_dir
+
         snapshot_config = dict(suite_isolation_config)
-        snapshot_config['cache_dir'] = self.paths_config.get('cache_dir', '../testing/cache')
-        
+        snapshot_config['cache_dir'] = self.paths_config.get('cache_dir', '../../cache')
+
+        disabled = suite_isolation_config.get('mode', '').lower() == 'disabled'
+
         self.snapshot_manager = SnapshotManager(
             base_path,
-            mode=snapshot_mode,
-            config=snapshot_config
+            config=snapshot_config,
+            compose_manager=self.compose,
+            mode=SnapshotMode.DISABLED if disabled else None,
         )
         
         self.suite_isolation_config = suite_isolation_config
@@ -139,12 +139,15 @@ class NetworkManager:
             native_ticker=getattr(self.topology.network, 'native_ticker', 'TCELL')
         )
         
+        # Detect node major version for versioned genesis scenarios
+        self._genesis_version_dir = self._detect_genesis_version()
+        
         logger.info("network_manager_initialized",
                    topology=topology_name,
                    network=self.topology.network.name,
                    timeouts=self.timeouts,
                    cache_dir=self.paths_config.get('cache_dir'),
-                   snapshot_mode=snapshot_mode.value)
+                   snapshot_mode=self.snapshot_manager.mode.value)
     
     def generate_node_configs(self) -> List[NodeConfig]:
         """
@@ -210,6 +213,332 @@ class NetworkManager:
         last_octet = int(parts[3]) + node_id - 1
         return f"{parts[0]}.{parts[1]}.{parts[2]}.{last_octet}"
     
+    def _detect_genesis_version(self) -> str:
+        """Choose genesis scenario directory version.
+
+        Priority:
+          1. ``[build] genesis_version`` from stage-env config (e.g. ``v5.8``)
+          2. ``stable`` symlink in scenarios/genesis/ (default)
+          3. Auto-detect from available ``vN.x`` directories (lowest first)
+        """
+        default_dir = "stable"
+        genesis_base = self.base_path / "scenarios" / "genesis"
+
+        stage_config = self.config_loader.load_stage_config()
+        configured = stage_config.get('genesis_version')
+        if configured:
+            configured = str(configured).strip()
+            if (genesis_base / configured).is_dir():
+                logger.info("genesis_version_from_config", version_dir=configured)
+                return configured
+            logger.warning("genesis_version_config_dir_missing",
+                           configured=configured, fallback=default_dir)
+
+        if (genesis_base / "stable").exists():
+            logger.info("genesis_version_stable_symlink", version_dir="stable")
+            return "stable"
+
+        available = sorted(
+            d.name for d in genesis_base.iterdir()
+            if d.is_dir() and d.name.startswith("v")
+        ) if genesis_base.is_dir() else []
+
+        if available:
+            default_dir = available[0]
+            logger.info("genesis_version_auto_selected", version_dir=default_dir, available=available)
+        else:
+            logger.warning("genesis_no_version_dirs", path=str(genesis_base))
+
+        return default_dir
+
+    def _sdk_branch_for_tools(self) -> str:
+        """Derive dap-sdk git branch from genesis version (v5.8 -> release-5.8)."""
+        ver = self._genesis_version_dir
+        if ver and ver.startswith("v"):
+            return f"release-{ver[1:]}"
+        return "release-6.0"
+
+    async def prepare(self, rebuild: bool = False) -> None:
+        """Restore snapshot, generate configs and compose — but do NOT start containers.
+
+        After calling ``prepare()`` the host data directories contain
+        consistent, static data that can be safely cloned by
+        ``_provision_node_compose``.  Call ``start()`` afterwards to
+        bring the containers up.
+        """
+        logger.info("preparing_network",
+                   topology=self.topology_name,
+                   rebuild=rebuild)
+
+        try:
+            self.compose.down(volumes=False, remove_images=False)
+        except Exception:
+            pass
+        self.compose.cleanup_stale_resources()
+
+        await self._restore_snapshots()
+
+        if not self.nodes:
+            node_configs = self.generate_node_configs()
+        else:
+            node_configs = list(self.nodes.values())
+
+        snapshot_restored = self._snapshot_clean_state_restored or self._snapshot_phase1_restored
+        if not snapshot_restored:
+            self.config_generator.generate_all(self.topology, node_configs, force=rebuild)
+        else:
+            self._remap_seed_nodes_for_shard(node_configs)
+
+        cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
+        node_source_config = self.config_loader.get_node_source_config()
+        settings = self.topology.network_settings
+        self.compose.generate_compose_for_nodes(
+            node_configs,
+            build_type=node_source_config.get('build_type', 'debug') if node_source_config else 'debug',
+            cache_dir_relative=cache_dir_relative,
+            node_source_config=node_source_config,
+            network_settings={
+                'subnet': settings.subnet,
+                'base_ip': settings.base_ip,
+            },
+            extra_services=self.docker_compose or None,
+        )
+        if rebuild:
+            self.compose.build(no_cache=rebuild)
+
+        self._prepared = True
+
+    def _default_phase1_name(self) -> str:
+        return f"phase1_zerochain_genesis_{self.topology.network.name}"
+
+    def _remap_seed_nodes_for_shard(self, node_configs) -> None:
+        """Adapt snapshot data for the current shard subnet.
+
+        Snapshot data originates from the genesis shard (shard-0).  In parallel
+        mode every shard uses a shifted subnet, so we remap
+        ``seed_nodes_hosts`` IPs in **all** network configs (not just the
+        primary network).  Nodes may be configured for multiple networks
+        (e.g. ``vpntest`` + ``stagenet``); leaving any config un-remapped
+        causes TCP SYN hangs to unreachable shard-0 IPs.
+
+        GDB is intentionally preserved: the balancer requires the node list
+        stored there to return peers (HTTP 204 otherwise).  Stale shard-0 IPs
+        in GDB entries are corrected by nodes re-registering on startup.
+        """
+        import re as _re
+
+        settings = self.topology.network_settings
+        base_ip_parts = settings.base_ip.split('.')
+        new_prefix = '.'.join(base_ip_parts[:3])
+
+        cache_dir = self.paths_config.get('cache_dir', 'cache')
+        configs_cache = (self.base_path / cache_dir / 'configs').resolve()
+
+        seed_re = _re.compile(r'(?m)^(seed_nodes_hosts\s*=\s*)\[([^\]]*)\]')
+
+        def _remap(hosts_str):
+            remapped = []
+            for entry in hosts_str.split(','):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                ip_port = entry.split(':')
+                if len(ip_port) == 2:
+                    old_octets = ip_port[0].split('.')
+                    remapped.append(f"{new_prefix}.{old_octets[3]}:{ip_port[1]}")
+                else:
+                    remapped.append(entry)
+            return '[' + ','.join(remapped) + ']'
+
+        patched = 0
+        for node in node_configs:
+            net_dir = configs_cache / f"node{node.node_id}" / "network"
+            if not net_dir.is_dir():
+                continue
+            for net_cfg in net_dir.glob("*.cfg"):
+                content = net_cfg.read_text()
+                new_content = seed_re.sub(
+                    lambda m: m.group(1) + _remap(m.group(2)),
+                    content,
+                )
+                if new_content != content:
+                    net_cfg.write_text(new_content)
+                    patched += 1
+
+        if patched:
+            logger.info("remapped_seed_nodes_for_shard",
+                       new_prefix=new_prefix, patched_files=patched)
+
+    def _regenerate_plugins_after_restore(self, node_configs) -> None:
+        """Regenerate plugins.cfg for all nodes after snapshot restore.
+
+        plugins.cfg depends on the runtime [plugins] config section, not on the
+        snapshot contents.  A snapshot created by a different config (e.g. node
+        base tests without [plugins] enabled=true) would leave plugins disabled.
+        """
+        cache_dir = self.paths_config.get('cache_dir', 'cache')
+        configs_cache = (self.base_path / cache_dir / 'configs').resolve()
+
+        for node in node_configs:
+            node_cfg_d = configs_cache / f"node{node.node_id}" / "cellframe-node.cfg.d"
+            node_cfg_d.mkdir(parents=True, exist_ok=True)
+            self.config_generator._generate_plugins_config(node_cfg_d, node)
+
+    async def _purge_nodes_list_before_snapshot(self, node_configs) -> None:
+        """Delete all entries from ``<net>.nodes.list`` via CLI before snapshot.
+
+        This ensures shards restored from this snapshot don't inherit
+        stale IPs — they will use ``seed_nodes_hosts`` from config instead.
+        """
+        import re
+        import subprocess
+        from ..utils.project import make_container_name
+
+        net_name = self.topology.network.name
+        group = f"{net_name}.nodes.list"
+        first_node = node_configs[0]
+        container = make_container_name(f"node-{first_node.node_id}")
+
+        try:
+            result = subprocess.run(
+                ["docker", "exec", container, "sh", "-c",
+                 f"cellframe-node-cli global_db get_keys -group {group}"],
+                capture_output=True, text=True, timeout=15)
+            if result.returncode != 0 or "No data" in result.stdout:
+                logger.info("nodes_list_already_empty", group=group)
+                return
+
+            keys = re.findall(r'key:\s+(\S+)', result.stdout)
+            deleted = 0
+            for key in keys:
+                try:
+                    subprocess.run(
+                        ["docker", "exec", container, "sh", "-c",
+                         f"cellframe-node-cli global_db delete -group {group} -key {key}"],
+                        capture_output=True, text=True, timeout=10)
+                    deleted += 1
+                except Exception:
+                    pass
+            logger.info("nodes_list_purged_before_snapshot",
+                       group=group, deleted=deleted, total_keys=len(keys))
+        except Exception as exc:
+            logger.warning("nodes_list_purge_failed", error=str(exc),
+                          note="Shards may have stale IPs in GDB")
+
+    def _fix_stale_node_list(self, node_configs) -> None:
+        """Overwrite stale IPs in ``nodes.list`` BEFORE starting containers.
+
+        Runs ``cf-cert-generator --read-addr`` and ``dap-gdb-tool node-rehost``
+        directly on the GDB files on disk.  Everything happens in a single
+        ``docker run`` — no running nodes, no CLI sockets required.
+        """
+        import subprocess
+        from ..certs.generator import CertGenerator, CERT_BUILDER_IMAGE
+
+        tools_image = CERT_BUILDER_IMAGE
+        sdk_branch = self._sdk_branch_for_tools()
+        cg = CertGenerator(self.base_path, dap_sdk_branch=sdk_branch)
+        if not cg.build_docker_image():
+            logger.error("gdb_tool_image_not_available")
+            return
+
+        cache_dir = self.paths_config.get('cache_dir', 'cache')
+        cache_path = (self.base_path / cache_dir).resolve()
+        net_name = self.topology.network.name
+        settings = self.topology.network_settings
+        base_ip_parts = settings.base_ip.split('.')
+
+        volumes: list[str] = []
+        ip_map: dict[int, str] = {}
+
+        for nc in node_configs:
+            data_path = cache_path / "data" / f"node{nc.node_id}"
+            volumes.extend(["-v", f"{data_path}:/nodes/node{nc.node_id}"])
+            ip_map[nc.node_id] = (
+                f"{'.'.join(base_ip_parts[:3])}"
+                f".{int(base_ip_parts[3]) + nc.node_id - 1}"
+            )
+
+        script_lines = ["set -e", ""]
+
+        for nc in node_configs:
+            script_lines.append(
+                f'ADDR_{nc.node_id}=$('
+                f'/usr/local/bin/cf-cert-generator --read-addr '
+                f'/nodes/node{nc.node_id}/lib/ca/node-addr.dcert 2>/dev/null'
+                f' | tail -1) || ADDR_{nc.node_id}=""'
+            )
+
+        script_lines.append("")
+
+        for target in node_configs:
+            gdb = f"/nodes/node{target.node_id}/lib/global_db"
+            for src in node_configs:
+                ip = ip_map[src.node_id]
+                script_lines.append(
+                    f'[ -n "$ADDR_{src.node_id}" ] && '
+                    f'/usr/local/bin/dap-gdb-tool '
+                    f'--db-path {gdb} '
+                    f'node-rehost {net_name} "$ADDR_{src.node_id}" {ip} 8079 '
+                    f'|| true'
+                )
+
+        script = "\n".join(script_lines)
+
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "--entrypoint", "sh",
+        ] + volumes + [
+            tools_image,
+            "-c", script,
+        ]
+
+        try:
+            result = subprocess.run(
+                docker_cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode == 0:
+                ok_count = result.stdout.count("OK ")
+                logger.info("stale_node_list_fixed",
+                            nodes=len(node_configs),
+                            entries_updated=ok_count)
+            else:
+                logger.error("gdb_tool_failed",
+                             rc=result.returncode,
+                             stderr=result.stderr[-500:] if result.stderr else "")
+        except subprocess.TimeoutExpired:
+            logger.error("gdb_tool_timeout")
+        except Exception as exc:
+            logger.error("gdb_tool_exception", exc=str(exc))
+
+    async def _restore_snapshots(self) -> None:
+        """Restore clean_state or phase1 snapshot if available."""
+        self._snapshot_clean_state_restored = False
+        self._snapshot_phase1_restored = False
+
+        clean_state_name = self.suite_isolation_config.get('snapshot_name', 'clean_state')
+        phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', self._default_phase1_name())
+
+        if self.snapshot_manager.mode == SnapshotMode.DISABLED:
+            self._clean_node_data()
+            return
+
+        _snap = self.snapshot_manager.snapshot
+
+        if _snap.exists(clean_state_name):
+            if await self.snapshot_manager.restore_snapshot(clean_state_name):
+                self._snapshot_clean_state_restored = True
+                return
+        if _snap.exists(phase1_snapshot_name):
+            if await self.snapshot_manager.restore_snapshot(phase1_snapshot_name):
+                self._snapshot_phase1_restored = True
+                return
+            raise RuntimeError(
+                f"Snapshot restore failed for '{phase1_snapshot_name}'. "
+                "Run './clean.sh' to remove root-owned files and try again."
+            )
+
+        self._clean_node_data()
+
     async def start(
         self,
         rebuild: bool = False,
@@ -225,124 +554,57 @@ class NetworkManager:
         logger.info("starting_network",
                    topology=self.topology_name,
                    rebuild=rebuild)
+
+        if not getattr(self, '_prepared', False):
+            # Full legacy path — stop, restore, config, compose
+            logger.info("stopping_previous_environment")
+            try:
+                self.compose.down(volumes=False, remove_images=False)
+                logger.info("previous_environment_stopped")
+            except Exception as e:
+                logger.debug("no_previous_environment", error=str(e))
+            self.compose.cleanup_stale_resources()
         
-        # Stop previous environment FIRST (keep volumes - they contain certs!)
-        logger.info("stopping_previous_environment")
-        try:
-            self.compose.down(volumes=False, remove_images=False)
-            logger.info("previous_environment_stopped")
-        except Exception as e:
-            logger.debug("no_previous_environment", error=str(e))
-        
-        # Clean up any remaining stale resources
-        self.compose.cleanup_stale_resources()
-        
-        # =================================================================
-        # SNAPSHOT RESTORE LOGIC (Priority: clean_state > phase1 > fresh)
-        # =================================================================
-        # 1. Check for clean_state snapshot (full genesis completed)
-        # 2. If not found, check for phase1 snapshot (only zerochain genesis)
-        # 3. If neither found, start fresh
-        
-        clean_state_name = self.suite_isolation_config.get('snapshot_name', 'clean_state')
-        phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', 'phase1_zerochain_genesis')
-        
-        clean_state_restored = False
-        phase1_snapshot_exists = False
-        
-        if self.snapshot_manager.mode != SnapshotMode.DISABLED:
-            # Helper to check if snapshot exists
-            def _snapshot_exists(name: str) -> bool:
-                if self.snapshot_manager.mode == SnapshotMode.SQUASHFS:
-                    return (self.snapshot_manager.snapshot.snapshots_path / f"{name}.sqfs").exists()
-                elif self.snapshot_manager.mode == SnapshotMode.FILESYSTEM:
-                    return (self.snapshot_manager.snapshot.snapshots_path / name).exists()
-                elif self.snapshot_manager.mode == SnapshotMode.RECREATE:
-                    return (self.snapshot_manager.snapshot.snapshots_path / f"{name}.marker").exists()
-                return False
-            
-            # PRIORITY 1: Check for clean_state snapshot (full genesis)
-            if _snapshot_exists(clean_state_name):
-                logger.info("clean_state_snapshot_found",
-                           name=clean_state_name,
-                           note="Full genesis snapshot exists - restoring")
-                restore_result = await self.snapshot_manager.restore_snapshot(clean_state_name)
-                if restore_result:
-                    logger.info("clean_state_restored_successfully",
-                               name=clean_state_name,
-                               note="Skipping ALL genesis phases")
-                    clean_state_restored = True
-                else:
-                    logger.warning("clean_state_restore_failed_trying_phase1",
-                                  name=clean_state_name)
-            
-            # PRIORITY 2: Check for phase1 snapshot (only if clean_state not restored)
-            if not clean_state_restored and _snapshot_exists(phase1_snapshot_name):
-                logger.info("phase1_snapshot_found_restoring",
-                           name=phase1_snapshot_name,
-                           mode=self.snapshot_manager.mode.value)
-                restore_result = await self.snapshot_manager.restore_snapshot(phase1_snapshot_name)
-                if restore_result:
-                    logger.info("phase1_snapshot_restored_successfully",
-                               name=phase1_snapshot_name,
-                               note="Will run Phase 2 to complete genesis")
-                    phase1_snapshot_exists = True
-                else:
-                    logger.error("phase1_snapshot_restore_failed",
-                                 name=phase1_snapshot_name,
-                                 hint="Run './clean.sh' to fix permission issues, then retry")
-                    raise RuntimeError(
-                        f"Snapshot restore failed for '{phase1_snapshot_name}'. "
-                        "This is usually caused by permission issues with Docker files. "
-                        "Run './clean.sh' to remove root-owned files and try again."
-                    )
-            
-            # PRIORITY 3: No snapshots - clean data for fresh start
-            if not clean_state_restored and not phase1_snapshot_exists:
-                logger.info("no_snapshots_found_cleaning_data_for_fresh_start")
-                self._clean_node_data()
-        else:
-            # Snapshot manager disabled - clean data
-            logger.info("snapshot_system_disabled_cleaning_data")
-            self._clean_node_data()
-        
-        # Generate node configurations
-        if not self.nodes:
-            node_configs = self.generate_node_configs()
-        else:
-            node_configs = list(self.nodes.values())
-        
-        # CRITICAL: Skip config generation if ANY snapshot was restored
-        # Configs are restored from snapshot and should NOT be regenerated
-        # Regeneration would overwrite static_genesis_event and fee_addr from snapshot
-        snapshot_restored = clean_state_restored or phase1_snapshot_exists
-        if not snapshot_restored:
-            # Generate configuration files and certificates
-            logger.info("generating_configs_and_certs")
-            self.config_generator.generate_all(
-                self.topology,
+        if not getattr(self, '_prepared', False):
+            # Full legacy path — snapshot restore + config/compose generation
+            await self._restore_snapshots()
+
+            if not self.nodes:
+                node_configs = self.generate_node_configs()
+            else:
+                node_configs = list(self.nodes.values())
+
+            snapshot_restored = self._snapshot_clean_state_restored or self._snapshot_phase1_restored
+            if not snapshot_restored:
+                self.config_generator.generate_all(self.topology, node_configs, force=rebuild)
+            else:
+                self._remap_seed_nodes_for_shard(node_configs)
+                self._regenerate_plugins_after_restore(node_configs)
+
+            cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
+            node_source_config = self.config_loader.get_node_source_config()
+            settings = self.topology.network_settings
+            self.compose.generate_compose_for_nodes(
                 node_configs,
-                force=rebuild
+                build_type=node_source_config.get('build_type', 'debug') if node_source_config else 'debug',
+                cache_dir_relative=cache_dir_relative,
+                node_source_config=node_source_config,
+                network_settings={
+                    'subnet': settings.subnet,
+                    'base_ip': settings.base_ip,
+                },
+                extra_services=self.docker_compose or None,
             )
+            if rebuild:
+                self.compose.build(no_cache=rebuild)
         else:
-            logger.info("skipping_config_generation_after_snapshot_restore",
-                       note="Configs restored from snapshot - preserving static_genesis_event and fee_addr")
-        
-        # Generate dynamic docker-compose.yml for all nodes
-        logger.info("generating_docker_compose")
-        cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
-        # Get node_source configuration from config loader
-        node_source_config = self.config_loader.get_node_source_config()
-        self.compose.generate_compose_for_nodes(
-            node_configs, 
-            cache_dir_relative=cache_dir_relative,
-            node_source_config=node_source_config
-        )
-        
-        # Build images if requested
-        if rebuild:
-            logger.info("rebuilding_images")
-            self.compose.build(no_cache=rebuild)
+            # prepare() already ran — just re-read state
+            node_configs = list(self.nodes.values())
+
+        clean_state_name = self.suite_isolation_config.get('snapshot_name', 'clean_state')
+        phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', self._default_phase1_name())
+        clean_state_restored = getattr(self, '_snapshot_clean_state_restored', False)
+        phase1_snapshot_exists = getattr(self, '_snapshot_phase1_restored', False)
         
         # Separate nodes by role for phased startup
         root_nodes = [n for n in node_configs if n.role == 'root']
@@ -370,28 +632,24 @@ class NetworkManager:
                        snapshot=clean_state_name,
                        note="Starting containers from clean_state snapshot")
             
+            # Fix stale node list in GDB BEFORE starting containers
+            self._fix_stale_node_list(node_configs)
+
             # Start ALL containers from restored clean_state
             all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
             logger.info("starting_all_containers_from_clean_state", services=all_services)
-            self.compose.up(services=all_services, detach=True, wait=False, no_build=True)
+            self.compose.up(services=all_services, detach=True, wait=False, no_build=False)
             
             # Wait for all nodes to come online
             await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
             
             # Verify fee_addr is configured (should be set during genesis)
             first_root = root_nodes[0]
-            try:
-                fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(first_root.node_id)
-                logger.info("fee_addr_verified_in_config",
-                          fee_addr=fee_addr[:16],
-                          node_id=first_root.node_id,
-                          note="fee_addr is configured (set during genesis)")
-            except RuntimeError as e:
-                logger.warning("fee_addr_missing_in_snapshot",
-                             error=str(e),
-                             note="fee_addr not found in restored snapshot config. "
-                                  "Snapshot may need to be recreated with current genesis flow. "
-                                  "Continuing without fee_addr - some operations may fail.")
+            fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(first_root.node_id)
+            logger.info("fee_addr_verified_in_config",
+                      fee_addr=fee_addr[:16],
+                      node_id=first_root.node_id,
+                      note="fee_addr is configured (set during genesis)")
             
             # Network is ready - no phases needed
             logger.info("network_started",
@@ -409,7 +667,8 @@ class NetworkManager:
                 root_nodes_dict = {f"node{n.node_id}": n for n in root_nodes}
                 consensus_monitor = NetworkConsensusMonitor(
                     nodes=root_nodes_dict,
-                    node_cli_path=self.node_cli_path
+                    node_cli_path=self.node_cli_path,
+                    network_name=self.topology.network.name
                 )
                 
                 # Use YAML scenario for phase1 genesis
@@ -418,9 +677,7 @@ class NetworkManager:
                 from ..scenarios.parser import ScenarioParser
                 
                 scenario_parser = ScenarioParser(self.base_path / "scenarios")
-                # Get version-specific scenario path (e.g., "genesis/6.0/phase1_zerochain.yml")
-                phase1_path = self.config_loader.get_genesis_scenario_path("phase1_zerochain.yml")
-                phase1_scenario = scenario_parser.load_scenario(phase1_path)
+                phase1_scenario = scenario_parser.load_scenario(f"genesis/{self._genesis_version_dir}/phase1_zerochain.yml")
                 
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
@@ -483,18 +740,16 @@ class NetworkManager:
                             logger.info("creating_phase1_snapshot_after_zerochain_genesis")
                             containers_shutdown = False
                             try:
-                                # CRITICAL: Gracefully shutdown ALL containers before snapshot
+                                # CRITICAL: Gracefully shutdown ROOT containers before snapshot
                                 # This ensures all data (GDB, chain files, configs) are flushed to disk
                                 # Graceful shutdown ensures:
                                 # - GDB flush completes (node list, validator orders)
                                 # - Chain files are saved (zerochain events)
                                 # - Configs are written to disk (static_genesis_event)
-                                # NOTE: Must include master nodes to ensure nodelist is synced and flushed!
-                                # Without this, master nodes won't have nodelist in snapshot and ESBocs will fail.
-                                logger.info("gracefully_shutting_down_all_containers_for_phase1_snapshot")
-                                all_active_services = [f"node-{nid}" for nid in root_node_ids + master_node_ids]
+                                logger.info("gracefully_shutting_down_root_containers_for_phase1_snapshot")
+                                root_services = [f"node-{nid}" for nid in root_node_ids]
                                 await self.lifecycle.graceful_shutdown_with_gdb_flush(
-                                    service_names=all_active_services,
+                                    service_names=root_services,
                                     flush_timeout=60
                                 )
                                 containers_shutdown = True
@@ -577,8 +832,13 @@ class NetworkManager:
                                            note="Squashfs snapshot captures all mounted directories automatically")
                                 
                                 # Create snapshot of phase1 state (with GDB data preserved)
-                                phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', 'phase1_zerochain_genesis')
-                                await self.create_clean_snapshot(name=phase1_snapshot_name)
+                                phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', self._default_phase1_name())
+                                phase1_meta = {}
+                                if emission_hash:
+                                    phase1_meta["emission_hash"] = emission_hash
+                                if genesis_event_hash:
+                                    phase1_meta["genesis_event_hash"] = genesis_event_hash
+                                await self.create_clean_snapshot(name=phase1_snapshot_name, extra_metadata=phase1_meta or None)
                                 logger.info("phase1_snapshot_created", 
                                            name=phase1_snapshot_name,
                                            note="zerochain genesis and LN ready")
@@ -586,7 +846,6 @@ class NetworkManager:
                                 # CRITICAL: After graceful shutdown, containers are stopped
                                 # Need to restart them to continue with PHASE 2
                                 # They will use configs from snapshot (seed_mode=false, static_genesis_event set)
-                                # NOTE: Restart only root nodes here - master nodes will be started by Phase 2
                                 logger.info("restarting_root_containers_after_snapshot_creation")
                                 root_services = [f"node-{nid}" for nid in root_node_ids]
                                 self.compose.up(services=root_services, detach=True, wait=False)
@@ -708,13 +967,10 @@ class NetworkManager:
                     node_id=root_node.node_id
                 )
                 
-                # Read fee_addr from main.cfg (may not exist in phase1 snapshot)
-                try:
-                    fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(
-                        node_id=root_node.node_id
-                    )
-                except RuntimeError:
-                    fee_addr = None
+                # Read fee_addr from main.cfg
+                fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(
+                    node_id=root_node.node_id
+                )
                 
                 break  # Only need to check first node
             
@@ -839,7 +1095,8 @@ class NetworkManager:
             root_nodes_dict = {f"node{n.node_id}": n for n in root_nodes}
             consensus_monitor = NetworkConsensusMonitor(
                 nodes=root_nodes_dict,
-                node_cli_path=self.node_cli_path
+                node_cli_path=self.node_cli_path,
+                network_name=self.topology.network.name
             )
             
             # Wait for ROOT nodes to establish links (they should have node list from snapshot)
@@ -847,154 +1104,97 @@ class NetworkManager:
             await consensus_monitor.wait_for_links_connecting_state(timeout=60.0)
             logger.info("root_nodes_links_established_after_snapshot_restore")
             
-            # CRITICAL: Get emission_hash (DATUM hash) from zerochain DAG events after snapshot restore
-            # emission_hash is needed for creating first transaction in PHASE 2
-            # IMPORTANT: Event hash != Emission datum hash!
-            # - Event hash: identifies the DAG event container
-            # - Emission hash: identifies the emission datum INSIDE the event
-            # tx_create -from_emission needs the EMISSION DATUM hash, not the event hash!
-            # We must: 1) get last event hash, 2) dump event, 3) extract emission_hash from dump
-            logger.info("getting_emission_hash_from_zerochain_dag_after_snapshot_restore")
+            # CRITICAL: Get emission_hash (DATUM hash) from zerochain after snapshot restore
+            # Prefer snapshot metadata (saved when phase1 snapshot was created); fallback to CLI retrieval
+            logger.info("getting_emission_hash_after_snapshot_restore")
             import re
             emission_hash = None
-            
-            # Method 1: Get emission_hash from dag event dump (CORRECT approach)
-            # This mirrors what phase1_zerochain.yml does
-            for root_node in root_nodes[:1]:  # Check first ROOT node
-                # Step 1: Get last event hash from zerochain
-                exit_code, stdout, _ = self.genesis._exec_cli(
-                    root_node.node_id,
-                    f"dag event last -net {self.topology.network.name} -chain zerochain",
-                    check_output=False
-                )
-                logger.info("dag_event_last_check",
-                           node_id=root_node.node_id,
-                           exit_code=exit_code,
-                           stdout_preview=stdout[:500] if stdout else "EMPTY")
+            phase1_snapshot_name = self.suite_isolation_config.get('phase1_snapshot_name', self._default_phase1_name())
+            snapshot_meta = self.snapshot_manager.get_snapshot_metadata(phase1_snapshot_name)
+            if snapshot_meta and snapshot_meta.get('emission_hash'):
+                emission_hash = snapshot_meta['emission_hash']
+                logger.info("emission_hash_loaded_from_snapshot_metadata",
+                           emission_hash=emission_hash[:16],
+                           note="Skipping CLI retrieval")
+            if not emission_hash:
+                # Method 1: Get emission_hash from dag event dump (CORRECT approach)
+                # This mirrors what phase1_zerochain.yml does
+                for root_node in root_nodes[:1]:  # Check first ROOT node
+                    # Step 1: Get last event hash from zerochain
+                    exit_code, stdout, _ = self.genesis._exec_cli(
+                        root_node.node_id,
+                        f"dag event last -net {self.topology.network.name} -chain zerochain",
+                        check_output=False
+                    )
+                    logger.info("dag_event_last_check",
+                               node_id=root_node.node_id,
+                               exit_code=exit_code,
+                               stdout_preview=stdout[:500] if stdout else "EMPTY")
                 
-                if exit_code != 0 or not stdout:
-                    logger.warning("dag_event_last_failed", exit_code=exit_code)
-                    continue
+                    if exit_code != 0 or not stdout:
+                        logger.warning("dag_event_last_failed", exit_code=exit_code)
+                        continue
                 
-                # Extract event hash from "dag event last" output
-                # Format: "last_event_hash: 0x..." or just "0x..."
-                event_hash_match = re.search(r'(?:last_event_hash:\s*)?(0x[A-Fa-f0-9]{64})', stdout)
-                if not event_hash_match:
-                    logger.warning("event_hash_not_found_in_dag_event_last", output=stdout[:200])
-                    continue
+                    # Extract event hash from "dag event last" output
+                    # Format: "last_event_hash: 0x..." or just "0x..."
+                    event_hash_match = re.search(r'(?:last_event_hash:\s*)?(0x[A-Fa-f0-9]{64})', stdout)
+                    if not event_hash_match:
+                        logger.warning("event_hash_not_found_in_dag_event_last", output=stdout[:200])
+                        continue
                     
-                last_event_hash = event_hash_match.group(1)
-                logger.info("last_event_hash_found", hash=last_event_hash[:20])
+                    last_event_hash = event_hash_match.group(1)
+                    logger.info("last_event_hash_found", hash=last_event_hash[:20])
                 
-                # Step 2: Dump the event to get emission_hash
-                exit_code, dump_stdout, _ = self.genesis._exec_cli(
-                    root_node.node_id,
-                    f"dag event dump -net {self.topology.network.name} -chain zerochain -event {last_event_hash} -from events",
-                    check_output=False
-                )
-                logger.info("dag_event_dump_check",
-                           node_id=root_node.node_id,
-                           exit_code=exit_code,
-                           event_hash=last_event_hash[:20],
-                           stdout_preview=dump_stdout[:1000] if dump_stdout else "EMPTY")
+                    # Step 2: Dump the event to get emission_hash
+                    exit_code, dump_stdout, _ = self.genesis._exec_cli(
+                        root_node.node_id,
+                        f"dag event dump -net {self.topology.network.name} -chain zerochain -event {last_event_hash} -from events",
+                        check_output=False
+                    )
+                    logger.info("dag_event_dump_check",
+                               node_id=root_node.node_id,
+                               exit_code=exit_code,
+                               event_hash=last_event_hash[:20],
+                               stdout_preview=dump_stdout[:1000] if dump_stdout else "EMPTY")
                 
-                if exit_code != 0 or not dump_stdout:
-                    logger.warning("dag_event_dump_failed", event_hash=last_event_hash[:20])
-                    continue
+                    if exit_code != 0 or not dump_stdout:
+                        logger.warning("dag_event_dump_failed", event_hash=last_event_hash[:20])
+                        continue
                 
-                # Step 3: Extract emission_hash from dump output
-                # Try JSON format first (6.0+): for DATUM_TOKEN_EMISSION events, event_hash IS the emission hash
-                # Then fallback to text format: "emission_hash: 0x..."
-                import json
-                try:
-                    dump_stripped = dump_stdout.strip()
-                    if dump_stripped.startswith('[') or dump_stripped.startswith('{'):
-                        data = json.loads(dump_stripped)
-                        if isinstance(data, list) and len(data) > 0:
-                            data = data[0]
-                        if isinstance(data, dict):
-                            type_id = data.get('type_id', '')
-                            # For DATUM_TOKEN_EMISSION events, the event_hash IS the emission hash
-                            if 'TOKEN_EMISSION' in type_id:
-                                emission_hash = data.get('event_hash', last_event_hash)
-                                logger.info("emission_hash_from_json_event",
-                                           emission_hash=emission_hash[:20] if emission_hash else "NONE",
-                                           type_id=type_id)
-                except (json.JSONDecodeError, KeyError, TypeError):
-                    pass  # Fall back to text parsing
-                
-                # Fallback: text format
-                if not emission_hash:
+                    # Step 3: Extract emission_hash from dump output
+                    # Format: "emission_hash: 0x..." (inside nested datum section)
                     emission_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump_stdout, re.IGNORECASE)
                     if emission_match:
                         emission_hash = emission_match.group(1)
                         logger.info("emission_hash_extracted_from_event_dump",
                                    emission_hash=emission_hash[:20],
                                    event_hash=last_event_hash[:20])
-                
-                if emission_hash:
-                    break
-                else:
-                    # If emission_hash not found, event might not be an emission event
-                    # Try previous event (emission is usually second-to-last after token_decl)
-                    logger.info("emission_hash_not_in_last_event_trying_previous",
-                               note="Last event might be token_decl, not emission")
+                        break
+                    else:
+                        logger.info("emission_hash_not_in_last_event_trying_previous",
+                                   note="Last event might be token_decl, not emission")
                     
-                    # Get event list to find emission event
-                    exit_code, list_stdout, _ = self.genesis._exec_cli(
-                        root_node.node_id,
-                        f"dag event list -net {self.topology.network.name} -chain zerochain -from events -limit 10",
-                        check_output=False
-                    )
-                    if exit_code == 0 and list_stdout:
-                        # Find all event hashes - try JSON first, then text
-                        all_event_hashes = []
-                        try:
-                            list_stripped = list_stdout.strip()
-                            if list_stripped.startswith('['):
-                                events_data = json.loads(list_stripped)
-                                for evt in events_data:
-                                    if isinstance(evt, dict) and 'event_hash' in evt:
-                                        all_event_hashes.append(evt['event_hash'])
-                        except (json.JSONDecodeError, TypeError):
-                            pass
+                        # Get event list to find emission event
+                        exit_code, list_stdout, _ = self.genesis._exec_cli(
+                            root_node.node_id,
+                            f"dag event list -net {self.topology.network.name} -chain zerochain -from events -limit 10",
+                            check_output=False
+                        )
+                        if exit_code == 0 and list_stdout:
+                            # Find all event hashes
+                            all_event_hashes = re.findall(r'event_hash:\s*(0x[A-Fa-f0-9]{64})', list_stdout)
+                            logger.info("dag_events_list_for_emission",
+                                       event_count=len(all_event_hashes),
+                                       hashes=all_event_hashes[:5])
                         
-                        # Fallback: text format
-                        if not all_event_hashes:
-                            all_event_hashes = re.findall(r'(?:"event_hash":\s*"|event_hash:\s*)(0x[A-Fa-f0-9]{64})', list_stdout)
-                        
-                        logger.info("dag_events_list_for_emission",
-                                   event_count=len(all_event_hashes),
-                                   hashes=all_event_hashes[:5])
-                        
-                        # Try each event to find one with emission_hash (type_id = DATUM_TOKEN_EMISSION)
-                        for evt_hash in all_event_hashes:
-                            exit_code2, dump2, _ = self.genesis._exec_cli(
-                                root_node.node_id,
-                                f"dag event dump -net {self.topology.network.name} -chain zerochain -event {evt_hash} -from events",
-                                check_output=False
-                            )
-                            if exit_code2 == 0 and dump2:
-                                # Try JSON format first
-                                try:
-                                    dump_stripped = dump2.strip()
-                                    if dump_stripped.startswith('[') or dump_stripped.startswith('{'):
-                                        data = json.loads(dump_stripped)
-                                        if isinstance(data, list) and len(data) > 0:
-                                            data = data[0]
-                                        if isinstance(data, dict):
-                                            type_id = data.get('type_id', '')
-                                            if 'TOKEN_EMISSION' in type_id:
-                                                emission_hash = data.get('event_hash', evt_hash)
-                                                logger.info("emission_hash_found_in_event_json",
-                                                           emission_hash=emission_hash[:20],
-                                                           event_hash=evt_hash[:20])
-                                                break
-                                except (json.JSONDecodeError, TypeError):
-                                    pass
-                                
-                                # Fallback: text format
-                                if not emission_hash:
+                            # Try each event to find one with emission_hash
+                            for evt_hash in all_event_hashes:
+                                exit_code2, dump2, _ = self.genesis._exec_cli(
+                                    root_node.node_id,
+                                    f"dag event dump -net {self.topology.network.name} -chain zerochain -event {evt_hash} -from events",
+                                    check_output=False
+                                )
+                                if exit_code2 == 0 and dump2:
                                     em_match = re.search(r'emission_hash:\s*(0x[A-Fa-f0-9]+)', dump2, re.IGNORECASE)
                                     if em_match:
                                         emission_hash = em_match.group(1)
@@ -1002,103 +1202,103 @@ class NetworkManager:
                                                    emission_hash=emission_hash[:20],
                                                    event_hash=evt_hash[:20])
                                         break
-                        if emission_hash:
-                            break
+                            if emission_hash:
+                                break
             
-            # Method 2: Fallback - try ledger list emis (list emissions with hashes)
-            if not emission_hash:
-                logger.info("emission_hash_not_found_in_dag_trying_ledger_emis")
-                for root_node in root_nodes[:1]:
-                    # List emissions specifically
-                    exit_code, stdout, _ = self.genesis._exec_cli(
-                        root_node.node_id,
-                        f"ledger list emis -net {self.topology.network.name}",
-                        check_output=False
-                    )
-                    logger.info("ledger_list_emis_check",
-                               node_id=root_node.node_id,
-                               exit_code=exit_code,
-                               stdout_preview=stdout[:1000] if stdout else "EMPTY")
+                # Method 2: Fallback - try ledger list emis (list emissions with hashes)
+                if not emission_hash:
+                    logger.info("emission_hash_not_found_in_dag_trying_ledger_emis")
+                    for root_node in root_nodes[:1]:
+                        # List emissions specifically
+                        exit_code, stdout, _ = self.genesis._exec_cli(
+                            root_node.node_id,
+                            f"ledger list emis -net {self.topology.network.name}",
+                            check_output=False
+                        )
+                        logger.info("ledger_list_emis_check",
+                                   node_id=root_node.node_id,
+                                   exit_code=exit_code,
+                                   stdout_preview=stdout[:1000] if stdout else "EMPTY")
                     
-                    if exit_code == 0 and stdout:
-                        # Look for emission hash in output
-                        # Format: "hash: 0x..." or "emission_hash: 0x..."
-                        hash_matches = re.findall(r'(?:emission_)?hash:\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                        if hash_matches:
-                            emission_hash = hash_matches[-1]  # Use last emission hash
-                            logger.info("emission_hash_found_in_ledger_emis",
-                                       hash=emission_hash[:20],
-                                       total_emissions=len(hash_matches))
-                            break
-                        # Try any 64-char hex hashes
-                        all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout)
-                        if all_hashes:
-                            emission_hash = all_hashes[-1]
-                            logger.info("emission_hash_found_from_ledger_hashes",
-                                       hash=emission_hash[:20],
-                                       total_hashes=len(all_hashes))
-                            break
+                        if exit_code == 0 and stdout:
+                            # Look for emission hash in output
+                            # Format: "hash: 0x..." or "emission_hash: 0x..."
+                            hash_matches = re.findall(r'(?:emission_)?hash:\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                            if hash_matches:
+                                emission_hash = hash_matches[-1]  # Use last emission hash
+                                logger.info("emission_hash_found_in_ledger_emis",
+                                           hash=emission_hash[:20],
+                                           total_emissions=len(hash_matches))
+                                break
+                            # Try any 64-char hex hashes
+                            all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout)
+                            if all_hashes:
+                                emission_hash = all_hashes[-1]
+                                logger.info("emission_hash_found_from_ledger_hashes",
+                                           hash=emission_hash[:20],
+                                           total_hashes=len(all_hashes))
+                                break
             
-            # Method 3: Fallback - try token show/info to get emission datum hash
-            if not emission_hash:
-                logger.info("emission_hash_not_found_trying_token_show")
-                for root_node in root_nodes[:1]:
-                    # Try token show command
-                    exit_code, stdout, _ = self.genesis._exec_cli(
-                        root_node.node_id,
-                        f"token show -net {self.topology.network.name} -token TCELL",
-                        check_output=False
-                    )
-                    logger.info("token_show_check",
-                               node_id=root_node.node_id,
-                               exit_code=exit_code,
-                               stdout_length=len(stdout) if stdout else 0,
-                               stdout_preview=stdout[:500] if stdout else "EMPTY")
+                # Method 3: Fallback - try token show/info to get emission datum hash
+                if not emission_hash:
+                    logger.info("emission_hash_not_found_trying_token_show")
+                    for root_node in root_nodes[:1]:
+                        # Try token show command
+                        exit_code, stdout, _ = self.genesis._exec_cli(
+                            root_node.node_id,
+                            f"token show -net {self.topology.network.name} -token TCELL",
+                            check_output=False
+                        )
+                        logger.info("token_show_check",
+                                   node_id=root_node.node_id,
+                                   exit_code=exit_code,
+                                   stdout_length=len(stdout) if stdout else 0,
+                                   stdout_preview=stdout[:500] if stdout else "EMPTY")
                     
-                    if exit_code == 0 and stdout:
-                        # Look for emission datum hash in token info
-                        hash_matches = re.findall(r'(?:emission|datum)\s+(?:hash|datum):\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                        if hash_matches:
-                            emission_hash = hash_matches[0]
-                            logger.info("emission_hash_found_in_token_show",
-                                       hash=emission_hash[:16])
-                            break
-                        # Try finding any hash
-                        all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
-                        if all_hashes:
-                            emission_hash = all_hashes[-1]
-                            logger.info("emission_hash_found_from_token_show_hashes",
-                                       hash=emission_hash[:16],
-                                       total_hashes=len(all_hashes),
-                                       note="Using last hash from token show")
-                            break
+                        if exit_code == 0 and stdout:
+                            # Look for emission datum hash in token info
+                            hash_matches = re.findall(r'(?:emission|datum)\s+(?:hash|datum):\s*(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                            if hash_matches:
+                                emission_hash = hash_matches[0]
+                                logger.info("emission_hash_found_in_token_show",
+                                           hash=emission_hash[:16])
+                                break
+                            # Try finding any hash
+                            all_hashes = re.findall(r'(0x[A-Fa-f0-9]{64})', stdout, re.IGNORECASE)
+                            if all_hashes:
+                                emission_hash = all_hashes[-1]
+                                logger.info("emission_hash_found_from_token_show_hashes",
+                                           hash=emission_hash[:16],
+                                           total_hashes=len(all_hashes),
+                                           note="Using last hash from token show")
+                                break
             
-            # Method 4: Fallback - try token list to verify emission exists
-            if not emission_hash:
-                logger.info("emission_hash_not_found_trying_token_list")
-                for root_node in root_nodes[:1]:
-                    exit_code, stdout, _ = self.genesis._exec_cli(
-                        root_node.node_id,
-                        f"token list -net {self.topology.network.name}",
-                        check_output=False
-                    )
-                    logger.info("token_list_check",
-                               node_id=root_node.node_id,
-                               exit_code=exit_code,
-                               stdout_length=len(stdout) if stdout else 0,
-                               stdout_preview=stdout[:500] if stdout else "EMPTY")
+                # Method 4: Fallback - try token list to verify emission exists
+                if not emission_hash:
+                    logger.info("emission_hash_not_found_trying_token_list")
+                    for root_node in root_nodes[:1]:
+                        exit_code, stdout, _ = self.genesis._exec_cli(
+                            root_node.node_id,
+                            f"token list -net {self.topology.network.name}",
+                            check_output=False
+                        )
+                        logger.info("token_list_check",
+                                   node_id=root_node.node_id,
+                                   exit_code=exit_code,
+                                   stdout_length=len(stdout) if stdout else 0,
+                                   stdout_preview=stdout[:500] if stdout else "EMPTY")
                     
-                    if exit_code == 0 and stdout and "TCELL" in stdout.upper():
-                        logger.info("tcell_token_found_but_emission_hash_missing",
-                                   note="Emission may have been lost - snapshot may be incomplete")
+                        if exit_code == 0 and stdout and "TCELL" in stdout.upper():
+                            logger.info("tcell_token_found_but_emission_hash_missing",
+                                       note="Emission may have been lost - snapshot may be incomplete")
             
-            if not emission_hash:
-                # Log detailed diagnostic info before failing
-                logger.error("emission_hash_retrieval_failed",
-                           note="Tried DAG events, ledger, token show, and token list - snapshot may be corrupted")
-                raise RuntimeError("Failed to retrieve emission_hash from zerochain after snapshot restore. "
-                                 "Snapshot may be corrupted or emission not found in DAG events/ledger. "
-                                 "Check logs for detailed command outputs.")
+                if not emission_hash:
+                    # Log detailed diagnostic info before failing
+                    logger.error("emission_hash_retrieval_failed",
+                               note="Tried DAG events, ledger, token show, and token list - snapshot may be corrupted")
+                    raise RuntimeError("Failed to retrieve emission_hash from zerochain after snapshot restore. "
+                                     "Snapshot may be corrupted or emission not found in DAG events/ledger. "
+                                     "Check logs for detailed command outputs.")
             
             logger.info("emission_hash_retrieved_after_snapshot_restore", hash=emission_hash[:16])
             
@@ -1143,7 +1343,7 @@ class NetworkManager:
             if not self.compose.are_services_running(master_full_services):
                 logger.info("starting_remaining_nodes_after_phase2_skip", services=master_full_services)
                 all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
-                self.compose.up(services=all_services, detach=True, wait=False, no_build=True)
+                self.compose.up(services=all_services, detach=True, wait=False, no_build=False)
                 await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
         else:
             logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
@@ -1181,9 +1381,7 @@ class NetworkManager:
                 from ..scenarios.parser import ScenarioParser
                 
                 scenario_parser = ScenarioParser(self.base_path / "scenarios")
-                # Get version-specific scenario path (e.g., "genesis/6.0/phase2_esbocs.yml")
-                phase2_path = self.config_loader.get_genesis_scenario_path("phase2_esbocs.yml")
-                phase2_scenario = scenario_parser.load_scenario(phase2_path)
+                phase2_scenario = scenario_parser.load_scenario(f"genesis/{self._genesis_version_dir}/phase2_esbocs.yml")
                 
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
@@ -1252,7 +1450,7 @@ class NetworkManager:
                     import docker
                     docker_client = docker.from_env()
                     for container in docker_client.containers.list(all=True):
-                        if "cellframe-stage-node" in container.name:
+                        if f"{self.compose.project_name}-node" in container.name:
                             log_path = f"/tmp/{container.name}.log"
                             try:
                                 with open(log_path, "wb") as f:
@@ -1290,11 +1488,13 @@ class NetworkManager:
             from ..monitoring.network_consensus import NetworkConsensusMonitor
             final_consensus_monitor = NetworkConsensusMonitor(
                 nodes=self.nodes,
-                node_cli_path=self.node_cli_path
+                node_cli_path=self.node_cli_path,
+                network_name=self.topology.network.name
             )
             
+            consensus_timeout = float(self.timeouts.get('startup', 600))
             try:
-                await final_consensus_monitor.wait_for_network_ready(timeout=150.0)
+                await final_consensus_monitor.wait_for_network_ready(timeout=consensus_timeout)
                 logger.info("all_nodes_ready_for_snapshot")
             except TimeoutError as e:
                 logger.error("full_network_not_ready", error=str(e))
@@ -1332,7 +1532,7 @@ class NetworkManager:
         )
         
         try:
-            await consensus_monitor.wait_for_network_ready(timeout=150.0)  # 150s for 8-node topology
+            await consensus_monitor.wait_for_network_ready(timeout=float(self.timeouts.get('startup', 600)))
             logger.info("network_consensus_achieved")
         except TimeoutError as e:
             logger.error("network_consensus_timeout_critical",
@@ -1435,7 +1635,7 @@ class NetworkManager:
         Implementation: Uses temporary Docker container (Alpine) to clean files.
         This ensures proper permissions for root-owned files created by node containers.
         """
-        cache_dir = self.paths_config.get('cache_dir', '../testing/cache')
+        cache_dir = self.paths_config.get('cache_dir', '../../cache')
         cache_path = (self.base_path / cache_dir).resolve()
         data_dir = cache_path / "data"
         
@@ -1453,13 +1653,20 @@ class NetworkManager:
             logger.error("failed_to_remove_node_data", error=str(e))
             raise
         
-        # Recreate empty data directory structure for each node
+        # Recreate data directory structure matching granular volume mounts
         data_dir.mkdir(parents=True, exist_ok=True)
         
+        node_var_subdirs = [
+            s.strip() for s in self.paths_config.get(
+                'node_var_subdirs',
+                'log, lib/ca, lib/global_db, lib/wallet, lib/network'
+            ).split(',')
+        ]
         for node_id in range(1, len(self.nodes) + 1):
-            node_data_path = data_dir / f"node{node_id}"
-            node_data_path.mkdir(parents=True, exist_ok=True)
-            logger.debug("recreated_node_data_dir", node_id=node_id, path=str(node_data_path))
+            for subdir in node_var_subdirs:
+                (data_dir / f"node{node_id}" / subdir).mkdir(parents=True, exist_ok=True)
+            logger.debug("recreated_node_data_dir", node_id=node_id,
+                        path=str(data_dir / f"node{node_id}"))
         
         logger.info("node_data_cleaned_and_recreated", nodes=len(self.nodes))
     
@@ -1513,45 +1720,15 @@ class NetworkManager:
         # Get container status
         service_status = self.compose.get_service_status()
         
-        # Detect running containers if self.nodes is empty
-        # This happens when status is called without start()
-        detected_nodes = {}
-        if not self.nodes and service_status:
-            # Detect nodes from running containers
-            for service_name, status in service_status.items():
-                if service_name.startswith('node-'):
-                    node_id = service_name.replace('node-', '')
-                    node_name = f"node{node_id}"
-                    # Determine role from node ID (1-3 root, 4-6 master, 7+ full)
-                    try:
-                        node_num = int(node_id)
-                        if node_num <= 3:
-                            role = "root"
-                        elif node_num <= 6:
-                            role = "master"
-                        else:
-                            role = "full"
-                    except ValueError:
-                        role = "unknown"
-                    
-                    detected_nodes[node_name] = {
-                        "role": role,
-                        "rpc_port": 8544 + int(node_id) if node_id.isdigit() else 0,
-                        "p2p_port": 31336 + int(node_id) if node_id.isdigit() else 0,
-                    }
-        
-        # Use detected nodes if self.nodes is empty
-        nodes_to_check = self.nodes if self.nodes else detected_nodes
-        
-        # Get health status via CLI
+        # Get health status via JSON-RPC (CLI)
         health_status = {}
-        for node_name in nodes_to_check.keys():
+        for node_name, config in self.nodes.items():
             try:
                 # Convert node_name to container name (node1 -> node-1)
                 if node_name.startswith('node'):
-                    container_name = f"cellframe-stage-node-{node_name[4:]}"
+                    container_name = f"{self.compose.project_name}-node-{node_name[4:]}"
                 else:
-                    container_name = f"cellframe-stage-{node_name}"
+                    container_name = f"{self.compose.project_name}-{node_name}"
                 
                 container = self.compose.client.containers.get(container_name)
                 network_name = self.topology.network.name
@@ -1574,7 +1751,7 @@ class NetworkManager:
                     health_status[node_name] = {
                         "healthy": current_state == "NET_STATE_ONLINE",
                         "state": current_state,
-                        "response_time_ms": 0,
+                        "response_time_ms": 0,  # Not applicable for CLI
                     }
                 else:
                     health_status[node_name] = {
@@ -1592,64 +1769,36 @@ class NetworkManager:
         
         # Build nodes array with combined info
         nodes_data = []
-        for node_name, config in nodes_to_check.items():
+        for node_name, config in self.nodes.items():
             # Convert node_name to docker service name (node1 -> node-1)
             if node_name.startswith('node'):
                 docker_service = f"node-{node_name[4:]}"
             else:
                 docker_service = node_name
             
-            # Get container status
+            # Get container status (service_status values are strings, not dicts)
             container_status = service_status.get(docker_service, "unknown")
             # Get health status
             health = health_status.get(node_name, {})
             
-            # Handle both NodeConfig objects and dicts (detected nodes)
-            if hasattr(config, 'role'):
-                role = config.role
-                rpc_port = config.rpc_port
-                p2p_port = config.p2p_port
-            else:
-                role = config.get('role', 'unknown')
-                rpc_port = config.get('rpc_port', 0)
-                p2p_port = config.get('p2p_port', 0)
-            
             nodes_data.append({
                 "name": node_name,
-                "role": role,
+                "role": config.role,
                 "container_status": container_status,
                 "health_status": health.get("state", "unknown"),
                 "healthy": health.get("healthy", False),
-                "rpc_port": rpc_port,
-                "p2p_port": p2p_port,
+                "rpc_port": config.rpc_port,
+                "p2p_port": config.p2p_port,
             })
         
         return {
             "topology": self.topology_name,
             "network_name": self.topology.network.name,
-            "total_nodes": len(nodes_to_check),
+            "total_nodes": len(self.nodes),
             "nodes": nodes_data,
             "containers": service_status,
             "health": health_status,
         }
-    
-    async def _wait_for_nodes_online(
-        self,
-        nodes: List,
-        timeout: float = 600.0
-    ) -> None:
-        """
-        Wait for all specified nodes to reach ONLINE state.
-        
-        Wrapper around state_manager.wait_for_nodes_online().
-        
-        Args:
-            nodes: List of NodeConfig objects
-            timeout: Maximum wait time in seconds
-        """
-        logger.info("waiting_for_nodes_online", node_count=len(nodes), timeout=timeout)
-        await self.state_manager.wait_for_nodes_online(nodes, timeout=timeout)
-        logger.info("nodes_online", node_count=len(nodes))
     
     async def _wait_for_network_ready(self) -> None:
         """
@@ -1733,32 +1882,37 @@ class NetworkManager:
         """Cleanup resources."""
         await self.health_checker.close()
     
-    async def create_clean_snapshot(self, name: Optional[str] = None) -> bool:
+    async def create_clean_snapshot(
+        self,
+        name: Optional[str] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """
         Create a snapshot of current clean environment state.
-        
+
         CRITICAL: This method does NOT clean data before creating snapshot.
         Snapshot system (squashfs/filesystem) automatically captures all mounted
         directories including GDB data. Cleaning data before snapshot would
         remove critical GDB data (node list, validator orders) needed for
         network operation.
-        
+
         Should be called after network is fully initialized and ready,
         before any tests are run.
-        
+
         Args:
             name: Optional snapshot name (defaults to config snapshot_name)
-            
+            extra_metadata: Optional dict to store in snapshot (e.g. emission_hash for phase1)
+
         Returns:
             True if snapshot created successfully
         """
         snapshot_name = name or self.suite_isolation_config.get('snapshot_name', 'clean_state')
-        
+
         logger.info("creating_clean_snapshot",
                    name=snapshot_name,
                    mode=self.snapshot_manager.mode.value)
-        
-        result = await self.snapshot_manager.create_snapshot(snapshot_name)
+
+        result = await self.snapshot_manager.create_snapshot(snapshot_name, extra_metadata=extra_metadata)
         
         if result and self.suite_isolation_config.get('auto_cleanup', True):
             # Cleanup old snapshots
@@ -1771,8 +1925,9 @@ class NetworkManager:
         """
         Restore environment to clean snapshot state.
         
-        This replaces the current clean_test_data() approach with snapshot restoration,
-        providing much faster suite isolation.
+        Uses lightweight compose.up() instead of full start() to preserve
+        committed Docker images set by the hybrid snapshot system. The full
+        start() would regenerate the compose file, overwriting image overrides.
         
         Args:
             name: Optional snapshot name (defaults to config snapshot_name)
@@ -1786,23 +1941,21 @@ class NetworkManager:
                    name=snapshot_name,
                    mode=self.snapshot_manager.mode.value)
         
-        # DISABLED mode - do nothing, keep current state
         if self.snapshot_manager.mode == SnapshotMode.DISABLED:
             logger.info("snapshot_mode_disabled_skipping_restore")
             return True
         
-        # Special case for 'recreate' mode - use traditional cleanup
         if self.snapshot_manager.mode == SnapshotMode.RECREATE:
             logger.info("recreate_mode_using_clean_test_data")
             await self.clean_test_data()
             return True
         
-        # For other modes, restore from snapshot
-        # CRITICAL: Stop containers before restore to avoid file conflicts
+        # Remove containers+networks so compose.up() creates fresh ones
+        # with correct bind mounts (compose.stop() would leave stale mounts
+        # after _docker_cleanup replaces host directories)
         logger.info("stopping_containers_before_snapshot_restore")
-        await self.stop(remove_volumes=False)
+        self.compose.down(volumes=False)
         
-        # Restore snapshot with containers stopped
         result = await self.snapshot_manager.restore_snapshot(snapshot_name)
         
         if not result:
@@ -1815,9 +1968,21 @@ class NetworkManager:
                 "Run './clean.sh' to remove root-owned files and try again."
             )
         
-        # Restart containers with restored data
-        logger.info("starting_containers_after_snapshot_restore")
-        await self.start(rebuild=False, wait_ready=True)
+        # Start node services only (docker_compose services are started by suite setup)
+        node_configs = list(self.nodes.values())
+        node_services = [f"node-{n.node_id}" for n in node_configs]
+        
+        logger.info("starting_containers_after_snapshot_restore",
+                   services=node_services)
+        self.compose.up(
+            services=node_services,
+            detach=True, wait=False, no_build=False,
+        )
+        
+        startup_timeout = self.timeouts.get('startup', 600)
+        await self.state_manager.wait_for_nodes_online(
+            node_configs, timeout=startup_timeout,
+        )
         
         return result
     
@@ -1894,7 +2059,7 @@ class NetworkManager:
             crashed_containers = []
             
             for node in master_nodes:
-                container_name = f"cellframe-stage-node-{node.node_id}"
+                container_name = f"{self.compose.project_name}-node-{node.node_id}"
                 try:
                     container = self.compose.client.containers.get(container_name)
                     container.reload()
@@ -1921,7 +2086,7 @@ class NetworkManager:
                             # Try docker-compose restart as fallback
                             service_name = f"node-{node.node_id}"
                             try:
-                                self.compose.restart_services([service_name])
+                                self.compose.restart(services=[service_name])
                                 logger.info("container_restarted_via_compose", node_id=node.node_id)
                                 all_running = False
                                 crashed_containers.append(node.node_id)
@@ -1954,7 +2119,7 @@ class NetworkManager:
         # Timeout reached - check final status
         failed_nodes = []
         for node in master_nodes:
-            container_name = f"cellframe-stage-node-{node.node_id}"
+            container_name = f"{self.compose.project_name}-node-{node.node_id}"
             try:
                 container = self.compose.client.containers.get(container_name)
                 container.reload()

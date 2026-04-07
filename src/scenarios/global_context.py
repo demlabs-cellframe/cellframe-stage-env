@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 import docker
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 
 logger = get_logger(__name__)
 
@@ -31,7 +32,8 @@ class ScenarioGlobalContext:
         network_name: str,
         topology_name: str,
         docker_client: Optional[docker.DockerClient] = None,
-        native_ticker: Optional[str] = None
+        native_ticker: Optional[str] = None,
+        node_port: int = 8079
     ):
         """
         Initialize global context.
@@ -41,10 +43,12 @@ class ScenarioGlobalContext:
             topology_name: Topology template name
             docker_client: Docker client for IP resolution (optional, will create if needed)
             native_ticker: Native token ticker (from config)
+            node_port: Cellframe node listen port (from config, default 8079)
         """
         self.network_name = network_name
         self.topology_name = topology_name
         self.native_ticker = native_ticker
+        self.node_port = node_port
         self._docker_client = docker_client or docker.from_env()
         
         # Cached node information
@@ -119,7 +123,7 @@ class ScenarioGlobalContext:
         container_names = []
         for node in node_configs:
             # node.node_id is numeric (1, 2, 3, ...)
-            container_names.append(f"cellframe-stage-node-{node.node_id}")
+            container_names.append(make_container_name(f"node-{node.node_id}"))
         
         # Wait for IPs if requested
         if wait_for_ips:
@@ -137,7 +141,7 @@ class ScenarioGlobalContext:
             
             # Collect IPs from waiter cache
             for node in node_configs:
-                container_name = f"cellframe-stage-node-{node.node_id}"
+                container_name = make_container_name(f"node-{node.node_id}")
                 node_key = f"node{node.node_id}"
                 
                 try:
@@ -157,7 +161,7 @@ class ScenarioGlobalContext:
         else:
             # Direct IP collection without waiting
             for node in node_configs:
-                container_name = f"cellframe-stage-node-{node.node_id}"
+                container_name = make_container_name(f"node-{node.node_id}")
                 node_key = f"node{node.node_id}"
                 
                 try:
@@ -188,6 +192,12 @@ class ScenarioGlobalContext:
                    count=len(self._node_ips),
                    node_ip_map=self._node_ip_map)
     
+    def add_extra_node_ip(self, key: str, ip: str) -> None:
+        """Register an additional node (e.g. from node_compose_gen) in the IP map."""
+        self._node_ip_map[key] = ip
+        if ip not in self._node_ips:
+            self._node_ips.append(ip)
+
     def refresh_ips(self) -> None:
         """Refresh IP addresses from containers (useful after restart)."""
         if self._node_configs:
@@ -211,11 +221,12 @@ class ScenarioGlobalContext:
         master_indices = list(range(self.root_count + 1, self.root_count + self.master_count + 1))
         full_indices = list(range(self.root_count + self.master_count + 1, self.node_count + 1))
         
-        return {
+        result = {
             # Network configuration
             'network_name': self.network_name,
             'topology_name': self.topology_name,
             'native_ticker': self.native_ticker,
+            'node_port': self.node_port,
             
             # Node IP addresses
             'node_ips': self._node_ips,  # Array: [ip1, ip2, ip3, ...]
@@ -238,6 +249,7 @@ class ScenarioGlobalContext:
             'root_indices': root_indices,
             'master_indices': master_indices,
             'full_indices': full_indices,
+            'all_indices': root_indices + master_indices + full_indices,
             
             # First/last node shortcuts
             'first_root': root_nodes[0] if root_nodes else None,
@@ -249,6 +261,25 @@ class ScenarioGlobalContext:
             'seed_nodes': root_nodes,
             'validator_nodes': master_nodes,
         }
+        
+        # Role-based IP shortcuts: {{node_ip_root-1}}, {{node_ip_master-2}}, etc.
+        for i in range(self.root_count):
+            node_id = i + 1
+            ip = self._node_ip_map.get(f'node{node_id}') or self._node_ip_map.get(f'node-{node_id}')
+            if ip:
+                result[f'node_ip_root-{i + 1}'] = ip
+        for i in range(self.master_count):
+            node_id = self.root_count + i + 1
+            ip = self._node_ip_map.get(f'node{node_id}') or self._node_ip_map.get(f'node-{node_id}')
+            if ip:
+                result[f'node_ip_master-{i + 1}'] = ip
+        for i in range(self.full_count):
+            node_id = self.root_count + self.master_count + i + 1
+            ip = self._node_ip_map.get(f'node{node_id}') or self._node_ip_map.get(f'node-{node_id}')
+            if ip:
+                result[f'node_ip_full-{i + 1}'] = ip
+        
+        return result
     
     def get_node_ip(self, node_id: str) -> Optional[str]:
         """

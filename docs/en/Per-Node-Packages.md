@@ -336,7 +336,6 @@ ERROR: Nodes cannot connect to each other
 
 ## See Also
 
-- [Scenario Language Reference](./Glossary.md)
-- [Network Topology](./Topology.md)
-- [Version Compatibility Test Example](../../e2e/examples/test_version_compatibility.yml)
+- [Scenario Language Reference](scenarios/Glossary.md)
+- [Version Compatibility Test Example](../../tests/integration/scenarios/examples/test_version_compatibility.yml)
 

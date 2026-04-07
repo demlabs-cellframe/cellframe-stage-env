@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from src.utils.logger import get_logger
 from .parser import ScenarioParser, ScenarioParseError
-from .schema import TestScenario
+from .schema import TestScenario, SuiteDescriptor, SectionConfig, CheckSectionConfig
 
 logger = get_logger(__name__)
 
@@ -125,10 +125,11 @@ class ScenarioValidator:
         report = ValidationReport(scenario_path)
         
         try:
-            # Try to load scenario
             scenario = self.parser.load_scenario(scenario_path)
             
-            # Perform semantic validation
+            if isinstance(scenario, SuiteDescriptor):
+                return report
+            
             self._validate_network_config(scenario, report)
             self._validate_variables(scenario, report)
             self._validate_node_references(scenario, report)
@@ -184,19 +185,29 @@ class ScenarioValidator:
                 suggestion="Ensure all node names are unique"
             )
     
+    @staticmethod
+    def _get_steps(section) -> list:
+        """Extract steps list from a section (SectionConfig, CheckSectionConfig, or raw list)."""
+        if isinstance(section, (SectionConfig, CheckSectionConfig)):
+            return section.steps
+        if isinstance(section, list):
+            return section
+        return []
+
     def _validate_variables(self, scenario: TestScenario, report: ValidationReport):
         """Validate variable usage."""
         import re
         
-        # Collect all variable definitions
         defined_vars = set(scenario.variables.keys())
         
-        # Track variables from save operations
-        for step in scenario.setup + scenario.test:
+        setup_steps = self._get_steps(scenario.setup)
+        test_steps = self._get_steps(scenario.test)
+        check_steps = self._get_steps(scenario.check)
+        
+        for step in setup_steps + test_steps:
             if hasattr(step, 'save') and step.save:
                 defined_vars.add(step.save)
         
-        # Find all variable usages
         used_vars = set()
         
         def extract_vars(text: str):
@@ -204,8 +215,7 @@ class ScenarioValidator:
                 for match in re.finditer(r'\{\{(\w+)\}\}', text):
                     used_vars.add(match.group(1))
         
-        # Check all string fields
-        for step in scenario.setup + scenario.test:
+        for step in setup_steps + test_steps:
             if hasattr(step, 'cli'):
                 extract_vars(step.cli)
             if hasattr(step, 'rpc'):
@@ -213,13 +223,12 @@ class ScenarioValidator:
             if hasattr(step, 'contains'):
                 extract_vars(step.contains)
         
-        for check in scenario.check:
+        for check in check_steps:
             if hasattr(check, 'cli'):
                 extract_vars(check.cli)
             if hasattr(check, 'contains'):
                 extract_vars(check.contains)
         
-        # Check for undefined variables
         undefined = used_vars - defined_vars
         if undefined:
             report.add_issue(
@@ -234,9 +243,10 @@ class ScenarioValidator:
         node_names = set([node.name for node in scenario.network.nodes])
         
         if not node_names:
-            return  # Already warned about no nodes
+            return
         
-        for step in scenario.setup + scenario.test:
+        all_steps = self._get_steps(scenario.setup) + self._get_steps(scenario.test)
+        for step in all_steps:
             if hasattr(step, 'node') and step.node:
                 if step.node not in node_names:
                     report.add_issue(
@@ -248,8 +258,10 @@ class ScenarioValidator:
     
     def _validate_timeouts(self, scenario: TestScenario, report: ValidationReport):
         """Validate timeout values."""
-        for step in scenario.setup + scenario.test:
+        for step in self._get_steps(scenario.setup) + self._get_steps(scenario.test):
             if hasattr(step, 'timeout') and step.timeout:
+                if isinstance(step.timeout, str):
+                    continue
                 if step.timeout < 1:
                     report.add_issue(
                         "warning",
@@ -283,8 +295,7 @@ class ScenarioValidator:
                 suggestion="Add tags like [feature, priority, duration] for categorization"
             )
         
-        # Check for missing checks
-        if not scenario.check:
+        if not self._get_steps(scenario.check):
             report.add_issue(
                 "warning",
                 "Scenario has no checks",
@@ -293,8 +304,7 @@ class ScenarioValidator:
                 doc_link="tests/scenarios/README.md#checks"
             )
         
-        # Check for wait steps after state changes
-        for i, step in enumerate(scenario.setup + scenario.test):
+        for i, step in enumerate(self._get_steps(scenario.setup) + self._get_steps(scenario.test)):
             if hasattr(step, 'cli') and any(cmd in step.cli for cmd in ['token_decl', 'token_emit', 'tx_create']):
                 if not hasattr(step, 'wait') or not step.wait:
                     report.add_issue(

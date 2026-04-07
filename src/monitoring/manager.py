@@ -25,63 +25,47 @@ from .health import HealthChecker
 
 class MonitoringManager:
     """
-    Singleton manager for all monitoring services.
-    
-    Provides centralized access to:
-    - DatumMonitor: Direct datum tracking
-    - HealthChecker: Node/endpoint health checks
+    Manager for all monitoring services.
+
+    Supports both singleton access (backward-compatible, sequential mode)
+    and per-shard instances (parallel mode — keyed by *shard_key*).
     """
-    
-    _instance: Optional["MonitoringManager"] = None
-    
+
+    _instances: dict[str, "MonitoringManager"] = {}
+
     def __init__(
         self,
         node_cli_path: str = "cellframe-node-cli",
-        log_file: Optional[Path] = None
+        log_file: Optional[Path] = None,
     ):
-        """
-        Initialize monitoring manager.
-        
-        Args:
-            node_cli_path: Path to cellframe-node-cli
-            log_file: Optional log file for monitoring events
-        """
         self.node_cli_path = node_cli_path
         self.log_file = log_file
-        
-        # Initialize services
+
         self.datum = DatumMonitor(
             node_cli_path=node_cli_path,
-            log_file=log_file
+            log_file=log_file,
         )
-        
         self.health = HealthChecker(timeout=10.0)
-    
+
     @classmethod
     def get_instance(
         cls,
         node_cli_path: Optional[str] = None,
-        log_file: Optional[Path] = None
+        log_file: Optional[Path] = None,
+        shard_key: str = "_default",
     ) -> "MonitoringManager":
-        """
-        Get or create singleton instance.
-        
-        Args:
-            node_cli_path: Path to cellframe-node-cli (only used on first call)
-            log_file: Optional log file (only used on first call)
-            
-        Returns:
-            MonitoringManager singleton instance
-        """
-        if cls._instance is None:
-            # First call - create instance with provided params or defaults
-            cls._instance = MonitoringManager(
+        """Get or create an instance keyed by *shard_key*."""
+        if shard_key not in cls._instances:
+            cls._instances[shard_key] = MonitoringManager(
                 node_cli_path=node_cli_path or "cellframe-node-cli",
-                log_file=log_file
+                log_file=log_file,
             )
-        return cls._instance
-    
+        return cls._instances[shard_key]
+
     @classmethod
-    def reset_instance(cls):
-        """Reset singleton instance (for testing)."""
-        cls._instance = None
+    def reset_instance(cls, shard_key: Optional[str] = None) -> None:
+        """Reset one or all monitoring instances."""
+        if shard_key is None:
+            cls._instances.clear()
+        else:
+            cls._instances.pop(shard_key, None)

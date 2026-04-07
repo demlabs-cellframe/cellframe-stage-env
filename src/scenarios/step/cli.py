@@ -2,11 +2,12 @@
 CLI command step executor.
 """
 
+import asyncio
 import json
 from typing import Any, Dict, Optional
 
 from ...utils.logger import get_logger
-from .base import StepExecutor
+from .base import StepExecutor, resolve_timeout
 from ..schema import CLIStep, StepDefaults
 from ..executor import ScenarioExecutionError, RuntimeContext
 
@@ -135,20 +136,26 @@ class CLIStepExecutor(StepExecutor):
         has_executor_ref = hasattr(self, '_executor_ref')
         has_run_cli = hasattr(self._executor_ref, '_run_cli_command') if has_executor_ref else False
         
-        if has_executor_ref and has_run_cli:
-            # If we have executor reference, use its _run_cli_command with retry
-            result = await self._executor_ref._run_cli_command(
-                command=cmd,
-                node=node,
-                timeout=step.timeout,
-                retry_on_init_failure=(step.save_node is not None)  # Enable retry for save_node
-            )
-        else:
-            # Fallback to direct container manager call (no retry)
-            result = await self.container_manager.exec_cli_command(
-                command=cmd,
-                node=node,
-                timeout=step.timeout
+        timeout = resolve_timeout(step.timeout, ctx, default=30)
+        try:
+            if has_executor_ref and has_run_cli:
+                result = await self._executor_ref._run_cli_command(
+                    command=cmd,
+                    node=node,
+                    timeout=timeout,
+                    retry_on_init_failure=(step.save_node is not None)
+                )
+            else:
+                result = await self.container_manager.exec_cli_command(
+                    command=cmd,
+                    node=node,
+                    timeout=timeout
+                )
+        except asyncio.TimeoutError:
+            raise ScenarioExecutionError(
+                f"CLI step timed out after {timeout}s",
+                step=cmd[:200],
+                context={"timeout": timeout, "node": node}
             )
         
         output = result["stdout"]
@@ -191,11 +198,9 @@ class CLIStepExecutor(StepExecutor):
                     step=cmd[:100],
                     context={"exit_code": exit_code, "stderr": result.get("stderr", "")[:500]}
                 )
-            # For save/save_to, save empty string or error message
-            if step.save or step.save_to:
-                variable_name = ctx.substitute(step.save or step.save_to)
-                ctx.set_variable(variable_name, result.get("stderr", "") or "")
-                logger.debug("cli_step_saved_error", variable=variable_name)
+            if step.save or step.save_to or step.save_map:
+                variable_name = ctx.substitute(step.save or step.save_to) if (step.save or step.save_to) else None
+                ctx.save_output(result.get("stderr", "") or "", variable_name, step.save_regex, step.save_map)
             return result
         
         # Extract and save values if requested (only if command succeeded)
@@ -259,6 +264,16 @@ class CLIStepExecutor(StepExecutor):
                 # Not YAML format - continue with hash extraction
                 pass
             
+            # CLI returned success (exit 0) but output may indicate node-side failure (e.g. tx_create)
+            if output and ("Can't place TX datum in mempool" in output or
+                          ("emission: False" in output and "message:" in output)):
+                raise ScenarioExecutionError(
+                    "CLI command reported failure in output (node could not process request). "
+                    "Check node logs for details.",
+                    step=cmd[:100],
+                    context={"output": output[:500]}
+                )
+            
             # Extract hash from output
             pattern = DataExtractor.get_default_pattern(ExtractType.HASH)
             try:
@@ -313,28 +328,44 @@ class CLIStepExecutor(StepExecutor):
                     context={"output": output[:500]}
                 )
         
-        # Save raw output if requested
-        if step.save or step.save_to:
-            variable_name = ctx.substitute(step.save or step.save_to)
-            ctx.set_variable(variable_name, output.strip())
-            logger.debug("cli_step_saved", variable=variable_name)
+        if step.save or step.save_to or step.save_map:
+            variable_name = ctx.substitute(step.save or step.save_to) if (step.save or step.save_to) else None
+            ctx.save_output(output, variable_name, step.save_regex, step.save_map)
         
         # Check contains/not_contains assertions (case-insensitive)
+        # Supports both literal substring match and regex patterns
+        import re
         output_lower = output.lower()
         
         if step.contains:
             expected_text = ctx.substitute(step.contains)
-            if expected_text.lower() not in output_lower:
-                raise ScenarioExecutionError(
-                    f"Output does not contain expected text: '{expected_text}'",
-                    step=cmd[:100],
-                    context={"output": output[:500], "expected": expected_text}
-                )
+            expected_lower = expected_text.lower()
+            if expected_lower not in output_lower:
+                try:
+                    if not re.search(expected_lower, output_lower):
+                        raise ScenarioExecutionError(
+                            f"Output does not contain expected text: '{expected_text}'",
+                            step=cmd[:100],
+                            context={"output": output[:500], "expected": expected_text}
+                        )
+                except re.error:
+                    raise ScenarioExecutionError(
+                        f"Output does not contain expected text: '{expected_text}'",
+                        step=cmd[:100],
+                        context={"output": output[:500], "expected": expected_text}
+                    )
             logger.debug("cli_step_contains_passed", expected=expected_text)
         
         if step.not_contains:
             unexpected_text = ctx.substitute(step.not_contains)
-            if unexpected_text.lower() in output_lower:
+            unexpected_lower = unexpected_text.lower()
+            matched = unexpected_lower in output_lower
+            if not matched:
+                try:
+                    matched = bool(re.search(unexpected_lower, output_lower))
+                except re.error:
+                    pass
+            if matched:
                 raise ScenarioExecutionError(
                     f"Output contains unexpected text: '{unexpected_text}'",
                     step=cmd[:100],

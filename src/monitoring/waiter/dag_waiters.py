@@ -8,6 +8,7 @@ from typing import Callable
 
 from ..base import BaseWaiter
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 
 logger = get_logger(__name__)
 
@@ -76,11 +77,11 @@ class DAGEventWaiter(BaseWaiter):
             self._last_log_time = time.time()
         
         # CRITICAL: Check if THIS SPECIFIC datum hash is in DAG events
-        # Not just "total events > 0" - we need to verify the specific datum is there
+        # Not just "total_events > 0" - we need to verify the specific datum is there
         if exit_code == 0 and stdout_events_str:
             # Parse event hashes from output
             event_hashes = re.findall(r'hash:\s*(0x[A-Fa-f0-9]{64})', stdout_events_str, re.IGNORECASE)
-            total_match = re.search(r'total events:\s*(\d+)', stdout_events_str, re.IGNORECASE)
+            total_match = re.search(r'total_events:\s*(\d+)', stdout_events_str, re.IGNORECASE)
             total_events = int(total_match.group(1)) if total_match else 0
             
             # Check each event for our datum hash
@@ -171,7 +172,7 @@ class DAGEventWaiter(BaseWaiter):
                 import docker
                 docker_client = docker.from_env()
                 logger.info("collecting_actual_node_logs", datum=self.datum_hash[:16])
-                container = docker_client.containers.get(f"cellframe-stage-node-{self.node_id}")
+                container = docker_client.containers.get(make_container_name(f"node-{self.node_id}"))
                 # Get last 500 lines of logs (increased from 100)
                 logs = container.logs(tail=500).decode('utf-8', errors='replace')
                 

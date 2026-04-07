@@ -13,6 +13,7 @@ import docker
 from docker.errors import NotFound
 
 from src.utils.logger import get_logger
+from src.utils.project import get_project_name, make_container_name
 
 logger = get_logger(__name__)
 
@@ -28,16 +29,11 @@ class DockerContainerManager:
     - Generate stack traces from core dumps
     """
     
-    def __init__(self, base_path: Path, node_cli_path: str = "cellframe-node-cli"):
-        """
-        Initialize container manager.
-        
-        Args:
-            base_path: Base path to stage-env directory (for artifacts collection)
-            node_cli_path: Path to cellframe-node-cli binary
-        """
+    def __init__(self, base_path: Path, node_cli_path: str = "cellframe-node-cli",
+                 project_name: Optional[str] = None):
         self.base_path = base_path
         self.node_cli_path = node_cli_path
+        self.project_name = project_name or get_project_name()
         self.docker_client = docker.from_env()
         self.current_test_name: Optional[str] = None
     
@@ -51,39 +47,32 @@ class DockerContainerManager:
         Returns:
             Container name (e.g., "cellframe-stage-node-1")
         """
-        # Already a full container name
-        if node.startswith("cellframe-stage-"):
+        pn = self.project_name
+
+        if node.startswith(f"{pn}-"):
             return node
         
-        # Handle role-based aliases directly
-        # Topology: root_nodes=3, master_nodes=3, full_nodes=2
-        # root-1 -> node-1, root-2 -> node-2, root-3 -> node-3
-        # master-1 -> node-4, master-2 -> node-5, master-3 -> node-6
-        # full-1 -> node-7, full-2 -> node-8
         if node.startswith("root-"):
             node_num = node.split("-")[1]
-            return f"cellframe-stage-node-{node_num}"
+            return f"{pn}-node-{node_num}"
         elif node.startswith("master-"):
             master_idx = int(node.split("-")[1])
-            node_num = str(master_idx + 3)  # master-1 -> 4, master-2 -> 5, etc.
-            return f"cellframe-stage-node-{node_num}"
+            node_num = str(master_idx + 3)
+            return f"{pn}-node-{node_num}"
         elif node.startswith("full-"):
             full_idx = int(node.split("-")[1])
-            node_num = str(full_idx + 6)  # full-1 -> 7, full-2 -> 8, etc. (3 root + 3 master)
-            return f"cellframe-stage-node-{node_num}"
+            node_num = str(full_idx + 6)
+            return f"{pn}-node-{node_num}"
         
-        # Try to extract number from node ID (node1 -> 1, node-1 -> 1)
         if node.startswith("node"):
             node_num = node[4:] if len(node) > 4 else node
-            # Remove any dashes
             node_num = node_num.replace("-", "")
-            return f"cellframe-stage-node-{node_num}"
+            return f"{pn}-node-{node_num}"
         
-        # Fallback: assume it's already a container name or node number
         if node.isdigit():
-            return f"cellframe-stage-node-{node}"
+            return f"{pn}-node-{node}"
         
-        return f"cellframe-stage-{node}"
+        return f"{pn}-{node}"
     
     def check_container_status(self, container_name: str) -> Dict[str, Any]:
         """
@@ -196,7 +185,8 @@ class DockerContainerManager:
             logger.debug("no_core_dumps_found_for_stack_trace", container=container_name)
             # Try to find core dumps directly in container
             try:
-                core_locations = ["/tmp/cores", "/var/crash", "/core", "/opt/cellframe-node/var/log"]
+                node_id = container_name.split("-")[-1] if "-" in container_name else "1"
+                core_locations = [f"/crash-artifacts/node-{node_id}", "/tmp/cores", "/var/crash", "/core", "/opt/cellframe-node/var/log"]
                 for location in core_locations:
                     try:
                         result = subprocess.run(
@@ -345,8 +335,21 @@ class DockerContainerManager:
                 "returncode": 1
             }
         
+        if status_info["status"] == "paused":
+            logger.warning("container_paused_attempting_unpause",
+                         container=container_name, node=node)
+            try:
+                status_info["container"].unpause()
+                import time
+                time.sleep(0.5)
+                status_info = self.check_container_status(container_name)
+                logger.info("container_unpaused_successfully",
+                          container=container_name, status=status_info["status"])
+            except Exception as e:
+                logger.error("container_unpause_failed",
+                           container=container_name, error=str(e))
+        
         if status_info["status"] != "running":
-            # FAIL-FAST: Container crashed - collect artifacts and fail immediately
             exit_code = status_info["exit_code"]
             container = status_info["container"]
             
@@ -402,11 +405,13 @@ class DockerContainerManager:
             }
         
         # Container is running - execute command
-        # Use shell mode to ensure proper argument passing through docker exec
+        # Use shell mode to ensure proper argument passing through docker exec.
+        # stdbuf forces line-buffered stdout so output is flushed before exit;
+        # without it, a crash during cleanup loses buffered printf output.
         import shlex
         cmd_args = command.split()
         cli_cmd_quoted = " ".join(shlex.quote(arg) for arg in cmd_args)
-        shell_cmd = f"{self.node_cli_path} {cli_cmd_quoted}"
+        shell_cmd = f"stdbuf -oL {self.node_cli_path} {cli_cmd_quoted}"
         
         full_cmd = [
             "docker", "exec", container_name,
@@ -439,8 +444,31 @@ class DockerContainerManager:
                 "returncode": process.returncode
             }
         except asyncio.TimeoutError:
+            logger.warning("exec_cli_timeout",
+                         container=container_name,
+                         command=command[:100],
+                         timeout=timeout)
             process.kill()
-            raise
+            partial_out = ""
+            partial_err = ""
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=3
+                )
+                partial_out = stdout.decode('utf-8', errors='replace')
+                partial_err = stderr.decode('utf-8', errors='replace')
+                if partial_out or partial_err:
+                    logger.warning("exec_cli_timeout_partial_output",
+                                 container=container_name,
+                                 stdout=partial_out[:500],
+                                 stderr=partial_err[:500])
+            except Exception:
+                pass
+            return {
+                "stdout": partial_out,
+                "stderr": f"TIMEOUT after {timeout}s: {partial_err}",
+                "returncode": -1
+            }
     
     async def exec_bash_command(
         self,
@@ -655,7 +683,7 @@ class DockerContainerManager:
                 except Exception as pull_err:
                     logger.warning("failed_to_pull_alpine", error=str(pull_err))
                     # Fallback to a node image if available
-                    containers = self.docker_client.containers.list(all=True, filters={"name": "cellframe-stage-node-"})
+                    containers = self.docker_client.containers.list(all=True, filters={"name": f"{self.project_name}-node-"})
                     if containers:
                         image = containers[0].image.tags[0]
                         logger.info("using_fallback_image", image=image)

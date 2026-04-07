@@ -68,10 +68,8 @@ class TokenGenesisManager(BaseGenesisManager):
             if exit_code_addr != 0:
                 raise RuntimeError(f"Wallet info failed: exit code {exit_code_addr}")
             
-            # Parse address from both text and JSON formats:
-            # - Text: "addr: XYZABC123..."
-            # - JSON: "addr": "XYZABC123..." or "address": "XYZABC123..."
-            addr_match = re.search(r'(?:"addr(?:ess)?":\s*"|addr:\s+)([A-Za-z0-9]{75,105})', stdout_addr, re.IGNORECASE)
+            # Parse address
+            addr_match = re.search(r'addr:\s+(\S+)', stdout_addr, re.IGNORECASE)
             if addr_match:
                 fee_addr = addr_match.group(1)
                 logger.info("fee_wallet_generated", address=fee_addr[:20] + "...")
@@ -280,7 +278,7 @@ class TokenGenesisManager(BaseGenesisManager):
                 check_output=False
             )
             # Check if DAG has ANY events
-            total_match = re.search(r'total events:\s*(\d+)', stdout_dag, re.IGNORECASE) if stdout_dag else None
+            total_match = re.search(r'total_events:\s*(\d+)', stdout_dag, re.IGNORECASE) if stdout_dag else None
             total_events = int(total_match.group(1)) if total_match else 0
             
             logger.info("dag_events_check",
@@ -567,7 +565,7 @@ class TokenGenesisManager(BaseGenesisManager):
                 
                 exit_code_mempool, stdout_mempool, _ = self._exec_cli(
                     first_master.node_id,
-                    f"mempool_list -net {self.network_name} -chain main",
+                    f"mempool list -net {self.network_name} -chain main",
                     check_output=False
                 )
                 

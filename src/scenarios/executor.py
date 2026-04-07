@@ -13,16 +13,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from src.utils.logger import get_logger
+from src.utils.project import make_container_name
 from ..monitoring import MonitoringManager, DatumMonitorResult
 from .parser import ScenarioParser
 from .schema import (
-    CLIStep, RPCStep, WaitStep, WaitForDatumStep, WaitForTxStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
-    NetworkWaitStep, DockerOpStep, SnapshotStep,
+    CLIStep, RPCStep, WaitStep, WaitForDatumStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
+    NetworkWaitStep, DockerOpStep, DockerExecStep, SnapshotStep, PlaywrightStep,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
-    ConfigStep,
+    ConfigStep, DpkgStep, CustomOperandStep,
+    MetricStep, MetricsTableStep,
     CLICheck, RPCCheck, PythonCheck, BashCheck,
     TestScenario, SuiteSetupScenario, TestStep, CheckSpec, StepDefaults, SectionConfig, DatumStatus
 )
+from .operand_registry import OperandRegistry
 
 logger = get_logger(__name__)
 
@@ -64,6 +67,7 @@ class RuntimeContext:
             logger.warning(f"scenario has no 'network' attribute or it's None")
         
         self.step_results: List[Dict[str, Any]] = []
+        self._metrics: List[Dict[str, Any]] = []
         self.start_time = time.time()
         self.parser = ScenarioParser(Path.cwd())
     
@@ -71,12 +75,69 @@ class RuntimeContext:
         """Set runtime variable."""
         self.variables[name] = value
         logger.debug(f"Set variable: {name} = {value}")
+
+    def save_output(self, output: str, save: Optional[str], save_regex: Optional[str] = None,
+                     save_map: Optional[Dict[str, Optional[str]]] = None) -> None:
+        """Save command output to variable(s) with optional regex extraction.
+
+        Args:
+            output: Raw command output.
+            save: Variable name to save to. If *None* and *save_map* is also
+                *None*, does nothing.
+            save_regex: Optional regex applied to *output* before saving to
+                *save*. First capturing group is stored; otherwise full match.
+            save_map: Optional dict ``{variable_name: regex_or_None}``.
+                For each entry the regex is applied to *output* and the result
+                is stored under *variable_name*. ``None`` regex means save the
+                full (stripped) output.
+        """
+        raw = output.strip() if output else ""
+
+        def _extract(match: re.Match) -> str:
+            """Return the first non-None capturing group, or the full match."""
+            if match.lastindex:
+                for i in range(1, match.lastindex + 1):
+                    if match.group(i) is not None:
+                        return match.group(i).strip()
+            return match.group(0).strip()
+
+        def _apply(var: str, pattern: Optional[str]) -> None:
+            if not pattern:
+                self.set_variable(var, raw)
+                logger.info("output_saved", variable=var,
+                             value_len=len(raw), regex="none")
+                return
+            m = re.search(pattern, raw, re.MULTILINE | re.DOTALL)
+            if m:
+                val = _extract(m)
+            else:
+                logger.warning("save_regex_no_match",
+                               variable=var, pattern=pattern,
+                               output_preview=raw[:200])
+                val = ""
+            self.set_variable(var, val)
+            logger.info("output_saved", variable=var,
+                         value_len=len(val), regex=pattern)
+
+        if save:
+            _apply(save, save_regex)
+
+        if save_map:
+            for var_name, pattern in save_map.items():
+                resolved_var = self.substitute(var_name) if var_name else var_name
+                _apply(resolved_var, pattern)
     
     def get_variable(self, name: str) -> Any:
         """Get runtime variable."""
         if name not in self.variables:
             raise ScenarioExecutionError(f"Undefined variable: {name}")
         return self.variables[name]
+
+    def has_variable(self, name: str) -> bool:
+        return name in self.variables
+
+    def delete_variable(self, name: str) -> None:
+        self.variables.pop(name, None)
     
     def get(self, name: str, default: Any = None) -> Any:
         """Get runtime variable with optional default (dict-like interface)."""
@@ -92,6 +153,20 @@ class RuntimeContext:
     def substitute(self, text: str) -> str:
         """Substitute variables in text."""
         return self.parser.substitute_variables(text, self.variables)
+
+    def substitute_raw(self, text: str):
+        """Substitute and return the raw Python object for bare {{var}} placeholders.
+        
+        Falls back to string substitution when the text contains surrounding
+        content or the variable is a scalar.
+        """
+        if isinstance(text, str):
+            stripped = text.strip()
+            if stripped.startswith('{{') and stripped.endswith('}}') and stripped.count('{{') == 1:
+                var_name = stripped[2:-2].strip()
+                if var_name in self.variables:
+                    return self.variables[var_name]
+        return self.parser.substitute_variables(text, self.variables)
     
     def add_result(self, step_type: str, success: bool, details: Dict[str, Any]):
         """Record step execution result."""
@@ -102,7 +177,15 @@ class RuntimeContext:
             **details
         }
         self.step_results.append(result)
-    
+
+    def add_metric(self, entry: Dict[str, Any]):
+        """Record a metric entry (from ``metric:`` step)."""
+        self._metrics.append(entry)
+
+    def get_metrics(self) -> List[Dict[str, Any]]:
+        """Return all collected metrics."""
+        return list(self._metrics)
+
     def get_summary(self) -> Dict[str, Any]:
         """Get execution summary."""
         total = len(self.step_results)
@@ -110,20 +193,23 @@ class RuntimeContext:
         failed = total - passed
         duration = time.time() - self.start_time
         
-        return {
+        summary = {
             "scenario": self.scenario.name,
             "total_steps": total,
             "passed": passed,
             "failed": failed,
             "duration_seconds": round(duration, 2),
-            "success_rate": round(passed / total * 100, 1) if total > 0 else 0
+            "success_rate": round(passed / total * 100, 1) if total > 0 else 0,
         }
+        if self._metrics:
+            summary["metrics"] = self._metrics
+        return summary
 
 
 class ScenarioExecutor:
     """Execute test scenarios with full lifecycle management."""
     
-    def __init__(self, node_cli_path: str = "cellframe-node-cli", log_file: Optional[Path] = None, debug: bool = False, base_path: Optional[Path] = None):
+    def __init__(self, node_cli_path: str = "cellframe-node-cli", log_file: Optional[Path] = None, debug: bool = False, base_path: Optional[Path] = None, custom_templates_dirs=None, cache_dir: Optional[Path] = None):
         """
         Initialize executor.
         
@@ -132,10 +218,13 @@ class ScenarioExecutor:
             log_file: Optional path to detailed log file
             debug: Enable debug logging
             base_path: Base path to stage-env directory (for artifacts collection)
+            custom_templates_dirs: List of paths to search for J2 config templates
+            cache_dir: Resolved cache directory (overrides global config; needed for shards)
         """
         self.node_cli_path = node_cli_path
         self.log_file = log_file
         self.debug = debug
+        self._custom_templates_dirs = custom_templates_dirs or []
         self._running = False
         # Monitoring manager будет получен через синглтон при старте сценария
         # Node role to ID mapping cache (populated from topology)
@@ -155,10 +244,10 @@ class ScenarioExecutor:
         from .step import (
             CLIStepExecutor, RPCStepExecutor, PythonStepExecutor, PrintStepExecutor,
             BashStepExecutor, ToolStepExecutor, WaitStepExecutor,
-            WaitForDatumStepExecutor, WaitForTxStepExecutor, LoopStepExecutor,
-            NetworkWaitStepExecutor, DockerOpStepExecutor, SnapshotStepExecutor,
+            WaitForDatumStepExecutor, LoopStepExecutor,
+            NetworkWaitStepExecutor, DockerOpStepExecutor, DockerExecStepExecutor, SnapshotStepExecutor,
             SetStepExecutor, IfStepExecutor, WhileStepExecutor, SwitchStepExecutor, ForStepExecutor,
-            ConfigStepExecutor
+            ConfigStepExecutor, DpkgStepExecutor
         )
         self.cli_executor = CLIStepExecutor(self.container_manager, log_file, debug)
         self.cli_executor._executor_ref = self  # Pass executor reference for retry support
@@ -176,9 +265,6 @@ class ScenarioExecutor:
         self.wait_for_datum_executor = WaitForDatumStepExecutor(
             self.container_manager, log_file, debug, node_cli_path
         )
-        self.wait_for_tx_executor = WaitForTxStepExecutor(
-            self.container_manager, log_file, debug
-        )
         self.loop_executor = LoopStepExecutor(
             self.container_manager, log_file, debug,
             execute_steps_callback=self._execute_steps
@@ -193,8 +279,14 @@ class ScenarioExecutor:
             resolve_node_alias_callback=self._resolve_node_alias,
             wait_executor=self.wait_executor
         )
+        self.docker_exec_executor = DockerExecStepExecutor(
+            self.container_manager, log_file, debug,
+            resolve_node_alias_callback=self._resolve_node_alias,
+        )
         self.snapshot_executor = SnapshotStepExecutor(
-            self.container_manager, log_file, debug, compose_manager=None
+            self.container_manager, log_file, debug, compose_manager=None,
+            base_path=self.base_path if hasattr(self, 'base_path') else None,
+            config_loader=self.config_loader if hasattr(self, 'config_loader') else None,
         )
         self.set_executor = SetStepExecutor(self.container_manager, log_file, debug)
         self.if_executor = IfStepExecutor(
@@ -215,9 +307,28 @@ class ScenarioExecutor:
         )
         self.config_executor = ConfigStepExecutor(
             self.container_manager, log_file, debug,
-            resolve_node_alias_callback=self._resolve_node_alias
+            resolve_node_alias_callback=self._resolve_node_alias,
+            custom_templates_dirs=self._custom_templates_dirs,
+            cache_dir=cache_dir,
         )
-        
+        self.dpkg_executor = DpkgStepExecutor(self.container_manager, log_file, debug)
+
+        from .step.metrics import MetricStepExecutor, MetricsTableStepExecutor
+        self.metric_executor = MetricStepExecutor(self.container_manager, log_file, debug)
+        self.metrics_table_executor = MetricsTableStepExecutor(self.container_manager, log_file, debug)
+
+        from .step.playwright import PlaywrightStepExecutor
+        self.playwright_executor = PlaywrightStepExecutor(self.container_manager, log_file, debug)
+
+        # Custom operand support
+        self._operand_registry = OperandRegistry()
+        from .step.custom_operand import CustomOperandStepExecutor
+        self.custom_operand_executor = CustomOperandStepExecutor(
+            self.container_manager, log_file, debug,
+            registry=self._operand_registry,
+            execute_steps_callback=self._execute_steps,
+        )
+
         # Check executors
         from .check import (
             CLICheckExecutor, RPCCheckExecutor,
@@ -228,6 +339,15 @@ class ScenarioExecutor:
         self.python_check_executor = PythonCheckExecutor(self.container_manager, log_file, debug)
         self.bash_check_executor = BashCheckExecutor(self.container_manager, log_file, debug)
     
+    def load_operands(self, *dirs: Path) -> None:
+        """Load custom operand definitions from directories."""
+        for d in dirs:
+            self._operand_registry.load_directory(Path(d))
+
+    @property
+    def operand_registry(self) -> OperandRegistry:
+        return self._operand_registry
+
     def _resolve_node_alias(self, node_alias: str) -> str:
         """
         Resolve node alias to actual node ID.
@@ -254,7 +374,15 @@ class ScenarioExecutor:
             node_num = node_alias[5:]
             if node_num.isdigit():
                 return f"node{node_num}"
-        
+
+        # Custom service names added via node_compose_gen (e.g. cdb-node-1,
+        # kelvpn-client-3).  These are direct docker-compose service names —
+        # return as-is so that container_manager can map them.
+        if re.match(r'^[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*-\d+$', node_alias):
+            return node_alias
+
+        _KNOWN_ROLES = {"root", "master", "full"}
+
         # Role-based aliases (root-1, master-2, full-1)
         if "-" in node_alias:
             parts = node_alias.rsplit("-", 1)
@@ -272,35 +400,60 @@ class ScenarioExecutor:
                         if role_nodes and 1 <= index <= len(role_nodes):
                             return role_nodes[index - 1]  # 1-indexed
                     
-                    # Fallback: dynamic mapping based on topology counts (fast fail if not available)
-                    if not self._global_context:
-                        raise RuntimeError(
-                            f"Cannot resolve node alias '{node_alias}': global_context not initialized. "
-                            "Ensure topology is loaded before using role-based aliases."
-                        )
-                    
-                    root_count = getattr(self._global_context, 'root_count', None)
-                    master_count = getattr(self._global_context, 'master_count', None)
-                    
-                    if root_count is None or master_count is None:
-                        raise RuntimeError(
-                            f"Cannot resolve node alias '{node_alias}': root_count or master_count not set in global_context. "
-                            f"root_count={root_count}, master_count={master_count}"
-                        )
-                    
-                    # root-1 -> node1, root-2 -> node2, ...
-                    # master-1 -> node{root_count+1}, master-2 -> node{root_count+2}, ...
-                    # full-1 -> node{root_count+master_count+1}, ...
-                    if role == "root":
-                        return f"node{index}"
-                    elif role == "master":
-                        return f"node{index + root_count}"
-                    elif role == "full":
-                        return f"node{index + root_count + master_count}"
+                    if role in _KNOWN_ROLES:
+                        if not self._global_context:
+                            raise RuntimeError(
+                                f"Cannot resolve node alias '{node_alias}': global_context not initialized. "
+                                "Ensure topology is loaded before using role-based aliases."
+                            )
+                        
+                        root_count = getattr(self._global_context, 'root_count', None)
+                        master_count = getattr(self._global_context, 'master_count', None)
+                        
+                        if root_count is None or master_count is None:
+                            raise RuntimeError(
+                                f"Cannot resolve node alias '{node_alias}': root_count or master_count not set in global_context. "
+                                f"root_count={root_count}, master_count={master_count}"
+                            )
+                        
+                        if role == "root":
+                            return f"node{index}"
+                        elif role == "master":
+                            return f"node{index + root_count}"
+                        elif role == "full":
+                            return f"node{index + root_count + master_count}"
         
         # Fallback: return as-is (will fail later if invalid)
         return node_alias
     
+    def _lookup_compose_node_id(self, service_name: str):
+        """Resolve NODE_ID from compose files for custom services.
+
+        Checks docker-compose.generated.yml first, then shard-specific
+        compose files used in parallel mode (docker-compose.shard-*.yml).
+        """
+        import yaml as _yaml
+        candidates = [self.base_path / "docker-compose.generated.yml"]
+        try:
+            candidates.extend(sorted(self.base_path.glob("docker-compose.shard-*.yml")))
+        except Exception:
+            pass
+        for compose_file in candidates:
+            try:
+                if not compose_file.exists():
+                    continue
+                with open(compose_file) as f:
+                    data = _yaml.safe_load(f)
+                svc = (data or {}).get("services", {}).get(service_name)
+                if not svc:
+                    continue
+                nid = svc.get("environment", {}).get("NODE_ID")
+                if nid is not None:
+                    return int(nid)
+            except Exception:
+                continue
+        return None
+
     def _resolve_node_to_container(self, node: str) -> str:
         """Convert node ID/alias to Docker container name (delegates to container manager)."""
         # First resolve alias to node ID, then convert to container name
@@ -452,14 +605,9 @@ class ScenarioExecutor:
         self._global_context = global_context
         self._node_configs = node_configs
         
-        # Set initial variables if provided (suite_accumulated_vars from previous scenarios).
+        # Set initial variables if provided
         if initial_variables:
             for key, value in initial_variables.items():
-                ctx.set_variable(key, value)
-        
-        # Scenario variables override initial_variables (each scenario defines its own wallet_name, etc.).
-        if hasattr(scenario, 'variables') and scenario.variables:
-            for key, value in scenario.variables.items():
                 ctx.set_variable(key, value)
         
         # CRITICAL: Pre-inject static node lists BEFORE setup phase
@@ -492,6 +640,27 @@ class ScenarioExecutor:
                 if global_defaults.cli:
                     self._log_to_file(f"[DEBUG] CLI defaults: {global_defaults.cli}")
             
+            # Install runtime packages/files before setup phase
+            if hasattr(scenario, 'packages') and scenario.packages:
+                from .step.package import PackageInstaller
+                pkg_installer = PackageInstaller(
+                    self.container_manager, self.log_file, self.debug,
+                    resolve_node_alias_callback=self._resolve_node_alias,
+                    base_path=self.base_path
+                )
+                logger.info("installing_runtime_packages", count=len(scenario.packages))
+                await pkg_installer.install_packages(scenario.packages)
+
+            if hasattr(scenario, 'files') and scenario.files:
+                from .step.file import FileInstaller
+                file_installer = FileInstaller(
+                    self.container_manager, self.log_file, self.debug,
+                    resolve_node_alias_callback=self._resolve_node_alias,
+                    base_path=self.base_path
+                )
+                logger.info("installing_runtime_files", count=len(scenario.files))
+                await file_installer.install_files(scenario.files)
+
             # Setup phase
             if hasattr(scenario, 'setup') and scenario.setup:
                 logger.info("Executing setup phase...")
@@ -521,7 +690,7 @@ class ScenarioExecutor:
             
             # Initialize CLI parser after setup (containers should be running now)
             # This ensures CLI defaults can be applied to commands in test phase
-            if compose_manager and global_defaults and global_defaults.cli:
+            if compose_manager:
                 from src.utils.cli_parser import get_cli_parser
                 from pathlib import Path
                 
@@ -531,7 +700,9 @@ class ScenarioExecutor:
                     # Try to find a running node container
                     try:
                         # Find first running node container using container manager
-                        containers = self.container_manager.docker_client.containers.list(filters={"name": "cellframe-stage-node-"})
+                        containers = self.container_manager.docker_client.containers.list(
+                            filters={"name": make_container_name("node-")}
+                        )
                         if containers:
                             container_name = containers[0].name
                             cache_file = Path(__file__).parent.parent.parent / ".cache" / "cli_commands.json"
@@ -552,6 +723,9 @@ class ScenarioExecutor:
                     except Exception as e:
                         logger.warning("failed_to_initialize_cli_parser", error=str(e),
                                      note="CLI defaults may not be applied")
+            
+            # Detect node version and inject cf_version* variables
+            await self._detect_node_version(ctx)
             
             # Test phase (only for TestScenario, not for SuiteSetupScenario)
             if hasattr(scenario, 'test') and scenario.test:
@@ -582,13 +756,57 @@ class ScenarioExecutor:
         except ScenarioExecutionError:
             raise
         except Exception as e:
+            err_detail = str(e) or type(e).__name__
             raise ScenarioExecutionError(
-                f"Unexpected error during execution: {str(e)}",
+                f"Unexpected error during execution ({type(e).__name__}): {err_detail}",
                 context=ctx.get_summary()
             ) from e
         finally:
             self._running = False
     
+    async def _detect_node_version(self, ctx: RuntimeContext) -> None:
+        """Detect cellframe-node version and inject cf_version* variables into context."""
+        try:
+            containers = self.container_manager.docker_client.containers.list(
+                filters={"name": make_container_name("node-")}
+            )
+            if not containers:
+                logger.warning("no_containers_for_version_detection")
+                return
+
+            container_name = containers[0].name
+            result = await self.container_manager.exec_cli_command("version", container_name)
+            version_output = result.get("stdout", "").strip()
+
+            if not version_output:
+                logger.warning("empty_version_output")
+                return
+
+            ctx.set_variable("cf_version", version_output)
+
+            # Parse "X.Y-BUILD" or "X.Y.Z" or "X.Y-SOMETHING" patterns
+            m = re.search(r'(\d+)\.(\d+)(?:[.\-](\S+))?', version_output)
+            if m:
+                ctx.set_variable("cf_version_major", int(m.group(1)))
+                ctx.set_variable("cf_version_minor", int(m.group(2)))
+                ctx.set_variable("cf_version_build", m.group(3) or "")
+            else:
+                ctx.set_variable("cf_version_major", 0)
+                ctx.set_variable("cf_version_minor", 0)
+                ctx.set_variable("cf_version_build", "")
+
+            logger.info("node_version_detected",
+                       cf_version=version_output,
+                       major=ctx.variables.get("cf_version_major"),
+                       minor=ctx.variables.get("cf_version_minor"),
+                       build=ctx.variables.get("cf_version_build"))
+        except Exception as e:
+            logger.warning("version_detection_failed", error=str(e))
+            ctx.set_variable("cf_version", "unknown")
+            ctx.set_variable("cf_version_major", 0)
+            ctx.set_variable("cf_version_minor", 0)
+            ctx.set_variable("cf_version_build", "")
+
     async def _execute_steps(
         self,
         steps: List[TestStep],
@@ -612,19 +830,23 @@ class ScenarioExecutor:
             if isinstance(step, WaitForDatumStep):
                 datum_count = len(step.wait_for_datum) if isinstance(step.wait_for_datum, list) else 1
                 step_desc = f"WaitForDatumStep ({datum_count} datum{'s' if datum_count > 1 else ''})"
-            elif isinstance(step, WaitForTxStep):
-                from .step.wait_for_tx import format_tx_hash_preview
-                tx_hash = ctx.substitute(step.wait_for_tx)
-                tx_preview = format_tx_hash_preview(tx_hash)
-                expected = ctx.substitute(step.expected_status)
-                step_desc = f"WaitForTxStep '{tx_preview}' (expect={expected})"
-                if step.description:
-                    step_desc += f" - {ctx.substitute(step.description)}"
             elif isinstance(step, StepGroup) and step.name:
                 step_desc = f"StepGroup: {step.name}"
             elif isinstance(step, ConfigStep):
                 step_desc = f"ConfigStep ({step.config})"
-            
+            elif isinstance(step, DpkgStep):
+                step_desc = f"DpkgStep ({step.dpkg} {step.package})"
+            elif isinstance(step, MetricStep):
+                step_desc = f"MetricStep ({step.metric}={step.value})"
+            elif isinstance(step, MetricsTableStep):
+                step_desc = f"MetricsTableStep ({step.metrics_table})"
+            elif isinstance(step, DockerExecStep):
+                step_desc = f"DockerExec ({step.docker_exec[:60]})"
+            elif isinstance(step, CustomOperandStep):
+                step_desc = f"CustomOperand ({step.operand_name}.{step.operand_action})"
+            elif isinstance(step, PlaywrightStep):
+                step_desc = f"Playwright ({step.playwright} [{step.browser}])"
+
             logger.info(f"Step {i}/{len(steps)}: {step_desc}")
             
             # Handle StepGroup
@@ -649,11 +871,11 @@ class ScenarioExecutor:
             elif isinstance(step, WaitStep):
                 step_dump = step.model_dump() if hasattr(step, 'model_dump') else str(step)
                 logger.info(f"Executing WaitStep. Dump: {step_dump}")
+                if defaults and defaults.cli:
+                    ctx.variables["_cli_defaults"] = defaults.cli
                 await self.wait_executor.execute(step, ctx)
             elif isinstance(step, WaitForDatumStep):
                 await self.wait_for_datum_executor.execute(step, ctx)
-            elif isinstance(step, WaitForTxStep):
-                await self.wait_for_tx_executor.execute(step, ctx)
             elif isinstance(step, PythonStep):
                 await self.python_executor.execute(step, ctx)
             elif isinstance(step, PrintStep):
@@ -666,6 +888,8 @@ class ScenarioExecutor:
                 await self.loop_executor.execute(step, ctx, defaults)
             elif isinstance(step, NetworkWaitStep):
                 await self.network_wait_executor.execute(step, ctx)
+            elif isinstance(step, DockerExecStep):
+                await self.docker_exec_executor.execute(step, ctx)
             elif isinstance(step, DockerOpStep):
                 await self.docker_op_executor.execute(step, ctx)
             elif isinstance(step, SnapshotStep):
@@ -682,10 +906,51 @@ class ScenarioExecutor:
                 await self.switch_executor.execute(step, ctx, defaults)
             elif isinstance(step, ConfigStep):
                 await self.config_executor.execute(step, ctx)
+            elif isinstance(step, DpkgStep):
+                await self.dpkg_executor.execute(step, ctx)
+            elif isinstance(step, MetricStep):
+                await self.metric_executor.execute(step, ctx)
+            elif isinstance(step, MetricsTableStep):
+                await self.metrics_table_executor.execute(step, ctx)
+            elif isinstance(step, PlaywrightStep):
+                await self.playwright_executor.execute(step, ctx)
+            elif isinstance(step, CustomOperandStep):
+                await self.custom_operand_executor.execute(step, ctx, defaults)
             else:
                 raise ScenarioExecutionError(f"Unknown step type: {type(step)}")
     
     
+    def _node_id_to_service(self, node_id: int) -> str:
+        """Map numeric node_id to docker-compose service name."""
+        svc = self._lookup_compose_node_id_reverse(node_id)
+        if svc:
+            return svc
+        logger.debug("node_id_to_service_fallback", node_id=node_id, base_path=str(self.base_path))
+        return f"node{node_id}"
+
+    def _lookup_compose_node_id_reverse(self, node_id: int):
+        """Reverse lookup: numeric NODE_ID -> service name from compose file."""
+        import yaml as _yaml
+        candidates = [self.base_path / "docker-compose.generated.yml"]
+        try:
+            candidates.extend(sorted(self.base_path.glob("docker-compose.shard-*.yml")))
+        except Exception:
+            pass
+        for compose_file in candidates:
+            try:
+                if not compose_file.exists():
+                    continue
+                with open(compose_file) as f:
+                    data = _yaml.safe_load(f)
+                for name, svc in (data or {}).get("services", {}).items():
+                    env = svc.get("environment", {})
+                    if isinstance(env, dict) and str(env.get("NODE_ID")) == str(node_id):
+                        return name
+            except Exception as e:
+                logger.warning("compose_reverse_lookup_failed",
+                               node_id=node_id, file=str(compose_file), error=str(e))
+        return None
+
     def _create_exec_cli_for_waiter(self):
         """Create synchronous exec_cli function for waiters with retry support."""
         # Waiters expect sync function, but we have async _run_cli_command
@@ -707,20 +972,22 @@ class ScenarioExecutor:
                 # If loop is running, we need to use a different approach
                 # Create a new task and wait for it
                 import concurrent.futures
+                svc = self._node_id_to_service(node_id)
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(
                         asyncio.run,
                         self._run_cli_command(
-                            command, f"node{node_id}", 30,
-                            retry_on_init_failure=True  # Enable retry for waiters
+                            command, svc, 30,
+                            retry_on_init_failure=True
                         )
                     )
-                    result = future.result(timeout=40)  # Increased for retries
+                    result = future.result(timeout=40)
             else:
+                svc = self._node_id_to_service(node_id)
                 result = loop.run_until_complete(
                     self._run_cli_command(
-                        command, f"node{node_id}", 30,
-                        retry_on_init_failure=True  # Enable retry for waiters
+                        command, svc, 30,
+                        retry_on_init_failure=True
                     )
                 )
             
@@ -751,7 +1018,12 @@ class ScenarioExecutor:
             master_idx = int(node_id.split("-")[1])
             node_num = master_idx + 3  # master-1 -> 4, master-2 -> 5, etc.
         else:
-            raise ValueError(f"Unknown node_id format: {node_id}")
+            # Custom compose service — look up NODE_ID from generated compose
+            nid = self._lookup_compose_node_id(resolved)
+            if nid is not None:
+                node_num = nid
+            else:
+                raise ValueError(f"Unknown node_id format: {node_id}")
         
         # Create minimal NodeConfig-like object
         from types import SimpleNamespace
@@ -789,8 +1061,6 @@ class ScenarioExecutor:
                 await self.python_check_executor.execute(check, ctx)
             elif isinstance(check, BashCheck):
                 await self.bash_check_executor.execute(check, ctx)
-            elif isinstance(check, WaitForTxStep):
-                await self.wait_for_tx_executor.execute(check, ctx)
             else:
                 raise ScenarioExecutionError(f"Unknown check type: {type(check)}")
     

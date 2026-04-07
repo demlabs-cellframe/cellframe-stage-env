@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import shutil
 from typing import List, Optional
 from src.utils.logger import get_logger
+from src.utils.project import get_project_name, make_container_name
 
 logger = get_logger(__name__)
 
@@ -32,7 +33,7 @@ class ArtifactsManager:
         self.config = config
         
         # Get artifacts directory from config
-        artifacts_dir = config.get('artifacts_dir', '../testing/artifacts')
+        artifacts_dir = config.get('artifacts_dir', '../../cache/artifacts')
         self.artifacts_root = (base_path / artifacts_dir).resolve()
         
         # Collection flags (use different names to avoid conflict with methods)
@@ -147,7 +148,7 @@ class ArtifactsManager:
         
         for node_name in node_names:
             try:
-                container_name = f"cellframe-stage-{node_name}"
+                container_name = make_container_name(node_name)
                 container = docker_client.containers.get(container_name)
                 
                 # Get all logs
@@ -169,6 +170,7 @@ class ArtifactsManager:
     def collect_core_dumps(self, run_dir: Path, docker_client, node_names: List[str]):
         """
         Collect core dumps from containers if they exist.
+        Works with both running and stopped containers using get_archive().
         
         Args:
             run_dir: Run directory
@@ -184,42 +186,62 @@ class ArtifactsManager:
         
         for node_name in node_names:
             try:
-                container_name = f"cellframe-stage-{node_name}"
+                container_name = make_container_name(node_name)
                 container = docker_client.containers.get(container_name)
+                is_running = container.status == "running"
                 
-                # Check for core dumps in common locations
-                core_paths = [
-                    "/tmp/core*",
-                    "/var/crash/*",
-                    "/opt/cellframe-node/var/log/core*"
-                ]
+                core_paths = ["/tmp/core*", "/var/crash/*", "/opt/cellframe-node/var/log/core*"]
                 
-                for pattern in core_paths:
-                    try:
-                        # List files matching pattern
-                        result = container.exec_run(f"sh -c 'ls -1 {pattern} 2>/dev/null || true'")
-                        if result.exit_code == 0 and result.output:
-                            files = result.output.decode('utf-8').strip().split('\n')
-                            for file_path in files:
-                                if file_path:
-                                    self._extract_file_from_container(
-                                        container, file_path, 
-                                        core_dumps_dir / f"{node_name}_{Path(file_path).name}"
-                                    )
-                                    
-                                    # Try to generate stack trace
-                                    self._generate_stack_trace(
-                                        container, file_path, node_name, stack_traces_dir
-                                    )
-                    except Exception as e:
-                        logger.debug("no_core_dumps_for_pattern",
-                                    node=node_name,
-                                    pattern=pattern,
-                                    error=str(e))
+                if is_running:
+                    for pattern in core_paths:
+                        try:
+                            result = container.exec_run(f"sh -c 'ls -1 {pattern} 2>/dev/null || true'")
+                            if result.exit_code == 0 and result.output:
+                                files = result.output.decode('utf-8').strip().split('\n')
+                                for file_path in files:
+                                    if file_path:
+                                        self._extract_file_from_container(
+                                            container, file_path,
+                                            core_dumps_dir / f"{node_name}_{Path(file_path).name}"
+                                        )
+                                        self._generate_stack_trace(
+                                            container, file_path, node_name, stack_traces_dir
+                                        )
+                        except Exception as e:
+                            logger.debug("no_core_dumps_for_pattern",
+                                        node=node_name, pattern=pattern, error=str(e))
+                else:
+                    self._collect_cores_from_stopped_container(
+                        container, node_name, core_dumps_dir, stack_traces_dir
+                    )
             except Exception as e:
                 logger.error("failed_to_check_core_dumps",
-                            node=node_name,
-                            error=str(e))
+                            node=node_name, error=str(e))
+    
+    def _collect_cores_from_stopped_container(self, container, node_name: str,
+                                               core_dumps_dir: Path, stack_traces_dir: Path):
+        """Extract core dumps from stopped container using get_archive (docker cp)."""
+        import tarfile
+        import io
+        
+        try:
+            stream, stat = container.get_archive("/tmp/")
+            tar_bytes = io.BytesIO()
+            for chunk in stream:
+                tar_bytes.write(chunk)
+            tar_bytes.seek(0)
+            
+            with tarfile.open(fileobj=tar_bytes) as tar:
+                for member in tar.getmembers():
+                    if member.isfile() and "core." in member.name:
+                        dest = core_dumps_dir / f"{node_name}_{Path(member.name).name}"
+                        with tar.extractfile(member) as src:
+                            dest.write_bytes(src.read())
+                        logger.info("extracted_core_from_stopped_container",
+                                   node=node_name, file=str(dest), size=dest.stat().st_size)
+        except Exception as e:
+            logger.debug("no_cores_in_stopped_container",
+                        node=node_name, error=str(e))
     
     def _extract_file_from_container(self, container, src_path: str, dest_path: Path):
         """Extract a file from Docker container."""
@@ -288,11 +310,9 @@ class ArtifactsManager:
         try:
             import docker
             client = docker.from_env()
-            project_name = "cellframe-stage"
-            
             containers = client.containers.list(
                 all=True,
-                filters={"label": f"com.docker.compose.project={project_name}"}
+                filters={"label": f"com.docker.compose.project={get_project_name()}"}
             )
             
             health_logs_dir = run_dir / "health-logs"
@@ -315,24 +335,29 @@ class ArtifactsManager:
                             "finished_at": container.attrs.get('State', {}).get('FinishedAt'),
                         }
                         
-                        # Try to get cellframe-node CLI health check
+                        import subprocess as _sp
+                        _HEALTH_CMD_TIMEOUT = 10
+
                         try:
-                            result = container.exec_run("cellframe-node-cli version", demux=False)
-                            health_info["cli_available"] = result.exit_code == 0
-                            if result.exit_code == 0:
-                                health_info["version"] = result.output.decode('utf-8', errors='ignore').strip()
-                        except:
-                            health_info["cli_available"] = False
-                        
-                        # Try to get network status
-                        try:
-                            result = container.exec_run(
-                                "cellframe-node-cli net -net stagenet get status",
-                                demux=False
+                            proc = _sp.run(
+                                ["docker", "exec", container_name, "cellframe-node-cli", "version"],
+                                capture_output=True, timeout=_HEALTH_CMD_TIMEOUT
                             )
-                            if result.exit_code == 0:
-                                health_info["network_status"] = result.output.decode('utf-8', errors='ignore').strip()
-                        except:
+                            health_info["cli_available"] = proc.returncode == 0
+                            if proc.returncode == 0:
+                                health_info["version"] = proc.stdout.decode('utf-8', errors='ignore').strip()
+                        except (_sp.TimeoutExpired, Exception):
+                            health_info["cli_available"] = False
+
+                        try:
+                            proc = _sp.run(
+                                ["docker", "exec", container_name,
+                                 "cellframe-node-cli", "net", "get", "status"],
+                                capture_output=True, timeout=_HEALTH_CMD_TIMEOUT
+                            )
+                            if proc.returncode == 0:
+                                health_info["network_status"] = proc.stdout.decode('utf-8', errors='ignore').strip()
+                        except (_sp.TimeoutExpired, Exception):
                             pass
                         
                         # Write health info to file

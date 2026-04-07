@@ -14,6 +14,13 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+SNAPSHOT_EXCLUDE_PATTERNS = [
+    "*/run/",
+    "*/run/node_cli",
+    "*/run/*.pid",
+    "*/mdbx.lck",
+]
+
 
 class BaseSnapshot(ABC):
     """
@@ -23,23 +30,23 @@ class BaseSnapshot(ABC):
     and implement the required methods.
     """
     
-    def __init__(self, base_path: Path, config: Dict[str, Any]):
+    def __init__(self, base_path: Path, config: Dict[str, Any], compose_manager=None):
         """
         Initialize snapshot handler.
         
         Args:
             base_path: Base path to stage-env directory
             config: Configuration dictionary
+            compose_manager: Optional DockerComposeManager for container operations
         """
         self.base_path = base_path
         self.config = config
+        self.compose_manager = compose_manager
         
-        # Paths from config
-        cache_dir = config.get('cache_dir', '../testing/cache')
+        cache_dir = config.get('cache_dir', '../../cache')
         self.cache_path = (base_path / cache_dir).resolve()
         
-        # Snapshot storage directory
-        snapshots_dir = config.get('snapshots_dir', '../testing/snapshots')
+        snapshots_dir = config.get('snapshots_dir', '../../cache/snapshots')
         self.snapshots_path = (base_path / snapshots_dir).resolve()
         self.snapshots_path.mkdir(parents=True, exist_ok=True)
         
@@ -49,13 +56,15 @@ class BaseSnapshot(ABC):
                     snapshots_path=str(self.snapshots_path))
     
     @abstractmethod
-    async def create(self, name: str) -> bool:
+    async def create(self, name: str, extra_metadata: Optional[Dict[str, Any]] = None, clone_images: dict | None = None) -> bool:
         """
         Create a snapshot.
-        
+
         Args:
             name: Snapshot name
-            
+            extra_metadata: Optional dict to merge into snapshot metadata (e.g. emission_hash)
+            clone_images: Optional mapping {source_service: [target_services]}
+
         Returns:
             True if successful
         """
@@ -63,51 +72,26 @@ class BaseSnapshot(ABC):
     
     @abstractmethod
     async def restore(self, name: str) -> bool:
-        """
-        Restore from snapshot.
-        
-        Args:
-            name: Snapshot name
-            
-        Returns:
-            True if successful
-        """
+        """Restore from snapshot."""
         pass
     
     @abstractmethod
     async def delete(self, name: str) -> bool:
-        """
-        Delete a snapshot.
-        
-        Args:
-            name: Snapshot name
-            
-        Returns:
-            True if successful
-        """
+        """Delete a snapshot."""
         pass
     
     @abstractmethod
     async def list(self) -> List[str]:
-        """
-        List available snapshots.
-        
-        Returns:
-            List of snapshot names
-        """
+        """List available snapshots."""
+        pass
+
+    @abstractmethod
+    def exists(self, name: str) -> bool:
+        """Check whether a named snapshot exists."""
         pass
     
     def get_info(self, name: str) -> Optional[Dict[str, Any]]:
-        """
-        Get snapshot information.
-        
-        Args:
-            name: Snapshot name
-            
-        Returns:
-            Dictionary with snapshot metadata
-        """
-        # Base implementation - can be overridden by subclasses
+        """Get snapshot information."""
         snapshot_path = self.snapshots_path / name
         if not snapshot_path.exists():
             return None
@@ -120,32 +104,15 @@ class BaseSnapshot(ABC):
         }
     
     def get_data_dirs(self) -> List[Path]:
-        """
-        Get list of data directories to snapshot.
-        
-        Returns:
-            List of Path objects for directories to include in snapshot
-        """
+        """Get list of data directories to snapshot."""
         data_path = self.cache_path / "data"
-        
-        # Get all node directories
         if not data_path.exists():
             return []
-        
         return [d for d in data_path.iterdir() if d.is_dir()]
 
     def get_config_dirs(self) -> List[Path]:
-        """
-        Get list of config directories to snapshot.
-        
-        Returns:
-            List of Path objects for config directories to include in snapshot
-        """
+        """Get list of config directories to snapshot."""
         configs_path = self.cache_path / "configs"
-        
-        # Get all node config directories
         if not configs_path.exists():
             return []
-            
         return [d for d in configs_path.iterdir() if d.is_dir()]
-

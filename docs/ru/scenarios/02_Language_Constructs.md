@@ -52,10 +52,11 @@ variables:
 ```yaml
 - for: i
   in: "range(3)"
-  eval: true
   steps:
     - print: "Iteration {{i}}"
 ```
+
+**Примечание:** Строковые значения `in` автоматически вычисляются как Python-выражения. `eval: true` не нужен (в отличие от `set` шагов).
 
 ### for по переменным
 ```yaml
@@ -81,7 +82,7 @@ variables:
 ### while loop
 ```yaml
 - while: "{{ctx.get_variable('count', 0) < 10}}"
-  max_iterations: 100
+  max_loops: 100
   steps:
     - cli: "check status"
       save_to: status
@@ -125,12 +126,19 @@ variables:
 
 ## Группы
 
+Группы объединяют связанные шаги под общим именем и опциональными defaults.
+Имя можно задать ключом `group:` или `name:` — оба варианта эквивалентны:
+
 ### Базовая Группа
 ```yaml
 - group: Token Operations
   steps:
     - cli: "token_decl ..."
     - cli: "token_emit ..."
+
+- name: Alternative syntax
+  steps:
+    - print: "Ключи 'group' и 'name' взаимозаменяемы"
 ```
 
 ### Группа с Defaults
@@ -219,9 +227,22 @@ test:
 ```
 
 ### regex_extract
+Извлекает первое совпадение (одну группу): `regex_extract(text, pattern, group=1) -> str`
 ```yaml
 - set: hash
   value: regex_extract(output, r'hash:\s*(\w+)', 1)
+  eval: true
+```
+
+### find_all
+Возвращает список всех совпадений: `find_all(text, pattern) -> list`
+```yaml
+- set: _serials
+  value: "find_all(raw_output, r'[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}')"
+  eval: true
+
+- set: first_serial
+  value: "_serials[0]"
   eval: true
 ```
 
