@@ -3,6 +3,8 @@ CLI commands for running tests.
 
 This module contains the main test execution command extracted from stage_env.py.
 """
+from __future__ import annotations
+
 import asyncio
 import typer
 from pathlib import Path
@@ -1788,7 +1790,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                     for _ctr in _containers:
                                         _svc = _ctr.labels.get("com.docker.compose.service", "")
                                         if _svc:
-                                            _log = _ctr.logs(tail=10000).decode('utf-8', errors='ignore')
+                                            _log = _ctr.logs().decode('utf-8', errors='ignore')
                                             (_logs_dir / f"{_svc}.log").write_text(_log)
                                 except Exception as log_err:
                                     print_warning(_("  Failed to collect logs on setup failure: {}").format(log_err))
@@ -2099,7 +2101,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                         "com.docker.compose.service", ""
                                     )
                                     if svc_name:
-                                        logs = container.logs(tail=10000).decode('utf-8', errors='ignore')
+                                        logs = container.logs().decode('utf-8', errors='ignore')
                                         log_file = node_logs_dir / f"{svc_name}.log"
                                         log_file.write_text(logs)
                                         collected_logs += 1
