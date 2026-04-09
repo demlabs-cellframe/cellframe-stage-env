@@ -541,17 +541,10 @@ class ScenarioExecutor:
             if step.timeout == 30:  # Default value
                 step.timeout = defaults.timeout
         
-        # Special handling for WaitForDatumStep timeouts
-        if isinstance(step, WaitForDatumStep) and defaults.timeout:
-            # Apply timeout to all WaitForDatumStep timeout fields if they have default values
-            if step.timeout_total == 300:
-                step.timeout_total = defaults.timeout
-            if step.timeout_mempool == 60:
-                step.timeout_mempool = defaults.timeout
-            if step.timeout_verification == 120:
-                step.timeout_verification = defaults.timeout
-            if step.timeout_in_blocks == 180:
-                step.timeout_in_blocks = defaults.timeout
+        # WaitForDatumStep has its own timeout hierarchy (timeout_total, timeout_mempool, etc.)
+        # which should NOT be overridden by the generic defaults.timeout (CLI command timeout).
+        # Only override individual WaitForDatumStep timeouts if the user explicitly set them
+        # via the step's own fields in YAML.
         
         return step
     

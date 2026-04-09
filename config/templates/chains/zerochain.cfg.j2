@@ -27,7 +27,7 @@ is_celled=false
 # is_add_directly: Controls whether events are added directly or via confirmation round
 # Production-like mode: use false to require multi-node confirmation via DAG-PoA round consensus
 # Genesis events are created manually via dag event sign + dag round complete
-is_add_directly={{ is_add_directly | default('false', true) }}
+is_add_directly={{ is_add_directly | default('true', true) }}
 datum_add_hashes_count=1
 # Enable detailed debug logging for DAG consensus (includes datums table operations)
 debug_more=true

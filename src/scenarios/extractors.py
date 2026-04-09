@@ -339,7 +339,7 @@ class DataExtractor:
         without specifying a custom pattern.
         """
         defaults = {
-            ExtractType.WALLET_ADDRESS: r'addr:\s+(\S+)',
+            ExtractType.WALLET_ADDRESS: r'(?:new[_ ])?addr(?:ess)?:\s+(\S+)',
             ExtractType.NODE_ADDRESS: r'Node addr:\s+([A-Fa-f0-9:]+)',
             # Match hash in various formats:
             # - "New: 0x..." (from token_decl_sign)
