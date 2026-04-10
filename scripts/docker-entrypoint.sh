@@ -60,7 +60,16 @@ info inferiors
 printf "\n=== CRASH BACKTRACE ===\n"
 thread apply all bt full
 printf "\n=== END BACKTRACE ===\n"
-quit
+python
+import gdb
+try:
+    sig = int(gdb.parse_and_eval("$_exitsignal"))
+    ec = int(gdb.parse_and_eval("$_exitcode"))
+    code = (128 + sig) if sig else ec
+    gdb.execute("quit %d" % code)
+except Exception:
+    gdb.execute("quit 1")
+end
 GDBEOF
     GDB_LOG="/tmp/gdb-output-${NODE_ID}.log"
     gdb -q -x "$GDB_INIT" /opt/cellframe-node/bin/cellframe-node </dev/null 2>&1 | tee "$GDB_LOG" &

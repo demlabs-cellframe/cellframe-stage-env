@@ -16,6 +16,7 @@ from docker.errors import DockerException, NotFound
 from docker.models.containers import Container
 
 from src.utils.logger import get_logger
+from src.utils.project import DEFAULT_PROJECT_NAME, get_project_name
 from ..network.models import NodeConfig
 
 logger = get_logger(__name__)
@@ -308,15 +309,26 @@ class DockerComposeManager:
         
         compose_data['services'] = services_to_keep
         
-        # Ensure packages/ directory exists in build context (required for COPY in Dockerfile)
-        # This directory will be empty for url/repository sources, but must exist
-        build_context_packages_dir = self.project_dir / "packages"
-        build_context_packages_dir.mkdir(exist_ok=True)
-        
         # Determine node source configuration
         node_source_type = node_source_config.get('type', 'url') if node_source_config else 'url'
-        
-        # Clear stale .deb files from packages/ build context
+
+        # Docker build context is self.project_dir; Dockerfile copies ${DOCKER_PACKAGES_DIR}/.
+        # Use a subdirectory per Compose project so parallel shards do not delete each other's
+        # *.deb files (historically all workers cleared tools/stage-env/packages/ globally).
+        _active_project = get_project_name()
+        if _active_project != DEFAULT_PROJECT_NAME:
+            build_context_packages_dir = self.project_dir / "packages" / _active_project
+        else:
+            build_context_packages_dir = self.project_dir / "packages"
+        build_context_packages_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            docker_packages_dir_arg = build_context_packages_dir.resolve().relative_to(
+                self.project_dir.resolve()
+            ).as_posix()
+        except ValueError:
+            docker_packages_dir_arg = "packages"
+
+        # Clear stale .deb files only in this shard's / default packages directory
         for item in build_context_packages_dir.iterdir():
             if item.is_file() and item.suffix == '.deb':
                 logger.debug("removing_stale_package", path=str(item))
@@ -459,6 +471,7 @@ class DockerComposeManager:
             # Set TOOLS_BASE_URL from paths config
             node_service['build']['args']['TOOLS_BASE_URL'] = tools_base_url
             node_service['build']['args']['BUILD_TYPE'] = build_type
+            node_service['build']['args']['DOCKER_PACKAGES_DIR'] = docker_packages_dir_arg
             
             node_service['image'] = f"cf-node:{build_type}-{cellframe_version}"
             
@@ -475,7 +488,7 @@ class DockerComposeManager:
                 # Directory already created above
                 # IMPORTANT: Use copy instead of symlink because Docker COPY doesn't follow
                 # symlinks that point outside build context
-                package_dest = self.project_dir / "packages" / package_name
+                package_dest = build_context_packages_dir / package_name
 
                 import shutil, tempfile
                 needs_copy = True

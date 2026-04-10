@@ -12,6 +12,8 @@ debug_dump_stream_headers=false
 
 # Auto bring up links and sync everything over them
 auto_online=true
+# Socket idle timeout before worker closes it (seconds, default 60)
+connection_timeout=300
 
 # Server part
 [server]
@@ -206,4 +208,7 @@ py_path=../var/lib/plugins
 # Path to Pyhon-based plugins
 #py_path=../var/lib/plugins
 
+# VPN Service - enable to override defaults from share/configs
+[srv_vpn]
+enabled=true
 

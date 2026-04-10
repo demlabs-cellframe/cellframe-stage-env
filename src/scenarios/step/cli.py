@@ -210,14 +210,21 @@ class CLIStepExecutor(StepExecutor):
         if step.save_node:
             variable_name = ctx.substitute(step.save_node)
             pattern = DataExtractor.get_default_pattern(ExtractType.NODE_ADDRESS)
-            # Log output for debugging node address extraction issues
-            logger.info("cli_save_node_output_debug", 
-                       command=cmd[:100],
-                       output_length=len(output),
-                       output_preview=output[:500] if output else "EMPTY",
-                       pattern=pattern)
+
+            extraction_output = output
+            if len(extraction_output) < 10:
+                for _retry in range(3):
+                    await asyncio.sleep(1)
+                    logger.info("cli_save_node_retry", attempt=_retry + 1,
+                               command=cmd[:60], reason="empty output")
+                    retry_result = await self.container_manager.exec_cli_command(
+                        command=cmd, node=node, timeout=timeout)
+                    extraction_output = retry_result.get("stdout", "")
+                    if len(extraction_output) >= 10:
+                        break
+
             node_addr, error = DataExtractor.extract_and_validate(
-                output, pattern, ExtractType.NODE_ADDRESS, required=True
+                extraction_output, pattern, ExtractType.NODE_ADDRESS, required=True
             )
             if node_addr:
                 ctx.set_variable(variable_name, node_addr)

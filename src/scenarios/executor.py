@@ -629,6 +629,7 @@ class ScenarioExecutor:
                        static_ips=len(static_vars.get('node_ip', {})))
         
         self._running = True
+        _test_error: Optional[Exception] = None
         
         try:
             # Global defaults (applied to all phases)
@@ -752,17 +753,38 @@ class ScenarioExecutor:
             
         except KeyboardInterrupt:
             logger.warning("Scenario execution interrupted by user")
+            _test_error = ScenarioExecutionError("Interrupted by user")
             raise
-        except ScenarioExecutionError:
+        except ScenarioExecutionError as e:
+            _test_error = e
             raise
         except Exception as e:
             err_detail = str(e) or type(e).__name__
-            raise ScenarioExecutionError(
+            _test_error = ScenarioExecutionError(
                 f"Unexpected error during execution ({type(e).__name__}): {err_detail}",
                 context=ctx.get_summary()
-            ) from e
+            )
+            raise _test_error from e
         finally:
             self._running = False
+            # Teardown phase — always executed, even on failure
+            if hasattr(scenario, 'teardown') and scenario.teardown:
+                teardown_steps = (
+                    scenario.teardown.steps
+                    if hasattr(scenario.teardown, 'steps')
+                    else scenario.teardown
+                )
+                if teardown_steps:
+                    logger.info("Executing teardown phase...")
+                    section_defaults = self._merge_defaults(
+                        scenario.defaults if hasattr(scenario, 'defaults') else None,
+                        scenario.teardown.defaults if hasattr(scenario.teardown, 'defaults') else None,
+                    )
+                    try:
+                        await self._execute_steps(teardown_steps, ctx, section_defaults)
+                        logger.info("Teardown phase completed")
+                    except Exception as td_err:
+                        logger.warning("teardown_failed", error=str(td_err))
     
     async def _detect_node_version(self, ctx: RuntimeContext) -> None:
         """Detect cellframe-node version and inject cf_version* variables into context."""

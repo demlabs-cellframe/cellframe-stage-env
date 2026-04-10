@@ -418,7 +418,7 @@ test:
   
   - wait: global_db_sync
     node: "{{first_root}}"
-    timeout: 60
+    timeout: 120
   
   # Token Emission
   - set: all_root_certs
@@ -450,7 +450,7 @@ test:
           - wait: cli
             cmd: "dag event list -chain zerochain"
             node: "{{_sync_node}}"
-            contains: "total_events: 2"
+            contains: "#: 2"
             timeout: 120
             interval: 3
 

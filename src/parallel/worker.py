@@ -337,6 +337,26 @@ def _run_suite_sync(
                 "traceback": traceback.format_exc(),
             })
 
+    # Collect Docker container logs before stopping
+    try:
+        import docker as docker_sdk
+        client = docker_sdk.from_env()
+        containers = client.containers.list(
+            all=True,
+            filters={"label": f"com.docker.compose.project={shard.project_name}"},
+        )
+        node_logs_dir = suite_dir / "node-logs"
+        for container in containers:
+            try:
+                svc_name = container.labels.get("com.docker.compose.service", "")
+                if svc_name:
+                    logs = container.logs(tail=50000).decode('utf-8', errors='ignore')
+                    (node_logs_dir / f"{svc_name}.log").write_text(logs)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # Stop shard network
     async def _stop():
         await network_mgr.stop(remove_volumes=False)

@@ -429,89 +429,99 @@ class NetworkManager:
                           note="Shards may have stale IPs in GDB")
 
     def _fix_stale_node_list(self, node_configs) -> None:
-        """Overwrite stale IPs in ``nodes.list`` BEFORE starting containers.
-
-        Runs ``cf-cert-generator --read-addr`` and ``dap-gdb-tool node-rehost``
-        directly on the GDB files on disk.  Everything happens in a single
-        ``docker run`` — no running nodes, no CLI sockets required.
+        """Purge stale ``nodes.list`` native GDB files BEFORE starting
+        containers so nodes bootstrap from ``seed_nodes_hosts`` only.
         """
-        import subprocess
-        from ..certs.generator import CertGenerator, CERT_BUILDER_IMAGE
-
-        tools_image = CERT_BUILDER_IMAGE
-        sdk_branch = self._sdk_branch_for_tools()
-        cg = CertGenerator(self.base_path, dap_sdk_branch=sdk_branch)
-        if not cg.build_docker_image():
-            logger.error("gdb_tool_image_not_available")
-            return
-
         cache_dir = self.paths_config.get('cache_dir', 'cache')
         cache_path = (self.base_path / cache_dir).resolve()
+        net_name = self.topology.network.name
+
+        purged = 0
+        for nc in node_configs:
+            native_dir = (
+                cache_path / "data" / f"node{nc.node_id}"
+                / "lib" / "global_db" / "gdb-mdbx" / "gdb-native"
+            )
+            stale_file = native_dir / f"{net_name}.nodes.list.gdb"
+            if stale_file.exists():
+                stale_file.unlink()
+                purged += 1
+
+        logger.info("stale_node_list_fixed",
+                     nodes=len(node_configs),
+                     entries_updated=purged,
+                     method="native_gdb_purge")
+
+    async def _register_nodes_after_restore(self, node_configs) -> None:
+        """Register all nodes in each other's node-list via CLI.
+
+        After a snapshot restore the GDB ``nodes.list`` is empty (the
+        native GDB files are ephemeral and not captured in squashfs).
+        Without explicit registration the balancer returns HTTP 204,
+        P2P links are never established and consensus halts.
+
+        This mirrors what Phase 1 YAML does during full genesis.
+        """
+        import subprocess
+        from ..utils.project import make_container_name
+
         net_name = self.topology.network.name
         settings = self.topology.network_settings
         base_ip_parts = settings.base_ip.split('.')
 
-        volumes: list[str] = []
         ip_map: dict[int, str] = {}
-
         for nc in node_configs:
-            data_path = cache_path / "data" / f"node{nc.node_id}"
-            volumes.extend(["-v", f"{data_path}:/nodes/node{nc.node_id}"])
             ip_map[nc.node_id] = (
                 f"{'.'.join(base_ip_parts[:3])}"
                 f".{int(base_ip_parts[3]) + nc.node_id - 1}"
             )
 
-        script_lines = ["set -e", ""]
-
+        addr_map: dict[int, str] = {}
         for nc in node_configs:
-            script_lines.append(
-                f'ADDR_{nc.node_id}=$('
-                f'/usr/local/bin/cf-cert-generator --read-addr '
-                f'/nodes/node{nc.node_id}/lib/ca/node-addr.dcert 2>/dev/null'
-                f' | tail -1) || ADDR_{nc.node_id}=""'
-            )
+            container = make_container_name(f"node-{nc.node_id}")
+            try:
+                result = subprocess.run(
+                    ["docker", "exec", container, "sh", "-c",
+                     "cellframe-node-cli node dump -net " + net_name],
+                    capture_output=True, text=True, timeout=15)
+                if result.returncode == 0:
+                    import re
+                    m = re.search(r'Node addr:\s+(\S+)', result.stdout)
+                    if m:
+                        addr_map[nc.node_id] = m.group(1)
+            except Exception as exc:
+                logger.warning("node_addr_read_failed",
+                               node_id=nc.node_id, error=str(exc))
 
-        script_lines.append("")
+        if not addr_map:
+            logger.error("no_node_addrs_resolved",
+                        note="Cannot register nodes — node dump failed for all")
+            return
 
+        registered = 0
         for target in node_configs:
-            gdb = f"/nodes/node{target.node_id}/lib/global_db"
+            container = make_container_name(f"node-{target.node_id}")
             for src in node_configs:
+                addr = addr_map.get(src.node_id)
+                if not addr:
+                    continue
                 ip = ip_map[src.node_id]
-                script_lines.append(
-                    f'[ -n "$ADDR_{src.node_id}" ] && '
-                    f'/usr/local/bin/dap-gdb-tool '
-                    f'--db-path {gdb} '
-                    f'node-rehost {net_name} "$ADDR_{src.node_id}" {ip} 8079 '
-                    f'|| true'
-                )
+                host_port = f"{ip}:{settings.node_port}"
+                try:
+                    result = subprocess.run(
+                        ["docker", "exec", container, "sh", "-c",
+                         f"cellframe-node-cli node add -addr {addr} "
+                         f"-host {host_port} -net {net_name}"],
+                        capture_output=True, text=True, timeout=15)
+                    if result.returncode == 0:
+                        registered += 1
+                except Exception:
+                    pass
 
-        script = "\n".join(script_lines)
-
-        docker_cmd = [
-            "docker", "run", "--rm",
-            "--entrypoint", "sh",
-        ] + volumes + [
-            tools_image,
-            "-c", script,
-        ]
-
-        try:
-            result = subprocess.run(
-                docker_cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode == 0:
-                ok_count = result.stdout.count("OK ")
-                logger.info("stale_node_list_fixed",
-                            nodes=len(node_configs),
-                            entries_updated=ok_count)
-            else:
-                logger.error("gdb_tool_failed",
-                             rc=result.returncode,
-                             stderr=result.stderr[-500:] if result.stderr else "")
-        except subprocess.TimeoutExpired:
-            logger.error("gdb_tool_timeout")
-        except Exception as exc:
-            logger.error("gdb_tool_exception", exc=str(exc))
+        logger.info("nodes_registered_after_restore",
+                     registered=registered,
+                     total=len(node_configs) * len(node_configs),
+                     net=net_name)
 
     async def _restore_snapshots(self) -> None:
         """Restore clean_state or phase1 snapshot if available."""
@@ -645,7 +655,11 @@ class NetworkManager:
             
             # Wait for all nodes to come online
             await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
-            
+
+            # Register nodes in each other's node-list so the balancer
+            # can return peers and P2P links are established.
+            await self._register_nodes_after_restore(node_configs)
+
             # Verify fee_addr is configured (should be set during genesis)
             first_root = root_nodes[0]
             fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(first_root.node_id)
@@ -685,11 +699,21 @@ class NetworkManager:
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
                 
+                # Get custom templates dirs
+                custom_tpl_raw = self.paths_config.get("custom_templates_dir", "")
+                custom_templates_dirs = []
+                if custom_tpl_raw:
+                    project_root = (self.base_path / self.paths_config.get("project_root", "../..")).resolve()
+                    resolved = (project_root / custom_tpl_raw).resolve()
+                    if resolved.is_dir():
+                        custom_templates_dirs.append(resolved)
+                
                 executor = ScenarioExecutor(
                     node_cli_path=self.node_cli_path,
                     log_file=None,
                     debug=scenarios_config.get('debug', False),
-                    base_path=self.base_path
+                    base_path=self.base_path,
+                    custom_templates_dirs=custom_templates_dirs
                 )
                 
                 # Execute phase1 scenario
@@ -1397,11 +1421,21 @@ class NetworkManager:
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
                 
+                # Get custom templates dirs
+                custom_tpl_raw = self.paths_config.get("custom_templates_dir", "")
+                custom_templates_dirs = []
+                if custom_tpl_raw:
+                    project_root = (self.base_path / self.paths_config.get("project_root", "../..")).resolve()
+                    resolved = (project_root / custom_tpl_raw).resolve()
+                    if resolved.is_dir():
+                        custom_templates_dirs.append(resolved)
+                
                 executor = ScenarioExecutor(
                     node_cli_path=self.node_cli_path,
                     log_file=None,
                     debug=scenarios_config.get('debug', False),
-                    base_path=self.base_path
+                    base_path=self.base_path,
+                    custom_templates_dirs=custom_templates_dirs
                 )
                 
                 # Execute phase2 scenario with all variables from phase1

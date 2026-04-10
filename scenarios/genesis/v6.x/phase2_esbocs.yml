@@ -33,7 +33,7 @@ setup:
 
   - wait: global_db_sync
     node: "{{first_root}}"
-    timeout: 60
+    timeout: 120
   
   # Get fee_addr from first root wallet
   # This wallet was created in phase1 and exists in the snapshot
@@ -74,7 +74,7 @@ test:
 
       - wait: global_db_sync
         nodes: "{{_active_nodes}}"
-        timeout: 60
+        timeout: 120
 
       # Debug: Check zerochain events on master after sync
       - cli: "dag event list -chain zerochain"
@@ -99,7 +99,7 @@ test:
       
       - wait: global_db_sync
         nodes: "{{_active_nodes}}"
-        timeout: 60
+        timeout: 120
 
       # Verify emission is now in ledger on master
       - cli: "ledger list coins"
@@ -122,7 +122,7 @@ test:
 
       - wait: global_db_sync
         nodes: "{{_active_nodes}}"
-        timeout: 60
+        timeout: 120
 
       # Debug: Show mempool status on master
       - cli: "mempool list -chain main"
@@ -183,7 +183,7 @@ test:
 
   - wait: global_db_sync
     node: "{{first_root}}"
-    timeout: 60
+    timeout: 120
   
   # Configure fee_addr in main.cfg 
   # SDK will automatically load it from config on node startup

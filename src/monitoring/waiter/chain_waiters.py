@@ -13,19 +13,26 @@ from src.utils.project import make_container_name
 
 logger = get_logger(__name__)
 
-# CLI can output "total_events: N" (v2) or "total events: N" (v1)
 DAG_TOTAL_EVENTS_PATTERN = re.compile(
     r"total[_ ]events?\s*:\s*(\d+)",
     re.IGNORECASE,
 )
 
+DAG_EVENT_ENTRY_PATTERN = re.compile(r"#:\s*\d+")
+
 
 def _parse_dag_total_events(stdout: str) -> int:
-    """Parse total events count from dag event list output (v1 or v2 format)."""
+    """Parse total events count from dag event list output.
+
+    Handles legacy ``total_events: N`` format and SDK 6.0 list format
+    where events are enumerated as ``#: 1``, ``#: 2``, etc.
+    """
     if not stdout:
         return 0
     m = DAG_TOTAL_EVENTS_PATTERN.search(stdout)
-    return int(m.group(1)) if m else 0
+    if m:
+        return int(m.group(1))
+    return len(DAG_EVENT_ENTRY_PATTERN.findall(stdout))
 
 
 class ChainDataPropagationWaiter(BaseWaiter):
