@@ -87,6 +87,31 @@ class CLIStepExecutor(StepExecutor):
         if 'transfer: false' in output_lower or '"transfer":"false"' in output_lower:
             return True
         
+        # Plain-text error patterns from cellframe-node-cli
+        # The CLI often returns exit 0 with a human-readable error message
+        _PLAIN_ERROR_PATTERNS = [
+            'already exists',
+            'not found',
+            'can\'t find',
+            'requires parameter',
+            'requires one of parameters',
+            'requres ',  # typo in cellframe-node (e.g. "token_emit command requres at least one valid certificate")
+            'invalid parameter',
+            'is invalid',
+            'can\'t recognize command',
+            'no such',
+            'unknown command',
+            'error:',
+            'failed to',
+            'can not ',
+            'cannot ',
+            'not enough',
+            'insufficient',
+        ]
+        for pattern in _PLAIN_ERROR_PATTERNS:
+            if pattern in output_lower:
+                return True
+        
         return False
     
     async def execute(

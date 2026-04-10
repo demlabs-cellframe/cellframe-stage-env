@@ -387,11 +387,30 @@ class DatumMonitor:
             in_mempool = await self._check_mempool(node, network, chain, datum_hash)
             
             if in_mempool:
-                # Check mempool timeout
                 mempool_time = current_time - mempool_start
                 
-                # Log mempool waiting state periodically
-                if int(mempool_time) % 10 == 0:  # Every 10 seconds
+                # mempool_autoproc may leave processed datums in mempool list;
+                # check DAG/blocks even while datum is still listed in mempool
+                block_info = await self._check_in_blocks(node, network, chain, datum_hash)
+                if block_info:
+                    block_number, block_hash = block_info
+                    is_dag = self._is_dag_chain(chain)
+                    item_type = "event" if is_dag else "block"
+                    self._log(f"  ✅ Datum {datum_hash[:16]}... already in {item_type} #{block_number} (still listed in mempool)")
+                    return DatumMonitorResult(
+                        status=DatumStatus.SUCCESS,
+                        datum_hash=datum_hash,
+                        elapsed_time=elapsed,
+                        details={
+                            "block_number": block_number,
+                            "block_hash": block_hash,
+                            "mempool_time": mempool_time,
+                            "still_in_mempool": True,
+                            "total_time": elapsed
+                        }
+                    )
+                
+                if int(mempool_time) % 10 == 0:
                     self._log(f"  ⏳ Datum {datum_hash[:16]}... still in mempool ({mempool_time:.1f}s)")
                 
                 if mempool_time > timeout_mempool:
@@ -399,7 +418,6 @@ class DatumMonitor:
                     self._log(f"  ❌ {error}")
                     self._log(f"  💡 This may indicate consensus issues or insufficient validators")
                     
-                    # Collect node logs for diagnosis
                     self._collect_node_logs(node, lines=200)
                     
                     return DatumMonitorResult(
@@ -410,7 +428,6 @@ class DatumMonitor:
                         error_message=error
                     )
                 
-                # Still in mempool, continue monitoring
                 await asyncio.sleep(check_interval)
                 continue
             
@@ -532,9 +549,8 @@ class DatumMonitor:
                 # Raise exception to stop monitoring immediately
                 raise RuntimeError(error_msg)
             
-            # Use mempool_list instead of mempool_proc -list
             cmd = [
-                self.node_cli_path, "mempool_list",
+                self.node_cli_path, "mempool", "list",
                 "-net", network, "-chain", chain
             ]
             
@@ -750,10 +766,10 @@ class DatumMonitor:
     async def _check_in_blockchain_blocks(self, node: str, network: str, chain: str, datum_hash: str) -> Optional[Tuple[int, str]]:
         """
         Check if datum is in a blockchain block (for ESBocs chains like main, kelvin).
-        Uses 'find datum' CLI command which searches for a datum hash across the chain.
+        Uses 'mempool check' CLI command which searches for a datum hash in chain and mempool.
         
         Returns:
-            Tuple of (block_number, block_hash) if found, None otherwise
+            Tuple of (block_number, block_hash) if found in chain, None otherwise
         """
         try:
             container_name = self._node_to_container(node)
@@ -762,23 +778,26 @@ class DatumMonitor:
             hash_for_cli = datum_hash if _STRICT_HASH_PATTERN.match(datum_hash) else (
                 _EXTRACT_HASH_PATTERN.search(datum_hash).group(1) if _EXTRACT_HASH_PATTERN.search(datum_hash) else datum_hash
             )
-            cmd = [
-                self.node_cli_path, "find", "datum",
-                "-net", network, "-chain", chain, "-hash", hash_for_cli
-            ]
             
+            cmd = [
+                self.node_cli_path, "mempool", "check",
+                "-net", network, "-chain", chain, "-datum", hash_for_cli
+            ]
             result = container.exec_run(cmd, demux=True)
             exit_code = result.exit_code
             stdout, stderr = result.output
             stdout_str = stdout.decode('utf-8') if stdout else ""
             
             if exit_code != 0:
+                self._log(f"  🔍 mempool check exit_code={exit_code}, stderr={stderr}")
                 return None
             
-            find_match = re.search(r'find:\s*true', stdout_str, re.IGNORECASE)
-            source_match = re.search(r'source:\s*chain', stdout_str, re.IGNORECASE)
+            self._log(f"  🔍 mempool check output: {stdout_str[:300]}")
+            
+            find_match = re.search(r'(?:"find"|find)\s*:\s*true', stdout_str, re.IGNORECASE)
+            source_match = re.search(r'(?:"source"|source)\s*:\s*(?:"chain"|chain)', stdout_str, re.IGNORECASE)
             if find_match and source_match:
-                atom_hash_match = re.search(r'atom_hash:\s*(0x[0-9a-fA-F]+)', stdout_str, re.IGNORECASE)
+                atom_hash_match = re.search(r'(?:"atom_hash"|atom_hash)\s*:\s*"?(0x[0-9a-fA-F]+)"?', stdout_str, re.IGNORECASE)
                 atom_hash = atom_hash_match.group(1) if atom_hash_match else "unknown"
                 self._log(f"  ✅ Datum {datum_hash[:16]}... found in chain (atom: {atom_hash[:16]}...)")
                 return (1, atom_hash)
