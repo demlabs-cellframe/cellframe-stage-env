@@ -15,6 +15,15 @@
 
 set -euo pipefail
 
+# Pin Docker SDK API version to match the daemon to avoid
+# "client version X is too new" errors in WSL / older engines.
+if [ -z "${DOCKER_API_VERSION:-}" ]; then
+    DOCKER_API_VERSION=$(docker version --format '{{.Server.APIVersion}}' 2>/dev/null || true)
+    if [ -n "$DOCKER_API_VERSION" ]; then
+        export DOCKER_API_VERSION
+    fi
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
