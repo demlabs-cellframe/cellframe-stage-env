@@ -524,7 +524,7 @@ class NetworkManager:
                         "docker", "run", "--rm",
                         "-v", f"{mdbx_dir}:/dbdata",
                         "cf-tools:latest",
-                        "/tools/dap-gdb-tool",
+                        "/usr/local/bin/dap-gdb-tool",
                         "--driver", "mdbx",
                         "--db-path", "/dbdata",
                         "node-rehost-all", net_name, old_prefix, new_prefix,
@@ -554,6 +554,11 @@ class NetworkManager:
                     old_prefix=old_prefix,
                     new_prefix=new_prefix,
                     method="dap_gdb_tool_node_rehost_all")
+
+        if updated == 0 and len(node_configs) > 0:
+            logger.warning("node_rehost_all_all_failed",
+                           note="Falling back to MDBX purge to prevent stale IPs on startup")
+            self._fix_stale_node_list_fallback(node_configs)
 
     def _fix_stale_node_list_fallback(self, node_configs) -> None:
         """Fallback: delete MDBX files when genesis prefix is unknown.
