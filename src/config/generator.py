@@ -323,7 +323,7 @@ class ConfigGenerator:
                 'fee_addr': '',  # Will be set per-node after fee wallet creation
                 # ESBocs consensus parameters (from topology.consensus)
                 'min_validators_count': mainchain_min_validators_count,  # Calculated from master_nodes_count
-                'poa_mode': 'false',  # PoS mode: auth certs auto-delegated, get GlobalDB write permissions
+                'poa_mode': 'false',  # PoS mode: validators auto-delegated as stake keys (poa_mode=true is bugged in SDK)
                 # Auto-generate auth_certs_prefix from network_name if not specified
                 'auth_certs_prefix': topology.consensus.auth_certs_prefix or f"{network_name}.master",
                 'new_round_delay': topology.consensus.new_round_delay,
@@ -501,7 +501,7 @@ class ConfigGenerator:
             'validators_addrs': custom_validators_addrs,  # For zerochain compatibility
             'mainchain_validators_addrs': custom_validators_addrs,  # CRITICAL: For main.cfg.j2 template
             'min_validators_count': calculated_min_validators,  # CRITICAL: must match validators count
-            'poa_mode': 'false',  # PoS mode: auth certs auto-delegated for GlobalDB permissions
+            'poa_mode': 'false',  # PoS mode: validators auto-delegated as stake keys (poa_mode=true is bugged in SDK)
             'root_nodes_addrs': root_nodes_addrs,
             'auth_certs_number': auth_certs_number,
             'auth_certs_number_verify': auth_certs_number_verify,

@@ -745,7 +745,7 @@ class GenesisConfigManager(BaseGenesisManager):
             'validators_addrs': validators_addrs_value,  # Keep for zerochain compatibility
             'mainchain_validators_addrs': validators_addrs_value,  # CRITICAL: Master validators for mainchain
             'min_validators_count': min_validators_count,  # CRITICAL: Set based on validators_addrs
-            'poa_mode': 'true',  # CRITICAL: Always use PoA mode (validators specified in config)
+            'poa_mode': 'false',  # PoS mode: validators auto-delegated as stake keys (poa_mode=true is bugged in SDK)
             'fee_addr': fee_addr if fee_addr else '',  # Use preserved fee_addr or empty string
             'genesis_mode': 'false',  # Disable genesis mode after genesis
         }

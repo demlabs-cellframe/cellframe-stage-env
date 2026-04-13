@@ -39,10 +39,8 @@ CACHE_DIR="$PROJECT_ROOT/cache"
 # Test directories
 TESTS_DIR="$PROJECT_ROOT/tests"
 E2E_TESTS="$TESTS_DIR/e2e"
-SCENARIOS_TESTS="$TESTS_DIR/e2e"
 FUNCTIONAL_TESTS="$TESTS_DIR/functional"
 REGRESSION_TESTS="$TESTS_DIR/regression"
-STAGE_ENV_INTEGRATION_BASE_TESTS="$STAGE_ENV_DIR/tests/integration/scenarios/base"
 
 # Build directories
 TEST_BUILD_DIR="$PROJECT_ROOT/build"
@@ -336,6 +334,12 @@ if $CLEAN_BEFORE; then
         popd > /dev/null
     fi
     
+    # Remove stale shard data dirs — leftover GDB/mempool from a previous run
+    # causes duplicate-token processing that can segfault the node on startup.
+    for shard_dir in "$CACHE_DIR"/shard-*; do
+        [ -d "$shard_dir" ] && rm -rf "$shard_dir"
+    done
+
     # Additional cleanup
     if [ -d "$CACHE_DIR/snapshots" ] && [ "$(ls -A "$CACHE_DIR/snapshots" 2>/dev/null)" ]; then
         info "Removing remaining snapshots..."
@@ -426,7 +430,22 @@ if [ $E2E_EXIT -eq 0 ]; then
         info "Running ${#TEST_DIRS[@]} test suite(s)..."
         
         pushd "$STAGE_ENV_DIR" > /dev/null
-        ./stage-env --config="$STAGE_ENV_CONFIG_ABS" run-tests --no-start-network "${TEST_DIRS[@]}" || TEST_EXIT=$?
+        # Limit parallel workers based on available memory to avoid OOM kills.
+        # Each shard runs 5 containers; with debug builds each node needs ~200MB.
+        # A single shard needs ~1.5GB (5 nodes + overhead), so:
+        #   <6GB  → sequential (-j 1) to avoid SIGSEGV from memory pressure
+        #   <12GB → 2 concurrent shards
+        #   ≥12GB → auto (cpu_count // 2, capped by suite count)
+        AVAIL_MEM_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
+        WORKERS_FLAG=""
+        if [ -n "$AVAIL_MEM_MB" ]; then
+            if [ "$AVAIL_MEM_MB" -lt 6000 ]; then
+                WORKERS_FLAG="-j 1"
+            elif [ "$AVAIL_MEM_MB" -lt 12000 ]; then
+                WORKERS_FLAG="-j 2"
+            fi
+        fi
+        ./stage-env --config="$STAGE_ENV_CONFIG_ABS" run-tests --no-start-network $WORKERS_FLAG "${TEST_DIRS[@]}" || TEST_EXIT=$?
         popd > /dev/null
         
         if [ $TEST_EXIT -ne 0 ]; then
@@ -506,7 +525,13 @@ echo "════════════════════════�
 
 # Find and display detailed test results from summary.json
 # Check both default cache and build/stage-env (when paths.cache_dir points there)
-LATEST_RUN_DIR=$(find "$CACHE_DIR/artifacts" "$PROJECT_ROOT/build/stage-env/artifacts" -maxdepth 1 -type d -name "run_*" 2>/dev/null | sort -r | head -n 1)
+SEARCH_DIRS=()
+[ -d "$CACHE_DIR/artifacts" ] && SEARCH_DIRS+=("$CACHE_DIR/artifacts")
+[ -d "$PROJECT_ROOT/build/stage-env/artifacts" ] && SEARCH_DIRS+=("$PROJECT_ROOT/build/stage-env/artifacts")
+LATEST_RUN_DIR=""
+if [ ${#SEARCH_DIRS[@]} -gt 0 ]; then
+    LATEST_RUN_DIR=$(find "${SEARCH_DIRS[@]}" -maxdepth 1 -type d -name "run_*" 2>/dev/null | sort -r | head -n 1) || true
+fi
 if [ -n "$LATEST_RUN_DIR" ] && [ -f "$LATEST_RUN_DIR/summary.json" ]; then
     echo ""
     echo "════════════════════════════════════"

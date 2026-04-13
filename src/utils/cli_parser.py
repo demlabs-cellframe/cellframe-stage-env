@@ -37,6 +37,7 @@ class CLICommandParser:
         self.commands: Dict[str, Set[str]] = {}
         self._parsed = False
         self.cache_file = cache_file
+        self._warned_commands: Set[str] = set()
     
     def load_from_cache(self) -> bool:
         """
@@ -392,15 +393,15 @@ class CLICommandParser:
         # Debug logging
         logger.debug(f"apply_cli_defaults: cli_command='{cli_command}', command='{command}', available_options={available_options}, defaults={defaults}, parsed={self._parsed}")
 
-        # Warn only when command is not in the parsed list at all (not when it has no options)
-        if not command_known:
+        if not command_known and command not in self._warned_commands:
+            self._warned_commands.add(command)
             if self._parsed:
-                logger.warning(
-                    f"Command '{command}' not found in parsed commands. Available commands: {list(self.commands.keys())[:15]}"
+                logger.debug(
+                    f"Command '{command}' not in parsed help output (may be unlisted/plugin command)"
                 )
             else:
                 logger.warning(
-                    f"CLI parser not initialized (parsed={self._parsed}). Cannot apply defaults for command '{command}'. Parser must be initialized before use."
+                    f"CLI parser not initialized. Cannot apply defaults for command '{command}'."
                 )
         
         # Build list of options to add

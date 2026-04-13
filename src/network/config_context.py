@@ -41,7 +41,7 @@ class ConfigContext:
     
     # Consensus parameters
     min_validators_count: int = 1  # Must be <= actual validators count (tests-in-docker uses 1)
-    poa_mode: str = "true"
+    poa_mode: str = "false"
     # auth_certs_number and auth_certs_number_verify are computed dynamically by generator
     # based on root_nodes_count from topology (tests-in-docker: 2 ROOT nodes)
     

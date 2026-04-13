@@ -53,21 +53,22 @@ class DatumInMempoolWaiter(BaseWaiter):
         return msg_hash == my_hash
 
     async def check(self) -> bool:
-        """Check if datum hash is in mempool."""
+        """Check if datum exists (mempool or chain) using targeted `mempool check`."""
         if self._start_time is None:
             self._start_time = time.time()
         
         try:
+            # Use targeted 'mempool check' instead of 'mempool list' to avoid
+            # garbled output and hangs when other mempool items are corrupted.
             exit_code, stdout, stderr = self.exec_cli(
                 self.node_id,
-                f"mempool list -net {self.network_name} -chain {self.chain}",
+                f"mempool check -net {self.network_name} -chain {self.chain} -datum {self.datum_hash}",
                 check_output=False
             )
             
             elapsed = time.time() - self._start_time
             
             if exit_code != 0:
-                # Check if stderr indicates container crash (fail-fast)
                 if stderr and ("not running" in stderr.lower() or "crashed" in stderr.lower()):
                     error_msg = f"Container crashed: {stderr}"
                     logger.error("container_crashed_during_datum_monitoring",
@@ -75,57 +76,45 @@ class DatumInMempoolWaiter(BaseWaiter):
                                datum=self.datum_hash[:16],
                                error=error_msg,
                                elapsed=f"{elapsed:.2f}s")
-                    # Re-raise to stop monitoring immediately
                     raise RuntimeError(
                         f"Container crashed during datum monitoring (node {self.node_id}): {error_msg}"
                     )
                 
-                logger.warning("mempool_list_failed",
+                logger.warning("mempool_check_failed",
                            node_id=self.node_id,
                            exit_code=exit_code,
                            stderr=stderr[:500] if stderr else "empty",
                            elapsed=f"{elapsed:.2f}s")
                 return False
             
-            # Log mempool contents for debugging (first few checks only)
-            if elapsed < 5.0:  # Only log during first 5 seconds
-                logger.info("mempool_list_result",
+            if elapsed < 5.0:
+                logger.info("mempool_check_result",
                            node_id=self.node_id,
                            stdout_length=len(stdout) if stdout else 0,
                            stdout_preview=stdout[:500] if stdout else "empty",
                            looking_for=self.datum_hash,
                            elapsed=f"{elapsed:.2f}s")
             
-            # Check if datum hash is in the output
-            # Try both hex format (with 0x prefix) and without prefix
-            datum_hash_lower = self.datum_hash.lower()
-            datum_hash_no_prefix = datum_hash_lower.replace("0x", "") if datum_hash_lower.startswith("0x") else datum_hash_lower
             stdout_lower = stdout.lower() if stdout else ""
             
-            # Check for hash with 0x prefix
-            if datum_hash_lower in stdout_lower:
-                logger.info("datum_found_in_mempool",
+            # 'mempool check' returns 'find: true' if datum exists (in mempool or chain)
+            import re
+            found = bool(re.search(r'find:\s*true', stdout_lower))
+            
+            if found:
+                source_match = re.search(r'source:\s*(\w+)', stdout_lower)
+                source = source_match.group(1) if source_match else "unknown"
+                logger.info("datum_found",
                            node_id=self.node_id,
                            datum=self.datum_hash[:16],
-                           format="with_0x_prefix",
+                           source=source,
                            elapsed=f"{elapsed:.2f}s")
                 return True
             
-            # Check for hash without 0x prefix
-            if datum_hash_no_prefix in stdout_lower:
-                logger.info("datum_found_in_mempool",
-                           node_id=self.node_id,
-                           datum=self.datum_hash[:16],
-                           format="without_0x_prefix",
-                           elapsed=f"{elapsed:.2f}s")
-                return True
-            
-            # Log what we're looking for vs what we found (first check only)
             if elapsed < 2.0:
                 logger.info("datum_not_found_yet",
                            node_id=self.node_id,
                            looking_for=self.datum_hash,
-                           looking_for_no_prefix=datum_hash_no_prefix,
                            stdout_sample=stdout_lower[:300] if stdout_lower else "empty")
             
             return False
@@ -134,14 +123,12 @@ class DatumInMempoolWaiter(BaseWaiter):
             elapsed = time.time() - self._start_time if self._start_time else 0
             error_str = str(e).lower()
             
-            # Check if error is about container crash (fail-fast)
             if "not running" in error_str or "409" in error_str or "conflict" in error_str or "crashed" in error_str:
                 logger.error("container_crashed_during_datum_monitoring",
                            node_id=self.node_id,
                            datum=self.datum_hash[:16],
                            error=str(e),
                            elapsed=f"{elapsed:.2f}s")
-                # Re-raise to stop monitoring immediately
                 raise RuntimeError(
                     f"Container crashed during datum monitoring (node {self.node_id}): {e}"
                 ) from e

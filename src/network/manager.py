@@ -288,6 +288,7 @@ class NetworkManager:
             self.config_generator.generate_all(self.topology, node_configs, force=rebuild)
         else:
             self._remap_seed_nodes_for_shard(node_configs)
+            self._regenerate_configs_after_restore(node_configs)
 
         cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
         node_source_config = self.config_loader.get_node_source_config()
@@ -315,15 +316,16 @@ class NetworkManager:
         """Adapt snapshot data for the current shard subnet.
 
         Snapshot data originates from the genesis shard (shard-0).  In parallel
-        mode every shard uses a shifted subnet, so we remap
-        ``seed_nodes_hosts`` IPs in **all** network configs (not just the
-        primary network).  Nodes may be configured for multiple networks
-        (e.g. ``vpntest`` + ``stagenet``); leaving any config un-remapped
-        causes TCP SYN hangs to unreachable shard-0 IPs.
+        mode every shard uses a shifted subnet, so we remap:
+        1. ``seed_nodes_hosts`` IPs in **all** network configs
+        2. ``ext_address`` in each node's ``cellframe-node.cfg``
+
+        Without (2) nodes announce themselves with the genesis-shard IP,
+        so peers never establish links to the correct container address.
 
         GDB is intentionally preserved: the balancer requires the node list
         stored there to return peers (HTTP 204 otherwise).  Stale shard-0 IPs
-        in GDB entries are corrected by nodes re-registering on startup.
+        in GDB entries are corrected by ``_fix_stale_node_list``.
         """
         import re as _re
 
@@ -335,6 +337,7 @@ class NetworkManager:
         configs_cache = (self.base_path / cache_dir / 'configs').resolve()
 
         seed_re = _re.compile(r'(?m)^(seed_nodes_hosts\s*=\s*)\[([^\]]*)\]')
+        ext_addr_re = _re.compile(r'(?m)^(ext_address\s*=\s*)(\d+\.\d+\.\d+\.\d+)')
 
         def _remap(hosts_str):
             remapped = []
@@ -365,23 +368,58 @@ class NetworkManager:
                     net_cfg.write_text(new_content)
                     patched += 1
 
-        if patched:
+        # Remap ext_address in cellframe-node.cfg for each node
+        ext_patched = 0
+        for node in node_configs:
+            node_cfg = configs_cache / f"node{node.node_id}" / "cellframe-node.cfg"
+            if not node_cfg.is_file():
+                continue
+            content = node_cfg.read_text()
+            new_content = ext_addr_re.sub(
+                lambda m: m.group(1) + node.ip_address,
+                content,
+            )
+            if new_content != content:
+                node_cfg.write_text(new_content)
+                ext_patched += 1
+
+        if patched or ext_patched:
             logger.info("remapped_seed_nodes_for_shard",
-                       new_prefix=new_prefix, patched_files=patched)
+                       new_prefix=new_prefix, patched_seed_files=patched,
+                       patched_ext_address=ext_patched)
 
-    def _regenerate_plugins_after_restore(self, node_configs) -> None:
-        """Regenerate plugins.cfg for all nodes after snapshot restore.
+    def _regenerate_configs_after_restore(self, node_configs) -> None:
+        """Re-render ``cellframe-node.cfg.d`` snippets from current templates.
 
-        plugins.cfg depends on the runtime [plugins] config section, not on the
-        snapshot contents.  A snapshot created by a different config (e.g. node
-        base tests without [plugins] enabled=true) would leave plugins disabled.
+        Snapshots may have been created with older template versions.  Re-
+        rendering ensures that any template changes (e.g. new role-specific
+        settings like ``mempool_autoproc``) take effect without requiring a
+        full snapshot rebuild.
         """
+        from jinja2 import Template as J2Template
+
         cache_dir = self.paths_config.get('cache_dir', 'cache')
         configs_cache = (self.base_path / cache_dir / 'configs').resolve()
+        network_name = self.topology.network.name
+
+        cfg_d_template_dir = (
+            self.config_generator._resolve_template("cellframe-node.cfg.d")
+        )
 
         for node in node_configs:
             node_cfg_d = configs_cache / f"node{node.node_id}" / "cellframe-node.cfg.d"
             node_cfg_d.mkdir(parents=True, exist_ok=True)
+
+            if cfg_d_template_dir and cfg_d_template_dir.is_dir():
+                snippet_ctx = {'network_name': network_name}
+                for cfg_snippet in cfg_d_template_dir.glob("*.cfg"):
+                    content = cfg_snippet.read_text()
+                    if '{{' in content or '{%' in content:
+                        rendered = J2Template(content).render(**snippet_ctx)
+                    else:
+                        rendered = content
+                    (node_cfg_d / cfg_snippet.name).write_text(rendered)
+
             self.config_generator._generate_plugins_config(node_cfg_d, node)
 
     async def _purge_nodes_list_before_snapshot(self, node_configs) -> None:
@@ -428,9 +466,10 @@ class NetworkManager:
     def _fix_stale_node_list(self, node_configs) -> None:
         """Overwrite stale IPs in ``nodes.list`` BEFORE starting containers.
 
-        Runs ``cf-cert-generator --read-addr`` and ``dap-gdb-tool node-rehost``
-        directly on the GDB files on disk.  Everything happens in a single
-        ``docker run`` — no running nodes, no CLI sockets required.
+        Reads node addresses from ``node_addr.txt`` (created during genesis)
+        and runs ``dap-gdb-tool node-rehost`` directly on the GDB files on
+        disk.  Everything happens in a single ``docker run`` — no running
+        nodes, no CLI sockets required.
         """
         import subprocess
         from ..certs.generator import CertGenerator, CERT_BUILDER_IMAGE
@@ -448,6 +487,23 @@ class NetworkManager:
         settings = self.topology.network_settings
         base_ip_parts = settings.base_ip.split('.')
 
+        # Read node addresses from node_addr.txt (generated during genesis)
+        # These files live in the shared certs directory, not per-shard
+        certs_base = getattr(self.genesis, 'certs_cache', cache_path / "certs")
+        addr_map: dict[int, str] = {}
+        for nc in node_configs:
+            addr_file = certs_base / f"node{nc.node_id}" / "node_addr.txt"
+            if not addr_file.is_file():
+                # Fallback: check shard-local data dir
+                addr_file = cache_path / "data" / f"node{nc.node_id}" / "node_addr.txt"
+            if addr_file.is_file():
+                addr_map[nc.node_id] = addr_file.read_text().strip()
+
+        if not addr_map:
+            logger.warning("no_node_addresses_found",
+                          note="Cannot fix stale node list without node_addr.txt files")
+            return
+
         volumes: list[str] = []
         ip_map: dict[int, str] = {}
 
@@ -459,27 +515,43 @@ class NetworkManager:
                 f".{int(base_ip_parts[3]) + nc.node_id - 1}"
             )
 
-        script_lines = ["set -e", ""]
+        # Check if dap-gdb-tool exists in the Docker image before building
+        # the full script.  If it's missing fall back to purging stale GDB
+        # files so nodes rebuild node list from seed_nodes_hosts on startup.
+        probe_cmd = [
+            "docker", "run", "--rm", "--entrypoint", "sh",
+            tools_image, "-c",
+            "test -x /usr/local/bin/dap-gdb-tool && echo OK || echo MISSING",
+        ]
+        try:
+            probe = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+            tool_available = probe.returncode == 0 and "OK" in probe.stdout
+        except Exception:
+            tool_available = False
 
-        for nc in node_configs:
-            script_lines.append(
-                f'ADDR_{nc.node_id}=$('
-                f'/usr/local/bin/cf-cert-generator --read-addr '
-                f'/nodes/node{nc.node_id}/lib/ca/node-addr.dcert 2>/dev/null'
-                f' | tail -1) || ADDR_{nc.node_id}=""'
+        if not tool_available:
+            logger.warning(
+                "dap_gdb_tool_not_available",
+                note="dap-gdb-tool binary missing from Docker image; "
+                     "nodes will rely on seed_nodes_hosts from config "
+                     "for peer discovery (already remapped by "
+                     "_remap_seed_nodes_for_shard)",
             )
+            return
 
-        script_lines.append("")
+        script_lines = ["set -e", ""]
 
         for target in node_configs:
             gdb = f"/nodes/node{target.node_id}/lib/global_db"
             for src in node_configs:
+                if src.node_id not in addr_map:
+                    continue
+                addr = addr_map[src.node_id]
                 ip = ip_map[src.node_id]
                 script_lines.append(
-                    f'[ -n "$ADDR_{src.node_id}" ] && '
                     f'/usr/local/bin/dap-gdb-tool '
                     f'--db-path {gdb} '
-                    f'node-rehost {net_name} "$ADDR_{src.node_id}" {ip} 8079 '
+                    f'node-rehost {net_name} "{addr}" {ip} 8079 '
                     f'|| true'
                 )
 
@@ -501,9 +573,14 @@ class NetworkManager:
                 logger.info("stale_node_list_fixed",
                             nodes=len(node_configs),
                             entries_updated=ok_count)
+                if ok_count == 0:
+                    logger.debug("gdb_tool_output",
+                                 stdout=result.stdout[-1000:] if result.stdout else "(empty)",
+                                 stderr=result.stderr[-500:] if result.stderr else "(empty)")
             else:
                 logger.error("gdb_tool_failed",
                              rc=result.returncode,
+                             stdout=result.stdout[-500:] if result.stdout else "",
                              stderr=result.stderr[-500:] if result.stderr else "")
         except subprocess.TimeoutExpired:
             logger.error("gdb_tool_timeout")
@@ -579,7 +656,7 @@ class NetworkManager:
                 self.config_generator.generate_all(self.topology, node_configs, force=rebuild)
             else:
                 self._remap_seed_nodes_for_shard(node_configs)
-                self._regenerate_plugins_after_restore(node_configs)
+                self._regenerate_configs_after_restore(node_configs)
 
             cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
             node_source_config = self.config_loader.get_node_source_config()

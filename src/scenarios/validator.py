@@ -305,7 +305,7 @@ class ScenarioValidator:
             )
         
         for i, step in enumerate(self._get_steps(scenario.setup) + self._get_steps(scenario.test)):
-            if hasattr(step, 'cli') and any(cmd in step.cli for cmd in ['token_decl', 'token_emit', 'tx_create']):
+            if hasattr(step, 'cli') and any(cmd in step.cli for cmd in ['token_decl', 'token_emit', 'tx create']):
                 if not hasattr(step, 'wait') or not step.wait:
                     report.add_issue(
                         "info",

@@ -91,7 +91,7 @@ setup:
 
 test:
   # Create transaction (goes to main chain)
-  - cli: tx_create -token TXDEMO -from_emission {{emission_hash}} -to_addr {{receiver_addr}} -value 5000 -fee 0.1 -cert {{root_cert_single}}
+  - cli: tx create -token TXDEMO -from_emission {{emission_hash}} -to_addr {{receiver_addr}} -value 5000 -fee 0.1 -cert {{root_cert_single}}
     save_hash: tx_hash
   
   # Monitor transaction with custom timeouts (usually NOT needed!)

@@ -58,6 +58,7 @@ add_executable(cf-cert-generator cert-generator.c ${CF_COMMON_SOURCES})
 
 target_link_libraries(cf-cert-generator
     dap-sdk
+    dap-sdk
     pthread
     m
     ssl
@@ -68,6 +69,7 @@ target_link_libraries(cf-cert-generator
 add_executable(dap-cert dap-cert.c ${CF_COMMON_SOURCES})
 
 target_link_libraries(dap-cert
+    dap-sdk
     dap-sdk
     pthread
     m
