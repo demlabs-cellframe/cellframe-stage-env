@@ -8,10 +8,11 @@
  *   - SDK 6.x:                  Driver-level API via dap_global_db_driver.h
  *
  * Commands:
- *   list-keys    - List all keys in a GDB group
- *   read         - Read a record (hex dump)
- *   delete       - Delete a record
- *   node-rehost  - Update host/port in a nodes.list entry
+ *   list-keys         - List all keys in a GDB group
+ *   read              - Read a record (hex dump)
+ *   delete            - Delete a record
+ *   node-rehost       - Update host/port in a nodes.list entry
+ *   node-rehost-all   - Replace host prefix in ALL nodes.list entries
  */
 
 #include <stdio.h>
@@ -66,10 +67,13 @@ static void s_print_usage(const char *a_prog)
     printf("  list-keys <group>\n");
     printf("  read <group> <key>\n");
     printf("  delete <group> <key>\n");
-    printf("  node-rehost <net_name> <node_addr> <new_host> [new_port]\n\n");
+    printf("  node-rehost <net_name> <node_addr> <new_host> [new_port]\n");
+    printf("  node-rehost-all <net_name> <old_host_prefix> <new_host_prefix>\n\n");
     printf("Examples:\n");
     printf("  %s --db-path /opt/cellframe-node/var/lib/global_db \\\n", a_prog);
     printf("      node-rehost vpntest 3FDA::0325::3A71::2C74 10.0.2.3 8079\n");
+    printf("  %s --db-path /opt/cellframe-node/var/lib/global_db \\\n", a_prog);
+    printf("      node-rehost-all vpntest 172.22 172.23\n");
 }
 
 /* ================================================================== */
@@ -361,6 +365,138 @@ static int s_cmd_node_rehost(const char *a_net_name,
     return l_rc ? 1 : 0;
 }
 
+static int s_cmd_node_rehost_all(const char *a_net_name,
+                                  const char *a_old_prefix,
+                                  const char *a_new_prefix)
+{
+    char l_group[256];
+    snprintf(l_group, sizeof(l_group), "%s.nodes.list", a_net_name);
+
+    dap_global_db_t *l_tree = dap_global_db_group_get_or_create(l_group);
+    if (!l_tree) {
+        fprintf(stderr, "Cannot open group '%s'\n", l_group);
+        return 1;
+    }
+
+    dap_global_db_cursor_t *l_cur = dap_global_db_cursor_create(l_tree);
+    if (!l_cur) {
+        printf("Group '%s' is empty — nothing to rehost\n", l_group);
+        return 0;
+    }
+
+    size_t l_old_prefix_len = strlen(a_old_prefix);
+    size_t l_new_prefix_len = strlen(a_new_prefix);
+    int l_updated = 0;
+
+    /* Collect all matching records first (cursor invalidates on write) */
+    typedef struct { dap_global_db_key_t key; char *text_key; void *value;
+                     uint32_t value_len; void *sign; uint32_t sign_len; } entry_t;
+    entry_t *l_entries = NULL;
+    size_t l_entry_count = 0;
+
+    dap_global_db_read_begin(l_tree);
+    int l_rc = dap_global_db_cursor_move(l_cur, DAP_GLOBAL_DB_FIRST, NULL);
+    while (l_rc == 0) {
+        dap_global_db_key_t l_cur_key;
+        char *l_text_key = NULL;
+        void *l_value = NULL;
+        uint32_t l_value_len = 0;
+        void *l_sign = NULL;
+        uint32_t l_sign_len = 0;
+        uint8_t l_flags = 0;
+
+        if (dap_global_db_cursor_get(l_cur, &l_cur_key, &l_text_key,
+                                     &l_value, &l_value_len,
+                                     &l_sign, &l_sign_len, &l_flags) == 0) {
+            if (!(l_flags & DAP_GLOBAL_DB_RECORD_DEL) &&
+                l_value_len >= sizeof(gdb_node_info_t)) {
+                gdb_node_info_t *l_info = (gdb_node_info_t *)l_value;
+                if (l_info->ext_host_len >= l_old_prefix_len &&
+                    strncmp(l_info->ext_host, a_old_prefix, l_old_prefix_len) == 0) {
+                    l_entries = realloc(l_entries,
+                                        (l_entry_count + 1) * sizeof(entry_t));
+                    l_entries[l_entry_count++] = (entry_t){
+                        l_cur_key, l_text_key, l_value,
+                        l_value_len, l_sign, l_sign_len
+                    };
+                    l_value = NULL; l_sign = NULL; l_text_key = NULL;
+                }
+            }
+            DAP_DEL_Z(l_text_key);
+            DAP_DEL_Z(l_value);
+            DAP_DEL_Z(l_sign);
+        }
+        l_rc = dap_global_db_cursor_move(l_cur, DAP_GLOBAL_DB_NEXT, NULL);
+    }
+    dap_global_db_read_end(l_tree);
+    dap_global_db_cursor_close(l_cur);
+
+    for (size_t i = 0; i < l_entry_count; i++) {
+        entry_t *e = &l_entries[i];
+        gdb_node_info_t *l_old_info = (gdb_node_info_t *)e->value;
+
+        const char *l_suffix     = l_old_info->ext_host + l_old_prefix_len;
+        size_t      l_suffix_len = l_old_info->ext_host_len - l_old_prefix_len;
+        size_t      l_new_host_len = l_new_prefix_len + l_suffix_len;
+        size_t      l_new_size     = sizeof(gdb_node_info_t) + l_new_host_len + 1;
+
+        gdb_node_info_t *l_new_info = calloc(1, l_new_size);
+        if (!l_new_info) continue;
+
+        l_new_info->address     = l_old_info->address;
+        l_new_info->cell_id     = l_old_info->cell_id;
+        memcpy(l_new_info->alias, l_old_info->alias, sizeof(l_new_info->alias));
+        l_new_info->ext_port    = l_old_info->ext_port;
+        l_new_info->ext_host_len = (uint8_t)l_new_host_len;
+        memcpy(l_new_info->ext_host, a_new_prefix, l_new_prefix_len);
+        memcpy(l_new_info->ext_host + l_new_prefix_len, l_suffix, l_suffix_len + 1);
+
+        char l_old_host[256] = {0};
+        memcpy(l_old_host, l_old_info->ext_host,
+               l_old_info->ext_host_len < 255 ? l_old_info->ext_host_len : 255);
+
+        dap_global_db_delete(l_tree, &e->key);
+
+        dap_global_db_store_obj_t l_obj = {
+            .group     = l_group,
+            .key       = e->text_key,
+            .value     = (byte_t *)l_new_info,
+            .value_len = (uint32_t)l_new_size,
+            .timestamp = dap_nanotime_now(),
+            .flags     = 0,
+            .sign      = NULL,
+            .crc       = 0,
+        };
+        l_obj.crc = dap_global_db_store_obj_checksum(&l_obj);
+
+        dap_global_db_hash_t l_hash = dap_global_db_hash_get(&l_obj);
+        dap_global_db_key_t  l_new_key = { .bets = l_hash.bets, .becrc = l_hash.becrc };
+
+        size_t l_key_len = strlen(e->text_key) + 1;
+        int l_wr = dap_global_db_insert(l_tree, &l_new_key,
+                                        e->text_key, (uint32_t)l_key_len,
+                                        l_new_info, (uint32_t)l_new_size,
+                                        e->sign, e->sign_len, 0);
+        if (l_wr == 0) {
+            printf("OK %s/%s: %s -> %s\n",
+                   l_group, e->text_key, l_old_host, l_new_info->ext_host);
+            l_updated++;
+        } else {
+            fprintf(stderr, "Failed to update '%s/%s', code %d\n",
+                    l_group, e->text_key, l_wr);
+        }
+
+        free(l_new_info);
+        DAP_DEL_Z(e->text_key);
+        DAP_DEL_Z(e->value);
+        DAP_DEL_Z(e->sign);
+    }
+    free(l_entries);
+
+    printf("Updated: %d\n", l_updated);
+    return 0;
+}
+
 /* ================================================================== */
 /*  SDK 6.x implementation (driver-level API)                          */
 /* ================================================================== */
@@ -523,6 +659,87 @@ static int s_cmd_node_rehost(const char *a_net_name,
     return l_rc ? 1 : 0;
 }
 
+static int s_cmd_node_rehost_all(const char *a_net_name,
+                                  const char *a_old_prefix,
+                                  const char *a_new_prefix)
+{
+    char l_group[256];
+    snprintf(l_group, sizeof(l_group), "%s.nodes.list", a_net_name);
+
+    size_t l_count = 0;
+    dap_store_obj_t *l_objs = dap_global_db_driver_read(l_group, NULL, &l_count, false);
+    if (!l_objs || !l_count) {
+        printf("Group '%s' is empty — nothing to rehost\n", l_group);
+        return 0;
+    }
+
+    size_t l_old_prefix_len = strlen(a_old_prefix);
+    size_t l_new_prefix_len = strlen(a_new_prefix);
+    int l_updated = 0;
+
+    for (size_t i = 0; i < l_count; i++) {
+        dap_store_obj_t *l_obj = &l_objs[i];
+        if (l_obj->flags & DAP_GLOBAL_DB_RECORD_DEL) continue;
+        if (l_obj->value_len < sizeof(gdb_node_info_t)) continue;
+
+        gdb_node_info_t *l_old_info = (gdb_node_info_t *)l_obj->value;
+        if (l_old_info->ext_host_len < l_old_prefix_len) continue;
+        if (strncmp(l_old_info->ext_host, a_old_prefix, l_old_prefix_len) != 0) continue;
+
+        const char *l_suffix     = l_old_info->ext_host + l_old_prefix_len;
+        size_t      l_suffix_len = l_old_info->ext_host_len - l_old_prefix_len;
+        size_t      l_new_host_len = l_new_prefix_len + l_suffix_len;
+        size_t      l_new_size     = sizeof(gdb_node_info_t) + l_new_host_len + 1;
+
+        gdb_node_info_t *l_new_info = calloc(1, l_new_size);
+        if (!l_new_info) continue;
+
+        l_new_info->address     = l_old_info->address;
+        l_new_info->cell_id     = l_old_info->cell_id;
+        memcpy(l_new_info->alias, l_old_info->alias, sizeof(l_new_info->alias));
+        l_new_info->ext_port    = l_old_info->ext_port;
+        l_new_info->ext_host_len = (uint8_t)l_new_host_len;
+        memcpy(l_new_info->ext_host, a_new_prefix, l_new_prefix_len);
+        memcpy(l_new_info->ext_host + l_new_prefix_len, l_suffix, l_suffix_len + 1);
+
+        char l_old_host[256] = {0};
+        memcpy(l_old_host, l_old_info->ext_host,
+               l_old_info->ext_host_len < 255 ? l_old_info->ext_host_len : 255);
+
+        /* Mark old record deleted */
+        l_obj->flags |= DAP_GLOBAL_DB_RECORD_DEL;
+        dap_global_db_driver_apply(l_obj, 1);
+
+        /* Insert updated record */
+        dap_store_obj_t l_new_obj = {
+            .group     = l_group,
+            .key       = l_obj->key,
+            .value     = (byte_t *)l_new_info,
+            .value_len = (uint32_t)l_new_size,
+            .timestamp = dap_nanotime_now(),
+            .flags     = 0,
+            .sign      = NULL,
+            .crc       = 0,
+        };
+        l_new_obj.crc = dap_store_obj_checksum(&l_new_obj);
+
+        int l_wr = dap_global_db_driver_apply(&l_new_obj, 1);
+        if (l_wr == 0) {
+            printf("OK %s/%s: %s -> %s\n",
+                   l_group, l_obj->key, l_old_host, l_new_info->ext_host);
+            l_updated++;
+        } else {
+            fprintf(stderr, "Failed to update '%s/%s', code %d\n",
+                    l_group, l_obj->key, l_wr);
+        }
+        free(l_new_info);
+    }
+
+    dap_store_obj_free(l_objs, l_count);
+    printf("Updated: %d\n", l_updated);
+    return 0;
+}
+
 #endif /* DAP_SDK_PRE_6 */
 
 /* ================================================================== */
@@ -601,6 +818,14 @@ int main(int argc, char **argv)
             l_ret = s_cmd_node_rehost(l_cmd_argv[0], l_cmd_argv[1],
                                       l_cmd_argv[2],
                                       l_cmd_argc > 3 ? l_cmd_argv[3] : NULL);
+        }
+    } else if (!strcmp(l_cmd, "node-rehost-all")) {
+        if (l_cmd_argc < 3) {
+            fprintf(stderr, "Usage: node-rehost-all <net_name> "
+                    "<old_host_prefix> <new_host_prefix>\n");
+        } else {
+            l_ret = s_cmd_node_rehost_all(l_cmd_argv[0], l_cmd_argv[1],
+                                          l_cmd_argv[2]);
         }
     } else {
         fprintf(stderr, "Unknown command: %s\n\n", l_cmd);

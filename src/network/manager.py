@@ -363,12 +363,26 @@ class NetworkManager:
             return old_ip
 
         patched = 0
+        genesis_prefix_detected: Optional[str] = None
+
         for node in node_configs:
             # Remap seed_nodes_hosts in network/*.cfg
             net_dir = configs_cache / f"node{node.node_id}" / "network"
             if net_dir.is_dir():
                 for net_cfg in net_dir.glob("*.cfg"):
                     content = net_cfg.read_text()
+                    # Detect genesis prefix from unmapped content (before remap)
+                    if genesis_prefix_detected is None:
+                        m_detect = seed_re.search(content)
+                        if m_detect:
+                            for entry in m_detect.group(2).split(','):
+                                entry = entry.strip()
+                                ip_port = entry.split(':')
+                                if len(ip_port) == 2:
+                                    old_octets = ip_port[0].split('.')
+                                    if len(old_octets) == 4:
+                                        genesis_prefix_detected = '.'.join(old_octets[:3])
+                                        break
                     new_content = seed_re.sub(
                         lambda m: m.group(1) + _remap(m.group(2)),
                         content,
@@ -390,9 +404,14 @@ class NetworkManager:
                     main_cfg.write_text(new_content)
                     patched += 1
 
+        # Save genesis prefix for _fix_stale_node_list (called later)
+        self._genesis_net_prefix = genesis_prefix_detected
+
         if patched:
             logger.info("remapped_seed_nodes_for_shard",
-                       new_prefix=new_prefix, patched_files=patched)
+                       new_prefix=new_prefix,
+                       genesis_prefix=genesis_prefix_detected,
+                       patched_files=patched)
 
     def _regenerate_plugins_after_restore(self, node_configs) -> None:
         """Regenerate plugins.cfg for all nodes after snapshot restore.
@@ -451,18 +470,99 @@ class NetworkManager:
                           note="Shards may have stale IPs in GDB")
 
     def _fix_stale_node_list(self, node_configs) -> None:
-        """Clear stale GDB ``nodes.list`` data BEFORE starting containers.
+        """Rewrite stale GDB ``nodes.list`` host IPs to the current shard subnet.
 
-        Snapshots are created from the genesis shard (shard-0, subnet 172.22.0.0/16).
-        Every shard restored from that snapshot will inherit shard-0 peer IPs in
-        its MDBX global-DB.  For non-zero shards those IPs are unreachable, so
-        nodes would populate their nodes.list with wrong addresses and never
-        establish P2P links.
+        Snapshots are created from the genesis shard (shard-0).  Every shard
+        restored from that snapshot will inherit shard-0 peer IPs in its MDBX
+        global-DB.  For non-zero shards those IPs are unreachable.
 
-        Deleting the MDBX **only affects the global-DB** (peers, runtime metadata).
-        Blockchain data lives in ``lib/network/<net>/`` and is NOT touched.
-        Nodes will rebuild their peers list from ``seed_nodes_hosts`` on first boot.
+        Uses ``dap-gdb-tool node-rehost-all`` (via ``cf-tools:latest`` Docker
+        image) to rewrite all ``ext_host`` fields in-place, preserving all other
+        node metadata.  This is preferred over deleting MDBX because nodes
+        immediately have valid peer information on startup and don't need to wait
+        for re-registration via CLI.
+
+        For shard-0 (genesis) no remapping is performed.
         """
+        import subprocess as _sp
+
+        # Genesis prefix is captured by _remap_seed_nodes_for_shard before
+        # it rewrites the network configs; if not available, fall back to delete.
+        old_prefix: Optional[str] = getattr(self, '_genesis_net_prefix', None)
+        settings = self.topology.network_settings
+        new_prefix = '.'.join(settings.base_ip.split('.')[:3])
+        net_name = self.topology.network.name
+
+        if old_prefix is None:
+            logger.warning("genesis_prefix_unknown",
+                           note="falling back to mdbx_purge")
+            self._fix_stale_node_list_fallback(node_configs)
+            return
+
+        if old_prefix == new_prefix:
+            logger.info("stale_node_list_skip",
+                        reason="shard-0 (genesis subnet), no remapping needed",
+                        prefix=new_prefix)
+            return
+
+        cache_dir = self.paths_config.get('cache_dir', 'cache')
+        cache_path = (self.base_path / cache_dir).resolve()
+
+        updated = 0
+        for nc in node_configs:
+            mdbx_dir = (
+                cache_path / "data" / f"node{nc.node_id}"
+                / "lib" / "global_db" / "gdb-mdbx"
+            )
+            if not mdbx_dir.exists():
+                logger.debug("mdbx_dir_not_found",
+                             node_id=nc.node_id, path=str(mdbx_dir))
+                continue
+            try:
+                result = _sp.run(
+                    [
+                        "docker", "run", "--rm",
+                        "-v", f"{mdbx_dir}:/dbdata",
+                        "cf-tools:latest",
+                        "/tools/dap-gdb-tool",
+                        "--driver", "mdbx",
+                        "--db-path", "/dbdata",
+                        "node-rehost-all", net_name, old_prefix, new_prefix,
+                    ],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if result.returncode != 0:
+                    logger.warning("node_rehost_all_failed",
+                                   node_id=nc.node_id,
+                                   stderr=result.stderr.strip())
+                else:
+                    logger.info("node_rehost_all_ok",
+                                node_id=nc.node_id,
+                                old_prefix=old_prefix,
+                                new_prefix=new_prefix,
+                                output=result.stdout.strip())
+                    updated += 1
+            except _sp.TimeoutExpired:
+                logger.warning("node_rehost_all_timeout", node_id=nc.node_id)
+            except Exception as exc:
+                logger.warning("node_rehost_all_exception",
+                               node_id=nc.node_id, error=str(exc))
+
+        logger.info("stale_node_list_fixed",
+                    nodes=len(node_configs),
+                    entries_updated=updated,
+                    old_prefix=old_prefix,
+                    new_prefix=new_prefix,
+                    method="dap_gdb_tool_node_rehost_all")
+
+    def _fix_stale_node_list_fallback(self, node_configs) -> None:
+        """Fallback: delete MDBX files when genesis prefix is unknown.
+
+        Nodes will rebuild their peers list from ``seed_nodes_hosts`` on
+        first boot (combined with ``_register_nodes_after_restore``).
+        """
+        import subprocess as _sp
+
         cache_dir = self.paths_config.get('cache_dir', 'cache')
         cache_path = (self.base_path / cache_dir).resolve()
 
@@ -479,19 +579,17 @@ class NetworkManager:
                         f.unlink()
                         purged += 1
                     except OSError:
-                        # File may be root-owned if chown post-extract failed
                         try:
-                            import subprocess as _sp
                             _sp.run(["sudo", "rm", "-f", str(f)],
                                     capture_output=True, timeout=5)
                             purged += 1
                         except Exception:
                             pass
 
-        logger.info("stale_node_list_fixed",
-                     nodes=len(node_configs),
-                     entries_updated=purged,
-                     method="mdbx_purge")
+        logger.info("stale_node_list_fixed_fallback",
+                    nodes=len(node_configs),
+                    files_deleted=purged,
+                    method="mdbx_purge")
 
     async def _register_nodes_after_restore(self, node_configs) -> None:
         """Register all nodes in each other's node-list via CLI.
