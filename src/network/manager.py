@@ -255,7 +255,10 @@ class NetworkManager:
         """Derive dap-sdk git branch from genesis version (v5.8 -> release-5.8)."""
         ver = self._genesis_version_dir
         if ver and ver.startswith("v"):
-            return f"release-{ver[1:]}"
+            suffix = ver[1:]
+            if suffix.endswith(".x"):
+                suffix = suffix[:-2] + ".0"
+            return f"release-{suffix}"
         return "release-6.0"
 
     async def prepare(self, rebuild: bool = False) -> None:
@@ -353,19 +356,41 @@ class NetworkManager:
                     remapped.append(entry)
             return '[' + ','.join(remapped) + ']'
 
+        # Regex to remap ext_address in cellframe-node.cfg
+        ext_addr_re = _re.compile(r'(?m)^(ext_address\s*=\s*)([\d]+\.[\d]+\.[\d]+\.[\d]+)')
+
+        def _remap_ip(old_ip: str) -> str:
+            octets = old_ip.split('.')
+            if len(octets) == 4:
+                return f"{new_prefix}.{octets[3]}"
+            return old_ip
+
         patched = 0
         for node in node_configs:
+            # Remap seed_nodes_hosts in network/*.cfg
             net_dir = configs_cache / f"node{node.node_id}" / "network"
-            if not net_dir.is_dir():
-                continue
-            for net_cfg in net_dir.glob("*.cfg"):
-                content = net_cfg.read_text()
-                new_content = seed_re.sub(
-                    lambda m: m.group(1) + _remap(m.group(2)),
+            if net_dir.is_dir():
+                for net_cfg in net_dir.glob("*.cfg"):
+                    content = net_cfg.read_text()
+                    new_content = seed_re.sub(
+                        lambda m: m.group(1) + _remap(m.group(2)),
+                        content,
+                    )
+                    if new_content != content:
+                        net_cfg.write_text(new_content)
+                        patched += 1
+
+            # Remap ext_address in cellframe-node.cfg so this node advertises
+            # its correct IP in the shard's subnet (not the genesis subnet).
+            main_cfg = configs_cache / f"node{node.node_id}" / "cellframe-node.cfg"
+            if main_cfg.exists():
+                content = main_cfg.read_text()
+                new_content = ext_addr_re.sub(
+                    lambda m: m.group(1) + _remap_ip(m.group(2)),
                     content,
                 )
                 if new_content != content:
-                    net_cfg.write_text(new_content)
+                    main_cfg.write_text(new_content)
                     patched += 1
 
         # Remap ext_address in cellframe-node.cfg for each node
@@ -464,128 +489,118 @@ class NetworkManager:
                           note="Shards may have stale IPs in GDB")
 
     def _fix_stale_node_list(self, node_configs) -> None:
-        """Overwrite stale IPs in ``nodes.list`` BEFORE starting containers.
+        """Clear stale GDB ``nodes.list`` data BEFORE starting containers.
 
-        Reads node addresses from ``node_addr.txt`` (created during genesis)
-        and runs ``dap-gdb-tool node-rehost`` directly on the GDB files on
-        disk.  Everything happens in a single ``docker run`` — no running
-        nodes, no CLI sockets required.
+        Snapshots are created from the genesis shard (shard-0, subnet 172.22.0.0/16).
+        Every shard restored from that snapshot will inherit shard-0 peer IPs in
+        its MDBX global-DB.  For non-zero shards those IPs are unreachable, so
+        nodes would populate their nodes.list with wrong addresses and never
+        establish P2P links.
+
+        Deleting the MDBX **only affects the global-DB** (peers, runtime metadata).
+        Blockchain data lives in ``lib/network/<net>/`` and is NOT touched.
+        Nodes will rebuild their peers list from ``seed_nodes_hosts`` on first boot.
         """
-        import subprocess
-        from ..certs.generator import CertGenerator, CERT_BUILDER_IMAGE
-
-        tools_image = CERT_BUILDER_IMAGE
-        sdk_branch = self._sdk_branch_for_tools()
-        cg = CertGenerator(self.base_path, dap_sdk_branch=sdk_branch)
-        if not cg.build_docker_image():
-            logger.error("gdb_tool_image_not_available")
-            return
-
         cache_dir = self.paths_config.get('cache_dir', 'cache')
         cache_path = (self.base_path / cache_dir).resolve()
+
+        purged = 0
+        for nc in node_configs:
+            mdbx_dir = (
+                cache_path / "data" / f"node{nc.node_id}"
+                / "lib" / "global_db" / "gdb-mdbx"
+            )
+            for fname in ("mdbx.dat", "mdbx.lck"):
+                f = mdbx_dir / fname
+                if f.exists():
+                    try:
+                        f.unlink()
+                        purged += 1
+                    except OSError:
+                        # File may be root-owned if chown post-extract failed
+                        try:
+                            import subprocess as _sp
+                            _sp.run(["sudo", "rm", "-f", str(f)],
+                                    capture_output=True, timeout=5)
+                            purged += 1
+                        except Exception:
+                            pass
+
+        logger.info("stale_node_list_fixed",
+                     nodes=len(node_configs),
+                     entries_updated=purged,
+                     method="mdbx_purge")
+
+    async def _register_nodes_after_restore(self, node_configs) -> None:
+        """Register all nodes in each other's node-list via CLI.
+
+        After a snapshot restore the GDB ``nodes.list`` is empty (the
+        native GDB files are ephemeral and not captured in squashfs).
+        Without explicit registration the balancer returns HTTP 204,
+        P2P links are never established and consensus halts.
+
+        This mirrors what Phase 1 YAML does during full genesis.
+        """
+        import subprocess
+        from ..utils.project import make_container_name
+
         net_name = self.topology.network.name
         settings = self.topology.network_settings
         base_ip_parts = settings.base_ip.split('.')
 
-        # Read node addresses from node_addr.txt (generated during genesis)
-        # These files live in the shared certs directory, not per-shard
-        certs_base = getattr(self.genesis, 'certs_cache', cache_path / "certs")
-        addr_map: dict[int, str] = {}
-        for nc in node_configs:
-            addr_file = certs_base / f"node{nc.node_id}" / "node_addr.txt"
-            if not addr_file.is_file():
-                # Fallback: check shard-local data dir
-                addr_file = cache_path / "data" / f"node{nc.node_id}" / "node_addr.txt"
-            if addr_file.is_file():
-                addr_map[nc.node_id] = addr_file.read_text().strip()
-
-        if not addr_map:
-            logger.warning("no_node_addresses_found",
-                          note="Cannot fix stale node list without node_addr.txt files")
-            return
-
-        volumes: list[str] = []
         ip_map: dict[int, str] = {}
-
         for nc in node_configs:
-            data_path = cache_path / "data" / f"node{nc.node_id}"
-            volumes.extend(["-v", f"{data_path}:/nodes/node{nc.node_id}"])
             ip_map[nc.node_id] = (
                 f"{'.'.join(base_ip_parts[:3])}"
                 f".{int(base_ip_parts[3]) + nc.node_id - 1}"
             )
 
-        # Check if dap-gdb-tool exists in the Docker image before building
-        # the full script.  If it's missing fall back to purging stale GDB
-        # files so nodes rebuild node list from seed_nodes_hosts on startup.
-        probe_cmd = [
-            "docker", "run", "--rm", "--entrypoint", "sh",
-            tools_image, "-c",
-            "test -x /usr/local/bin/dap-gdb-tool && echo OK || echo MISSING",
-        ]
-        try:
-            probe = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
-            tool_available = probe.returncode == 0 and "OK" in probe.stdout
-        except Exception:
-            tool_available = False
+        addr_map: dict[int, str] = {}
+        for nc in node_configs:
+            container = make_container_name(f"node-{nc.node_id}")
+            try:
+                result = subprocess.run(
+                    ["docker", "exec", container, "sh", "-c",
+                     "cellframe-node-cli node dump -net " + net_name],
+                    capture_output=True, text=True, timeout=15)
+                if result.returncode == 0:
+                    import re
+                    m = re.search(r'Node addr:\s+(\S+)', result.stdout)
+                    if m:
+                        addr_map[nc.node_id] = m.group(1)
+            except Exception as exc:
+                logger.warning("node_addr_read_failed",
+                               node_id=nc.node_id, error=str(exc))
 
-        if not tool_available:
-            logger.warning(
-                "dap_gdb_tool_not_available",
-                note="dap-gdb-tool binary missing from Docker image; "
-                     "nodes will rely on seed_nodes_hosts from config "
-                     "for peer discovery (already remapped by "
-                     "_remap_seed_nodes_for_shard)",
-            )
+        if not addr_map:
+            logger.error("no_node_addrs_resolved",
+                        note="Cannot register nodes — node dump failed for all")
             return
 
-        script_lines = ["set -e", ""]
-
+        registered = 0
         for target in node_configs:
-            gdb = f"/nodes/node{target.node_id}/lib/global_db"
+            container = make_container_name(f"node-{target.node_id}")
             for src in node_configs:
-                if src.node_id not in addr_map:
+                addr = addr_map.get(src.node_id)
+                if not addr:
                     continue
-                addr = addr_map[src.node_id]
                 ip = ip_map[src.node_id]
-                script_lines.append(
-                    f'/usr/local/bin/dap-gdb-tool '
-                    f'--db-path {gdb} '
-                    f'node-rehost {net_name} "{addr}" {ip} 8079 '
-                    f'|| true'
-                )
+                host_port = f"{ip}:{settings.node_port}"
+                try:
+                    result = subprocess.run(
+                        ["docker", "exec", container, "sh", "-c",
+                         f"cellframe-node-cli node add -addr {addr} "
+                         f"-host {host_port} -net {net_name}"],
+                        capture_output=True, text=True, timeout=15)
+                    if result.returncode == 0:
+                        registered += 1
+                except Exception:
+                    pass
 
-        script = "\n".join(script_lines)
-
-        docker_cmd = [
-            "docker", "run", "--rm",
-            "--entrypoint", "sh",
-        ] + volumes + [
-            tools_image,
-            "-c", script,
-        ]
-
-        try:
-            result = subprocess.run(
-                docker_cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode == 0:
-                ok_count = result.stdout.count("OK ")
-                logger.info("stale_node_list_fixed",
-                            nodes=len(node_configs),
-                            entries_updated=ok_count)
-                if ok_count == 0:
-                    logger.debug("gdb_tool_output",
-                                 stdout=result.stdout[-1000:] if result.stdout else "(empty)",
-                                 stderr=result.stderr[-500:] if result.stderr else "(empty)")
-            else:
-                logger.error("gdb_tool_failed",
-                             rc=result.returncode,
-                             stdout=result.stdout[-500:] if result.stdout else "",
-                             stderr=result.stderr[-500:] if result.stderr else "")
-        except subprocess.TimeoutExpired:
-            logger.error("gdb_tool_timeout")
-        except Exception as exc:
-            logger.error("gdb_tool_exception", exc=str(exc))
+        logger.info("nodes_registered_after_restore",
+                     registered=registered,
+                     total=len(node_configs) * len(node_configs),
+                     net=net_name)
 
     async def _restore_snapshots(self) -> None:
         """Restore clean_state or phase1 snapshot if available."""
@@ -719,7 +734,11 @@ class NetworkManager:
             
             # Wait for all nodes to come online
             await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
-            
+
+            # Register nodes in each other's node-list so the balancer
+            # can return peers and P2P links are established.
+            await self._register_nodes_after_restore(node_configs)
+
             # Verify fee_addr is configured (should be set during genesis)
             first_root = root_nodes[0]
             fee_addr = self.genesis.config_mgr.read_fee_addr_from_config(first_root.node_id)
@@ -759,11 +778,21 @@ class NetworkManager:
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
                 
+                # Get custom templates dirs
+                custom_tpl_raw = self.paths_config.get("custom_templates_dir", "")
+                custom_templates_dirs = []
+                if custom_tpl_raw:
+                    project_root = (self.base_path / self.paths_config.get("project_root", "../..")).resolve()
+                    resolved = (project_root / custom_tpl_raw).resolve()
+                    if resolved.is_dir():
+                        custom_templates_dirs.append(resolved)
+                
                 executor = ScenarioExecutor(
                     node_cli_path=self.node_cli_path,
                     log_file=None,
                     debug=scenarios_config.get('debug', False),
-                    base_path=self.base_path
+                    base_path=self.base_path,
+                    custom_templates_dirs=custom_templates_dirs
                 )
                 
                 # Execute phase1 scenario
@@ -1424,6 +1453,14 @@ class NetworkManager:
                 await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
         else:
             logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
+            master_services = [f"node-{n.node_id}" for n in master_nodes]
+            if not self.compose.are_services_running(master_services):
+                logger.info("starting_master_nodes_for_phase2", services=master_services)
+                self.compose.up(services=master_services, detach=True, wait=False)
+                await self.state_manager.wait_for_nodes_online(
+                    root_nodes + master_nodes,
+                    timeout=self.timeouts.get('startup', 600))
+                logger.info("master_nodes_online_for_phase2")
         
         try:
             if skip_phase2:
@@ -1463,11 +1500,21 @@ class NetworkManager:
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
                 
+                # Get custom templates dirs
+                custom_tpl_raw = self.paths_config.get("custom_templates_dir", "")
+                custom_templates_dirs = []
+                if custom_tpl_raw:
+                    project_root = (self.base_path / self.paths_config.get("project_root", "../..")).resolve()
+                    resolved = (project_root / custom_tpl_raw).resolve()
+                    if resolved.is_dir():
+                        custom_templates_dirs.append(resolved)
+                
                 executor = ScenarioExecutor(
                     node_cli_path=self.node_cli_path,
                     log_file=None,
                     debug=scenarios_config.get('debug', False),
-                    base_path=self.base_path
+                    base_path=self.base_path,
+                    custom_templates_dirs=custom_templates_dirs
                 )
                 
                 # Execute phase2 scenario with all variables from phase1

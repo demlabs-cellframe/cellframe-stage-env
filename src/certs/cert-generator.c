@@ -589,6 +589,132 @@ static int s_pki_config_generate(const dap_cert_generator_node_t *nodes, int nod
 /**
  * @brief Main entry point
  */
+/**
+ * Resolve signature type name to DAP enum.
+ *
+ * Accepts short aliases (``sig_dil``, ``sig_falcon``, ``dilithium``, ``falcon``, etc.)
+ * and falls back to ``dap_enc_key_type_find_by_name()`` for canonical SDK names.
+ *
+ * Returns ``DAP_ENC_KEY_TYPE_NULL`` when the name is unrecognised.
+ */
+static dap_enc_key_type_t s_resolve_sig_type(const char *a_name)
+{
+    if (!a_name || !*a_name)
+        return DAP_ENC_KEY_TYPE_NULL;
+
+    /* Short aliases used in CLI / YAML scenarios */
+    if (strcmp(a_name, "sig_dil") == 0 || strcmp(a_name, "dilithium") == 0)
+        return DAP_ENC_KEY_TYPE_SIG_DILITHIUM;
+    if (strcmp(a_name, "sig_falcon") == 0 || strcmp(a_name, "falcon") == 0)
+        return DAP_ENC_KEY_TYPE_SIG_FALCON;
+    if (strcmp(a_name, "sig_ecdsa") == 0 || strcmp(a_name, "ecdsa") == 0)
+        return DAP_ENC_KEY_TYPE_SIG_ECDSA;
+    if (strcmp(a_name, "sig_sphincsplus") == 0 || strcmp(a_name, "sphincsplus") == 0)
+        return DAP_ENC_KEY_TYPE_SIG_SPHINCSPLUS;
+    if (strcmp(a_name, "sig_shipovnik") == 0 || strcmp(a_name, "shipovnik") == 0)
+        return DAP_ENC_KEY_TYPE_SIG_SHIPOVNIK;
+    if (strcmp(a_name, "sig_picnic") == 0 || strcmp(a_name, "picnic") == 0)
+        return DAP_ENC_KEY_TYPE_SIG_PICNIC;
+
+    /* Canonical SDK lookup as last resort */
+    dap_enc_key_type_t l_type = dap_enc_key_type_find_by_name(a_name);
+    return l_type;
+}
+
+/**
+ * Dump mode: load an existing .dcert file and print human-readable info.
+ *
+ * Usage: cf-cert-generator --dump <cert_path>
+ *
+ * Output lines (machine-parseable):
+ *   NAME:<cert name>
+ *   TYPE:<key type name>
+ *   ADDR:<node address>
+ *   --- full SDK dump follows ---
+ */
+static int s_dump_cert_mode(const char *a_cert_path)
+{
+    dap_log_level_set(L_CRITICAL + 1);
+
+    dap_cert_t *l_cert = dap_cert_file_load(a_cert_path);
+    if (!l_cert) {
+        fprintf(stderr, "Failed to load certificate: %s\n", a_cert_path);
+        return DAP_CERT_GEN_RET_ERROR;
+    }
+
+    printf("NAME:%s\n", l_cert->name);
+    if (l_cert->enc_key) {
+        const char *l_type_name = dap_enc_get_type_name(l_cert->enc_key->type);
+        printf("TYPE:%s\n", l_type_name ? l_type_name : "unknown");
+    }
+
+    dap_node_addr_t l_addr = dap_node_addr_from_cert(l_cert);
+    if (l_addr.uint64 != 0) {
+        char *l_addr_str = dap_node_addr_to_str(l_addr);
+        printf("ADDR:%s\n", l_addr_str ? l_addr_str : "N/A");
+        DAP_DELETE(l_addr_str);
+    }
+
+    char *l_dump = dap_cert_dump(l_cert);
+    if (l_dump) {
+        printf("---\n%s\n", l_dump);
+        DAP_DELETE(l_dump);
+    }
+
+    dap_cert_delete(l_cert);
+    fflush(stdout);
+    return DAP_CERT_GEN_RET_SUCCESS;
+}
+
+/**
+ * Single-cert mode: generate one certificate and print its node address.
+ *
+ * Usage: cf-cert-generator --single <output_dir> [cert_name] [--type sig_dil|sig_falcon|...]
+ *
+ * Generates ``<output_dir>/<cert_name>.dcert`` (default cert_name = "node-addr",
+ * default type = FALCON) and prints exactly one line to stdout:
+ * ``ADDR:<hex node address>`` so the caller can parse it deterministically.
+ */
+static int s_single_cert_mode(const char *output_dir, const char *cert_name,
+                              dap_enc_key_type_t a_key_type)
+{
+    if (s_create_directory(output_dir) != DAP_CERT_GEN_RET_SUCCESS)
+        return DAP_CERT_GEN_RET_ERROR;
+
+    dap_cert_t *cert = dap_cert_generate_mem(cert_name, a_key_type);
+    if (!cert) {
+        log_it(L_ERROR, "Failed to generate certificate '%s'", cert_name);
+        return DAP_CERT_GEN_RET_ERROR;
+    }
+
+    char cert_path[DAP_CERT_GEN_MAX_PATH_LEN];
+    snprintf(cert_path, sizeof(cert_path), "%s/%s.dcert", output_dir, cert_name);
+    if (dap_cert_file_save(cert, cert_path) != 0) {
+        log_it(L_ERROR, "Failed to save certificate to %s", cert_path);
+        dap_cert_delete(cert);
+        return DAP_CERT_GEN_RET_ERROR;
+    }
+
+    dap_node_addr_t addr = dap_node_addr_from_cert(cert);
+    char *addr_str = dap_node_addr_to_str(addr);
+    /* Print to stdout so the caller can capture it */
+    printf("ADDR:%s\n", addr_str ? addr_str : "0000::0000::0000::0000");
+    fflush(stdout);
+    DAP_DELETE(addr_str);
+
+    /* Also save to node_addr.txt for convenience */
+    char addr_path[DAP_CERT_GEN_MAX_PATH_LEN];
+    snprintf(addr_path, sizeof(addr_path), "%s/node_addr.txt", output_dir);
+    addr_str = dap_node_addr_to_str(addr);
+    s_save_to_file(addr_path, addr_str ? addr_str : "");
+    DAP_DELETE(addr_str);
+
+    dap_cert_delete(cert);
+    log_it(L_NOTICE, "Single cert '%s' generated: %s", cert_name, cert_path);
+    return DAP_CERT_GEN_RET_SUCCESS;
+}
+
+
 int main(int argc, char *argv[]) {
     const char *output_dir = "/certs";
     const char *network_name = "stagenet";  /* Default network name */
@@ -598,18 +724,83 @@ int main(int argc, char *argv[]) {
     int node_count = 0;
     int root_count = 2;  /* Default: 2 ROOT nodes */
     
-    /* Initialize DAP SDK FIRST - before ANY other DAP calls */
-    dap_log_level_set(L_DEBUG);
-    dap_enc_key_init();
+    /* Suppress log output for read-only modes */
+    int quiet_mode = (argc >= 3 &&
+                      (strcmp(argv[1], "--read-addr") == 0 ||
+                       strcmp(argv[1], "--dump") == 0));
+    if (quiet_mode)
+        dap_log_level_set(L_CRITICAL + 1);
+
+    /* Initialize DAP SDK (core + crypto) — sets up common, enc, cert, sign */
+    if (s_sdk_init() != 0) {
+        fprintf(stderr, "Fatal: SDK init failed\n");
+        return DAP_CERT_GEN_RET_ERROR;
+    }
+    if (!quiet_mode)
+        dap_log_level_set(L_DEBUG);
     
     debug_if(s_debug_more, L_NOTICE, "=== Initializing DAP Certificate Generator ===");
-    
+
+    /* --single mode: generate one cert and print address */
+    if (argc >= 3 && strcmp(argv[1], "--single") == 0) {
+        const char *s_out = argv[2];
+        const char *s_name = "node-addr";
+        dap_enc_key_type_t s_key_type = DAP_ENC_KEY_TYPE_SIG_FALCON;
+
+        for (int i = 3; i < argc; i++) {
+            if (strcmp(argv[i], "--type") == 0 && i + 1 < argc) {
+                s_key_type = s_resolve_sig_type(argv[++i]);
+                if (s_key_type == DAP_ENC_KEY_TYPE_NULL) {
+                    log_it(L_ERROR, "Unknown signature type: %s", argv[i]);
+                    s_sdk_deinit();
+                    return DAP_CERT_GEN_RET_ERROR;
+                }
+            } else if (argv[i][0] != '-') {
+                s_name = argv[i];
+            }
+        }
+        ret = s_single_cert_mode(s_out, s_name, s_key_type);
+        s_sdk_deinit();
+        return ret;
+    }
+
+    /* --dump mode: load cert and print info */
+    if (argc >= 3 && strcmp(argv[1], "--dump") == 0) {
+        ret = s_dump_cert_mode(argv[2]);
+        s_sdk_deinit();
+        return ret;
+    }
+
+    /* --read-addr mode: read node address from existing .dcert file */
+    if (argc >= 3 && strcmp(argv[1], "--read-addr") == 0) {
+        dap_log_level_set(L_CRITICAL + 1);
+        const char *cert_path = argv[2];
+        dap_cert_t *cert = dap_cert_file_load(cert_path);
+        if (!cert) {
+            fprintf(stderr, "Failed to load certificate: %s\n", cert_path);
+            _exit(DAP_CERT_GEN_RET_ERROR);
+        }
+        dap_node_addr_t addr = dap_node_addr_from_cert(cert);
+        char *addr_str = dap_node_addr_to_str(addr);
+        if (addr_str && addr.uint64 != 0) {
+            printf("%s\n", addr_str);
+            fflush(stdout);
+            _exit(DAP_CERT_GEN_RET_SUCCESS);
+        }
+        _exit(DAP_CERT_GEN_RET_ERROR);
+    }
+
     /* Parse command line arguments */
     if (argc < 4) {
         log_it(L_ERROR, "Usage: %s <output_dir> <node_count> <network_name> [network_id] [root_count]", argv[0]);
+        log_it(L_ERROR, "       %s --single <output_dir> [cert_name] [--type sig_dil|sig_falcon|...]", argv[0]);
+        log_it(L_ERROR, "       %s --dump <cert_path>                # print certificate info", argv[0]);
+        log_it(L_ERROR, "       %s --read-addr <cert_path>           # read node address from .dcert", argv[0]);
         log_it(L_ERROR, "Example: %s /certs 6 stagenet 0x1234 2  # 6 nodes, 2 ROOT, 4 MASTER", argv[0]);
-        log_it(L_ERROR, "Example: %s /certs 3 testnet 0x5678 1  # 3 nodes, 1 ROOT, 2 MASTER", argv[0]);
-        dap_enc_key_deinit();
+        log_it(L_ERROR, "Example: %s --single /tmp/out test_cert --type sig_dil", argv[0]);
+        log_it(L_ERROR, "Example: %s --dump /path/to/cert.dcert", argv[0]);
+        log_it(L_ERROR, "Example: %s --read-addr /path/to/node-addr.dcert  # → 80C4::5AC6::1583::B52C", argv[0]);
+        s_sdk_deinit();
         return DAP_CERT_GEN_RET_ERROR;
     }
     

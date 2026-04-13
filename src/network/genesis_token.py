@@ -277,9 +277,13 @@ class TokenGenesisManager(BaseGenesisManager):
                 f"dag event list -net {self.network_name} -chain zerochain -from events -limit 20",
                 check_output=False
             )
-            # Check if DAG has ANY events
-            total_match = re.search(r'total_events:\s*(\d+)', stdout_dag, re.IGNORECASE) if stdout_dag else None
-            total_events = int(total_match.group(1)) if total_match else 0
+            total_events = 0
+            if stdout_dag:
+                total_match = re.search(r'total[_ ]events?\s*:\s*(\d+)', stdout_dag, re.IGNORECASE)
+                if total_match:
+                    total_events = int(total_match.group(1))
+                else:
+                    total_events = len(re.findall(r'#:\s*\d+', stdout_dag))
             
             logger.info("dag_events_check",
                        exit_code=exit_code_dag,

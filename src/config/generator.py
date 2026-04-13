@@ -77,7 +77,10 @@ class ConfigGenerator:
     def _sdk_branch_from_version(version_dir: str) -> str:
         """Map genesis version directory (e.g. 'v5.8') to dap-sdk git branch."""
         if version_dir and version_dir.startswith("v"):
-            return f"release-{version_dir[1:]}"
+            suffix = version_dir[1:]
+            if suffix.endswith(".x"):
+                suffix = suffix[:-2] + ".0"
+            return f"release-{suffix}"
         return "release-6.0"
 
     def _resolve_template(self, relative_path: str) -> Optional[Path]:

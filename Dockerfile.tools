@@ -130,4 +130,5 @@ LABEL dap.sdk.branch="${DAP_SDK_BRANCH}"
 
 WORKDIR /output
 
-ENTRYPOINT ["/bin/sh"]
+ENTRYPOINT []
+CMD ["/bin/sh"]
