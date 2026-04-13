@@ -353,19 +353,41 @@ class NetworkManager:
                     remapped.append(entry)
             return '[' + ','.join(remapped) + ']'
 
+        # Regex to remap ext_address in cellframe-node.cfg
+        ext_addr_re = _re.compile(r'(?m)^(ext_address\s*=\s*)([\d]+\.[\d]+\.[\d]+\.[\d]+)')
+
+        def _remap_ip(old_ip: str) -> str:
+            octets = old_ip.split('.')
+            if len(octets) == 4:
+                return f"{new_prefix}.{octets[3]}"
+            return old_ip
+
         patched = 0
         for node in node_configs:
+            # Remap seed_nodes_hosts in network/*.cfg
             net_dir = configs_cache / f"node{node.node_id}" / "network"
-            if not net_dir.is_dir():
-                continue
-            for net_cfg in net_dir.glob("*.cfg"):
-                content = net_cfg.read_text()
-                new_content = seed_re.sub(
-                    lambda m: m.group(1) + _remap(m.group(2)),
+            if net_dir.is_dir():
+                for net_cfg in net_dir.glob("*.cfg"):
+                    content = net_cfg.read_text()
+                    new_content = seed_re.sub(
+                        lambda m: m.group(1) + _remap(m.group(2)),
+                        content,
+                    )
+                    if new_content != content:
+                        net_cfg.write_text(new_content)
+                        patched += 1
+
+            # Remap ext_address in cellframe-node.cfg so this node advertises
+            # its correct IP in the shard's subnet (not the genesis subnet).
+            main_cfg = configs_cache / f"node{node.node_id}" / "cellframe-node.cfg"
+            if main_cfg.exists():
+                content = main_cfg.read_text()
+                new_content = ext_addr_re.sub(
+                    lambda m: m.group(1) + _remap_ip(m.group(2)),
                     content,
                 )
                 if new_content != content:
-                    net_cfg.write_text(new_content)
+                    main_cfg.write_text(new_content)
                     patched += 1
 
         if patched:
@@ -429,28 +451,47 @@ class NetworkManager:
                           note="Shards may have stale IPs in GDB")
 
     def _fix_stale_node_list(self, node_configs) -> None:
-        """Purge stale ``nodes.list`` native GDB files BEFORE starting
-        containers so nodes bootstrap from ``seed_nodes_hosts`` only.
+        """Clear stale GDB ``nodes.list`` data BEFORE starting containers.
+
+        Snapshots are created from the genesis shard (shard-0, subnet 172.22.0.0/16).
+        Every shard restored from that snapshot will inherit shard-0 peer IPs in
+        its MDBX global-DB.  For non-zero shards those IPs are unreachable, so
+        nodes would populate their nodes.list with wrong addresses and never
+        establish P2P links.
+
+        Deleting the MDBX **only affects the global-DB** (peers, runtime metadata).
+        Blockchain data lives in ``lib/network/<net>/`` and is NOT touched.
+        Nodes will rebuild their peers list from ``seed_nodes_hosts`` on first boot.
         """
         cache_dir = self.paths_config.get('cache_dir', 'cache')
         cache_path = (self.base_path / cache_dir).resolve()
-        net_name = self.topology.network.name
 
         purged = 0
         for nc in node_configs:
-            native_dir = (
+            mdbx_dir = (
                 cache_path / "data" / f"node{nc.node_id}"
-                / "lib" / "global_db" / "gdb-mdbx" / "gdb-native"
+                / "lib" / "global_db" / "gdb-mdbx"
             )
-            stale_file = native_dir / f"{net_name}.nodes.list.gdb"
-            if stale_file.exists():
-                stale_file.unlink()
-                purged += 1
+            for fname in ("mdbx.dat", "mdbx.lck"):
+                f = mdbx_dir / fname
+                if f.exists():
+                    try:
+                        f.unlink()
+                        purged += 1
+                    except OSError:
+                        # File may be root-owned if chown post-extract failed
+                        try:
+                            import subprocess as _sp
+                            _sp.run(["sudo", "rm", "-f", str(f)],
+                                    capture_output=True, timeout=5)
+                            purged += 1
+                        except Exception:
+                            pass
 
         logger.info("stale_node_list_fixed",
                      nodes=len(node_configs),
                      entries_updated=purged,
-                     method="native_gdb_purge")
+                     method="mdbx_purge")
 
     async def _register_nodes_after_restore(self, node_configs) -> None:
         """Register all nodes in each other's node-list via CLI.

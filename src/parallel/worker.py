@@ -199,7 +199,12 @@ def _run_suite_sync(
     async def _start():
         await network_mgr.start(rebuild=False, wait_ready=True)
 
-    asyncio.run(_start())
+    try:
+        asyncio.run(_start())
+    except Exception as start_exc:
+        # Collect node logs even when shard startup fails so we can diagnose why
+        _collect_shard_logs_on_failure(shard, suite_dir)
+        raise
 
     # Provision suite services (node_compose, docker_compose, generators, etc.)
     from ..cli.test_commands import provision_suite_services
@@ -387,6 +392,29 @@ def _cleanup_shard(shard, base_path: Path) -> None:
         for net in client.networks.list(names=[f"{shard.project_name}_"]):
             try:
                 net.remove()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _collect_shard_logs_on_failure(shard, suite_dir: Path) -> None:
+    """Collect container logs when a shard fails to start (best-effort)."""
+    try:
+        import docker as docker_sdk
+        client = docker_sdk.from_env()
+        containers = client.containers.list(
+            all=True,
+            filters={"label": f"com.docker.compose.project={shard.project_name}"},
+        )
+        node_logs_dir = suite_dir / "node-logs"
+        node_logs_dir.mkdir(parents=True, exist_ok=True)
+        for container in containers:
+            try:
+                svc_name = container.labels.get("com.docker.compose.service", "")
+                if svc_name:
+                    logs = container.logs(tail=50000).decode('utf-8', errors='ignore')
+                    (node_logs_dir / f"{svc_name}.log").write_text(logs)
             except Exception:
                 pass
     except Exception:
