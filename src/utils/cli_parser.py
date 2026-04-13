@@ -265,9 +265,11 @@ class CLICommandParser:
         if not defaults:
             return cli_command
         
-        # "net list" in 6.x takes no arguments; adding -net causes "To many arguments"
-        if isinstance(cli_command, str) and cli_command.strip().startswith("net list"):
-            return cli_command
+        # Commands that never accept extra options
+        if isinstance(cli_command, str):
+            stripped = cli_command.strip()
+            if stripped.startswith("net list") or stripped == "help" or stripped.startswith("help "):
+                return cli_command
         
         # Ensure cli_command is a string
         if not isinstance(cli_command, str):
@@ -306,9 +308,9 @@ class CLICommandParser:
             pattern = rf'(^|\s)-{re.escape(option)}(\s|$)'
             if re.search(pattern, cli_command):
                 continue
-            if not self._parsed or not command_known:
+            if not self._parsed or not command_known or not available_options:
                 options_to_add.append(f"-{option} {value}")
-                logger.debug(f"Permissively adding -{option} {value} to command '{cli_command}' (parsed={self._parsed}, command_known={command_known})")
+                logger.debug(f"Permissively adding -{option} {value} to command '{cli_command}' (parsed={self._parsed}, command_known={command_known}, options_empty={not available_options})")
             elif option in available_options:
                 options_to_add.append(f"-{option} {value}")
                 logger.debug(f"Adding option -{option} {value} to command '{cli_command}'")

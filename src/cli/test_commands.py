@@ -13,7 +13,7 @@ from typing import Optional, List, Dict, Callable
 
 from .common import print_info, print_success, print_error, print_warning
 from src.utils.i18n import _
-from src.utils.project import get_project_name, make_container_name
+from src.utils.project import get_project_name, make_container_name, find_common_root
 
 
 def _fixup_node_identity(cfg_dir: Path, data_dir: Path, role: str, node_id: int,
@@ -814,10 +814,23 @@ def provision_suite_services(
         )
 
     # --- Merge compose files ------------------------------------------------
+    merged_svc_names: List[str] = []
     if network_mgr and suite_spec.docker_compose_files:
+        import yaml as _yaml
         for dcf_rel in suite_spec.docker_compose_files:
             dcf_path = Path(base_path) / dcf_rel
+            if dcf_path.exists():
+                with open(dcf_path) as _f:
+                    _ext = _yaml.safe_load(_f) or {}
+                merged_svc_names.extend((_ext.get('services') or {}).keys())
             network_mgr.compose.merge_compose_file(dcf_path)
+        if merged_svc_names:
+            try:
+                network_mgr.compose.up(
+                    services=merged_svc_names, detach=True, wait=False, no_build=False,
+                )
+            except Exception as _e:
+                print_warning(_("Failed to start merged compose services: {}").format(_e))
 
     # --- Provision docker_compose -------------------------------------------
     if network_mgr and suite_spec.docker_compose:
@@ -1394,12 +1407,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     suite_scenarios = suite_info['scenarios']
                     
                     # Parse suite descriptor to get metadata
-                    # common_root: use project's tests/e2e/ for cross-suite common includes
+                    # common_root: walk up from suite dir to find the nearest real common/ directory
                     paths_config = get_config_loader().get_paths_config()
                     project_root = (base_path / paths_config.get('project_root', '../..')).resolve()
-                    common_root = project_root / "tests" / "e2e"
-                    if not common_root.exists():
-                        common_root = base_path / "tests"
+                    common_root = find_common_root(
+                        Path(suite_path), fallback=base_path / "tests"
+                    )
                     # fallback: stage-env integration scenarios (e.g. common/networks/single_node.yml)
                     fallback_common = (base_path / "tests" / "integration" / "scenarios").resolve()
                     if not fallback_common.exists():
@@ -1679,13 +1692,28 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         )
 
                     # --- Merge external docker-compose files -------------------
+                    _seq_merged_svcs: list = []
                     if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.docker_compose_files:
                         from pathlib import Path as _Path
+                        import yaml as _yaml_seq
                         for dcf_rel in suite_spec.docker_compose_files:
                             dcf_path = _Path(base_path) / dcf_rel
                             print_info(_("📎 Merging compose file: {}").format(dcf_rel))
+                            if dcf_path.exists():
+                                with open(dcf_path) as _sf:
+                                    _ext_data = _yaml_seq.safe_load(_sf) or {}
+                                _seq_merged_svcs.extend((_ext_data.get('services') or {}).keys())
                             network_mgr.compose.merge_compose_file(dcf_path)
                             print_success(_("  Merged: {}").format(dcf_path.name))
+                        if _seq_merged_svcs:
+                            print_info(_("🚀 Starting merged compose services: {}").format(', '.join(_seq_merged_svcs)))
+                            try:
+                                network_mgr.compose.up(
+                                    services=_seq_merged_svcs, detach=True, wait=False, no_build=False,
+                                )
+                                print_success(_("  Started merged services"))
+                            except Exception as _me:
+                                print_warning(_("  Failed to start merged services: {}").format(_me))
 
                     # --- Provision docker_compose services ---------------------
                     if network_mgr and isinstance(suite_spec, SuiteDescriptor) and suite_spec.docker_compose:

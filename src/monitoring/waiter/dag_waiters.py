@@ -81,8 +81,8 @@ class DAGEventWaiter(BaseWaiter):
         if exit_code == 0 and stdout_events_str:
             # Parse event hashes from output
             event_hashes = re.findall(r'hash:\s*(0x[A-Fa-f0-9]{64})', stdout_events_str, re.IGNORECASE)
-            total_match = re.search(r'total_events:\s*(\d+)', stdout_events_str, re.IGNORECASE)
-            total_events = int(total_match.group(1)) if total_match else 0
+            total_match = re.search(r'total[_ ]events?\s*:\s*(\d+)', stdout_events_str, re.IGNORECASE)
+            total_events = int(total_match.group(1)) if total_match else len(re.findall(r'#:\s*\d+', stdout_events_str))
             
             # Check each event for our datum hash
             datum_found = False

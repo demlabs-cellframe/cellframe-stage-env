@@ -602,10 +602,22 @@ class CertGenerator:
         
         return missing
     
-    def generate_single_node_cert(self, output_dir: Path, cert_name: str = "node-addr") -> Optional[str]:
-        """Generate a single node-addr certificate and return the node address.
+    def generate_single_node_cert(
+        self,
+        output_dir: Path,
+        cert_name: str = "node-addr",
+        sig_type: Optional[str] = None,
+    ) -> Optional[str]:
+        """Generate a single certificate and return the node address.
 
-        Uses ``cf-cert-generator --single`` which prints ``ADDR:<hex>`` to stdout.
+        Uses ``cf-cert-generator --single [--type <sig_type>]`` which prints
+        ``ADDR:<hex>`` to stdout.
+
+        Args:
+            output_dir: Directory to write the .dcert file into.
+            cert_name: Certificate name (default ``node-addr``).
+            sig_type: Signature algorithm (e.g. ``sig_dil``, ``sig_falcon``).
+                      ``None`` keeps the generator default (FALCON).
 
         Returns:
             Node address string (e.g. "A1B2::C3D4::E5F6::7890") or None on failure.
@@ -617,14 +629,17 @@ class CertGenerator:
         output_dir.mkdir(parents=True, exist_ok=True)
         uid, gid = os.getuid(), os.getgid()
 
+        gen_cmd = f"/usr/local/bin/cf-cert-generator --single /output {cert_name}"
+        if sig_type:
+            gen_cmd += f" --type {sig_type}"
+
         docker_cmd = [
             "docker", "run", "--rm",
             "--entrypoint", "sh",
             "-v", f"{output_dir.absolute()}:/output",
             CERT_BUILDER_IMAGE,
             "-c",
-            f"/usr/local/bin/cf-cert-generator --single /output {cert_name}"
-            f" && chown -R {uid}:{gid} /output",
+            f"{gen_cmd} && chown -R {uid}:{gid} /output",
         ]
 
         try:
@@ -633,12 +648,44 @@ class CertGenerator:
                 if line.startswith("ADDR:"):
                     addr = line[5:].strip()
                     logger.info("single_cert_generated", cert_name=cert_name, addr=addr,
+                                sig_type=sig_type or "default",
                                 output_dir=str(output_dir))
                     return addr
             logger.warning("single_cert_no_addr_in_output", stdout=result.stdout[:300])
             return None
         except subprocess.CalledProcessError as e:
             logger.error("single_cert_generation_failed", rc=e.returncode,
+                         stderr=e.stderr[:300])
+            return None
+
+    def dump_cert(self, cert_path: Path) -> Optional[str]:
+        """Dump certificate info using cf-cert-generator --dump.
+
+        Args:
+            cert_path: Path to the .dcert file on the host.
+
+        Returns:
+            Dump output string or None on failure.
+        """
+        if not self.build_docker_image():
+            logger.error("cert_builder_image_not_available")
+            return None
+
+        parent = cert_path.parent.absolute()
+        filename = cert_path.name
+
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "-v", f"{parent}:/input:ro",
+            CERT_BUILDER_IMAGE,
+            "/usr/local/bin/cf-cert-generator", "--dump", f"/input/{filename}",
+        ]
+
+        try:
+            result = subprocess.run(docker_cmd, capture_output=True, text=True, check=True)
+            return result.stdout
+        except subprocess.CalledProcessError as e:
+            logger.error("cert_dump_failed", rc=e.returncode,
                          stderr=e.stderr[:300])
             return None
 
