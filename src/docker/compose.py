@@ -16,6 +16,7 @@ from docker.errors import DockerException, NotFound
 from docker.models.containers import Container
 
 from src.utils.logger import get_logger
+from src.utils.project import DEFAULT_PROJECT_NAME, get_project_name
 from ..network.models import NodeConfig
 
 logger = get_logger(__name__)
@@ -276,7 +277,15 @@ class DockerComposeManager:
         if not node_template:
             raise ValueError("No x-cf-node-template found in docker-compose.yml")
         
-        # Override network config from stage-env.cfg (template has defaults)
+        # Replace template networks with the actual project network.
+        # The template may define a default network (e.g. "stagenet") that
+        # conflicts with the actual network name and subnet.
+        template_networks = set(compose_data.get('networks', {}).keys())
+        for old_net in template_networks:
+            if old_net != self.network_name:
+                del compose_data['networks'][old_net]
+                logger.debug("template_network_removed", name=old_net)
+
         if network_settings:
             subnet = network_settings.get('subnet')
             if subnet:
@@ -300,15 +309,26 @@ class DockerComposeManager:
         
         compose_data['services'] = services_to_keep
         
-        # Ensure packages/ directory exists in build context (required for COPY in Dockerfile)
-        # This directory will be empty for url/repository sources, but must exist
-        build_context_packages_dir = self.project_dir / "packages"
-        build_context_packages_dir.mkdir(exist_ok=True)
-        
         # Determine node source configuration
         node_source_type = node_source_config.get('type', 'url') if node_source_config else 'url'
-        
-        # Clear stale .deb files from packages/ build context
+
+        # Docker build context is self.project_dir; Dockerfile copies ${DOCKER_PACKAGES_DIR}/.
+        # Use a subdirectory per Compose project so parallel shards do not delete each other's
+        # *.deb files (historically all workers cleared tools/stage-env/packages/ globally).
+        _active_project = get_project_name()
+        if _active_project != DEFAULT_PROJECT_NAME:
+            build_context_packages_dir = self.project_dir / "packages" / _active_project
+        else:
+            build_context_packages_dir = self.project_dir / "packages"
+        build_context_packages_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            docker_packages_dir_arg = build_context_packages_dir.resolve().relative_to(
+                self.project_dir.resolve()
+            ).as_posix()
+        except ValueError:
+            docker_packages_dir_arg = "packages"
+
+        # Clear stale .deb files only in this shard's / default packages directory
         for item in build_context_packages_dir.iterdir():
             if item.is_file() and item.suffix == '.deb':
                 logger.debug("removing_stale_package", path=str(item))
@@ -451,6 +471,7 @@ class DockerComposeManager:
             # Set TOOLS_BASE_URL from paths config
             node_service['build']['args']['TOOLS_BASE_URL'] = tools_base_url
             node_service['build']['args']['BUILD_TYPE'] = build_type
+            node_service['build']['args']['DOCKER_PACKAGES_DIR'] = docker_packages_dir_arg
             
             node_service['image'] = f"cf-node:{build_type}-{cellframe_version}"
             
@@ -467,7 +488,7 @@ class DockerComposeManager:
                 # Directory already created above
                 # IMPORTANT: Use copy instead of symlink because Docker COPY doesn't follow
                 # symlinks that point outside build context
-                package_dest = self.project_dir / "packages" / package_name
+                package_dest = build_context_packages_dir / package_name
 
                 import shutil, tempfile
                 needs_copy = True
@@ -536,6 +557,7 @@ class DockerComposeManager:
                 'NETWORK_NAME': self.network_name,
                 'DAP_DEBUG': '1',
                 'CELLFRAME_DEBUG': '1',
+                'DEBUG_GDB': '1',
             }
             if network_settings:
                 env['DOCKER_SUBNET'] = network_settings.get('subnet', '172.20.0.0/16')
@@ -813,6 +835,19 @@ class DockerComposeManager:
             logger.info("docker_compose_service_added", name=svc_name)
 
         if added:
+            top_nets = compose_data.setdefault('networks', {})
+            for svc_config in services.values():
+                if not isinstance(svc_config, dict):
+                    continue
+                svc_nets = svc_config.get('networks')
+                if isinstance(svc_nets, dict):
+                    for net_name in svc_nets:
+                        if net_name not in top_nets:
+                            top_nets[net_name] = {'driver': 'bridge'}
+                elif isinstance(svc_nets, list):
+                    for net_name in svc_nets:
+                        if net_name not in top_nets:
+                            top_nets[net_name] = {'driver': 'bridge'}
             with open(self.compose_file, 'w') as f:
                 yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
             logger.info("docker_compose_services_written", count=added)
@@ -844,13 +879,23 @@ class DockerComposeManager:
         with open(self.compose_file) as f:
             compose_data = yaml.safe_load(f) or {}
 
+        source_dir = compose_file_path.resolve().parent
+
         added_svc = 0
         for svc_name, svc_config in (external.get('services') or {}).items():
             if svc_name in compose_data.get('services', {}):
                 logger.debug("merge_compose_service_exists", service=svc_name)
                 continue
-            if isinstance(svc_config, dict) and 'networks' not in svc_config:
-                svc_config['networks'] = [self.network_name]
+            if isinstance(svc_config, dict):
+                if 'networks' not in svc_config:
+                    svc_config['networks'] = [self.network_name]
+                build = svc_config.get('build')
+                if isinstance(build, dict) and 'context' in build:
+                    ctx = Path(build['context'])
+                    if not ctx.is_absolute():
+                        build['context'] = str((source_dir / ctx).resolve())
+                elif isinstance(build, str) and not Path(build).is_absolute():
+                    svc_config['build'] = str((source_dir / build).resolve())
             compose_data.setdefault('services', {})[svc_name] = svc_config
             added_svc += 1
             logger.info("merge_compose_service_added", name=svc_name,

@@ -864,6 +864,9 @@ class TestScenario(BaseModel):
     
     # Check phase - can be either list of checks (old format) or CheckSectionConfig (new format)
     check: Union[List[CheckSpec], CheckSectionConfig] = Field(default_factory=list, description="Assertions")
+
+    # Teardown phase - executed after test (even on failure)
+    teardown: Union[List[TestStep], SectionConfig] = Field(default_factory=list, description="Teardown steps (always executed)")
     
     # Variables (runtime context)
     variables: Dict[str, Any] = Field(default_factory=dict, description="Predefined variables")
@@ -886,6 +889,8 @@ class TestScenario(BaseModel):
             self.test = SectionConfig(steps=self.test)
         if isinstance(self.check, list):
             self.check = CheckSectionConfig(steps=self.check)
+        if isinstance(self.teardown, list):
+            self.teardown = SectionConfig(steps=self.teardown)
         
         # Validate at least one test step
         if not self.test.steps:

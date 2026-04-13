@@ -10,8 +10,12 @@ debug_dump_stream_headers=false
 #debug_http=false
 # debug-config=false
 
+seed_mode={{ seed_mode | default('false', true) }}
+
 # Auto bring up links and sync everything over them
 auto_online=true
+# Socket idle timeout before worker closes it (seconds, default 60)
+connection_timeout=300
 
 # Server part
 [server]
@@ -48,6 +52,12 @@ ext_address={{ node_ip }}
 # debug_dump_stream_headers=false
 #debug=true
 
+[dap_client]
+timeout=30
+timeout_read_after_connect=30
+max_tries=5
+debug_more=true
+
 # Build in DNS client (need for bootstraping)
 [dns_client]
 # debug_more=false
@@ -79,10 +89,9 @@ debug_more=true
 
 # Links check defaults
 [link_manager]
-#timer_update_states=5000
-#max_attempts_num=2
-# reconnect_delay=
-# More debug output - ENABLED for network state transitions debugging
+timer_update_states=3000
+max_attempts_num=5
+reconnect_delay=10
 debug_more=true
 
 [srv]
@@ -186,7 +195,7 @@ path=../etc/network
 [global_db]
 debug_more=true
 path=../var/lib/global_db
-driver=btree
+driver=mdbx
 # mdbx_upper_limit_of_db_size=1024
 #pgsql conninfo array
 # pg_conninfo=[dbname=postgres]
@@ -201,4 +210,7 @@ py_path=../var/lib/plugins
 # Path to Pyhon-based plugins
 #py_path=../var/lib/plugins
 
+# VPN Service - enable to override defaults from share/configs
+[srv_vpn]
+enabled=true
 

@@ -541,16 +541,18 @@ class ScenarioExecutor:
             if step.timeout == 30:  # Default value
                 step.timeout = defaults.timeout
         
-        # Special handling for WaitForDatumStep timeouts
+        # Special handling for WaitForDatumStep timeouts:
+        # Only apply the global timeout default when the step uses Pydantic
+        # schema defaults, meaning the user did NOT explicitly set them in YAML.
         if isinstance(step, WaitForDatumStep) and defaults.timeout:
-            # Apply timeout to all WaitForDatumStep timeout fields if they have default values
-            if step.timeout_total == 300:
+            fields_info = step.model_fields_set if hasattr(step, 'model_fields_set') else set()
+            if 'timeout_total' not in fields_info and step.timeout_total == 300:
                 step.timeout_total = defaults.timeout
-            if step.timeout_mempool == 60:
+            if 'timeout_mempool' not in fields_info and step.timeout_mempool == 60:
                 step.timeout_mempool = defaults.timeout
-            if step.timeout_verification == 120:
+            if 'timeout_verification' not in fields_info and step.timeout_verification == 120:
                 step.timeout_verification = defaults.timeout
-            if step.timeout_in_blocks == 180:
+            if 'timeout_in_blocks' not in fields_info and step.timeout_in_blocks == 180:
                 step.timeout_in_blocks = defaults.timeout
         
         return step
@@ -629,6 +631,7 @@ class ScenarioExecutor:
                        static_ips=len(static_vars.get('node_ip', {})))
         
         self._running = True
+        _test_error: Optional[Exception] = None
         
         try:
             # Global defaults (applied to all phases)
@@ -752,17 +755,38 @@ class ScenarioExecutor:
             
         except KeyboardInterrupt:
             logger.warning("Scenario execution interrupted by user")
+            _test_error = ScenarioExecutionError("Interrupted by user")
             raise
-        except ScenarioExecutionError:
+        except ScenarioExecutionError as e:
+            _test_error = e
             raise
         except Exception as e:
             err_detail = str(e) or type(e).__name__
-            raise ScenarioExecutionError(
+            _test_error = ScenarioExecutionError(
                 f"Unexpected error during execution ({type(e).__name__}): {err_detail}",
                 context=ctx.get_summary()
-            ) from e
+            )
+            raise _test_error from e
         finally:
             self._running = False
+            # Teardown phase — always executed, even on failure
+            if hasattr(scenario, 'teardown') and scenario.teardown:
+                teardown_steps = (
+                    scenario.teardown.steps
+                    if hasattr(scenario.teardown, 'steps')
+                    else scenario.teardown
+                )
+                if teardown_steps:
+                    logger.info("Executing teardown phase...")
+                    section_defaults = self._merge_defaults(
+                        scenario.defaults if hasattr(scenario, 'defaults') else None,
+                        scenario.teardown.defaults if hasattr(scenario.teardown, 'defaults') else None,
+                    )
+                    try:
+                        await self._execute_steps(teardown_steps, ctx, section_defaults)
+                        logger.info("Teardown phase completed")
+                    except Exception as td_err:
+                        logger.warning("teardown_failed", error=str(td_err))
     
     async def _detect_node_version(self, ctx: RuntimeContext) -> None:
         """Detect cellframe-node version and inject cf_version* variables into context."""

@@ -77,7 +77,7 @@ class ChainSyncManager(BaseGenesisManager):
             while time.time() - start_time < timeout:
                 exit_code, stdout_str, stderr_str = self._exec_cli(
                     first_node.node_id,
-                    f"mempool_list -net {self.network_name} -chain zerochain",
+                    f"mempool list -net {self.network_name} -chain zerochain",
                     check_output=False
                 )
                 

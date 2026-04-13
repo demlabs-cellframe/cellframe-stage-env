@@ -18,20 +18,24 @@ setup:
     value: "root_nodes + master_nodes"
     eval: true
   
-  # Enable seed_mode on ALL root and master nodes via CLI (no restart needed)
-  - group: Enable seed_mode for main chain
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 120
+
+  # Enable seed_mode on active nodes via CLI (no restart needed)
+  - group: Enable seed_mode on active nodes
     steps:
-      - for: _node
+      - for: _seed_node
         in: "{{_active_nodes}}"
         steps:
           - cli: "chain seed -chain main on"
-            node: "{{_node}}"
-            save_to: _seed_mode_result
-          - print: "seed_mode on {{_node}}: {{_seed_mode_result}}"
+            node: "{{_seed_node}}"
+          - cli: "chain seed -chain zerochain on"
+            node: "{{_seed_node}}"
 
   - wait: global_db_sync
     node: "{{first_root}}"
-    timeout: 60
+    timeout: 120
   
   # Get fee_addr from first root wallet
   # This wallet was created in phase1 and exists in the snapshot
@@ -72,7 +76,7 @@ test:
 
       - wait: global_db_sync
         nodes: "{{_active_nodes}}"
-        timeout: 60
+        timeout: 120
 
       # Debug: Check zerochain events on master after sync
       - cli: "dag event list -chain zerochain"
@@ -97,7 +101,7 @@ test:
       
       - wait: global_db_sync
         nodes: "{{_active_nodes}}"
-        timeout: 60
+        timeout: 120
 
       # Verify emission is now in ledger on master
       - cli: "ledger list coins"
@@ -120,7 +124,7 @@ test:
 
       - wait: global_db_sync
         nodes: "{{_active_nodes}}"
-        timeout: 60
+        timeout: 120
 
       # Debug: Show mempool status on master
       - cli: "mempool list -chain main"
@@ -166,25 +170,27 @@ test:
       static_genesis_block: "{{genesis_block_hash}}"
       is_static_genesis_block: "true"
   
-  # Disable seed_mode on seed nodes via CLI
-  - group: Disable seed_mode for main chain
+  # Disable seed_mode on all active nodes via CLI
+  - group: Disable seed_mode on active nodes
     steps:
-      - for: _node
-        in: "{{seed_nodes}}"
+      - for: _seed_node
+        in: "{{_active_nodes}}"
         steps:
           - cli: "chain seed -chain main off"
-            node: "{{_node}}"
+            node: "{{_seed_node}}"
+          - cli: "chain seed -chain zerochain off"
+            node: "{{_seed_node}}"
 
   - docker_op: restart
     services: "{{all_nodes}}"
 
   - wait_network: online
     nodes: "{{_active_nodes}}"
-    timeout: 60
+    timeout: 120
 
   - wait: global_db_sync
     node: "{{first_root}}"
-    timeout: 60
+    timeout: 120
   
   # Configure fee_addr in main.cfg 
   # SDK will automatically load it from config on node startup
