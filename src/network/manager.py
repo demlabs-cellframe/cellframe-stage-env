@@ -604,9 +604,17 @@ class NetworkManager:
         Without explicit registration the balancer returns HTTP 204,
         P2P links are never established and consensus halts.
 
+        This function is intentionally called BEFORE wait_for_nodes_online so
+        that shard-specific IPs are present in the GDB when the link_manager
+        starts its first retry cycle (nodes rebuild the GDB from chain data
+        with genesis IPs within seconds of startup; injecting correct IPs
+        early lets the link_manager use them on the next attempt).
+
         This mirrors what Phase 1 YAML does during full genesis.
         """
+        import asyncio as _asyncio
         import subprocess
+        import re
         from ..utils.project import make_container_name
 
         net_name = self.topology.network.name
@@ -620,22 +628,31 @@ class NetworkManager:
                 f".{int(base_ip_parts[3]) + nc.node_id - 1}"
             )
 
+        # Wait for at least one node to accept CLI connections (up to 60s)
+        cli_ready_deadline = _asyncio.get_event_loop().time() + 60
         addr_map: dict[int, str] = {}
-        for nc in node_configs:
-            container = make_container_name(f"node-{nc.node_id}")
-            try:
-                result = subprocess.run(
-                    ["docker", "exec", container, "sh", "-c",
-                     "cellframe-node-cli node dump -net " + net_name],
-                    capture_output=True, text=True, timeout=15)
-                if result.returncode == 0:
-                    import re
-                    m = re.search(r'Node addr:\s+(\S+)', result.stdout)
-                    if m:
-                        addr_map[nc.node_id] = m.group(1)
-            except Exception as exc:
-                logger.warning("node_addr_read_failed",
-                               node_id=nc.node_id, error=str(exc))
+        while _asyncio.get_event_loop().time() < cli_ready_deadline:
+            addr_map = {}
+            for nc in node_configs:
+                container = make_container_name(f"node-{nc.node_id}")
+                try:
+                    result = subprocess.run(
+                        ["docker", "exec", container, "sh", "-c",
+                         "cellframe-node-cli node dump -net " + net_name],
+                        capture_output=True, text=True, timeout=15)
+                    if result.returncode == 0:
+                        m = re.search(r'Node addr:\s+(\S+)', result.stdout)
+                        if m:
+                            addr_map[nc.node_id] = m.group(1)
+                except Exception as exc:
+                    logger.debug("node_addr_read_failed",
+                                 node_id=nc.node_id, error=str(exc))
+            if addr_map:
+                logger.info("cli_ready_for_registration",
+                            resolved=len(addr_map), total=len(node_configs))
+                break
+            logger.info("waiting_for_cli_ready", note="Retrying in 5s…")
+            await _asyncio.sleep(5)
 
         if not addr_map:
             logger.error("no_node_addrs_resolved",
@@ -796,13 +813,16 @@ class NetworkManager:
             all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
             logger.info("starting_all_containers_from_clean_state", services=all_services)
             self.compose.up(services=all_services, detach=True, wait=False, no_build=False)
-            
+
+            # Register nodes in each other's node-list BEFORE waiting for ONLINE.
+            # Nodes populate their GDB from chain data (genesis IPs) immediately after
+            # startup; the link_manager then tries to connect to those unreachable IPs.
+            # Injecting shard-specific IPs into the GDB early lets the link_manager
+            # pick them up on the next retry cycle and establish valid P2P links.
+            await self._register_nodes_after_restore(node_configs)
+
             # Wait for all nodes to come online
             await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
-
-            # Register nodes in each other's node-list so the balancer
-            # can return peers and P2P links are established.
-            await self._register_nodes_after_restore(node_configs)
 
             # Verify fee_addr is configured (should be set during genesis)
             first_root = root_nodes[0]

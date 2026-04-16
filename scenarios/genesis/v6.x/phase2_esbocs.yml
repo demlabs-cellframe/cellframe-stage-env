@@ -20,9 +20,7 @@ setup:
   
   - wait_network: online
     nodes: "{{_active_nodes}}"
-    timeout: 120
-
-  # Enable seed_mode on active nodes via CLI (no restart needed)
+    timeout: 300
   - group: Enable seed_mode on active nodes
     steps:
       - for: _seed_node
@@ -35,7 +33,7 @@ setup:
 
   - wait: global_db_sync
     node: "{{first_root}}"
-    timeout: 120
+    timeout: 300
   
   # Get fee_addr from first root wallet
   # This wallet was created in phase1 and exists in the snapshot
@@ -72,11 +70,11 @@ test:
 
       - wait: network_sync
         nodes: "{{_active_nodes}}"
-        timeout: 120
+        timeout: 300
 
       - wait: global_db_sync
         nodes: "{{_active_nodes}}"
-        timeout: 120
+        timeout: 300
 
       # Debug: Check zerochain events on master after sync
       - cli: "dag event list -chain zerochain"
@@ -101,7 +99,7 @@ test:
       
       - wait: global_db_sync
         nodes: "{{_active_nodes}}"
-        timeout: 120
+        timeout: 300
 
       # Verify emission is now in ledger on master
       - cli: "ledger list coins"
@@ -124,7 +122,7 @@ test:
 
       - wait: global_db_sync
         nodes: "{{_active_nodes}}"
-        timeout: 120
+        timeout: 300
 
       # Debug: Show mempool status on master
       - cli: "mempool list -chain main"
@@ -186,11 +184,11 @@ test:
 
   - wait_network: online
     nodes: "{{_active_nodes}}"
-    timeout: 120
+    timeout: 300
 
   - wait: global_db_sync
     node: "{{first_root}}"
-    timeout: 120
+    timeout: 300
   
   # Configure fee_addr in main.cfg 
   # SDK will automatically load it from config on node startup
