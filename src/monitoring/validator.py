@@ -46,7 +46,7 @@ class ValidatorMonitor(BaseMonitor):
         self.nodes = nodes
         self.network_name = network_name
         self.expected_order_count = expected_order_count
-        self.docker_client = docker.from_env()
+        self.docker_client = docker.from_env(timeout=30)
         
         # Track per-node state
         self.node_states: Dict[int, Dict[str, Any]] = {}

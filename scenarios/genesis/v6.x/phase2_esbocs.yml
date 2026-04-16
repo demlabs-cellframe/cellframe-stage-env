@@ -22,16 +22,25 @@ setup:
     nodes: "{{_active_nodes}}"
     timeout: 120
 
-  # Enable seed_mode on active nodes via CLI (no restart needed)
+  # Enable seed_mode on active nodes via config (requires restart)
+  # seed_mode allows accepting new genesis blocks for mainchain
   - group: Enable seed_mode on active nodes
     steps:
-      - for: _seed_node
-        in: "{{_active_nodes}}"
-        steps:
-          - cli: "chain seed -chain main on"
-            node: "{{_seed_node}}"
-          - cli: "chain seed -chain zerochain on"
-            node: "{{_seed_node}}"
+      - config: "cellframe-node"
+        nodes: "{{_active_nodes}}"
+        set:
+          seed_mode: "true"
+      
+      - docker_op: restart
+        services: "{{_active_nodes}}"
+      
+      - wait: 10s
+      
+      - print: "seed_mode enabled on active nodes via config"
+
+  - wait_network: online
+    nodes: "{{_active_nodes}}"
+    timeout: 120
 
   - wait: global_db_sync
     node: "{{first_root}}"
@@ -170,16 +179,15 @@ test:
       static_genesis_block: "{{genesis_block_hash}}"
       is_static_genesis_block: "true"
   
-  # Disable seed_mode on all active nodes via CLI
+  # Disable seed_mode on all active nodes via config
   - group: Disable seed_mode on active nodes
     steps:
-      - for: _seed_node
-        in: "{{_active_nodes}}"
-        steps:
-          - cli: "chain seed -chain main off"
-            node: "{{_seed_node}}"
-          - cli: "chain seed -chain zerochain off"
-            node: "{{_seed_node}}"
+      - config: "cellframe-node"
+        nodes: "{{_active_nodes}}"
+        set:
+          seed_mode: "false"
+      
+      - print: "seed_mode disabled on active nodes via config"
 
   - docker_op: restart
     services: "{{all_nodes}}"

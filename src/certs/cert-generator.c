@@ -59,6 +59,25 @@ static inline char* dap_node_addr_to_str(dap_node_addr_t a_addr)
         a_addr.words[3], a_addr.words[2], a_addr.words[1], a_addr.words[0]);
 }
 
+/* === SDK Initialization Helper Functions === */
+static int s_sdk_init(void)
+{
+    if (dap_common_init("cf-cert-generator", NULL) != 0)
+        return -1;
+    if (dap_enc_key_init() != 0)
+        return -1;
+    if (dap_cert_init() != 0)
+        return -1;
+    if (dap_sign_init(DAP_HASH_TYPE_SHA3_256) != 0)
+        return -1;
+    return 0;
+}
+
+static void s_sdk_deinit(void)
+{
+    dap_common_deinit();
+}
+
 /* === Constants === */
 #define LOG_TAG "cf-cert-generator"
 

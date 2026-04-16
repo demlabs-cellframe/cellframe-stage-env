@@ -176,7 +176,7 @@ class NetworkConsensusMonitor:
         
         # Import Docker SDK for container access
         import docker
-        self.docker_client = docker.from_env()
+        self.docker_client = docker.from_env(timeout=30)
         
         logger.info("network_consensus_monitor_initialized",
                    nodes=self.expected_node_count,

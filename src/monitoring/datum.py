@@ -73,7 +73,7 @@ class DatumMonitor:
             log_file: Optional path to monitoring logs directory
         """
         self.node_cli_path = node_cli_path
-        self.docker_client = docker.from_env()
+        self.docker_client = docker.from_env(timeout=30)
         self._topology_map = None  # Cache for role -> node_ids mapping
         
         # Create separate datum monitor log

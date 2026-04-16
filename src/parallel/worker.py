@@ -228,7 +228,7 @@ def _run_suite_sync(
             suite_includes=suite_spec.includes or [],
             suite_setup=suite_spec.setup.model_dump() if suite_spec.setup else None,
             suite_name=suite_name,
-            base_dir=task.suite_dir,
+            base_dir=task.descriptor_path.parent,
         )
         executor = ScenarioExecutor(
             node_cli_path="cellframe-node-cli",
@@ -378,7 +378,7 @@ def _cleanup_shard(shard, base_path: Path) -> None:
     """Best-effort cleanup of shard Docker resources."""
     try:
         import docker
-        client = docker.from_env()
+        client = docker.from_env(timeout=30)
         containers = client.containers.list(
             all=True,
             filters={"label": f"com.docker.compose.project={shard.project_name}"},

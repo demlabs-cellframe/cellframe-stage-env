@@ -1048,7 +1048,7 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
         if self.data_cache.exists():
             try:
                 import docker
-                docker_client = docker.from_env()
+                docker_client = docker.from_env(timeout=30)
                 logger.debug("cleaning_data_cache_with_docker", path=str(self.data_cache))
                 
                 target_path = f"{CLEANUP_MOUNT_PATH}/data"

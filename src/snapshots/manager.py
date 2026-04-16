@@ -129,7 +129,7 @@ class SnapshotManager:
             tag = f"prototype-{source}"
             try:
                 import docker
-                client = docker.from_env()
+                client = docker.from_env(timeout=30)
                 ctr = client.containers.get(container_name)
                 ctr.commit(repository=tag, tag="latest")
                 images[source] = f"{tag}:latest"

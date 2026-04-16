@@ -488,36 +488,46 @@ class NetworkManager:
             logger.warning("nodes_list_purge_failed", error=str(exc),
                           note="Shards may have stale IPs in GDB")
 
-    def _fix_stale_node_list(self, node_configs) -> None:
-        """Clear stale GDB ``nodes.list`` data BEFORE starting containers.
+    def _fix_stale_node_list(self, node_configs) -> bool:
+        """Clear stale GDB node list data for non-genesis shards BEFORE starting containers.
 
-        Snapshots are created from the genesis shard (shard-0, subnet 172.22.0.0/16).
-        Every shard restored from that snapshot will inherit shard-0 peer IPs in
-        its MDBX global-DB.  For non-zero shards those IPs are unreachable, so
-        nodes would populate their nodes.list with wrong addresses and never
-        establish P2P links.
+        Snapshots are created from the genesis shard (shard-0, typically subnet 172.20.0.0/16).
+        Every shard restored from that snapshot inherits shard-0 peer IPs in its GDB.
+        For non-zero shards those IPs are unreachable, causing nodes to fail connecting.
 
-        Deleting the MDBX **only affects the global-DB** (peers, runtime metadata).
-        Blockchain data lives in ``lib/network/<net>/`` and is NOT touched.
-        Nodes will rebuild their peers list from ``seed_nodes_hosts`` on first boot.
+        We only delete node list/states GDB - other GDB files (chain, mempool) are preserved.
+
+        Returns:
+            True if GDB files were purged, False otherwise.
         """
         cache_dir = self.paths_config.get('cache_dir', 'cache')
+        cache_dir_str = str(cache_dir)
+        
+        is_non_genesis_shard = 'shard-' in cache_dir_str and '/shard-0' not in cache_dir_str
+        
+        if not is_non_genesis_shard:
+            logger.info("stale_node_list_check",
+                        note="Genesis shard - GDB files preserved",
+                        cache_dir=cache_dir)
+            return False
+
         cache_path = (self.base_path / cache_dir).resolve()
+        net_name = self.topology.network.name
 
         purged = 0
         for nc in node_configs:
-            mdbx_dir = (
+            gdb_dir = (
                 cache_path / "data" / f"node{nc.node_id}"
-                / "lib" / "global_db" / "gdb-mdbx"
+                / "lib" / "global_db" / "gdb-native"
             )
-            for fname in ("mdbx.dat", "mdbx.lck"):
-                f = mdbx_dir / fname
+            for fname in (f"{net_name}.nodes.list.gdb", f"{net_name}.nodes.states.gdb"):
+                f = gdb_dir / fname
                 if f.exists():
                     try:
                         f.unlink()
                         purged += 1
+                        logger.debug("deleted_stale_gdb", file=str(f))
                     except OSError:
-                        # File may be root-owned if chown post-extract failed
                         try:
                             import subprocess as _sp
                             _sp.run(["sudo", "rm", "-f", str(f)],
@@ -527,9 +537,11 @@ class NetworkManager:
                             pass
 
         logger.info("stale_node_list_fixed",
-                     nodes=len(node_configs),
-                     entries_updated=purged,
-                     method="mdbx_purge")
+                    nodes=len(node_configs),
+                    files_deleted=purged,
+                    cache_dir=cache_dir,
+                    note="Non-genesis shard - stale GDB entries purged")
+        return purged > 0
 
     async def _register_nodes_after_restore(self, node_configs) -> None:
         """Register all nodes in each other's node-list via CLI.
@@ -542,6 +554,7 @@ class NetworkManager:
         This mirrors what Phase 1 YAML does during full genesis.
         """
         import subprocess
+        import asyncio
         from ..utils.project import make_container_name
 
         net_name = self.topology.network.name
@@ -555,26 +568,44 @@ class NetworkManager:
                 f".{int(base_ip_parts[3]) + nc.node_id - 1}"
             )
 
+        # Retry logic: node CLI might not be ready immediately after container start
+        max_attempts = 5
+        retry_delays = [5, 10, 15, 20, 30]  # exponential backoff
         addr_map: dict[int, str] = {}
-        for nc in node_configs:
-            container = make_container_name(f"node-{nc.node_id}")
-            try:
-                result = subprocess.run(
-                    ["docker", "exec", container, "sh", "-c",
-                     "cellframe-node-cli node dump -net " + net_name],
-                    capture_output=True, text=True, timeout=15)
-                if result.returncode == 0:
-                    import re
-                    m = re.search(r'Node addr:\s+(\S+)', result.stdout)
-                    if m:
-                        addr_map[nc.node_id] = m.group(1)
-            except Exception as exc:
-                logger.warning("node_addr_read_failed",
-                               node_id=nc.node_id, error=str(exc))
+        
+        for attempt in range(max_attempts):
+            addr_map.clear()
+            for nc in node_configs:
+                container = make_container_name(f"node-{nc.node_id}")
+                try:
+                    result = subprocess.run(
+                        ["docker", "exec", container, "sh", "-c",
+                         "cellframe-node-cli node dump -net " + net_name],
+                        capture_output=True, text=True, timeout=15)
+                    if result.returncode == 0:
+                        import re
+                        m = re.search(r'Node addr:\s+(\S+)', result.stdout)
+                        if m:
+                            addr_map[nc.node_id] = m.group(1)
+                except Exception as exc:
+                    logger.warning("node_addr_read_failed",
+                                   node_id=nc.node_id, error=str(exc), attempt=attempt+1)
+            
+            if addr_map:
+                logger.info("node_addrs_resolved", count=len(addr_map), 
+                           total=len(node_configs), attempt=attempt+1)
+                break
+            
+            if attempt < max_attempts - 1:
+                delay = retry_delays[attempt]
+                logger.warning("retrying_node_addr_resolution",
+                             attempt=attempt+1, max_attempts=max_attempts,
+                             delay=delay, note="CLI not ready yet")
+                await asyncio.sleep(delay)
 
         if not addr_map:
             logger.error("no_node_addrs_resolved",
-                        note="Cannot register nodes — node dump failed for all")
+                        note="Cannot register nodes — node dump failed for all after retries")
             return
 
         registered = 0
@@ -724,20 +755,31 @@ class NetworkManager:
                        snapshot=clean_state_name,
                        note="Starting containers from clean_state snapshot")
             
-            # Fix stale node list in GDB BEFORE starting containers
-            self._fix_stale_node_list(node_configs)
+            # Fix stale node list - for non-genesis shards, this deletes stale GDB files
+            # so nodes start fresh with correct IPs from seed_nodes_hosts config.
+            gdb_was_purged = self._fix_stale_node_list(node_configs)
 
             # Start ALL containers from restored clean_state
             all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
             logger.info("starting_all_containers_from_clean_state", services=all_services)
             self.compose.up(services=all_services, detach=True, wait=False, no_build=False)
             
+            if gdb_was_purged:
+                # For non-genesis shards: GDB was cleared, so balancer has no nodes.
+                # Must register nodes BEFORE waiting for online, otherwise nodes can't
+                # get links from balancer (returns 204) and will timeout.
+                import asyncio
+                logger.info("registering_nodes_before_wait",
+                           note="GDB was purged - registering nodes to populate balancer")
+                await asyncio.sleep(15)  # Wait for node CLI to be ready
+                await self._register_nodes_after_restore(node_configs)
+            
             # Wait for all nodes to come online
             await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
 
-            # Register nodes in each other's node-list so the balancer
-            # can return peers and P2P links are established.
-            await self._register_nodes_after_restore(node_configs)
+            if not gdb_was_purged:
+                # For genesis shard: register after online (GDB was preserved from snapshot)
+                await self._register_nodes_after_restore(node_configs)
 
             # Verify fee_addr is configured (should be set during genesis)
             first_root = root_nodes[0]
@@ -1572,7 +1614,7 @@ class NetworkManager:
                     logger.error("master_nodes_genesis_failed", error=str(e), traceback=traceback.format_exc())
                     # Dump logs for all running containers
                     import docker
-                    docker_client = docker.from_env()
+                    docker_client = docker.from_env(timeout=30)
                     for container in docker_client.containers.list(all=True):
                         if f"{self.compose.project_name}-node" in container.name:
                             log_path = f"/tmp/{container.name}.log"

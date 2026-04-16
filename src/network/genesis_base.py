@@ -44,7 +44,7 @@ class BaseGenesisManager:
         self.base_path = base_path
         self.network_name = network_name
         self.config_path = config_path
-        self.docker_client = docker.from_env()
+        self.docker_client = docker.from_env(timeout=30)
         # Use DockerContainerManager for CLI execution
         from ..docker.container import DockerContainerManager
         self.container_manager = DockerContainerManager(base_path, "cellframe-node-cli")

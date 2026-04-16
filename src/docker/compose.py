@@ -58,7 +58,7 @@ class DockerComposeManager:
         self.compose_file = project_dir / "docker-compose.yml"
         
         try:
-            self.client = docker.from_env()
+            self.client = docker.from_env(timeout=30)
             logger.info("docker_connected", version=self.client.version()["Version"])
         except DockerException as e:
             logger.error("docker_connection_failed", error=str(e))
