@@ -19,6 +19,17 @@ logger = get_logger(__name__)
 
 _OUTPUT_VAR_RE = re.compile(r"^::set-output\s+(\w+)=(.*)$", re.MULTILINE)
 
+# Known Playwright projects declared in tests/e2e/browser/playwright.config.ts.
+# Must be kept in sync with that file; `chromium` (without -mt/-st suffix) is
+# intentionally NOT valid — it does not select a WASM tier and any scenario
+# using it is a configuration bug.
+_KNOWN_BROWSERS = frozenset({
+    "chromium-mt",
+    "chromium-st",
+    "firefox",
+    "webkit",
+})
+
 
 class PlaywrightStepExecutor(StepExecutor):
     """Executor for Playwright browser test steps.
@@ -29,6 +40,16 @@ class PlaywrightStepExecutor(StepExecutor):
     """
 
     async def execute(self, step: PlaywrightStep, ctx: RuntimeContext) -> Dict[str, Any]:
+        if step.browser not in _KNOWN_BROWSERS:
+            raise ScenarioExecutionError(
+                f"Playwright step uses unknown browser/project '{step.browser}'. "
+                f"Valid projects: {sorted(_KNOWN_BROWSERS)}. "
+                f"Note: 'chromium' is not a valid project — use 'chromium-mt' "
+                f"(WASM multi-threaded, SAB) or 'chromium-st' (single-threaded fallback).",
+                step=step.playwright,
+                context={"browser": step.browser, "known": sorted(_KNOWN_BROWSERS)},
+            )
+
         env_vars: Dict[str, str] = {}
         for k, v in step.env.items():
             env_vars[k] = ctx.substitute(v)
