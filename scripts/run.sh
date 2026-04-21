@@ -206,6 +206,15 @@ fi
 
 success "Prerequisites OK"
 
+# Create config from default template if absent
+STAGE_ENV_DEFAULT="$STAGE_ENV_DIR/config/stage-env.cfg.default"
+if [ ! -f "$STAGE_ENV_CONFIG" ] && [ -f "$STAGE_ENV_DEFAULT" ]; then
+    info "Config not found, creating from default template..."
+    mkdir -p "$(dirname "$STAGE_ENV_CONFIG")"
+    cp "$STAGE_ENV_DEFAULT" "$STAGE_ENV_CONFIG"
+    success "Created $STAGE_ENV_CONFIG"
+fi
+
 # Check node_source.type from config
 NODE_SOURCE_TYPE=""
 if [ -f "$STAGE_ENV_CONFIG" ]; then
