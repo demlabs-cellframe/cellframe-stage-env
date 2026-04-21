@@ -33,11 +33,16 @@ echo ""
 # Parse arguments
 REMOVE_IMAGES=true
 FORCE=false
+DOCKER_PRUNE_ALL=false
 
 for arg in "$@"; do
     case $arg in
         --keep-images)
             REMOVE_IMAGES=false
+            shift
+            ;;
+        --docker-prune-all)
+            DOCKER_PRUNE_ALL=true
             shift
             ;;
         -f|--force)
@@ -48,9 +53,10 @@ for arg in "$@"; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --keep-images  Keep Docker images (cf-node:*, cf-cert-generator:*)"
-            echo "  -f, --force    Skip confirmation prompt"
-            echo "  -h, --help     Show this help message"
+            echo "  --keep-images      Keep Docker images (cf-node:*, cf-cert-generator:*)"
+            echo "  --docker-prune-all  After cleanup, run: docker system prune -a -f"
+            echo "  -f, --force        Skip confirmation prompt"
+            echo "  -h, --help         Show this help message"
             echo ""
             exit 0
             ;;
@@ -72,6 +78,10 @@ if [ "$FORCE" = false ]; then
     if [ "$REMOVE_IMAGES" = false ]; then
         echo ""
         echo "  (Images will be KEPT due to --keep-images flag)"
+    fi
+    if [ "$DOCKER_PRUNE_ALL" = true ]; then
+        echo ""
+        echo "  Also run: docker system prune -a -f (removes all unused images — high disk savings)"
     fi
     echo ""
     read -p "Are you sure? (y/N) " -n 1 -r
@@ -182,10 +192,16 @@ rm -f /tmp/cellframe-stage-*.log 2>/dev/null || true
 rm -f /tmp/final_test.log 2>/dev/null || true
 success "Tmp logs cleaned"
 
+if [ "$DOCKER_PRUNE_ALL" = true ]; then
+    info "docker system prune -a -f ..."
+    docker system prune -a -f 2>/dev/null || warning "docker system prune failed (check Docker daemon)"
+fi
+
 echo ""
 echo "========================================="
 success "Cleanup complete! You can now run:"
 echo ""
-echo "  ./run.sh --keep-running"
+echo "  ./scripts/run.sh --start-only"
+echo "  # or: ./scripts/run.sh --keep-running"
 echo ""
 echo "========================================="

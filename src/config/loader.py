@@ -411,7 +411,7 @@ class ConfigLoader:
             'node_var_subdirs': 'log, lib/ca, lib/global_db, lib/wallet, lib/network',
             'cellframe_sdk_git': 'https://gitlab.demlabs.net/cellframe/cellframe-sdk.git',
             'dap_sdk_git': 'https://gitlab.demlabs.net/dap/dap-sdk.git',
-            'sdk_git_branch': 'master',
+            'sdk_git_branch': 'auto',
             'custom_templates_dir': '',
         }
         

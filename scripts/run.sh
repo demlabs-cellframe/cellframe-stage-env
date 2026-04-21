@@ -2,15 +2,16 @@
 #
 # Unified test runner for Cellframe Node
 #
-# Usage:
-#   ./tests/run.sh                     # Run all tests
-#   ./tests/run.sh --e2e               # Run only E2E tests
-#   ./tests/run.sh --functional        # Run only functional tests
-#   ./tests/run.sh --regression        # Run only regression tests
-#   ./tests/run.sh --clean             # Clean cache before running
-#   ./tests/run.sh --rebuild           # Rebuild Docker images
-#   ./tests/run.sh --keep-running      # Don't stop network after tests
-#   ./tests/run.sh --skip-build        # Skip building cellframe-node
+# Usage (from repo root):
+#   ./tests/stage-env/scripts/run.sh                    # Run all suites
+#   ./tests/stage-env/scripts/run.sh --e2e             # E2E only
+#   ./tests/stage-env/scripts/run.sh --functional      # Functional only
+#   ./tests/stage-env/scripts/run.sh --regression      # Regression only
+#   ./tests/stage-env/scripts/run.sh --clean           # Clean cache first
+#   ./tests/stage-env/scripts/run.sh --rebuild         # Rebuild Docker images
+#   ./tests/stage-env/scripts/run.sh --keep-running    # Leave network up after tests
+#   ./tests/stage-env/scripts/run.sh --skip-build      # No CMake/cpack build
+#   ./tests/stage-env/scripts/run.sh --start-only      # Start env only (no tests)
 #
 
 set -euo pipefail
@@ -64,6 +65,7 @@ REBUILD_IMAGES=false
 SKIP_BUILD=false
 PKGS_UPDATE=false
 STOP_ENV=false
+START_ONLY=false
 SPECIFIC_TESTS=()
 
 while [[ $# -gt 0 ]]; do
@@ -104,6 +106,11 @@ while [[ $# -gt 0 ]]; do
             STOP_ENV=true
             shift
             ;;
+        --start-only)
+            START_ONLY=true
+            KEEP_RUNNING=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS] [TEST_PATH...]"
             echo ""
@@ -117,6 +124,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-build    Skip building cellframe-node (use existing .deb or config)"
             echo "  --pkgs-update   Update packages in running containers"
             echo "  --stop          Stop stage environment"
+            echo "  --start-only    Build/start the network only; do not run tests (implies --keep-running)"
             echo "  -h, --help      Show this help message"
             echo ""
             echo "Node source (stage-env.cfg [node_source]):"
@@ -131,7 +139,8 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --rebuild --e2e                    # Rebuild images and run E2E tests"
             echo "  $0 --keep-running                     # Keep network running after tests"
             echo "  $0 --stop                             # Stop stage environment"
-            echo "  $0 tests/e2e/token                    # Run specific test suite"
+            echo "  $0 --start-only                       # Start network only (leave running)"
+            echo "  $0 tests/e2e/consensus              # Run one suite dir under tests/"
             echo ""
             exit 0
             ;;
@@ -181,7 +190,7 @@ fi
 # If specific tests provided, use them directly
 if [ ${#SPECIFIC_TESTS[@]} -gt 0 ]; then
     info "Specific tests requested: ${SPECIFIC_TESTS[*]}"
-elif ! $RUN_E2E && ! $RUN_FUNCTIONAL && ! $RUN_REGRESSION; then
+elif ! $START_ONLY && ! $RUN_E2E && ! $RUN_FUNCTIONAL && ! $RUN_REGRESSION; then
     # If nothing specified, run all
     RUN_E2E=true
     RUN_FUNCTIONAL=true
@@ -239,8 +248,10 @@ print(config.get('node_source', 'url', fallback=''))
     if [ -n "$NODE_URL" ]; then
         success "Node source: $NODE_URL"
     else
-        error "type=url but no url specified in config"
-        exit 1
+        # Empty url with type=url means: auto-detect the latest published
+        # cellframe-node-X.Y-Z[-dbg]-<arch>.deb from the master directory
+        # listing inside the Dockerfile build (PACKAGE_URL build-arg stays empty).
+        info "Node source: auto-detect latest published package (url is empty in config)"
     fi
 elif $SKIP_BUILD; then
     # --skip-build flag: use existing local package or config
@@ -395,6 +406,11 @@ popd > /dev/null
 
 if [ $E2E_EXIT -eq 0 ]; then
     success "Stage environment started"
+    
+    if $START_ONLY; then
+        success "Start-only: stage environment left running (no tests run)"
+        exit 0
+    fi
     
     # Collect test directories
     TEST_DIRS=()

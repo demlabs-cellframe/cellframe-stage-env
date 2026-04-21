@@ -10,6 +10,12 @@ node-role={{ node_role | default('full', true) }}
 # Both aliases and hosts are required for node discovery
 seed_nodes_aliases={{ seed_nodes_aliases | default('[]', true) }}
 seed_nodes_hosts={{ seed_nodes_hosts | default('[]', true) }}
+# Permanent links: required for v5.7+ binaries so root nodes connect to each
+# other directly on first boot (the GDB nodelist is empty until 'node add').
+# permanent_nodes_addrs holds the hex node addresses of all root nodes;
+# permanent_nodes_hosts maps those addresses to <ip>:<port> when GDB is empty.
+permanent_nodes_addrs={{ permanent_nodes_addrs | default('[]', true) }}
+permanent_nodes_hosts={{ permanent_nodes_hosts | default('[]', true) }}
 # NOTE: authorized_nodes_addrs is NOT read from this file!
 # It MUST be in zerochain.cfg [chain] section for node add command to work
 

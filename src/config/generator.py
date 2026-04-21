@@ -60,8 +60,12 @@ class ConfigGenerator:
         self.data_cache = self.cache_dir / "data"
         self.certs_cache = self.cache_dir / "certs"
         
-        # Derive dap-sdk branch from genesis_version (v5.8 -> release-5.8)
-        sdk_branch = self._sdk_branch_from_version(version_dir)
+        # dap-sdk branch: [paths] sdk_git_branch (default "auto" — derived from genesis version)
+        raw_branch = (paths_config.get("sdk_git_branch") or "").strip()
+        if raw_branch and raw_branch.lower() != "auto":
+            sdk_branch = raw_branch
+        else:
+            sdk_branch = self._sdk_branch_from_version(version_dir)
 
         # Initialize cert generator with correct certs path
         self.cert_generator = CertGenerator(base_path, certs_dir=self.certs_cache,
@@ -81,7 +85,8 @@ class ConfigGenerator:
             if suffix.endswith(".x"):
                 suffix = suffix[:-2] + ".0"
             return f"release-{suffix}"
-        return "release-6.0"
+        # stable/unknown — align with current node mainline (see [paths] sdk_git_branch)
+        return "current"
 
     def _resolve_template(self, relative_path: str) -> Optional[Path]:
         """Find template file/dir: versioned directory first, then common fallback."""
@@ -383,7 +388,12 @@ class ConfigGenerator:
                 blocks_sign_cert = f"{network_name}.master.pvt.{master_idx}"
                 logger.debug("blocks_sign_cert_prepared", node_id=node.node_id, master_idx=master_idx, root_count=root_nodes_count, cert=blocks_sign_cert)
             
-            # Render template with node-specific context
+            # Render template with node-specific context.
+            # permanent_nodes_addrs / permanent_nodes_hosts are required for
+            # the v5.7+ node binary to form direct links between root nodes
+            # without relying on the GDB nodelist (which is empty at first
+            # boot in a freshly bootstrapped local network).
+            permanent_nodes_addrs = base_chain_context['root_nodes_addrs'] if base_chain_context else "[]"
             network_context = {
                 'network_name': network_name,
                 'network_id': base_chain_context['network_id'] if base_chain_context else '0x0000000000001234',
@@ -392,6 +402,7 @@ class ConfigGenerator:
                 'node_role': node_role,
                 'seed_nodes_aliases': seed_nodes_aliases,
                 'seed_nodes_hosts': seed_nodes_hosts,
+                'permanent_nodes_addrs': permanent_nodes_addrs,
                 'permanent_nodes_hosts': permanent_nodes_hosts,
                 'events_sign_cert': events_sign_cert,
                 'blocks_sign_cert': blocks_sign_cert
