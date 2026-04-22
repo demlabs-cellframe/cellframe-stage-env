@@ -64,6 +64,7 @@ echo ""
 REMOVE_IMAGES=true
 PRUNE_BUILD_CACHE=true
 FORCE=false
+DOCKER_PRUNE_ALL=false
 
 for arg in "$@"; do
     case $arg in
@@ -261,6 +262,7 @@ echo ""
 echo "========================================="
 success "Cleanup complete!${FREED} You can now run:"
 echo ""
-echo "  ./run.sh --keep-running"
+echo "  ./scripts/run.sh --start-only"
+echo "  # or: ./scripts/run.sh --keep-running"
 echo ""
 echo "========================================="

@@ -252,14 +252,17 @@ class NetworkManager:
         return default_dir
 
     def _sdk_branch_for_tools(self) -> str:
-        """Derive dap-sdk git branch from genesis version (v5.8 -> release-5.8)."""
+        """Derive dap-sdk git branch; prefer [paths] sdk_git_branch."""
+        explicit = (self.paths_config.get("sdk_git_branch") or "").strip()
+        if explicit and explicit.lower() != "auto":
+            return explicit
         ver = self._genesis_version_dir
         if ver and ver.startswith("v"):
             suffix = ver[1:]
             if suffix.endswith(".x"):
                 suffix = suffix[:-2] + ".0"
             return f"release-{suffix}"
-        return "release-6.0"
+        return "current"
 
     async def prepare(self, rebuild: bool = False) -> None:
         """Restore snapshot, generate configs and compose — but do NOT start containers.
