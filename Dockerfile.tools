@@ -59,20 +59,29 @@ RUN if [ "$DAP_TOOLS_VARIANT" = "auto" ]; then \
 RUN find /src/dap-sdk -name "CMakeLists.txt" -o -name "*.cmake" \
       | xargs sed -i 's/-Werror//g' 2>/dev/null || true
 
-# libmdbx: unquoted macro args break CHECK_*_COMPILER_FLAG on CMake 3.25+ (flags with spaces / strict parsing)
-RUN sed -i \
-    's/check_cxx_compiler_flag(${flag} ${variable})/check_cxx_compiler_flag("${flag}" "${variable}")/g' \
-    /src/dap-sdk/3rdparty/libmdbx/cmake/compiler.cmake && \
-  sed -i \
-    's/check_c_compiler_flag(${flag} ${variable})/check_c_compiler_flag("${flag}" "${variable}")/g' \
-    /src/dap-sdk/3rdparty/libmdbx/cmake/compiler.cmake
+# libmdbx: unquoted macro args break CHECK_*_COMPILER_FLAG on CMake 3.25+ (flags with spaces / strict parsing).
+# Only present in v6.0 SDK layout; master SDK has no in-tree libmdbx, so skip when missing.
+RUN MDBX_CMAKE=/src/dap-sdk/3rdparty/libmdbx/cmake/compiler.cmake; \
+    if [ -f "$MDBX_CMAKE" ]; then \
+        sed -i \
+            's/check_cxx_compiler_flag(${flag} ${variable})/check_cxx_compiler_flag("${flag}" "${variable}")/g' \
+            "$MDBX_CMAKE" && \
+        sed -i \
+            's/check_c_compiler_flag(${flag} ${variable})/check_c_compiler_flag("${flag}" "${variable}")/g' \
+            "$MDBX_CMAKE"; \
+    else \
+        echo "libmdbx not present in dap-sdk (master layout) - skipping CMake 3.25+ patch"; \
+    fi
 
 # MDBX_BUILD_CXX=OFF: libmdbx as C-only avoids CMake check_cxx_compiler_flag macro issues
 # in 3rdparty/libmdbx/cmake/compiler.cmake when built as a subdirectory (bookworm + current SDK).
 RUN mkdir -p /tmp/sdk-build && cd /tmp/sdk-build && \
     cmake -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_C_FLAGS="-Wno-error" \
+          -DCMAKE_C_FLAGS="-Wno-error -fPIC" \
           -DBUILD_DAP_SDK_TESTS=OFF \
+          -DBUILD_SHARED=OFF \
+          -DBUILD_STATIC=ON \
+          -DINSTALL_DAP_SDK=OFF \
           -DBUILD_WITH_GDB_DRIVER_MDBX=ON \
           -DMDBX_BUILD_CXX=OFF \
           -DCELLFRAME_MODULES="core chains network" \
