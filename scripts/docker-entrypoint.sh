@@ -41,6 +41,9 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT SIGHUP SIGQUIT
 
+# Ensure required directories exist (plugins dir is checked by dap_sdk_init)
+mkdir -p /opt/cellframe-node/var/lib/plugins
+
 # Remove stale MDBX lock files — may remain from snapshot restore or
 # data cloning and prevent the database from opening.
 find /opt/cellframe-node/var/lib -name "mdbx.lck" -delete 2>/dev/null

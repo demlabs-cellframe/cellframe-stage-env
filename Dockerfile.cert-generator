@@ -1,0 +1,71 @@
+# Dockerfile for Certificate Generator
+# 
+# Minimal build - only crypto libraries, no network stack
+# Uses DAP SDK crypto for post-quantum certificate generation
+#
+# Usage:
+#   docker build -f tools/stage-env/Dockerfile.cert-generator -t cf-cert-generator:latest .
+#   docker run --rm -v $(pwd)/certs:/output cf-cert-generator:latest /output 6 stagenet 0x1234
+#
+FROM debian:bookworm-slim AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    pkg-config \
+    libssl-dev \
+    python3 \
+    xsltproc \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /project
+
+# Copy cellframe-sdk source and root dap-sdk (cellframe-sdk's dap-sdk submodule may be outdated)
+COPY cellframe-sdk /project/cellframe-sdk
+COPY dap-sdk /project/dap-sdk
+
+# Replace cellframe-sdk's dap-sdk submodule with the root dap-sdk
+RUN rm -rf /project/cellframe-sdk/dap-sdk && \
+    cp -a /project/dap-sdk /project/cellframe-sdk/dap-sdk
+
+# Clean any host CMake artifacts
+RUN find /project/cellframe-sdk -name "CMakeCache.txt" -delete && \
+    find /project/cellframe-sdk -name "CMakeFiles" -type d -exec rm -rf {} + 2>/dev/null || true
+
+# Build cellframe_sdk shared library (bump REBUILD_SDK to force rebuild when crypto/keccak changes)
+ARG REBUILD_SDK=2
+WORKDIR /project/cellframe-sdk/build
+RUN cmake -DCMAKE_BUILD_TYPE=Release .. && \
+    make -j$(nproc) cellframe_sdk
+
+# Copy and build cert-generator
+COPY tools/stage-env/src/certs /project/cert-generator
+WORKDIR /project/cert-generator/build
+RUN cmake -DCELLFRAME_SDK_BUILD=/project/cellframe-sdk/build \
+          -DCELLFRAME_SDK_SRC=/project/cellframe-sdk \
+          -DDAP_SDK_SRC=/project/dap-sdk \
+          .. && \
+    make -j$(nproc) cf-cert-generator && \
+    strip cf-cert-generator
+
+# Runtime image - minimal
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the cellframe_sdk and dap-sdk shared libraries
+COPY --from=builder /project/cellframe-sdk/build/libcellframe_sdk.so* /usr/local/lib/
+COPY --from=builder /project/cellframe-sdk/build/dap-sdk/libdap-sdk.so /usr/local/lib/
+RUN ldconfig
+
+COPY --from=builder /project/cert-generator/build/cf-cert-generator /usr/local/bin/
+
+WORKDIR /output
+ENTRYPOINT ["/usr/local/bin/cf-cert-generator"]
+CMD ["--help"]
+
+LABEL maintainer="Cellframe Team"
+LABEL description="Certificate generator with post-quantum crypto (minimal build)"

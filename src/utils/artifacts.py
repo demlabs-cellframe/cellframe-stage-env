@@ -309,7 +309,7 @@ class ArtifactsManager:
         
         try:
             import docker
-            client = docker.from_env()
+            client = docker.from_env(timeout=30)
             containers = client.containers.list(
                 all=True,
                 filters={"label": f"com.docker.compose.project={get_project_name()}"}

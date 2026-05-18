@@ -486,11 +486,7 @@ class ConfigStepExecutor(StepExecutor):
                 k, v = line.split('=', 1)
                 k = k.strip()
                 v = v.strip()
-                if v.lower() == 'true':
-                    v = True
-                elif v.lower() == 'false':
-                    v = False
-                elif v.isdigit():
+                if v.isdigit():
                     v = int(v)
                 context[k] = v
         

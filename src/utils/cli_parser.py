@@ -14,6 +14,15 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Bump when cache format or extraction logic changes so stale/broken caches are ignored.
+_CLI_CACHE_VERSION = 2
+
+# If cached command map looks like a failed parse (e.g. only "output"/"Total"), reload from container.
+_MIN_SANE_COMMAND_COUNT = 8
+_SENTINEL_COMMANDS = frozenset(
+    {"help", "token", "wallet", "mempool", "net", "node", "version"}
+)
+
 
 class CLICommandParser:
     """Parse CLI commands and extract available options."""
@@ -28,6 +37,7 @@ class CLICommandParser:
         self.commands: Dict[str, Set[str]] = {}
         self._parsed = False
         self.cache_file = cache_file
+        self._warned_commands: Set[str] = set()
     
     def load_from_cache(self) -> bool:
         """
@@ -43,15 +53,37 @@ class CLICommandParser:
             with open(self.cache_file, 'r') as f:
                 data = json.load(f)
             
+            if isinstance(data, dict) and "_meta" in data:
+                meta = data.get("_meta") or {}
+                if meta.get("version") != _CLI_CACHE_VERSION:
+                    logger.warning(
+                        "CLI command cache version mismatch - will reparse",
+                        cached=meta.get("version"),
+                        expected=_CLI_CACHE_VERSION,
+                    )
+                    return False
+                payload = {k: v for k, v in data.items() if k != "_meta"}
+            else:
+                payload = data
+            
             # Convert lists back to sets
             self.commands = {
                 cmd: set(opts) 
-                for cmd, opts in data.items()
+                for cmd, opts in payload.items()
             }
             
             # Validate cache is not empty
             if not self.commands:
                 logger.warning("Cache file exists but is empty - will reparse")
+                return False
+            
+            keys = set(self.commands.keys())
+            if len(keys) < _MIN_SANE_COMMAND_COUNT or not (keys & _SENTINEL_COMMANDS):
+                logger.warning(
+                    "CLI command cache looks corrupt (too few or wrong command names) - will reparse",
+                    command_count=len(keys),
+                    sample=list(keys)[:12],
+                )
                 return False
             
             self._parsed = True
@@ -81,6 +113,7 @@ class CLICommandParser:
                 cmd: list(opts) 
                 for cmd, opts in self.commands.items()
             }
+            data["_meta"] = {"version": _CLI_CACHE_VERSION}
             
             with open(self.cache_file, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -121,8 +154,9 @@ class CLICommandParser:
             # Log help output for debugging
             logger.info(f"CLI help output (first 500 chars): {main_help[:500]}")
             
+            help_text = self._normalize_help_text(main_help)
             # Extract command list from main help
-            commands = self._extract_commands(main_help)
+            commands = self._extract_commands(help_text)
             logger.info(f"Found {len(commands)} CLI commands")
             
             if len(commands) == 0:
@@ -134,6 +168,7 @@ class CLICommandParser:
                 # Cellframe CLI format: "help <command>" not "<command> -h"
                 cmd_help = await self._exec_cli_help(node_container, ["help", cmd])
                 if cmd_help:
+                    cmd_help = self._normalize_help_text(cmd_help)
                     options = self._extract_options(cmd_help)
                     self.commands[cmd] = options
                     logger.debug(f"Command '{cmd}': {len(options)} options")
@@ -178,8 +213,78 @@ class CLICommandParser:
             logger.debug("CLI help exec failed", args=args, error=str(e))
             return ""
     
+    def _normalize_help_text(self, raw: str) -> str:
+        """Turn JSON-RPC / human-readable CLI help into plain text for parsing."""
+        text = raw.strip()
+        if not text:
+            return ""
+        # Raw JSON from CLI (non-pretty path): [{"output":"..."}] or {"output":"..."}
+        if text.startswith(("[", "{")):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list) and parsed:
+                    parsed = parsed[0]
+                if isinstance(parsed, dict) and "output" in parsed:
+                    inner = parsed.get("output")
+                    if isinstance(inner, str):
+                        return inner
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        # Human text from s_json_str_to_text: "output: <text>"
+        if text.startswith("output:"):
+            rest = text[len("output:") :].lstrip()
+            return rest
+        return text
+
+    def _extract_commands_from_table(self, help_text: str) -> List[str]:
+        """Extract command names from 6.x table help ( 'cmd  | desc |' )."""
+        seen: Set[str] = set()
+        commands: List[str] = []
+        skip = {
+            "command",
+            "description",
+            "output",
+            "total",
+            "exit",
+            "quit",
+            "?",
+            "commands",
+            "usage",
+            "options",
+        }
+
+        for line in help_text.split("\n"):
+            if "|" not in line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) < 2:
+                continue
+            name = parts[0].strip()
+            if not name:
+                continue
+            if name.lower().startswith("total") or "total commands" in line.lower():
+                continue
+            if set(name) <= {"_", "-", " "} or "___" in name:
+                continue
+            if name.lower() in skip:
+                continue
+            # First column is fixed-width; may contain spaces for single-token commands
+            name = " ".join(name.split())
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            commands.append(name)
+        return commands
+
     def _extract_commands(self, help_text: str) -> List[str]:
         """Extract command names from main help output."""
+        # Prefer table format (6.x+)
+        table_cmds = self._extract_commands_from_table(help_text)
+        if len(table_cmds) >= _MIN_SANE_COMMAND_COUNT and any(
+            c in _SENTINEL_COMMANDS for c in table_cmds
+        ):
+            return table_cmds
+
         seen: Set[str] = set()
         commands: List[str] = []
         skip = {'help', 'version', 'exit', 'quit', '?', 'Commands', 'Usage', 'Options'}
@@ -290,15 +395,15 @@ class CLICommandParser:
         # Debug logging
         logger.debug(f"apply_cli_defaults: cli_command='{cli_command}', command='{command}', available_options={available_options}, defaults={defaults}, parsed={self._parsed}")
 
-        # Warn only when command is not in the parsed list at all (not when it has no options)
-        if not command_known:
+        if not command_known and command not in self._warned_commands:
+            self._warned_commands.add(command)
             if self._parsed:
-                logger.warning(
-                    f"Command '{command}' not found in parsed commands. Available commands: {list(self.commands.keys())[:15]}"
+                logger.debug(
+                    f"Command '{command}' not in parsed help output (may be unlisted/plugin command)"
                 )
             else:
                 logger.warning(
-                    f"CLI parser not initialized (parsed={self._parsed}). Cannot apply defaults for command '{command}'. Parser must be initialized before use."
+                    f"CLI parser not initialized. Cannot apply defaults for command '{command}'."
                 )
         
         # Build list of options to add

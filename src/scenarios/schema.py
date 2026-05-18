@@ -468,6 +468,17 @@ class WaitForDatumStep(BaseModel):
     save_status: Optional[str] = Field(None, description="Variable name to save final status")
 
 
+class WaitForTxStep(BaseModel):
+    """Wait for a transaction to be processed through mempool and reach the chain."""
+    wait_for_tx: str = Field(..., description="Transaction hash to wait for")
+    expected_status: str = Field("success", description="Expected status: 'success' or 'failure'")
+    node: Optional[str] = Field(None, description="Node to check on")
+    network: Optional[str] = Field(None, description="Network name")
+    chain: Optional[str] = Field(None, description="Chain name")
+    timeout_per_stage: int = Field(60, description="Timeout per verification stage in seconds")
+    check_interval: int = Field(2, description="Check interval in seconds")
+
+
 class NetworkWaitStep(BaseModel):
     """Wait for network state (online, offline, links_connecting, links_established, sync_complete)."""
     wait_network: str = Field(..., description="Network state to wait for: 'online', 'offline', 'links_connecting', 'links_established', 'sync_complete'")
@@ -664,7 +675,7 @@ class StepGroup(BaseModel):
 # CustomOperandStep MUST be LAST — it is a catch-all populated by the parser's
 # pre-processing pass and will never appear in raw YAML directly.
 TestStep = Union[
-    NetworkWaitStep, WaitForDatumStep, SnapshotStep, DockerExecStep, DockerOpStep, DpkgStep,
+    NetworkWaitStep, WaitForDatumStep, WaitForTxStep, SnapshotStep, DockerExecStep, DockerOpStep, DpkgStep,
     CLIStep, RPCStep, PythonStep, PrintStep, BashStep, ToolStep, LoopStep, StepGroup,
     SetStep, IfStep, WhileStep, SwitchStep, ForStep,
     ConfigStep, MetricStep, MetricsTableStep,

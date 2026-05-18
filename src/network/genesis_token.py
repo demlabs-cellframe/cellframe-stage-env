@@ -487,7 +487,7 @@ class TokenGenesisManager(BaseGenesisManager):
             
             exit_code, stdout_str, stderr_str = self._exec_cli(
                 first_master.node_id,
-                f"tx_create -token TCELL -from_emission {emission_hash} -value 100000000 -fee 0.1 -cert {master_cert_name} -net {self.network_name} -chain main",
+                f"tx create -token TCELL -from_emission {emission_hash} -value 100000000 -fee 0.1 -cert {master_cert_name} -net {self.network_name} -chain main",
                 check_output=False
             )
             

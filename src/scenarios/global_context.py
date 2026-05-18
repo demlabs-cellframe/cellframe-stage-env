@@ -49,7 +49,7 @@ class ScenarioGlobalContext:
         self.topology_name = topology_name
         self.native_ticker = native_ticker
         self.node_port = node_port
-        self._docker_client = docker_client or docker.from_env()
+        self._docker_client = docker_client or docker.from_env(timeout=30)
         
         # Cached node information
         self._node_ips: List[str] = []

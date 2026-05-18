@@ -73,7 +73,7 @@ class DatumMonitor:
             log_file: Optional path to monitoring logs directory
         """
         self.node_cli_path = node_cli_path
-        self.docker_client = docker.from_env()
+        self.docker_client = docker.from_env(timeout=30)
         self._topology_map = None  # Cache for role -> node_ids mapping
         
         # Create separate datum monitor log
@@ -413,6 +413,32 @@ class DatumMonitor:
                 if int(mempool_time) % 10 == 0:
                     self._log(f"  ⏳ Datum {datum_hash[:16]}... still in mempool ({mempool_time:.1f}s)")
                 
+                # GDB corruption can prevent mempool cleanup even after
+                # successful processing.  Periodically check chain events
+                # while the datum is still in the mempool.
+                if mempool_time > 10 and iteration % 5 == 0:
+                    block_info = await self._check_in_blocks(node, network, chain, datum_hash)
+                    if block_info:
+                        block_number, block_hash = block_info
+                        is_dag = self._is_dag_chain(chain)
+                        item_type = "event" if is_dag else "block"
+                        self._log(
+                            f"  ✅ Datum {datum_hash[:16]}... found in {item_type} #{block_number} "
+                            f"(still in mempool — likely stale GDB entry)"
+                        )
+                        return DatumMonitorResult(
+                            status=DatumStatus.SUCCESS,
+                            datum_hash=datum_hash,
+                            elapsed_time=elapsed,
+                            details={
+                                "block_number": block_number,
+                                "block_hash": block_hash,
+                                "mempool_stale": True,
+                                "mempool_time": mempool_time,
+                                "total_time": elapsed,
+                            },
+                        )
+                
                 if mempool_time > timeout_mempool:
                     error = f"Datum stuck in mempool for {mempool_time:.1f}s (expected verification within {timeout_mempool}s)"
                     self._log(f"  ❌ {error}")
@@ -518,13 +544,11 @@ class DatumMonitor:
             await asyncio.sleep(check_interval)
     
     async def _check_mempool(self, node: str, network: str, chain: str, datum_hash: str) -> bool:
-        """Check if datum is in mempool."""
+        """Check if datum is still in mempool using targeted `mempool check`."""
         try:
-            # Convert node to container name
             container_name = self._node_to_container(node)
             container = self.docker_client.containers.get(container_name)
             
-            # CRITICAL: Check container status before executing command (fail-fast)
             container.reload()
             if container.status != 'running':
                 error_msg = (
@@ -532,7 +556,6 @@ class DatumMonitor:
                     f"(status: {container.status}). Container crashed during datum monitoring."
                 )
                 self._log(f"  ❌ {error_msg}")
-                # Collect crash artifacts if container crashed
                 from ..docker.container import DockerContainerManager
                 from pathlib import Path
                 container_manager = DockerContainerManager(Path.cwd(), self.node_cli_path)
@@ -545,19 +568,20 @@ class DatumMonitor:
                     self._log(f"  📦 Crash artifacts collected: {artifacts}")
                 except Exception as artifact_error:
                     self._log(f"  ⚠️ Failed to collect crash artifacts: {artifact_error}")
-                
-                # Raise exception to stop monitoring immediately
                 raise RuntimeError(error_msg)
             
             cmd = [
-                self.node_cli_path, "mempool", "list",
-                "-net", network, "-chain", chain
+                self.node_cli_path, "mempool", "check",
+                "-net", network, "-chain", chain, "-datum", datum_hash
             ]
             
             self._log(f"  🔍 Checking mempool on {node} ({container_name})...")
             self._log(f"     Command: {' '.join(cmd)}")
             
-            result = container.exec_run(cmd, demux=True)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(container.exec_run, cmd, demux=True),
+                timeout=30.0
+            )
             exit_code = result.exit_code
             stdout, stderr = result.output
             
@@ -566,7 +590,7 @@ class DatumMonitor:
             
             self._log(f"     Exit code: {exit_code}")
             if stdout_str:
-                self._log(f"     Stdout preview: {stdout_str[:200]}")
+                self._log(f"     Stdout preview: {stdout_str[:300]}")
             if stderr_str:
                 self._log(f"     Stderr: {stderr_str[:200]}")
             
@@ -574,17 +598,19 @@ class DatumMonitor:
                 self._log(f"  ⚠️ Mempool check failed with exit code {exit_code}")
                 return False
             
-            # Check if our datum hash is in the output
-            found = datum_hash.lower() in stdout_str.lower()
-            self._log(f"     Result: {'✓ FOUND' if found else '✗ NOT FOUND'}")
+            # 'mempool check' returns structured output with 'source: mempool' or 'source: chain'
+            in_mempool = bool(re.search(r'source:\s*mempool', stdout_str, re.IGNORECASE))
+            in_chain = bool(re.search(r'source:\s*chain', stdout_str, re.IGNORECASE))
+            self._log(f"     Result: in_mempool={in_mempool}, in_chain={in_chain}")
             
-            return found
+            return in_mempool
             
+        except asyncio.TimeoutError:
+            self._log(f"  ⚠️ Mempool check timed out (30s) on {node}")
+            return False
         except RuntimeError:
-            # Re-raise RuntimeError (container crash) to stop monitoring
             raise
         except Exception as e:
-            # Check if error is about container not running
             error_str = str(e).lower()
             if "not running" in error_str or "409" in error_str or "conflict" in error_str:
                 container_name = self._node_to_container(node)
@@ -592,7 +618,6 @@ class DatumMonitor:
                     f"Container {container_name} (node {node}) crashed during mempool check: {e}"
                 )
                 self._log(f"  ❌ {error_msg}")
-                # Collect crash artifacts
                 from ..docker.container import DockerContainerManager
                 from pathlib import Path
                 container_manager = DockerContainerManager(Path.cwd(), self.node_cli_path)

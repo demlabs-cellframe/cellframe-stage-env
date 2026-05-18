@@ -119,7 +119,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             compose_mgr = None
             try:
                 import docker
-                docker_client = docker.from_env()
+                docker_client = docker.from_env(timeout=30)
                 # Create minimal compose manager just for cleanup
                 compose_mgr = DockerComposeManager(base_path, project_name="stage_env_cleanup")
                 print_info(_("Using Docker for cleanup"))
@@ -215,7 +215,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             print_info(_("Cleaning Docker networks..."))
             try:
                 import docker
-                docker_client = docker.from_env()
+                docker_client = docker.from_env(timeout=30)
                 
                 # Find and remove all test-related networks
                 all_networks = docker_client.networks.list()

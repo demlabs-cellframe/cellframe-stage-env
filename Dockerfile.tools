@@ -1,13 +1,12 @@
 # Self-contained SDK tools for Cellframe Node E2E testing.
 #
-# Clones dap-sdk from remote (branch controlled via build arg) and builds
-# cf-cert-generator + dap-gdb-tool.  Tool sources come from build context.
+# Uses local dap-sdk source from build context and builds
+# cf-cert-generator + dap-gdb-tool.
 #
 # Build context: project root
 #
 # Build:
-#   docker build -f tools/stage-env/Dockerfile.tools \
-#       --build-arg DAP_SDK_BRANCH=release-6.0 \
+#   docker build -f tests/stage-env/Dockerfile.tools \
 #       -t cf-tools:latest .
 #
 # Run (cert-generator):
@@ -19,13 +18,13 @@
 #       /usr/local/bin/dap-gdb-tool --driver mdbx --db-path /data/var/lib/global_db \
 #       node-rehost vpntest 3FDA::0325::3A71::2C74 10.0.2.3 8079
 
-ARG DAP_SDK_BRANCH=release-6.0
-ARG DAP_SDK_REPO=https://gitlab.demlabs.net/dap/dap-sdk.git
+ARG DAP_SDK_BRANCH=unknown
+ARG DAP_TOOLS_VARIANT=auto
 
 FROM debian:bookworm-slim AS builder
 
 ARG DAP_SDK_BRANCH
-ARG DAP_SDK_REPO
+ARG DAP_TOOLS_VARIANT
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config libssl-dev python3 \
@@ -34,42 +33,79 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /src
 
-RUN git clone --depth 1 --branch ${DAP_SDK_BRANCH} ${DAP_SDK_REPO} /src/dap-sdk
-
+COPY cellframe-sdk/dap-sdk/     /src/dap-sdk/
 COPY tools/dap_tpl/             /src/dap-sdk/module/test/dap_tpl/
-COPY tools/stage-env/src/certs/ /src/cert-generator/
-COPY tools/stage-env/src/gdb/   /src/gdb-tool/
+COPY cellframe-sdk/modules/common/ /src/cellframe-sdk/modules/common/
+COPY tests/stage-env/src/certs/v6.0/   /src/cert-generator-v6.0/
+COPY tests/stage-env/src/certs/master/ /src/cert-generator-master/
+COPY tests/stage-env/src/gdb/v6.0/     /src/gdb-tool-v6.0/
+COPY tests/stage-env/src/gdb/master/   /src/gdb-tool-master/
 
-# Build SDK — detect build system generation (5.x vs 6.0+) and produce libdap-sdk.a
-#   5.x: uses CELLFRAME_MODULES, produces individual .a archives
-#   6.0+: uses DAPSDK_MODULES, may produce libdap-sdk.so (shared) → we need static objects
-RUN mkdir -p /tmp/sdk-build && cd /tmp/sdk-build && \
-    if grep -q CELLFRAME_MODULES /src/dap-sdk/CMakeLists.txt; then \
-        cmake -DCMAKE_BUILD_TYPE=Release \
-              -DBUILD_DAP_SDK_TESTS=OFF \
-              -DBUILD_WITH_GDB_DRIVER_MDBX=ON \
-              -DCELLFRAME_MODULES="core chains network" \
-              /src/dap-sdk; \
-    else \
-        cmake -DCMAKE_BUILD_TYPE=Release \
-              -DBUILD_DAP_SDK_TESTS=OFF \
-              -DBUILD_SHARED=OFF -DBUILD_STATIC=ON \
-              -DINSTALL_DAP_SDK=OFF \
-              -DBUILD_WITH_GDB_DRIVER_MDBX=ON \
-              /src/dap-sdk; \
+# Select tool variant: explicit ARG or auto-detect from SDK layout.
+# module/core/include exists → v6.0 (module/* layout);
+# flat core/include → current SDK.
+RUN if [ "$DAP_TOOLS_VARIANT" = "auto" ]; then \
+        if [ -d /src/dap-sdk/module/core/include ]; then \
+            DAP_TOOLS_VARIANT=v6.0; \
+        else \
+            DAP_TOOLS_VARIANT=master; \
+        fi; \
     fi && \
+    echo "SDK tools: $DAP_TOOLS_VARIANT" && \
+    ln -s /src/cert-generator-${DAP_TOOLS_VARIANT} /src/cert-generator && \
+    ln -s /src/gdb-tool-${DAP_TOOLS_VARIANT}      /src/gdb-tool
+
+# Build SDK — CELLFRAME_MODULES drives which modules are compiled for both layouts.
+RUN find /src/dap-sdk -name "CMakeLists.txt" -o -name "*.cmake" \
+      | xargs sed -i 's/-Werror//g' 2>/dev/null || true
+
+# libmdbx: unquoted macro args break CHECK_*_COMPILER_FLAG on CMake 3.25+ (flags with spaces / strict parsing).
+# Only present in v6.0 SDK layout; master SDK has no in-tree libmdbx, so skip when missing.
+RUN MDBX_CMAKE=/src/dap-sdk/3rdparty/libmdbx/cmake/compiler.cmake; \
+    if [ -f "$MDBX_CMAKE" ]; then \
+        sed -i \
+            's/check_cxx_compiler_flag(${flag} ${variable})/check_cxx_compiler_flag("${flag}" "${variable}")/g' \
+            "$MDBX_CMAKE" && \
+        sed -i \
+            's/check_c_compiler_flag(${flag} ${variable})/check_c_compiler_flag("${flag}" "${variable}")/g' \
+            "$MDBX_CMAKE"; \
+    else \
+        echo "libmdbx not present in dap-sdk (master layout) - skipping CMake 3.25+ patch"; \
+    fi
+
+# MDBX_BUILD_CXX=OFF: libmdbx as C-only avoids CMake check_cxx_compiler_flag macro issues
+# in 3rdparty/libmdbx/cmake/compiler.cmake when built as a subdirectory (bookworm + current SDK).
+RUN mkdir -p /tmp/sdk-build && cd /tmp/sdk-build && \
+    cmake -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_FLAGS="-Wno-error -fPIC" \
+          -DBUILD_DAP_SDK_TESTS=OFF \
+          -DBUILD_SHARED=OFF \
+          -DBUILD_STATIC=ON \
+          -DINSTALL_DAP_SDK=OFF \
+          -DBUILD_WITH_GDB_DRIVER_MDBX=ON \
+          -DMDBX_BUILD_CXX=OFF \
+          -DCELLFRAME_MODULES="core chains network" \
+          /src/dap-sdk && \
     cmake --build . -j$(nproc) && \
     if [ ! -f libdap-sdk.a ]; then \
-        find . \( -name "*.c.o" -o -name "*.S.o" \) -print0 | xargs -0 ar rcs libdap-sdk.a; \
+        find . -name "*.o" -print0 | xargs -0 ar rcs libdap-sdk.a; \
     fi && \
-    for xlib in $(find /tmp/sdk-build -maxdepth 5 \
-        \( -name "libdap-XKCP*.a" -o -name "libmdbx*.a" \
-           -o -name "libdap_crypto_kyber512.a" -o -name "libdap_core_unix.a" \) \
-        -not -path "*/static/*" 2>/dev/null); do \
+    find . -name "*.S.o" -not -path "*/CMakeFiles/CMakeTmp/*" -print0 \
+        | xargs -0 ar rs libdap-sdk.a 2>/dev/null || true && \
+    if [ -f static/libdap-sdk.a ]; then \
         tmpd=$(mktemp -d) && \
-        (cd "$tmpd" && ar x "$xlib" && ar rcs /tmp/sdk-build/libdap-sdk.a *.o) && \
+        (cd "$tmpd" && ar x /tmp/sdk-build/static/libdap-sdk.a && \
+         ar rs /tmp/sdk-build/libdap-sdk.a *.o) && \
         rm -rf "$tmpd"; \
-    done
+    fi && \
+    for xlib in $(find /tmp/sdk-build -name "lib*.a" \
+        -not -name "libdap-sdk.a" -not -path "*/static/*" 2>/dev/null); do \
+        tmpd=$(mktemp -d) && \
+        (cd "$tmpd" && ar x "$xlib" && ar rs /tmp/sdk-build/libdap-sdk.a *.o) && \
+        rm -rf "$tmpd"; \
+    done && \
+    find . -path "*/CMakeFiles/dap_crypto.dir/src/*/*.c.o" -print0 \
+        | xargs -0 ar qs libdap-sdk.a 2>/dev/null || true
 
 # Detect SDK features by inspecting built library
 RUN HAS_SDK_INIT=OFF && \
@@ -83,6 +119,7 @@ RUN . /tmp/sdk-features.env && \
     mkdir -p /tmp/cert-build && cd /tmp/cert-build && \
     cmake -DDAP_SDK_SRC=/src/dap-sdk \
           -DDAP_SDK_BUILD=/tmp/sdk-build \
+          -DCELLFRAME_SDK_SRC=/src/cellframe-sdk \
           -DDAP_HAS_SDK_INIT=$DAP_HAS_SDK_INIT \
           /src/cert-generator 2>&1 && \
     cmake --build . -j$(nproc) 2>&1

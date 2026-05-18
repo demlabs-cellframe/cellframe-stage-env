@@ -228,7 +228,7 @@ def _run_suite_sync(
             suite_includes=suite_spec.includes or [],
             suite_setup=suite_spec.setup.model_dump() if suite_spec.setup else None,
             suite_name=suite_name,
-            base_dir=task.suite_dir,
+            base_dir=task.descriptor_path.parent,
         )
         executor = ScenarioExecutor(
             node_cli_path="cellframe-node-cli",
@@ -375,10 +375,10 @@ def _run_suite_sync(
 
 
 def _cleanup_shard(shard, base_path: Path) -> None:
-    """Best-effort cleanup of shard Docker resources."""
+    """Best-effort cleanup of shard Docker resources and disk data."""
     try:
         import docker
-        client = docker.from_env()
+        client = docker.from_env(timeout=30)
         containers = client.containers.list(
             all=True,
             filters={"label": f"com.docker.compose.project={shard.project_name}"},
@@ -394,6 +394,28 @@ def _cleanup_shard(shard, base_path: Path) -> None:
                 net.remove()
             except Exception:
                 pass
+    except Exception:
+        pass
+
+    shard_cache = (base_path / shard.cache_dir).resolve()
+    if shard_cache.exists():
+        _remove_shard_data(shard_cache)
+
+
+def _remove_shard_data(shard_cache: Path) -> None:
+    """Remove shard cache data, using Docker for root-owned files if needed."""
+    import shutil
+    try:
+        shutil.rmtree(shard_cache)
+    except PermissionError:
+        import subprocess
+        subprocess.run(
+            ["docker", "run", "--rm",
+             "-v", f"{shard_cache.parent}:/cleanup",
+             "alpine", "sh", "-c",
+             f"rm -rf /cleanup/{shard_cache.name}"],
+            timeout=30, capture_output=True,
+        )
     except Exception:
         pass
 

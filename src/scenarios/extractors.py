@@ -138,10 +138,32 @@ class DataExtractor:
             return (False, None, f"Failed to parse address structure: {e}")
     
     @staticmethod
+    def _extract_from_json(json_data, extract_type: 'ExtractType') -> Optional[str]:
+        """Extract value from parsed JSON CLI v2 response by walking nested arrays/dicts."""
+        # CLI v2 formats: [[{...}]] or [{"key": "value"}] or {"result": ...}
+        _JSON_KEY_MAP = {
+            ExtractType.WALLET_ADDRESS: ("addr", "address", "new_addr", "new_address"),
+            ExtractType.NODE_ADDRESS: ("node_addr", "node_address", "addr"),
+            ExtractType.HASH: ("hash", "block_hash", "datum_hash", "event_hash", "tx_hash"),
+            ExtractType.RAW: (),
+        }
+        keys = _JSON_KEY_MAP.get(extract_type, ())
+        obj = json_data
+        # Unwrap nested arrays: [[{...}]] -> [{...}] -> {...}
+        while isinstance(obj, list) and len(obj) > 0:
+            obj = obj[0]
+        if isinstance(obj, dict):
+            for key in keys:
+                val = obj.get(key)
+                if val is not None:
+                    return str(val)
+        return None
+
+    @staticmethod
     def extract_and_validate(
         output: str,
         pattern: str,
-        extract_type: ExtractType,
+        extract_type: 'ExtractType',
         group: int = 1,
         required: bool = True,
         default: Optional[str] = None
@@ -165,37 +187,38 @@ class DataExtractor:
         Raises:
             ExtractionError: If extraction/validation fails and required=True
         """
-        # STRATEGY 1: Try JSON parsing first (modern CLI output format)
-        if extract_type == ExtractType.HASH:
-            try:
-                import json
-                json_data = json.loads(output)
-                
-                # Handle cellframe-node-cli JSON-RPC response format
-                # Structure: {"result": [[...blocks...], {...summary...}]}
+        # STRATEGY 1: Try JSON parsing first (modern CLI v2 output format)
+        try:
+            import json
+            json_data = json.loads(output)
+            extracted_value = None
+
+            if extract_type == ExtractType.HASH:
                 if isinstance(json_data, dict) and "result" in json_data:
                     result = json_data["result"]
                     if isinstance(result, list) and len(result) > 0:
-                        # result[0] is blocks array, result[1] is summary
                         blocks_array = result[0]
                         if isinstance(blocks_array, list) and len(blocks_array) > 0:
                             first_block = blocks_array[0]
-                            # Look for hash in block object
-                            # Try both v1 format ("hash") and v2 format ("block_hash")
-                            hash_value = first_block.get("hash") or first_block.get("block_hash")
-                            if hash_value:
-                                _debug_print(f"[EXTRACT_DEBUG] ✓ Extracted hash from JSON: {hash_value}")
-                                # Validate and return
-                                error_msg = DataExtractor._validate_type(hash_value, extract_type)
-                                if error_msg:
-                                    if required:
-                                        raise ExtractionError(error_msg)
-                                    return (default, error_msg if default is None else None)
-                                return (hash_value, None)
+                            extracted_value = first_block.get("hash") or first_block.get("block_hash")
                         else:
                             _debug_print(f"[EXTRACT_DEBUG] JSON parsed but blocks array is empty")
-            except (json.JSONDecodeError, KeyError, TypeError, IndexError) as e:
-                _debug_print(f"[EXTRACT_DEBUG] JSON parsing failed: {e}, falling back to regex")
+
+            if extract_type in (ExtractType.WALLET_ADDRESS, ExtractType.NODE_ADDRESS,
+                                ExtractType.HASH, ExtractType.RAW):
+                if extracted_value is None:
+                    extracted_value = DataExtractor._extract_from_json(json_data, extract_type)
+
+            if extracted_value is not None:
+                _debug_print(f"[EXTRACT_DEBUG] ✓ Extracted from JSON: {extracted_value}")
+                error_msg = DataExtractor._validate_type(extracted_value, extract_type)
+                if error_msg:
+                    if required:
+                        raise ExtractionError(error_msg)
+                    return (default, error_msg if default is None else None)
+                return (extracted_value, None)
+        except (json.JSONDecodeError, KeyError, TypeError, IndexError) as e:
+            _debug_print(f"[EXTRACT_DEBUG] JSON parsing failed: {e}, falling back to regex")
         
         # STRATEGY 2: Regex fallback (legacy text output format or non-JSON output)
         match = re.search(pattern, output, re.MULTILINE)
@@ -339,7 +362,7 @@ class DataExtractor:
         without specifying a custom pattern.
         """
         defaults = {
-            ExtractType.WALLET_ADDRESS: r'(?:new )?addr(?:ess)?:\s+(\S+)',
+            ExtractType.WALLET_ADDRESS: r'(?:new[_ ])?addr(?:ess)?:\s+(\S+)',
             ExtractType.NODE_ADDRESS: r'Node addr:\s+([A-Fa-f0-9:]+)',
             # Match hash in various formats:
             # - "New: 0x..." (from token_decl_sign)

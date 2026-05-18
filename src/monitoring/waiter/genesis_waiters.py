@@ -672,12 +672,14 @@ class BlockCreatedWaiter(BaseWaiter):
             )
             
             if exit_code != 0:
-                logger.debug("block_created_check",
-                           status="command_failed",
-                           node_id=self.node.node_id,
-                           chain=self.chain,
-                           check_count=self._check_count,
-                           exit_code=exit_code)
+                if self._check_count == 1 or self._check_count % 10 == 0:
+                    logger.warning("block_created_check",
+                               status="command_failed",
+                               node_id=self.node.node_id,
+                               chain=self.chain,
+                               check_count=self._check_count,
+                               exit_code=exit_code,
+                               stderr=(stderr or '')[:200])
                 return False
             
             output = (stdout or '').strip()
@@ -701,7 +703,6 @@ class BlockCreatedWaiter(BaseWaiter):
                                elapsed=f"{elapsed:.1f}s")
                     return True
                 else:
-                    # Log progress every 10 checks (30s with 3s interval)
                     if self._check_count % 10 == 0:
                         elapsed = time.time() - self._start_time
                         logger.info("waiting_for_block_creation",
@@ -713,13 +714,14 @@ class BlockCreatedWaiter(BaseWaiter):
                                    elapsed=f"{elapsed:.1f}s")
                     return False
             else:
-                # Pattern not found - log for debugging
-                if self._check_count % 10 == 0:
-                    logger.debug("block_count_pattern_not_found",
+                if self._check_count == 1 or self._check_count % 10 == 0:
+                    elapsed = time.time() - self._start_time
+                    logger.info("block_count_pattern_not_found",
                                node_id=self.node.node_id,
                                chain=self.chain,
                                check_count=self._check_count,
-                               output_preview=output[:100])
+                               elapsed=f"{elapsed:.1f}s",
+                               output_preview=output[:200])
                 return False
             
         except Exception as e:

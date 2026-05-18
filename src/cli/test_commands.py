@@ -1775,7 +1775,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                                 suite_includes=suite_spec.includes or [],
                                 suite_setup=suite_spec.setup.model_dump() if suite_spec.setup else None,
                                 suite_name=suite_name,
-                                base_dir=suite_path
+                                base_dir=suite_descriptor.parent
                             )
                             
                             executor = ScenarioExecutor(
@@ -1809,7 +1809,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             print_error(_("❌ Skipping all scenarios in suite: {}").format(suite_name))
                             if network_mgr:
                                 try:
-                                    _client = docker.from_env()
+                                    _client = docker.from_env(timeout=30)
                                     _containers = _client.containers.list(
                                         all=True,
                                         filters={"label": f"com.docker.compose.project={get_project_name()}"}
@@ -2111,7 +2111,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                     if network_mgr:
                         print_info(_("\n📦 Collecting suite artifacts for {}...").format(suite_relative_path))
                         try:
-                            client = docker.from_env()
+                            client = docker.from_env(timeout=30)
                             project_name = get_project_name()
                             
                             containers = client.containers.list(

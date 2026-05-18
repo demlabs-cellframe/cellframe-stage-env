@@ -29,12 +29,15 @@ class DockerContainerManager:
     - Generate stack traces from core dumps
     """
     
+    DOCKER_TIMEOUT = 30  # Default timeout for Docker API calls (seconds)
+    
     def __init__(self, base_path: Path, node_cli_path: str = "cellframe-node-cli",
-                 project_name: Optional[str] = None):
+                 project_name: Optional[str] = None, docker_timeout: int = None):
         self.base_path = base_path
         self.node_cli_path = node_cli_path
         self.project_name = project_name or get_project_name()
-        self.docker_client = docker.from_env()
+        self.docker_timeout = docker_timeout or self.DOCKER_TIMEOUT
+        self.docker_client = docker.from_env(timeout=self.docker_timeout)
         self.current_test_name: Optional[str] = None
     
     def resolve_node_to_container(self, node: str) -> str:
@@ -74,17 +77,22 @@ class DockerContainerManager:
         
         return f"{pn}-{node}"
     
-    def check_container_status(self, container_name: str) -> Dict[str, Any]:
+    def check_container_status(self, container_name: str, timeout: int = None) -> Dict[str, Any]:
         """
-        Check container status and return status info.
+        Check container status and return status info with timeout protection.
         
         Args:
             container_name: Docker container name
+            timeout: Timeout in seconds (default: self.docker_timeout)
             
         Returns:
             Dict with status info: {'status': str, 'exit_code': int, 'container': Container}
         """
-        try:
+        import concurrent.futures
+        
+        timeout = timeout or self.docker_timeout
+        
+        def _check_status():
             container = self.docker_client.containers.get(container_name)
             container.reload()
             exit_code = container.attrs.get("State", {}).get("ExitCode", -1)
@@ -93,6 +101,22 @@ class DockerContainerManager:
                 "exit_code": exit_code,
                 "container": container,
                 "exists": True
+            }
+        
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_check_status)
+                return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            logger.error("container_status_check_timeout", 
+                        container=container_name, 
+                        timeout=timeout)
+            return {
+                "status": "timeout",
+                "exit_code": -1,
+                "container": None,
+                "exists": False,
+                "error": f"Docker API timeout after {timeout}s"
             }
         except NotFound:
             return {
@@ -329,6 +353,15 @@ class DockerContainerManager:
         if not status_info["exists"]:
             error_msg = f"Container {container_name} not found"
             logger.error("container_not_found", container=container_name, node=node)
+            return {
+                "stdout": "",
+                "stderr": error_msg,
+                "returncode": 1
+            }
+        
+        if status_info["status"] == "timeout":
+            error_msg = status_info.get("error", f"Docker API timeout for {container_name}")
+            logger.error("container_status_timeout", container=container_name, node=node, error=error_msg)
             return {
                 "stdout": "",
                 "stderr": error_msg,

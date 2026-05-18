@@ -60,8 +60,12 @@ class ConfigGenerator:
         self.data_cache = self.cache_dir / "data"
         self.certs_cache = self.cache_dir / "certs"
         
-        # Derive dap-sdk branch from genesis_version (v5.8 -> release-5.8)
-        sdk_branch = self._sdk_branch_from_version(version_dir)
+        # dap-sdk branch: [paths] sdk_git_branch (default "auto" — derived from genesis version)
+        raw_branch = (paths_config.get("sdk_git_branch") or "").strip()
+        if raw_branch and raw_branch.lower() != "auto":
+            sdk_branch = raw_branch
+        else:
+            sdk_branch = self._sdk_branch_from_version(version_dir)
 
         # Initialize cert generator with correct certs path
         self.cert_generator = CertGenerator(base_path, certs_dir=self.certs_cache,
@@ -81,7 +85,8 @@ class ConfigGenerator:
             if suffix.endswith(".x"):
                 suffix = suffix[:-2] + ".0"
             return f"release-{suffix}"
-        return "release-6.0"
+        # stable/unknown — align with current node mainline (see [paths] sdk_git_branch)
+        return "current"
 
     def _resolve_template(self, relative_path: str) -> Optional[Path]:
         """Find template file/dir: versioned directory first, then common fallback."""
@@ -169,6 +174,7 @@ class ConfigGenerator:
             for node in nodes:
                 context = {
                     'node_ip': node.ip_address,
+                    'seed_mode': 'true' if node.is_seed_node else 'false',
                 }
                 logger.info("generating_cellframe_node_cfg", 
                            node_id=node.node_id, 
@@ -325,7 +331,7 @@ class ConfigGenerator:
                 'fee_addr': '',  # Will be set per-node after fee wallet creation
                 # ESBocs consensus parameters (from topology.consensus)
                 'min_validators_count': mainchain_min_validators_count,  # Calculated from master_nodes_count
-                'poa_mode': 'false',  # PoS mode: auth certs auto-delegated, get GlobalDB write permissions
+                'poa_mode': 'false',  # PoS mode: validators auto-delegated as stake keys (poa_mode=true is bugged in SDK)
                 # Auto-generate auth_certs_prefix from network_name if not specified
                 'auth_certs_prefix': topology.consensus.auth_certs_prefix or f"{network_name}.master",
                 'new_round_delay': topology.consensus.new_round_delay,
@@ -382,7 +388,12 @@ class ConfigGenerator:
                 blocks_sign_cert = f"{network_name}.master.pvt.{master_idx}"
                 logger.debug("blocks_sign_cert_prepared", node_id=node.node_id, master_idx=master_idx, root_count=root_nodes_count, cert=blocks_sign_cert)
             
-            # Render template with node-specific context
+            # Render template with node-specific context.
+            # permanent_nodes_addrs / permanent_nodes_hosts are required for
+            # the v5.7+ node binary to form direct links between root nodes
+            # without relying on the GDB nodelist (which is empty at first
+            # boot in a freshly bootstrapped local network).
+            permanent_nodes_addrs = base_chain_context['root_nodes_addrs'] if base_chain_context else "[]"
             network_context = {
                 'network_name': network_name,
                 'network_id': base_chain_context['network_id'] if base_chain_context else '0x0000000000001234',
@@ -391,6 +402,7 @@ class ConfigGenerator:
                 'node_role': node_role,
                 'seed_nodes_aliases': seed_nodes_aliases,
                 'seed_nodes_hosts': seed_nodes_hosts,
+                'permanent_nodes_addrs': permanent_nodes_addrs,
                 'permanent_nodes_hosts': permanent_nodes_hosts,
                 'events_sign_cert': events_sign_cert,
                 'blocks_sign_cert': blocks_sign_cert
@@ -503,7 +515,7 @@ class ConfigGenerator:
             'validators_addrs': custom_validators_addrs,  # For zerochain compatibility
             'mainchain_validators_addrs': custom_validators_addrs,  # CRITICAL: For main.cfg.j2 template
             'min_validators_count': calculated_min_validators,  # CRITICAL: must match validators count
-            'poa_mode': 'false',  # PoS mode: auth certs auto-delegated for GlobalDB permissions
+            'poa_mode': 'false',  # PoS mode: validators auto-delegated as stake keys (poa_mode=true is bugged in SDK)
             'root_nodes_addrs': root_nodes_addrs,
             'auth_certs_number': auth_certs_number,
             'auth_certs_number_verify': auth_certs_number_verify,
@@ -1047,7 +1059,7 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
         if self.data_cache.exists():
             try:
                 import docker
-                docker_client = docker.from_env()
+                docker_client = docker.from_env(timeout=30)
                 logger.debug("cleaning_data_cache_with_docker", path=str(self.data_cache))
                 
                 target_path = f"{CLEANUP_MOUNT_PATH}/data"

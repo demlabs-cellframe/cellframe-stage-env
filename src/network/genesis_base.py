@@ -44,7 +44,7 @@ class BaseGenesisManager:
         self.base_path = base_path
         self.network_name = network_name
         self.config_path = config_path
-        self.docker_client = docker.from_env()
+        self.docker_client = docker.from_env(timeout=30)
         # Use DockerContainerManager for CLI execution
         from ..docker.container import DockerContainerManager
         self.container_manager = DockerContainerManager(base_path, "cellframe-node-cli")
@@ -354,7 +354,7 @@ class BaseGenesisManager:
             
             # Always pass -fee parameter (required by SDK)
             command = (
-                f"tx_create -net {self.network_name} -chain {chain} -token {token} "
+                f"tx create -net {self.network_name} -chain {chain} -token {token} "
                 f"-from_wallet {from_wallet} -value {amount_value} -to_addr {to_address} -fee {fee_value}"
             )
             
@@ -567,7 +567,7 @@ class BaseGenesisManager:
                                  note="Using original fee value - SDK may parse it incorrectly")
             
             command = (
-                f"tx_create -net {self.network_name} -chain {chain} -token {token} "
+                f"tx create -net {self.network_name} -chain {chain} -token {token} "
                 f"-from_emission {emission_hash} -chain_emission {emission_chain} "
                 f"-value {amount_value} -to_addr {to_address} -cert {cert_name} -fee {fee_value}"
             )

@@ -7,6 +7,8 @@ load_priority=0
 # Match tests-in-docker configuration
 datum_types=[token,emission,ca,decree]
 default_datum_types=[token,emission,ca,decree]
+# mempool_auto_types specifies which datum types can be processed by proc_all
+# Required for genesis event creation when is_add_directly=true
 mempool_auto_types=[token,emission,ca,decree]
 consensus=dag_poa
 # Authorized nodes have special permissions (can write to nodelist, mempool)
@@ -22,6 +24,10 @@ storage_dir=../../../var/lib/network/{{ network_name | default('stagenet') }}/ze
 [dag]
 is_single_line=true
 is_celled=false
+# is_add_directly: Controls whether events are added directly or via confirmation round
+# Production-like mode: use false to require multi-node confirmation via DAG-PoA round consensus
+# Genesis events are created manually via dag event sign + dag round complete
+is_add_directly={{ is_add_directly | default('true', true) }}
 datum_add_hashes_count=1
 # Enable detailed debug logging for DAG consensus (includes datums table operations)
 debug_more=true
@@ -37,13 +43,14 @@ auth_certs_prefix={{ network_name | default('stagenet') }}.root
 auth_certs_number={{ auth_certs_number }}
 # Minimum required signatures (N/2 + 1)
 auth_certs_number_verify={{ auth_certs_number_verify }}
-# Events signing certificate moved to network config (stagenet.cfg)
-# SDK loads it from l_net->pub.config, not from chain config
+# Events signing certificate - required for creating DAG events
+{% if events_sign_cert %}
+events-sign-cert={{ events_sign_cert }}
+{% endif %}
 # Timeout for collecting confirmations from other ROOT nodes
-# Short timeouts for fast auto-round-complete in test environment
-# auto_round_complete timer = 2 * confirmations_timeout for remote events
-confirmations_timeout=3
-wait_sync_before_complete=10
+# Using same values as tests-in-docker for faster consensus
+confirmations_timeout=15
+wait_sync_before_complete=30
 auto_confirmation=true
 auto_round_complete=true
 

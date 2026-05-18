@@ -162,15 +162,15 @@ class ChainSyncManager(BaseGenesisManager):
                                container=container_name,
                                container_status=node_container.status)
                     
-                    # CRITICAL: Execute mempool_proc and capture all output
-                    logger.debug("executing_mempool_proc_command",
+                    # Use 'mempool proc_all' since 'mempool proc -datum' is deprecated in v6.0
+                    logger.debug("executing_mempool_proc_all_command",
                                node=f"node{node.node_id}",
                                datum=datum_hash[:16],
-                               command=f"mempool_proc -datum {datum_hash} -net {self.network_name} -chain zerochain")
+                               command=f"mempool proc_all -net {self.network_name} -chain zerochain")
                     
                     exit_code, stdout, stderr = self._exec_cli(
                         node.node_id,
-                        f"mempool_proc -datum {datum_hash} -net {self.network_name} -chain zerochain",
+                        f"mempool proc_all -net {self.network_name} -chain zerochain",
                         check_output=False
                     )
                     

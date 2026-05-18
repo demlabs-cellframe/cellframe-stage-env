@@ -98,19 +98,27 @@ test:
   - group: Force chain sync if needed
     description: Ensure chains are synced from root to master
     steps:
-      # Force sync on master node to get latest data from root
+      # Force a clean re-sync from scratch on master and root.
+      # 'net go sync' (NOT 'sync chains') is required: 'go sync' keeps
+      # state_target=NET_STATE_ONLINE so the network returns to ONLINE
+      # after sync completes (ESBocs needs ONLINE to accept packets).
+      # 'sync chains' instead sets state_target=NET_STATE_SYNC_CHAINS,
+      # leading to NET_STATE_OFFLINE once the sync drains.
       - cli: "net go sync"
         node: "{{first_master}}"
-      
-      # Wait for sync to complete (60s for ASAN builds)
-      - wait: "60s"
-      
-      # Verify emission is now in ledger on master
-      - cli: "ledger list coins"
+
+      - cli: "net go sync"
+        node: "{{first_root}}"
+
+      # Poll the ledger on master until emission propagates.
+      - wait: cli
+        cmd: "ledger list coins"
         node: "{{first_master}}"
         contains: "{{native_ticker}}"
-      
-      - print: "✓ Emission synced to master node ledger"
+        timeout: 180
+        interval: 5
+
+      - print: "Emission synced to master node ledger"
   
   - group: Genesis Block - Create from emission
     defaults:
@@ -119,51 +127,42 @@ test:
         chain: "main"
         token: "{{native_ticker}}"
     steps:
-      - cli: "tx_create -chain_emission zerochain -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert {{network_name}}.root.pvt.0"
+      # v5.7+ CLI: command is tx_create (underscore), -chain_emission was
+      # removed (the emission chain is derived from the emission hash now);
+      # -token must be passed explicitly.
+      - cli: "tx_create -from_emission {{emission_hash}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert {{network_name}}.root.pvt.0 -token {{native_ticker}}"
         save_hash: mainchain_genesis_tx
       
       # Process mainchain genesis transaction on root
       - cli: "mempool proc -datum {{mainchain_genesis_tx}}"
-      
-      # Wait for mempool sync via Global DB (60s for ASAN builds)
-      - wait: "60s"
-      
-      # Debug: Show mempool status on master
-      - cli: "mempool list -chain main"
-        node: "{{first_master}}"
-        save_to: _master_mempool_status
-      
-      - print: "Master mempool: {{_master_mempool_status}}"
-      
+
       # ARCHITECTURE NOTE:
-      # - Genesis TX is created on ROOT node 
-      # - TX is synced to MASTER nodes via Global DB mempool cluster
-      # - MASTER nodes have proc_chains=[main] configured, so they auto-process main chain
-      # - When master node processes genesis TX:
-      #   1. Verify emission exists in ledger (synced via net go sync)
-      #   2. Create genesis block via ESBocs consensus
-      #   3. Sync genesis block to all nodes via Global DB
-      # - ROOT node has seed_mode=true, so it will ACCEPT genesis block when synced
-      
-      # Wait for ESBocs consensus to create genesis block
-      # This includes: TX validation, consensus round, block signing, propagation
-      # 180s to accommodate ASAN instrumentation overhead
-      - wait: "180s"
-      
-      # Check if genesis block was created
-      - cli: "block list"
+      # - Genesis TX is created on ROOT node, placed in main mempool.
+      # - GlobalDB cluster mempool sync propagates the datum to MASTER
+      #   nodes (cluster ID 0x12340000).
+      # - MASTER nodes have mempool_auto_types=[transaction] and run
+      #   ESBocs as the main-chain consensus; the round leader picks up
+      #   the datum from its local block_new and proposes it as the
+      #   genesis block candidate.
+      # - Once 2/3 master signatures are collected the block is added to
+      #   the chain and propagated to ROOT via GlobalDB.
+
+      # Poll the master mempool for our datum to confirm propagation.
+      - wait: cli
+        cmd: "mempool list -chain main"
         node: "{{first_master}}"
-        save_to: _master_blocks_status
-      
-      - print: "Master blocks status: {{_master_blocks_status}}"
-      
-      # Additional wait if no blocks yet (60s for ASAN builds)
-      - wait: "60s"
-      
-      # Verify block was created and synced to master node
-      - cli: "block list"
+        contains: "{{mainchain_genesis_tx}}"
+        timeout: 120
+        interval: 5
+        optional: true
+
+      # Poll for the genesis block to be produced and synced to master.
+      - wait: cli
+        cmd: "block list"
         node: "{{first_master}}"
         contains: "have blocks: [1-9]"
+        timeout: 300
+        interval: 5
   
   - cli: "block list -chain main"
     node: "{{first_master}}"

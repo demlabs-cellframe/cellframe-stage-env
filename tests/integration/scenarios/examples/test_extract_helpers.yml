@@ -57,7 +57,7 @@ test:
   - cli: token info -name AUTOTEST -net {{network_name}}
     save: full_token_info         # Saves entire output
   
-  - cli: tx_create -token AUTOTEST -from_emission {{emission_hash}} -value 500 -fee 0.1 -cert {{root_cert_single}}
+  - cli: tx create -token AUTOTEST -from_emission {{emission_hash}} -value 500 -fee 0.1 -cert {{root_cert_single}}
     save_hash: tx_hash            # Extracts only the hash
 
 check:

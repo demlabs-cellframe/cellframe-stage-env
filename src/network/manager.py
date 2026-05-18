@@ -252,14 +252,17 @@ class NetworkManager:
         return default_dir
 
     def _sdk_branch_for_tools(self) -> str:
-        """Derive dap-sdk git branch from genesis version (v5.8 -> release-5.8)."""
+        """Derive dap-sdk git branch; prefer [paths] sdk_git_branch."""
+        explicit = (self.paths_config.get("sdk_git_branch") or "").strip()
+        if explicit and explicit.lower() != "auto":
+            return explicit
         ver = self._genesis_version_dir
         if ver and ver.startswith("v"):
             suffix = ver[1:]
             if suffix.endswith(".x"):
                 suffix = suffix[:-2] + ".0"
             return f"release-{suffix}"
-        return "release-6.0"
+        return "current"
 
     async def prepare(self, rebuild: bool = False) -> None:
         """Restore snapshot, generate configs and compose — but do NOT start containers.
@@ -291,6 +294,7 @@ class NetworkManager:
             self.config_generator.generate_all(self.topology, node_configs, force=rebuild)
         else:
             self._remap_seed_nodes_for_shard(node_configs)
+            self._regenerate_configs_after_restore(node_configs)
 
         cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
         node_source_config = self.config_loader.get_node_source_config()
@@ -318,15 +322,16 @@ class NetworkManager:
         """Adapt snapshot data for the current shard subnet.
 
         Snapshot data originates from the genesis shard (shard-0).  In parallel
-        mode every shard uses a shifted subnet, so we remap
-        ``seed_nodes_hosts`` IPs in **all** network configs (not just the
-        primary network).  Nodes may be configured for multiple networks
-        (e.g. ``vpntest`` + ``stagenet``); leaving any config un-remapped
-        causes TCP SYN hangs to unreachable shard-0 IPs.
+        mode every shard uses a shifted subnet, so we remap:
+        1. ``seed_nodes_hosts`` IPs in **all** network configs
+        2. ``ext_address`` in each node's ``cellframe-node.cfg``
+
+        Without (2) nodes announce themselves with the genesis-shard IP,
+        so peers never establish links to the correct container address.
 
         GDB is intentionally preserved: the balancer requires the node list
         stored there to return peers (HTTP 204 otherwise).  Stale shard-0 IPs
-        in GDB entries are corrected by nodes re-registering on startup.
+        in GDB entries are corrected by ``_fix_stale_node_list``.
         """
         import re as _re
 
@@ -337,7 +342,16 @@ class NetworkManager:
         cache_dir = self.paths_config.get('cache_dir', 'cache')
         configs_cache = (self.base_path / cache_dir / 'configs').resolve()
 
-        seed_re = _re.compile(r'(?m)^(seed_nodes_hosts\s*=\s*)\[([^\]]*)\]')
+        # Bracketed host lists. ``permanent_nodes_hosts`` lives next to
+        # ``seed_nodes_hosts`` and points to root nodes that masters/full nodes
+        # use as their bootstrap path before GDB is populated. If we miss it,
+        # masters keep dialling the genesis-shard subnet (e.g. 172.20.0.x),
+        # which is unreachable from the new shard subnet (e.g. 172.22.0.x),
+        # so they never establish links and stay in NET_STATE_LINKS_CONNECTING.
+        bracketed_hosts_re = _re.compile(
+            r'(?m)^((?:seed_nodes_hosts|permanent_nodes_hosts)\s*=\s*)\[([^\]]*)\]'
+        )
+        ext_addr_re = _re.compile(r'(?m)^(ext_address\s*=\s*)(\d+\.\d+\.\d+\.\d+)')
 
         def _remap(hosts_str):
             remapped = []
@@ -353,9 +367,6 @@ class NetworkManager:
                     remapped.append(entry)
             return '[' + ','.join(remapped) + ']'
 
-        # Regex to remap ext_address in cellframe-node.cfg
-        ext_addr_re = _re.compile(r'(?m)^(ext_address\s*=\s*)([\d]+\.[\d]+\.[\d]+\.[\d]+)')
-
         def _remap_ip(old_ip: str) -> str:
             octets = old_ip.split('.')
             if len(octets) == 4:
@@ -366,24 +377,12 @@ class NetworkManager:
         genesis_prefix_detected: Optional[str] = None
 
         for node in node_configs:
-            # Remap seed_nodes_hosts in network/*.cfg
+            # Remap seed_nodes_hosts and permanent_nodes_hosts in network/*.cfg
             net_dir = configs_cache / f"node{node.node_id}" / "network"
             if net_dir.is_dir():
                 for net_cfg in net_dir.glob("*.cfg"):
                     content = net_cfg.read_text()
-                    # Detect genesis prefix from unmapped content (before remap)
-                    if genesis_prefix_detected is None:
-                        m_detect = seed_re.search(content)
-                        if m_detect:
-                            for entry in m_detect.group(2).split(','):
-                                entry = entry.strip()
-                                ip_port = entry.split(':')
-                                if len(ip_port) == 2:
-                                    old_octets = ip_port[0].split('.')
-                                    if len(old_octets) == 4:
-                                        genesis_prefix_detected = '.'.join(old_octets[:3])
-                                        break
-                    new_content = seed_re.sub(
+                    new_content = bracketed_hosts_re.sub(
                         lambda m: m.group(1) + _remap(m.group(2)),
                         content,
                     )
@@ -404,28 +403,58 @@ class NetworkManager:
                     main_cfg.write_text(new_content)
                     patched += 1
 
-        # Save genesis prefix for _fix_stale_node_list (called later)
-        self._genesis_net_prefix = genesis_prefix_detected
+        # Remap ext_address in cellframe-node.cfg for each node
+        ext_patched = 0
+        for node in node_configs:
+            node_cfg = configs_cache / f"node{node.node_id}" / "cellframe-node.cfg"
+            if not node_cfg.is_file():
+                continue
+            content = node_cfg.read_text()
+            new_content = ext_addr_re.sub(
+                lambda m: m.group(1) + node.ip_address,
+                content,
+            )
+            if new_content != content:
+                node_cfg.write_text(new_content)
+                ext_patched += 1
 
-        if patched:
+        if patched or ext_patched:
             logger.info("remapped_seed_nodes_for_shard",
-                       new_prefix=new_prefix,
-                       genesis_prefix=genesis_prefix_detected,
-                       patched_files=patched)
+                       new_prefix=new_prefix, patched_seed_files=patched,
+                       patched_ext_address=ext_patched)
 
-    def _regenerate_plugins_after_restore(self, node_configs) -> None:
-        """Regenerate plugins.cfg for all nodes after snapshot restore.
+    def _regenerate_configs_after_restore(self, node_configs) -> None:
+        """Re-render ``cellframe-node.cfg.d`` snippets from current templates.
 
-        plugins.cfg depends on the runtime [plugins] config section, not on the
-        snapshot contents.  A snapshot created by a different config (e.g. node
-        base tests without [plugins] enabled=true) would leave plugins disabled.
+        Snapshots may have been created with older template versions.  Re-
+        rendering ensures that any template changes (e.g. new role-specific
+        settings like ``mempool_autoproc``) take effect without requiring a
+        full snapshot rebuild.
         """
+        from jinja2 import Template as J2Template
+
         cache_dir = self.paths_config.get('cache_dir', 'cache')
         configs_cache = (self.base_path / cache_dir / 'configs').resolve()
+        network_name = self.topology.network.name
+
+        cfg_d_template_dir = (
+            self.config_generator._resolve_template("cellframe-node.cfg.d")
+        )
 
         for node in node_configs:
             node_cfg_d = configs_cache / f"node{node.node_id}" / "cellframe-node.cfg.d"
             node_cfg_d.mkdir(parents=True, exist_ok=True)
+
+            if cfg_d_template_dir and cfg_d_template_dir.is_dir():
+                snippet_ctx = {'network_name': network_name}
+                for cfg_snippet in cfg_d_template_dir.glob("*.cfg"):
+                    content = cfg_snippet.read_text()
+                    if '{{' in content or '{%' in content:
+                        rendered = J2Template(content).render(**snippet_ctx)
+                    else:
+                        rendered = content
+                    (node_cfg_d / cfg_snippet.name).write_text(rendered)
+
             self.config_generator._generate_plugins_config(node_cfg_d, node)
 
     async def _purge_nodes_list_before_snapshot(self, node_configs) -> None:
@@ -469,20 +498,17 @@ class NetworkManager:
             logger.warning("nodes_list_purge_failed", error=str(exc),
                           note="Shards may have stale IPs in GDB")
 
-    def _fix_stale_node_list(self, node_configs) -> None:
-        """Rewrite stale GDB ``nodes.list`` host IPs to the current shard subnet.
+    def _fix_stale_node_list(self, node_configs) -> bool:
+        """Clear stale GDB node list data for non-genesis shards BEFORE starting containers.
 
-        Snapshots are created from the genesis shard (shard-0).  Every shard
-        restored from that snapshot will inherit shard-0 peer IPs in its MDBX
-        global-DB.  For non-zero shards those IPs are unreachable.
+        Snapshots are created from the genesis shard (shard-0, typically subnet 172.20.0.0/16).
+        Every shard restored from that snapshot inherits shard-0 peer IPs in its GDB.
+        For non-zero shards those IPs are unreachable, causing nodes to fail connecting.
 
-        Uses ``dap-gdb-tool node-rehost-all`` (via ``cf-tools:latest`` Docker
-        image) to rewrite all ``ext_host`` fields in-place, preserving all other
-        node metadata.  This is preferred over deleting MDBX because nodes
-        immediately have valid peer information on startup and don't need to wait
-        for re-registration via CLI.
+        We only delete node list/states GDB - other GDB files (chain, mempool) are preserved.
 
-        For shard-0 (genesis) no remapping is performed.
+        Returns:
+            True if GDB files were purged, False otherwise.
         """
         import subprocess as _sp
 
@@ -569,20 +595,32 @@ class NetworkManager:
         import subprocess as _sp
 
         cache_dir = self.paths_config.get('cache_dir', 'cache')
+        cache_dir_str = str(cache_dir)
+        
+        is_non_genesis_shard = 'shard-' in cache_dir_str and '/shard-0' not in cache_dir_str
+        
+        if not is_non_genesis_shard:
+            logger.info("stale_node_list_check",
+                        note="Genesis shard - GDB files preserved",
+                        cache_dir=cache_dir)
+            return False
+
         cache_path = (self.base_path / cache_dir).resolve()
+        net_name = self.topology.network.name
 
         purged = 0
         for nc in node_configs:
-            mdbx_dir = (
+            gdb_dir = (
                 cache_path / "data" / f"node{nc.node_id}"
-                / "lib" / "global_db" / "gdb-mdbx"
+                / "lib" / "global_db" / "gdb-native"
             )
-            for fname in ("mdbx.dat", "mdbx.lck"):
-                f = mdbx_dir / fname
+            for fname in (f"{net_name}.nodes.list.gdb", f"{net_name}.nodes.states.gdb"):
+                f = gdb_dir / fname
                 if f.exists():
                     try:
                         f.unlink()
                         purged += 1
+                        logger.debug("deleted_stale_gdb", file=str(f))
                     except OSError:
                         try:
                             _sp.run(["sudo", "rm", "-f", str(f)],
@@ -591,10 +629,12 @@ class NetworkManager:
                         except Exception:
                             pass
 
-        logger.info("stale_node_list_fixed_fallback",
+        logger.info("stale_node_list_fixed",
                     nodes=len(node_configs),
                     files_deleted=purged,
-                    method="mdbx_purge")
+                    cache_dir=cache_dir,
+                    note="Non-genesis shard - stale GDB entries purged")
+        return purged > 0
 
     async def _register_nodes_after_restore(self, node_configs) -> None:
         """Register all nodes in each other's node-list via CLI.
@@ -614,7 +654,7 @@ class NetworkManager:
         """
         import asyncio as _asyncio
         import subprocess
-        import re
+        import asyncio
         from ..utils.project import make_container_name
 
         net_name = self.topology.network.name
@@ -628,11 +668,13 @@ class NetworkManager:
                 f".{int(base_ip_parts[3]) + nc.node_id - 1}"
             )
 
-        # Wait for at least one node to accept CLI connections (up to 60s)
-        cli_ready_deadline = _asyncio.get_event_loop().time() + 60
+        # Retry logic: node CLI might not be ready immediately after container start
+        max_attempts = 5
+        retry_delays = [5, 10, 15, 20, 30]  # exponential backoff
         addr_map: dict[int, str] = {}
-        while _asyncio.get_event_loop().time() < cli_ready_deadline:
-            addr_map = {}
+        
+        for attempt in range(max_attempts):
+            addr_map.clear()
             for nc in node_configs:
                 container = make_container_name(f"node-{nc.node_id}")
                 try:
@@ -641,22 +683,29 @@ class NetworkManager:
                          "cellframe-node-cli node dump -net " + net_name],
                         capture_output=True, text=True, timeout=15)
                     if result.returncode == 0:
+                        import re
                         m = re.search(r'Node addr:\s+(\S+)', result.stdout)
                         if m:
                             addr_map[nc.node_id] = m.group(1)
                 except Exception as exc:
-                    logger.debug("node_addr_read_failed",
-                                 node_id=nc.node_id, error=str(exc))
+                    logger.warning("node_addr_read_failed",
+                                   node_id=nc.node_id, error=str(exc), attempt=attempt+1)
+            
             if addr_map:
-                logger.info("cli_ready_for_registration",
-                            resolved=len(addr_map), total=len(node_configs))
+                logger.info("node_addrs_resolved", count=len(addr_map), 
+                           total=len(node_configs), attempt=attempt+1)
                 break
-            logger.info("waiting_for_cli_ready", note="Retrying in 5s…")
-            await _asyncio.sleep(5)
+            
+            if attempt < max_attempts - 1:
+                delay = retry_delays[attempt]
+                logger.warning("retrying_node_addr_resolution",
+                             attempt=attempt+1, max_attempts=max_attempts,
+                             delay=delay, note="CLI not ready yet")
+                await asyncio.sleep(delay)
 
         if not addr_map:
             logger.error("no_node_addrs_resolved",
-                        note="Cannot register nodes — node dump failed for all")
+                        note="Cannot register nodes — node dump failed for all after retries")
             return
 
         registered = 0
@@ -753,7 +802,7 @@ class NetworkManager:
                 self.config_generator.generate_all(self.topology, node_configs, force=rebuild)
             else:
                 self._remap_seed_nodes_for_shard(node_configs)
-                self._regenerate_plugins_after_restore(node_configs)
+                self._regenerate_configs_after_restore(node_configs)
 
             cache_dir_relative = self.paths_config.get('cache_dir', 'cache')
             node_source_config = self.config_loader.get_node_source_config()
@@ -806,23 +855,31 @@ class NetworkManager:
                        snapshot=clean_state_name,
                        note="Starting containers from clean_state snapshot")
             
-            # Fix stale node list in GDB BEFORE starting containers
-            self._fix_stale_node_list(node_configs)
+            # Fix stale node list - for non-genesis shards, this deletes stale GDB files
+            # so nodes start fresh with correct IPs from seed_nodes_hosts config.
+            gdb_was_purged = self._fix_stale_node_list(node_configs)
 
             # Start ALL containers from restored clean_state
             all_services = [f"node-{i}" for i in range(1, len(root_nodes) + len(master_nodes) + len(full_nodes) + 1)]
             logger.info("starting_all_containers_from_clean_state", services=all_services)
             self.compose.up(services=all_services, detach=True, wait=False, no_build=False)
-
-            # Register nodes in each other's node-list BEFORE waiting for ONLINE.
-            # Nodes populate their GDB from chain data (genesis IPs) immediately after
-            # startup; the link_manager then tries to connect to those unreachable IPs.
-            # Injecting shard-specific IPs into the GDB early lets the link_manager
-            # pick them up on the next retry cycle and establish valid P2P links.
-            await self._register_nodes_after_restore(node_configs)
-
+            
+            if gdb_was_purged:
+                # For non-genesis shards: GDB was cleared, so balancer has no nodes.
+                # Must register nodes BEFORE waiting for online, otherwise nodes can't
+                # get links from balancer (returns 204) and will timeout.
+                import asyncio
+                logger.info("registering_nodes_before_wait",
+                           note="GDB was purged - registering nodes to populate balancer")
+                await asyncio.sleep(15)  # Wait for node CLI to be ready
+                await self._register_nodes_after_restore(node_configs)
+            
             # Wait for all nodes to come online
             await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
+
+            if not gdb_was_purged:
+                # For genesis shard: register after online (GDB was preserved from snapshot)
+                await self._register_nodes_after_restore(node_configs)
 
             # Verify fee_addr is configured (should be set during genesis)
             first_root = root_nodes[0]
@@ -1657,7 +1714,7 @@ class NetworkManager:
                     logger.error("master_nodes_genesis_failed", error=str(e), traceback=traceback.format_exc())
                     # Dump logs for all running containers
                     import docker
-                    docker_client = docker.from_env()
+                    docker_client = docker.from_env(timeout=30)
                     for container in docker_client.containers.list(all=True):
                         if f"{self.compose.project_name}-node" in container.name:
                             log_path = f"/tmp/{container.name}.log"

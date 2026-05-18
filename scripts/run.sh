@@ -2,18 +2,28 @@
 #
 # Unified test runner for Cellframe Node
 #
-# Usage:
-#   ./tests/run.sh                     # Run all tests
-#   ./tests/run.sh --e2e               # Run only E2E tests
-#   ./tests/run.sh --functional        # Run only functional tests
-#   ./tests/run.sh --regression        # Run only regression tests
-#   ./tests/run.sh --clean             # Clean cache before running
-#   ./tests/run.sh --rebuild           # Rebuild Docker images
-#   ./tests/run.sh --keep-running      # Don't stop network after tests
-#   ./tests/run.sh --skip-build        # Skip building cellframe-node
+# Usage (from repo root):
+#   ./tests/stage-env/scripts/run.sh                    # Run all suites
+#   ./tests/stage-env/scripts/run.sh --e2e             # E2E only
+#   ./tests/stage-env/scripts/run.sh --functional      # Functional only
+#   ./tests/stage-env/scripts/run.sh --regression      # Regression only
+#   ./tests/stage-env/scripts/run.sh --clean           # Clean cache first
+#   ./tests/stage-env/scripts/run.sh --rebuild         # Rebuild Docker images
+#   ./tests/stage-env/scripts/run.sh --keep-running    # Leave network up after tests
+#   ./tests/stage-env/scripts/run.sh --skip-build      # No CMake/cpack build
+#   ./tests/stage-env/scripts/run.sh --start-only      # Start env only (no tests)
 #
 
 set -euo pipefail
+
+# Pin Docker SDK API version to match the daemon to avoid
+# "client version X is too new" errors in WSL / older engines.
+if [ -z "${DOCKER_API_VERSION:-}" ]; then
+    DOCKER_API_VERSION=$(docker version --format '{{.Server.APIVersion}}' 2>/dev/null || true)
+    if [ -n "$DOCKER_API_VERSION" ]; then
+        export DOCKER_API_VERSION
+    fi
+fi
 
 # Colors
 RED='\033[0;31m'
@@ -39,10 +49,8 @@ CACHE_DIR="$PROJECT_ROOT/cache"
 # Test directories
 TESTS_DIR="$PROJECT_ROOT/tests"
 E2E_TESTS="$TESTS_DIR/e2e"
-SCENARIOS_TESTS="$TESTS_DIR/e2e"
 FUNCTIONAL_TESTS="$TESTS_DIR/functional"
 REGRESSION_TESTS="$TESTS_DIR/regression"
-STAGE_ENV_INTEGRATION_BASE_TESTS="$STAGE_ENV_DIR/tests/integration/scenarios/base"
 
 # Build directories
 TEST_BUILD_DIR="$PROJECT_ROOT/build"
@@ -57,6 +65,7 @@ REBUILD_IMAGES=false
 SKIP_BUILD=false
 PKGS_UPDATE=false
 STOP_ENV=false
+START_ONLY=false
 SPECIFIC_TESTS=()
 
 while [[ $# -gt 0 ]]; do
@@ -97,6 +106,11 @@ while [[ $# -gt 0 ]]; do
             STOP_ENV=true
             shift
             ;;
+        --start-only)
+            START_ONLY=true
+            KEEP_RUNNING=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS] [TEST_PATH...]"
             echo ""
@@ -110,6 +124,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-build    Skip building cellframe-node (use existing .deb or config)"
             echo "  --pkgs-update   Update packages in running containers"
             echo "  --stop          Stop stage environment"
+            echo "  --start-only    Build/start the network only; do not run tests (implies --keep-running)"
             echo "  -h, --help      Show this help message"
             echo ""
             echo "Node source (stage-env.cfg [node_source]):"
@@ -124,7 +139,8 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --rebuild --e2e                    # Rebuild images and run E2E tests"
             echo "  $0 --keep-running                     # Keep network running after tests"
             echo "  $0 --stop                             # Stop stage environment"
-            echo "  $0 tests/e2e/token                    # Run specific test suite"
+            echo "  $0 --start-only                       # Start network only (leave running)"
+            echo "  $0 tests/e2e/consensus              # Run one suite dir under tests/"
             echo ""
             exit 0
             ;;
@@ -174,7 +190,7 @@ fi
 # If specific tests provided, use them directly
 if [ ${#SPECIFIC_TESTS[@]} -gt 0 ]; then
     info "Specific tests requested: ${SPECIFIC_TESTS[*]}"
-elif ! $RUN_E2E && ! $RUN_FUNCTIONAL && ! $RUN_REGRESSION; then
+elif ! $START_ONLY && ! $RUN_E2E && ! $RUN_FUNCTIONAL && ! $RUN_REGRESSION; then
     # If nothing specified, run all
     RUN_E2E=true
     RUN_FUNCTIONAL=true
@@ -198,6 +214,15 @@ if ! command -v docker &> /dev/null; then
 fi
 
 success "Prerequisites OK"
+
+# Create config from default template if absent
+STAGE_ENV_DEFAULT="$STAGE_ENV_DIR/config/stage-env.cfg.default"
+if [ ! -f "$STAGE_ENV_CONFIG" ] && [ -f "$STAGE_ENV_DEFAULT" ]; then
+    info "Config not found, creating from default template..."
+    mkdir -p "$(dirname "$STAGE_ENV_CONFIG")"
+    cp "$STAGE_ENV_DEFAULT" "$STAGE_ENV_CONFIG"
+    success "Created $STAGE_ENV_CONFIG"
+fi
 
 # Check node_source.type from config
 NODE_SOURCE_TYPE=""
@@ -232,8 +257,10 @@ print(config.get('node_source', 'url', fallback=''))
     if [ -n "$NODE_URL" ]; then
         success "Node source: $NODE_URL"
     else
-        error "type=url but no url specified in config"
-        exit 1
+        # Empty url with type=url means: auto-detect the latest published
+        # cellframe-node-X.Y-Z[-dbg]-<arch>.deb from the master directory
+        # listing inside the Dockerfile build (PACKAGE_URL build-arg stays empty).
+        info "Node source: auto-detect latest published package (url is empty in config)"
     fi
 elif $SKIP_BUILD; then
     # --skip-build flag: use existing local package or config
@@ -336,6 +363,12 @@ if $CLEAN_BEFORE; then
         popd > /dev/null
     fi
     
+    # Remove stale shard data dirs — leftover GDB/mempool from a previous run
+    # causes duplicate-token processing that can segfault the node on startup.
+    for shard_dir in "$CACHE_DIR"/shard-*; do
+        [ -d "$shard_dir" ] && rm -rf "$shard_dir"
+    done
+
     # Additional cleanup
     if [ -d "$CACHE_DIR/snapshots" ] && [ "$(ls -A "$CACHE_DIR/snapshots" 2>/dev/null)" ]; then
         info "Removing remaining snapshots..."
@@ -383,6 +416,11 @@ popd > /dev/null
 if [ $E2E_EXIT -eq 0 ]; then
     success "Stage environment started"
     
+    if $START_ONLY; then
+        success "Start-only: stage environment left running (no tests run)"
+        exit 0
+    fi
+    
     # Collect test directories
     TEST_DIRS=()
     
@@ -426,7 +464,22 @@ if [ $E2E_EXIT -eq 0 ]; then
         info "Running ${#TEST_DIRS[@]} test suite(s)..."
         
         pushd "$STAGE_ENV_DIR" > /dev/null
-        ./stage-env --config="$STAGE_ENV_CONFIG_ABS" run-tests --no-start-network "${TEST_DIRS[@]}" || TEST_EXIT=$?
+        # Limit parallel workers based on available memory to avoid OOM kills.
+        # Each shard runs 5 containers; with debug builds each node needs ~200MB.
+        # A single shard needs ~1.5GB (5 nodes + overhead), so:
+        #   <6GB  → sequential (-j 1) to avoid SIGSEGV from memory pressure
+        #   <12GB → 2 concurrent shards
+        #   ≥12GB → auto (cpu_count // 2, capped by suite count)
+        AVAIL_MEM_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
+        WORKERS_FLAG=""
+        if [ -n "$AVAIL_MEM_MB" ]; then
+            if [ "$AVAIL_MEM_MB" -lt 6000 ]; then
+                WORKERS_FLAG="-j 1"
+            elif [ "$AVAIL_MEM_MB" -lt 12000 ]; then
+                WORKERS_FLAG="-j 2"
+            fi
+        fi
+        ./stage-env --config="$STAGE_ENV_CONFIG_ABS" run-tests --no-start-network $WORKERS_FLAG "${TEST_DIRS[@]}" || TEST_EXIT=$?
         popd > /dev/null
         
         if [ $TEST_EXIT -ne 0 ]; then
@@ -506,7 +559,13 @@ echo "════════════════════════�
 
 # Find and display detailed test results from summary.json
 # Check both default cache and build/stage-env (when paths.cache_dir points there)
-LATEST_RUN_DIR=$(find "$CACHE_DIR/artifacts" "$PROJECT_ROOT/build/stage-env/artifacts" -maxdepth 1 -type d -name "run_*" 2>/dev/null | sort -r | head -n 1)
+SEARCH_DIRS=()
+[ -d "$CACHE_DIR/artifacts" ] && SEARCH_DIRS+=("$CACHE_DIR/artifacts")
+[ -d "$PROJECT_ROOT/build/stage-env/artifacts" ] && SEARCH_DIRS+=("$PROJECT_ROOT/build/stage-env/artifacts")
+LATEST_RUN_DIR=""
+if [ ${#SEARCH_DIRS[@]} -gt 0 ]; then
+    LATEST_RUN_DIR=$(find "${SEARCH_DIRS[@]}" -maxdepth 1 -type d -name "run_*" 2>/dev/null | sort -r | head -n 1) || true
+fi
 if [ -n "$LATEST_RUN_DIR" ] && [ -f "$LATEST_RUN_DIR/summary.json" ]; then
     echo ""
     echo "════════════════════════════════════"

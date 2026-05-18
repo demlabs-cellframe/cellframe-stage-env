@@ -170,7 +170,7 @@ class DAGEventWaiter(BaseWaiter):
             # Collect actual node logs for diagnostic
             try:
                 import docker
-                docker_client = docker.from_env()
+                docker_client = docker.from_env(timeout=30)
                 logger.info("collecting_actual_node_logs", datum=self.datum_hash[:16])
                 container = docker_client.containers.get(make_container_name(f"node-{self.node_id}"))
                 # Get last 500 lines of logs (increased from 100)

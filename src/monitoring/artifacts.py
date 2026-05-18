@@ -198,7 +198,7 @@ class ArtifactsCollector:
         import docker
         
         try:
-            client = docker.from_env()
+            client = docker.from_env(timeout=30)
             container = client.containers.get(container_name)
             stream, stat = container.get_archive(location + "/")
         except Exception:
