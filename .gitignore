@@ -14,3 +14,5 @@ config/stage-env.cfg
 slc
 logs/
 docker-compose.shard-*.yml
+src/certs/build/
+src/gdb/build/

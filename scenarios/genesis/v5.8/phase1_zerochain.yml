@@ -80,10 +80,7 @@ setup:
   - docker_op: restart
     services: "{{all_nodes}}"
   
-  - wait_network: online
-    nodes: "{{root_nodes}}"
-    timeout: 120
-
+  - wait: 10s
 
 test:
   # v5.8: no MDBX race condition workaround needed
@@ -157,9 +154,7 @@ test:
   - docker_op: restart
     services: "{{_active_nodes}}"
   
-  - wait_network: online
-    nodes: "{{_active_nodes}}"
-    timeout: 60
+  - wait: 15s
   
   - group: Add all nodes to nodelist
     steps:
@@ -283,6 +278,13 @@ test:
     nodes: "{{seed_nodes}}"
     set:
       seed_mode: "true"
+  
+  # For genesis events with is_add_directly=true, only 1 signature is available
+  # Set auth_certs_number_verify=1 on ALL nodes so they can verify/accept single-signed events
+  - config: "{{network_name}}/zerochain"
+    nodes: "{{_active_nodes}}"
+    set:
+      auth_certs_number_verify: "1"
   
   - docker_op: restart
     services: "{{_active_nodes}}"

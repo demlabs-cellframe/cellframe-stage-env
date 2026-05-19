@@ -1,132 +1,20 @@
 # Self-contained SDK tools for Cellframe Node E2E testing.
 #
-# Uses local dap-sdk source from build context and builds
-# cf-cert-generator + dap-gdb-tool.
+# Uses host-built binaries copied into the image
 #
 # Build context: project root
-#
-# Build:
-#   docker build -f tools/stage-env/Dockerfile.tools \
-#       --build-arg DAP_SDK_BRANCH=release-6.0 \
-#       -t cf-tools:latest .
-#
-# Run (cert-generator):
-#   docker run --rm -v /path/to/output:/output cf-tools:latest \
-#       /usr/local/bin/cf-cert-generator /output 2 stagenet 0x1234 1
-#
-# Run (gdb-tool):
-#   docker run --rm -v /path/to/nodedata:/data cf-tools:latest \
-#       /usr/local/bin/dap-gdb-tool --driver mdbx --db-path /data/var/lib/global_db \
-#       node-rehost vpntest 3FDA::0325::3A71::2C74 10.0.2.3 8079
 
-ARG DAP_SDK_BRANCH=release-6.0
-ARG DAP_SDK_REPO=https://gitlab.demlabs.net/dap/dap-sdk.git
-
-FROM debian:bookworm-slim AS builder
-
-ARG DAP_SDK_BRANCH
-ARG DAP_SDK_REPO
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake pkg-config libssl-dev python3 \
-    ca-certificates git xsltproc \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-
-COPY cellframe-sdk/dap-sdk/     /src/dap-sdk/
-COPY tools/dap_tpl/             /src/dap-sdk/module/test/dap_tpl/
-COPY cellframe-sdk/modules/common/ /src/cellframe-sdk/modules/common/
-COPY tools/stage-env/src/certs/ /src/cert-generator/
-COPY tools/stage-env/src/gdb/   /src/gdb-tool/
-
-# Build SDK — detect build system generation (5.x vs 6.0+) and produce libdap-sdk.a
-#   5.x: uses CELLFRAME_MODULES, produces individual .a archives
-#   6.0+: uses DAPSDK_MODULES, may produce libdap-sdk.so (shared) → we need static objects
-RUN find /src/dap-sdk -name "CMakeLists.txt" -o -name "*.cmake" \
-      | xargs sed -i 's/-Werror//g' 2>/dev/null || true
-
-RUN mkdir -p /tmp/sdk-build && cd /tmp/sdk-build && \
-    if grep -q CELLFRAME_MODULES /src/dap-sdk/CMakeLists.txt; then \
-        cmake -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_C_FLAGS="-Wno-error" \
-              -DBUILD_DAP_SDK_TESTS=OFF \
-              -DBUILD_WITH_GDB_DRIVER_MDBX=ON \
-              -DCELLFRAME_MODULES="core chains network" \
-              /src/dap-sdk; \
-    else \
-        cmake -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_C_FLAGS="-Wno-error" \
-              -DBUILD_DAP_SDK_TESTS=OFF \
-              -DBUILD_SHARED=OFF -DBUILD_STATIC=ON \
-              -DINSTALL_DAP_SDK=OFF \
-              -DBUILD_WITH_GDB_DRIVER_MDBX=ON \
-              /src/dap-sdk; \
-    fi && \
-    cmake --build . -j$(nproc) && \
-    if [ ! -f libdap-sdk.a ]; then \
-        find . -name "*.o" -print0 | xargs -0 ar rcs libdap-sdk.a; \
-    fi && \
-    find . -name "*.S.o" -not -path "*/CMakeFiles/CMakeTmp/*" -print0 \
-        | xargs -0 ar rs libdap-sdk.a 2>/dev/null || true && \
-    if [ -f static/libdap-sdk.a ]; then \
-        tmpd=$(mktemp -d) && \
-        (cd "$tmpd" && ar x /tmp/sdk-build/static/libdap-sdk.a && \
-         ar rs /tmp/sdk-build/libdap-sdk.a *.o) && \
-        rm -rf "$tmpd"; \
-    fi && \
-    for xlib in $(find /tmp/sdk-build -maxdepth 5 -name "lib*.a" \
-        -not -name "libdap-sdk.a" -not -path "*/static/*" 2>/dev/null); do \
-        tmpd=$(mktemp -d) && \
-        (cd "$tmpd" && ar x "$xlib" && ar rs /tmp/sdk-build/libdap-sdk.a *.o) && \
-        rm -rf "$tmpd"; \
-    done && \
-    find . -path "*/CMakeFiles/dap_crypto.dir/src/*/*.c.o" -print0 \
-        | xargs -0 ar qs libdap-sdk.a 2>/dev/null || true
-
-# Detect SDK features by inspecting built library
-RUN HAS_SDK_INIT=OFF && \
-    if find /tmp/sdk-build -name "dap_sdk.c.o" 2>/dev/null | grep -q .; then \
-        HAS_SDK_INIT=ON; \
-    fi && \
-    echo "DAP_HAS_SDK_INIT=$HAS_SDK_INIT" > /tmp/sdk-features.env
-
-# Build cf-cert-generator
-RUN . /tmp/sdk-features.env && \
-    mkdir -p /tmp/cert-build && cd /tmp/cert-build && \
-    cmake -DDAP_SDK_SRC=/src/dap-sdk \
-          -DDAP_SDK_BUILD=/tmp/sdk-build \
-          -DCELLFRAME_SDK_SRC=/src/cellframe-sdk \
-          -DDAP_HAS_SDK_INIT=$DAP_HAS_SDK_INIT \
-          /src/cert-generator 2>&1 && \
-    cmake --build . -j$(nproc) 2>&1
-
-# Build dap-gdb-tool (required — sharding depends on it)
-RUN . /tmp/sdk-features.env && \
-    mkdir -p /tmp/gdb-build && cd /tmp/gdb-build && \
-    cmake -DDAP_SDK_SRC=/src/dap-sdk \
-          -DDAP_SDK_BUILD=/tmp/sdk-build \
-          -DDAP_HAS_SDK_INIT=$DAP_HAS_SDK_INIT \
-          /src/gdb-tool 2>&1 && \
-    cmake --build . -j$(nproc) 2>&1
-
-# Stage all built binaries
-RUN mkdir -p /tools && \
-    cp /tmp/cert-build/cf-cert-generator /tools/ && \
-    cp /tmp/gdb-build/dap-gdb-tool /tools/
-
-# --- runtime stage ---
-FROM debian:bookworm-slim
-
-ARG DAP_SDK_BRANCH
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /tools/ /usr/local/bin/
+# Copy pre-built binaries from host
+COPY tests/stage-env/src/certs/build/cf-cert-generator /usr/local/bin/
+COPY tests/stage-env/src/certs/build/dap-cert /usr/local/bin/
 
-LABEL dap.sdk.branch="${DAP_SDK_BRANCH}"
+RUN chmod +x /usr/local/bin/cf-cert-generator /usr/local/bin/dap-cert
 
 WORKDIR /output
 

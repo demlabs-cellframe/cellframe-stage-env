@@ -25,9 +25,41 @@
 #include "dap_enc_key.h"
 #include "dap_enc_base58.h"
 #include "dap_chain_common.h"
-#include "dap_stream.h"
+#include "dap_hash.h"
 
 #define LOG_TAG "dap-cert"
+
+/* === Inline Node Address Generation (from cert-generator.c) === */
+
+typedef union {
+    uint64_t uint64;
+    uint16_t words[4];
+    uint8_t  raw[8];
+} dap_node_addr_t;
+
+static inline void dap_node_addr_from_hash(dap_hash_fast_t *a_hash, dap_node_addr_t *a_addr)
+{
+    a_addr->words[3] = *(uint16_t *)a_hash->raw;
+    a_addr->words[2] = *(uint16_t *)(a_hash->raw + sizeof(uint16_t));
+    a_addr->words[1] = *(uint16_t *)(a_hash->raw + DAP_CHAIN_HASH_FAST_SIZE - sizeof(uint16_t) * 2);
+    a_addr->words[0] = *(uint16_t *)(a_hash->raw + DAP_CHAIN_HASH_FAST_SIZE - sizeof(uint16_t));
+}
+
+static inline dap_node_addr_t dap_node_addr_from_cert(dap_cert_t *a_cert)
+{
+    dap_node_addr_t l_ret = { .uint64 = 0 };
+    if (!a_cert) return l_ret;
+    dap_hash_fast_t l_hash;
+    if (dap_cert_get_pkey_hash(a_cert, &l_hash) == 0)
+        dap_node_addr_from_hash(&l_hash, &l_ret);
+    return l_ret;
+}
+
+static inline char* dap_node_addr_to_str(dap_node_addr_t a_addr)
+{
+    return dap_strdup_printf("%04hX::%04hX::%04hX::%04hX",
+        a_addr.words[3], a_addr.words[2], a_addr.words[1], a_addr.words[0]);
+}
 
 /* Global debug flag for detailed logging */
 static bool s_debug_more = false;
@@ -221,7 +253,7 @@ static int s_cmd_addr(int argc, char **argv)
 /**
  * @brief Command: node-addr - Extract short node address from certificate
  * Usage: dap-cert node-addr <cert_path>
- * @details Extracts dap_cluster_node_addr_t (short format like 3FDA::0325::3A71::2C74)
+ * @details Extracts dap_node_addr_t (short format like 3FDA::0325::3A71::2C74)
  *          This is the format needed for authorized_nodes_addrs in chain config
  */
 static int s_cmd_node_addr(int argc, char **argv)
@@ -237,8 +269,8 @@ static int s_cmd_node_addr(int argc, char **argv)
         return DAP_CERT_ERROR;
     }
     
-    /* Extract node address (dap_cluster_node_addr_t) */
-    dap_cluster_node_addr_t l_node_addr = dap_cluster_node_addr_from_cert(l_cert);
+    /* Extract node address (dap_node_addr_t) */
+    dap_node_addr_t l_node_addr = dap_node_addr_from_cert(l_cert);
     
     dap_cert_delete(l_cert);
     
@@ -249,7 +281,7 @@ static int s_cmd_node_addr(int argc, char **argv)
     }
     
     /* Convert to string format (short address) */
-    const char *l_addr_str = dap_cluster_node_addr_to_str(l_node_addr);
+    char *l_addr_str = dap_node_addr_to_str(l_node_addr);
     if (!l_addr_str) {
         log_it(L_ERROR, "Failed to convert node address to string");
         return DAP_CERT_ERROR;
@@ -257,6 +289,7 @@ static int s_cmd_node_addr(int argc, char **argv)
     
     /* Output short address */
     printf("%s\n", l_addr_str);
+    DAP_DELETE(l_addr_str);
     return DAP_CERT_SUCCESS;
 }
 

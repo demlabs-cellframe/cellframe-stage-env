@@ -259,7 +259,7 @@ class NetworkManager:
             if suffix.endswith(".x"):
                 suffix = suffix[:-2] + ".0"
             return f"release-{suffix}"
-        return "release-6.0"
+        return "release-5.8"
 
     async def prepare(self, rebuild: bool = False) -> None:
         """Restore snapshot, generate configs and compose — but do NOT start containers.

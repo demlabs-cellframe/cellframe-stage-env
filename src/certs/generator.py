@@ -51,13 +51,13 @@ class CertGenerator:
             certs_dir: Optional path to certificates directory (defaults to base_path/cache/certs)
             dap_sdk_branch: Git branch of dap-sdk to build tools against
                            (e.g. "release-5.8", "release-6.0").
-                           Defaults to "release-6.0".
+                           Defaults to "release-5.8".
         """
         self.base_path = base_path
         self.certs_dir = certs_dir if certs_dir is not None else (base_path / "cache" / "certs")
         self.dockerfile = base_path / "Dockerfile.tools"
         self.project_root = base_path.parent.parent
-        self.dap_sdk_branch = dap_sdk_branch or "release-6.0"
+        self.dap_sdk_branch = dap_sdk_branch or "release-5.8"
         
         self.certs_dir.mkdir(parents=True, exist_ok=True)
         

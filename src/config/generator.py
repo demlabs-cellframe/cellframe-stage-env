@@ -81,7 +81,7 @@ class ConfigGenerator:
             if suffix.endswith(".x"):
                 suffix = suffix[:-2] + ".0"
             return f"release-{suffix}"
-        return "release-6.0"
+        return "release-5.8"
 
     def _resolve_template(self, relative_path: str) -> Optional[Path]:
         """Find template file/dir: versioned directory first, then common fallback."""
