@@ -49,15 +49,16 @@ class CertGenerator:
         Args:
             base_path: Base path to stage-env directory
             certs_dir: Optional path to certificates directory (defaults to base_path/cache/certs)
-            dap_sdk_branch: Git branch of dap-sdk to build tools against
-                           (e.g. "release-5.8", "release-6.0").
-                           Defaults to "release-5.8".
+            dap_sdk_branch: SDK version label for the Docker image
+                           (e.g. "release-5.8", "release-6.0", "current").
+                           Used only for the image label and rebuild detection;
+                           the Dockerfile auto-selects the correct tool sources.
         """
         self.base_path = base_path
         self.certs_dir = certs_dir if certs_dir is not None else (base_path / "cache" / "certs")
         self.dockerfile = base_path / "Dockerfile.tools"
         self.project_root = base_path.parent.parent
-        self.dap_sdk_branch = dap_sdk_branch or "release-5.8"
+        self.dap_sdk_branch = dap_sdk_branch or "unknown"
         
         self.certs_dir.mkdir(parents=True, exist_ok=True)
         
@@ -66,6 +67,15 @@ class CertGenerator:
                    dap_sdk_branch=self.dap_sdk_branch,
                    docker_mode=True)
     
+    @staticmethod
+    def _tools_variant_from_branch(branch: str) -> str:
+        """Map SDK branch name to tool-source variant directory."""
+        if branch.startswith("release-6.") or branch == "v6.0":
+            return "v6.0"
+        if branch in ("master", "develop"):
+            return "master"
+        return "auto"
+
     def _image_needs_rebuild(self) -> bool:
         """Check if the Docker image is older than local source files or SDK branch changed."""
         try:
@@ -96,7 +106,7 @@ class CertGenerator:
                 src_dir = self.base_path / subdir
                 if src_dir.exists():
                     mtimes.extend(
-                        f.stat().st_mtime for f in src_dir.iterdir() if f.is_file()
+                        f.stat().st_mtime for f in src_dir.rglob("*") if f.is_file()
                     )
             if self.dockerfile.exists():
                 mtimes.append(self.dockerfile.stat().st_mtime)
@@ -118,9 +128,9 @@ class CertGenerator:
         """
         Build the cf-tools Docker image if needed.
 
-        The image clones dap-sdk from remote (branch = ``self.dap_sdk_branch``)
-        and builds cf-cert-generator + dap-gdb-tool.  Tool sources are COPY'd
-        from the project tree; the SDK is NOT copied — it's always cloned fresh.
+        The image uses local dap-sdk from the build context and builds
+        cf-cert-generator + dap-gdb-tool.  The Dockerfile auto-detects the SDK
+        layout (module/ vs flat) and selects the matching versioned tool sources.
 
         Automatically rebuilds when local source files in ``src/certs/`` or
         ``src/gdb/`` are newer than the existing Docker image.
@@ -143,15 +153,16 @@ class CertGenerator:
 
         logger.info("building_cert_builder_image",
                     dap_sdk_branch=self.dap_sdk_branch)
-        print_info(_("Building cf-tools image (SDK branch: {})...").format(
-            self.dap_sdk_branch))
+        print_info(_("Building cf-tools image..."))
 
         try:
+            tools_variant = self._tools_variant_from_branch(self.dap_sdk_branch)
             result = subprocess.run(
                 [
                     "docker", "build",
                     "-f", str(self.dockerfile),
                     "--build-arg", f"DAP_SDK_BRANCH={self.dap_sdk_branch}",
+                    "--build-arg", f"DAP_TOOLS_VARIANT={tools_variant}",
                     "-t", CERT_BUILDER_IMAGE,
                     str(self.project_root),
                 ],
@@ -164,8 +175,7 @@ class CertGenerator:
                 print_error(_("Failed to build builder image: {}").format(result.stderr))
                 return False
 
-            print_success(_("cf-tools image built (SDK: {})").format(
-                self.dap_sdk_branch))
+            print_success(_("cf-tools image built"))
             logger.info("cert_builder_image_built",
                         dap_sdk_branch=self.dap_sdk_branch)
             return True

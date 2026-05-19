@@ -252,14 +252,17 @@ class NetworkManager:
         return default_dir
 
     def _sdk_branch_for_tools(self) -> str:
-        """Derive dap-sdk git branch from genesis version (v5.8 -> release-5.8)."""
+        """Derive dap-sdk git branch; prefer [paths] sdk_git_branch."""
+        explicit = (self.paths_config.get("sdk_git_branch") or "").strip()
+        if explicit and explicit.lower() != "auto":
+            return explicit
         ver = self._genesis_version_dir
         if ver and ver.startswith("v"):
             suffix = ver[1:]
             if suffix.endswith(".x"):
                 suffix = suffix[:-2] + ".0"
             return f"release-{suffix}"
-        return "release-5.8"
+        return "current"
 
     async def prepare(self, rebuild: bool = False) -> None:
         """Restore snapshot, generate configs and compose — but do NOT start containers.
@@ -339,7 +342,15 @@ class NetworkManager:
         cache_dir = self.paths_config.get('cache_dir', 'cache')
         configs_cache = (self.base_path / cache_dir / 'configs').resolve()
 
-        seed_re = _re.compile(r'(?m)^(seed_nodes_hosts\s*=\s*)\[([^\]]*)\]')
+        # Bracketed host lists. ``permanent_nodes_hosts`` lives next to
+        # ``seed_nodes_hosts`` and points to root nodes that masters/full nodes
+        # use as their bootstrap path before GDB is populated. If we miss it,
+        # masters keep dialling the genesis-shard subnet (e.g. 172.20.0.x),
+        # which is unreachable from the new shard subnet (e.g. 172.22.0.x),
+        # so they never establish links and stay in NET_STATE_LINKS_CONNECTING.
+        bracketed_hosts_re = _re.compile(
+            r'(?m)^((?:seed_nodes_hosts|permanent_nodes_hosts)\s*=\s*)\[([^\]]*)\]'
+        )
         ext_addr_re = _re.compile(r'(?m)^(ext_address\s*=\s*)(\d+\.\d+\.\d+\.\d+)')
 
         def _remap(hosts_str):
@@ -356,9 +367,6 @@ class NetworkManager:
                     remapped.append(entry)
             return '[' + ','.join(remapped) + ']'
 
-        # Regex to remap ext_address in cellframe-node.cfg
-        ext_addr_re = _re.compile(r'(?m)^(ext_address\s*=\s*)([\d]+\.[\d]+\.[\d]+\.[\d]+)')
-
         def _remap_ip(old_ip: str) -> str:
             octets = old_ip.split('.')
             if len(octets) == 4:
@@ -367,12 +375,12 @@ class NetworkManager:
 
         patched = 0
         for node in node_configs:
-            # Remap seed_nodes_hosts in network/*.cfg
+            # Remap seed_nodes_hosts and permanent_nodes_hosts in network/*.cfg
             net_dir = configs_cache / f"node{node.node_id}" / "network"
             if net_dir.is_dir():
                 for net_cfg in net_dir.glob("*.cfg"):
                     content = net_cfg.read_text()
-                    new_content = seed_re.sub(
+                    new_content = bracketed_hosts_re.sub(
                         lambda m: m.group(1) + _remap(m.group(2)),
                         content,
                     )

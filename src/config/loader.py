@@ -134,31 +134,34 @@ class ConfigLoader:
         """
         Load stage-env configuration file.
         
-        Config file must exist explicitly - no auto-creation.
-        Use custom config path with ConfigLoader(base_path, config_path) or
-        ensure stage-env.cfg exists in config/ directory.
+        If the config file does not exist, it is created automatically from
+        ``config/stage-env.cfg.default``.
         
         Returns:
             Configuration dictionary with all default values
             
         Raises:
-            FileNotFoundError: If config file doesn't exist
+            FileNotFoundError: If config file doesn't exist and no default template is available
         """
-        # Use custom config path if provided, otherwise use default
         if self.custom_config_path:
             config_file = self.custom_config_path
         else:
             config_file = self.config_dir / "stage-env.cfg"
         
-        # Load config (no auto-creation - config must exist explicitly)
         if not config_file.exists():
-            error_msg = f"Configuration file not found: {config_file}"
-            if not self.custom_config_path:
-                error_msg += f"\n\nDefault config location: {self.config_dir / 'stage-env.cfg'}"
-                error_msg += f"\nYou can copy from template: {self.config_dir / 'stage-env.cfg.default'}"
-                error_msg += f"\nOr specify custom config with --config option"
-            logger.error("config_not_found", path=str(config_file))
-            raise FileNotFoundError(error_msg)
+            default_template = self.config_dir / "stage-env.cfg.default"
+            if default_template.exists():
+                import shutil
+                config_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(default_template, config_file)
+                logger.info("config_created_from_default",
+                            source=str(default_template),
+                            dest=str(config_file))
+            else:
+                error_msg = f"Configuration file not found: {config_file}"
+                error_msg += f"\nDefault template also missing: {default_template}"
+                logger.error("config_not_found", path=str(config_file))
+                raise FileNotFoundError(error_msg)
         
         config = configparser.ConfigParser()
         config.read(config_file)
@@ -411,7 +414,7 @@ class ConfigLoader:
             'node_var_subdirs': 'log, lib/ca, lib/global_db, lib/wallet, lib/network',
             'cellframe_sdk_git': 'https://gitlab.demlabs.net/cellframe/cellframe-sdk.git',
             'dap_sdk_git': 'https://gitlab.demlabs.net/dap/dap-sdk.git',
-            'sdk_git_branch': 'master',
+            'sdk_git_branch': 'auto',
             'custom_templates_dir': '',
         }
         

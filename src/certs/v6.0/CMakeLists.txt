@@ -16,6 +16,8 @@ if(NOT DEFINED CELLFRAME_SDK_SRC)
     set(CELLFRAME_SDK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../cellframe-sdk")
 endif()
 
+message(STATUS "Cellframe SDK Build: ${CELLFRAME_SDK_BUILD}")
+message(STATUS "Cellframe SDK Source: ${CELLFRAME_SDK_SRC}")
 message(STATUS "DAP SDK Source: ${DAP_SDK_SRC}")
 message(STATUS "DAP SDK Build: ${DAP_SDK_BUILD}")
 
@@ -56,11 +58,16 @@ include_directories(
     ${DAP_SDK_SRC}/module/core/src/unix
     ${DAP_SDK_BUILD}/module/core
     ${DAP_SDK_BUILD}/module/core/json-c
-    ${DAP_SDK_SRC}/module/3rdparty/json-c
-    ${DAP_SDK_SRC}/module/3rdparty/uthash/src
-    # Host build paths (when DAP_SDK_BUILD points to build root)
-    ${DAP_SDK_BUILD}/dap-sdk/core/json-c
-    ${DAP_SDK_BUILD}/dap-sdk/core
+    ${CELLFRAME_SDK_BUILD}/dap-sdk/module/core
+    ${DAP_SDK_SRC}/module/json/include
+    ${DAP_SDK_SRC}/module/crypto/include
+    ${DAP_SDK_SRC}/module/crypto/src/Kyber/crypto_kem/kyber512/optimized
+    ${DAP_SDK_SRC}/module/hash/table/include
+    ${DAP_SDK_SRC}/module/hash/include
+    ${DAP_SDK_SRC}/module/math/include
+    ${DAP_SDK_SRC}/module/io/include
+    ${DAP_SDK_SRC}/module/net/common/include
+    ${CELLFRAME_SDK_SRC}/modules/common/include
 )
 
 # Link directories - search both SDK build and cellframe-sdk build

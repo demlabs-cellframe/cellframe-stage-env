@@ -171,7 +171,7 @@ RUN apt-get update && apt-get install -y \
     && \
     # Install debug tools for debug and asan builds
     if [ "$BUILD_TYPE" = "debug" ] || [ "$BUILD_TYPE" = "asan" ]; then \
-        apt-get install -y htop strace gdb valgrind vim nano; \
+        apt-get install -y htop strace gdb valgrind vim nano libasan8; \
     fi && \
     rm -rf /var/lib/apt/lists/*
 
@@ -190,6 +190,22 @@ RUN apt-get update && \
 # Create systemctl stub for Docker (cellframe-node postinst tries to use systemctl)
 RUN echo '#!/bin/bash\nexit 0' > /usr/bin/systemctl && \
     chmod +x /usr/bin/systemctl
+
+# Download architecture-specific cellframe tools (optional, may fail if internal network is unavailable)
+RUN DPKG_ARCH=$(dpkg --print-architecture) \
+    && if [ "$DPKG_ARCH" = "arm64" ] || [ "$DPKG_ARCH" = "aarch64" ]; then \
+         ARCH_SUFFIX="arm64"; \
+       else \
+         ARCH_SUFFIX="amd64"; \
+       fi \
+    && echo "Building for architecture: ${DPKG_ARCH} -> ${ARCH_SUFFIX}" \
+    && (curl --connect-timeout 10 -O https://internal-pub.cellframe.net/linux/cellframe-tool-sign/feature/20325/cellframe-tool-sign-${ARCH_SUFFIX} \
+    && curl --connect-timeout 10 -O https://internal-pub.cellframe.net/linux/cellframe-tool-compose/feature/20325/cellframe-tool-compose-${ARCH_SUFFIX} \
+    && chmod +x /cellframe-tool-compose-${ARCH_SUFFIX} \
+    && chmod +x /cellframe-tool-sign-${ARCH_SUFFIX} \
+    && ln -sf /cellframe-tool-sign-${ARCH_SUFFIX} /cellframe-tool-sign \
+    && ln -sf /cellframe-tool-compose-${ARCH_SUFFIX} /cellframe-tool-compose \
+    || echo "WARNING: Could not download cellframe tools from internal network, skipping")
 
 # Create cache directory for Cellframe packages (persistent across builds)
 RUN mkdir -p /var/cache/cellframe-packages

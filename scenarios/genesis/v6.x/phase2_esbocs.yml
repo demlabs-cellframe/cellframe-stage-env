@@ -104,7 +104,10 @@ test:
   - group: Force chain sync if needed
     description: Ensure chains are synced from root to master
     steps:
-      # Force sync on master node to get latest data from root
+      # Force sync on both root and master to push/pull chain data
+      - cli: "net go sync"
+        node: "{{first_root}}"
+
       - cli: "net go sync"
         node: "{{first_master}}"
       
@@ -131,9 +134,21 @@ test:
       
       - cli: "mempool proc_all"
 
-      - wait: global_db_sync
-        nodes: "{{_active_nodes}}"
+      # Trigger sync on both sides so the mempool datum propagates via GDB cluster
+      - cli: "net go sync"
+        node: "{{first_root}}"
+
+      - cli: "net go sync"
+        node: "{{first_master}}"
+
+      # Poll master's mempool until the genesis TX actually arrives.
+      # global_db_sync only checks node-list; mempool is a separate GDB cluster.
+      - wait: cli
+        cmd: "mempool list -chain main"
+        node: "{{first_master}}"
+        contains: "datum"
         timeout: 120
+        interval: 5
 
       # Debug: Show mempool status on master
       - cli: "mempool list -chain main"
@@ -152,12 +167,12 @@ test:
       #   3. Sync genesis block to all nodes via Global DB
       # - ROOT node has seed_mode enabled via CLI, so it will ACCEPT genesis block when synced
       
-      # Wait for ESBocs consensus to create genesis block
+      # Wait for ESBocs consensus to create genesis block (300s for debug/ASAN builds)
       - wait: block_created
         node: "{{first_master}}"
         chain: "main"
         min_blocks: 1
-        timeout: 180
+        timeout: 300
 
       # Check if genesis block was created
       - cli: "block list"
