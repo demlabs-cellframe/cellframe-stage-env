@@ -20,7 +20,7 @@
 ARG DAP_SDK_BRANCH=unknown
 ARG DAP_TOOLS_VARIANT=auto
 
-FROM debian:bookworm-slim AS builder
+FROM debian:trixie-slim AS builder
 
 ARG DAP_SDK_BRANCH
 ARG DAP_TOOLS_VARIANT
@@ -138,7 +138,7 @@ RUN mkdir -p /tools && \
     cp /tmp/gdb-build/dap-gdb-tool /tools/
 
 # --- runtime stage ---
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 ARG DAP_SDK_BRANCH
 
@@ -146,11 +146,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy pre-built binaries from host
-COPY tests/stage-env/src/certs/build/cf-cert-generator /usr/local/bin/
-COPY tests/stage-env/src/certs/build/dap-cert /usr/local/bin/
+# Copy built binaries from builder stage
+COPY --from=builder /tools/cf-cert-generator /usr/local/bin/
+COPY --from=builder /tools/dap-gdb-tool /usr/local/bin/
 
-RUN chmod +x /usr/local/bin/cf-cert-generator /usr/local/bin/dap-cert
+RUN chmod +x /usr/local/bin/cf-cert-generator /usr/local/bin/dap-gdb-tool
 
 WORKDIR /output
 

@@ -50,8 +50,7 @@ static dap_node_addr_short_t s_node_addr_from_cert(dap_cert_t *a_cert)
     if (!a_cert)
         return l_ret;
     dap_hash_fast_t l_hash;
-    if (dap_cert_get_pkey_hash(a_cert, DAP_HASH_TYPE_SHA3_256,
-                               (byte_t *)&l_hash, sizeof(l_hash)) != 0)
+    if (dap_cert_get_pkey_hash(a_cert, &l_hash) != 0)
         return l_ret;
     s_node_addr_from_hash(&l_hash, &l_ret);
     return l_ret;

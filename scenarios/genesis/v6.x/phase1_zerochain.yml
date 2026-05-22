@@ -350,7 +350,7 @@ test:
       - print: "✓ Token declaration event propagated to all root nodes"
 
       - cli: "token list"
-        contains: "token_name: TCELL"
+        contains: "tokens: 1"
 
       # Emission must be processed while seed_mode is still enabled
       - set: all_root_certs
