@@ -232,12 +232,6 @@ test:
         save_to: "_node_list_{{_verify_node_idx}}"
       - print: "Node list on {{_verify_node}} verified"
 
-  # Enable seed_mode on seed_nodes (root nodes that create genesis events)
-  - config: "cellframe-node"
-    nodes: "{{seed_nodes}}"
-    set:
-      seed_mode: "true"
-  
   # For genesis events with is_add_directly=true, only 1 signature is available
   # Set auth_certs_number_verify=1 on ALL nodes so they can verify/accept single-signed events
   # This must be set on all nodes to allow chain sync to work properly
@@ -249,14 +243,23 @@ test:
   - docker_op: restart
     services: "{{_active_nodes}}"
   
-  - wait: 10s
-  
-  - print: "seed_mode enabled on seed nodes, auth_certs_number_verify=1 on all active nodes"
-
   # GDB now populated — balancer will return nodes — wait for online
   - wait_network: online
     nodes: "{{_active_nodes}}"
     timeout: 120
+  
+  # Enable seed_mode on seed_nodes via CLI (v6.0: seed_mode is CLI-only, not config)
+  - group: Enable seed_mode on seed nodes
+    steps:
+      - for: _seed_node
+        in: "{{seed_nodes}}"
+        steps:
+          - cli: "chain seed -net {{network_name}} -chain zerochain on"
+            node: "{{_seed_node}}"
+          - cli: "chain seed -net {{network_name}} -chain main on"
+            node: "{{_seed_node}}"
+  
+  - print: "seed_mode enabled via CLI on seed nodes, auth_certs_number_verify=1 on all active nodes"
 
   # Create wallets dynamically for all nodes
   - group: Create wallets
@@ -342,6 +345,18 @@ test:
         save_to: _mempool_proc_result
       - print: "Mempool proc_all result: {{_mempool_proc_result}}"
 
+      # v6.0: proc_all processes datum but does NOT auto-create DAG events
+      # Need explicit dag round complete on each seed node
+      - group: Complete DAG round for token declaration
+        steps:
+          - for: _seed_node
+            in: "{{seed_nodes}}"
+            steps:
+              - cli: "dag round complete -net {{network_name}} -chain zerochain"
+                node: "{{_seed_node}}"
+                save_to: _round_token_result
+              - print: "Token DAG round on {{_seed_node}}: {{_round_token_result}}"
+      
       - wait: chain_data_propagation
         nodes: "{{root_nodes}}"
         chain: zerochain
@@ -374,6 +389,17 @@ test:
       - cli: "mempool proc_all"
         save_to: _emission_mempool_result
       - print: "Emission mempool proc_all result: {{_emission_mempool_result}}"
+      
+      # v6.0: explicit dag round complete required after proc_all
+      - group: Complete DAG round for emission
+        steps:
+          - for: _seed_node
+            in: "{{seed_nodes}}"
+            steps:
+              - cli: "dag round complete -net {{network_name}} -chain zerochain"
+                node: "{{_seed_node}}"
+                save_to: _round_emission_result
+              - print: "Emission DAG round on {{_seed_node}}: {{_round_emission_result}}"
       
       - cli: "dag event list"
         save_to: _dag_after_proc
@@ -432,11 +458,16 @@ test:
       static_genesis_event: "{{genesis_event_hash}}"
       is_static_genesis_event: "true"
   
-  # Disable seed_mode on seed nodes via config
-  - config: "cellframe-node"
-    nodes: "{{seed_nodes}}"
-    set:
-      seed_mode: "false"
+  # Disable seed_mode on seed nodes via CLI (v6.0: CLI-only)
+  - group: Disable seed_mode on seed nodes
+    steps:
+      - for: _seed_node
+        in: "{{seed_nodes}}"
+        steps:
+          - cli: "chain seed -net {{network_name}} -chain zerochain off"
+            node: "{{_seed_node}}"
+          - cli: "chain seed -net {{network_name}} -chain main off"
+            node: "{{_seed_node}}"
   
   # Note: Keep auth_certs_number_verify=1 for genesis events
   # All events created with is_add_directly=true have only 1 signature
