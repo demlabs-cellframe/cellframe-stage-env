@@ -192,7 +192,6 @@ class ConfigGenerator:
                 # Docker bind-mounts can leave an empty directory here instead of a file;
                 # remove it before writing so write_text() does not raise IsADirectoryError.
                 if base_cfg_path.is_dir():
-                    import shutil
                     shutil.rmtree(base_cfg_path)
                 base_cfg_path.write_text(node_cfg_content)
                 logger.debug("base_config_generated", node_id=node.node_id)
