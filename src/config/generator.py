@@ -42,6 +42,9 @@ class ConfigGenerator:
         if version_dir is None:
             stage_config = self.config_loader.load_stage_config()
             version_dir = stage_config.get('genesis_version', 'stable')
+        # load_stage_config auto-casts numeric-looking values (e.g. "6.0") to float;
+        # genesis_version is always a directory name → coerce to str.
+        version_dir = str(version_dir)
         self.version_dir = version_dir
         
         # Load paths from config
@@ -67,9 +70,11 @@ class ConfigGenerator:
         else:
             sdk_branch = self._sdk_branch_from_version(version_dir)
 
-        # Initialize cert generator with correct certs path
+        # Initialize cert generator with correct certs path; pass paths_config so
+        # cf-tools Dockerfile picks up non-monorepo SDK layouts via build-args.
         self.cert_generator = CertGenerator(base_path, certs_dir=self.certs_cache,
-                                            dap_sdk_branch=sdk_branch)
+                                            dap_sdk_branch=sdk_branch,
+                                            paths_config=paths_config)
         
         # Template directories: versioned first, then common fallback
         self.templates_dir = base_path / "config" / "templates"
@@ -184,6 +189,11 @@ class ConfigGenerator:
                 node_etc_base = self.configs_cache / f"node{node.node_id}"
                 node_etc_base.mkdir(parents=True, exist_ok=True)
                 base_cfg_path = node_etc_base / "cellframe-node.cfg"
+                # Docker bind-mounts can leave an empty directory here instead of a file;
+                # remove it before writing so write_text() does not raise IsADirectoryError.
+                if base_cfg_path.is_dir():
+                    import shutil
+                    shutil.rmtree(base_cfg_path)
                 base_cfg_path.write_text(node_cfg_content)
                 logger.debug("base_config_generated", node_id=node.node_id)
                 

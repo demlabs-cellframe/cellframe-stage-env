@@ -49,6 +49,15 @@ class CLIStepExecutor(StepExecutor):
                 # Check "transfer": "False" pattern (tx_create failure indicator)
                 if item.get('transfer') == 'False':
                     return True
+                # Check tx_create: false (JSON boolean)
+                if item.get('tx_create') is False:
+                    return True
+                # Check find: false (mempool check negative result used as error)
+                if item.get('find') is False:
+                    return True
+                # Check emission: "False" (base tx create failure)
+                if item.get('emission') in ('False', False):
+                    return True
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
         
@@ -64,6 +73,12 @@ class CLIStepExecutor(StepExecutor):
                     if isinstance(errors, list) and len(errors) > 0:
                         return True
                 if data.get('transfer') == 'False':
+                    return True
+                if data.get('tx_create') is False:
+                    return True
+                if data.get('emission') in ('False', False):
+                    return True
+                if data.get('find') is False:
                     return True
         except Exception:
             pass
@@ -107,6 +122,12 @@ class CLIStepExecutor(StepExecutor):
             'cannot ',
             'not enough',
             'insufficient',
+            'not placed in datum pool',
+            'tx_create: false',
+            'find: false',
+            'emission: false',
+            "can't place tx datum",
+            "can't place emission datum",
         ]
         for pattern in _PLAIN_ERROR_PATTERNS:
             if pattern in output_lower:
@@ -198,8 +219,19 @@ class CLIStepExecutor(StepExecutor):
             # cellframe-node-cli always returns exit code 0 for successfully communicated
             # commands, even if the command handler returned an error code.
             # We must also check the output content for error indicators.
-            has_output_error = self._detect_cli_error(output) if exit_code == 0 else True
+            if exit_code != 0:
+                has_output_error = True
+            elif not output or not output.strip():
+                # Empty output when an error was expected is treated as an error indicator.
+                # cellframe-node-cli sometimes produces no output for failed commands
+                # (e.g. wallet new duplicate, token_emit with invalid args).
+                has_output_error = True
+            else:
+                has_output_error = self._detect_cli_error(output)
             if exit_code == 0 and not has_output_error:
+                logger.warning("expected_error_not_detected",
+                               command=cmd[:200],
+                               output_repr=repr(output[:500]))
                 raise ScenarioExecutionError(
                     f"CLI command succeeded: Expected error but got exit code 0 "
                     f"and no error indicators in output",

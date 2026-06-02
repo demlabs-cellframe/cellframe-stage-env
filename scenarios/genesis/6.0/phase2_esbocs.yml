@@ -128,8 +128,8 @@ test:
       - wait: "30s"
         message: "Waiting for network to be online"
       
-      # v6.0+ requires -from_wallet and -token parameters for tx create
-      - cli: "tx create -net {{network_name}} -chain_emission zerochain -from_emission {{emission_hash}} -from_wallet {{network_name}}_root_0 -token {{native_ticker}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert {{network_name}}.root.pvt.0"
+      # v6.0+ requires -from_wallet and -token parameters for tx_create
+      - cli: "tx_create -net {{network_name}} -chain_emission zerochain -from_emission {{emission_hash}} -from_wallet {{network_name}}_root_0 -token {{native_ticker}} -value 10.0e+54 -to_addr {{fee_addr}} -fee 5.0e+18 -cert {{network_name}}.root.pvt.0"
         save_hash: mainchain_genesis_tx
       
       - wait: "180s"

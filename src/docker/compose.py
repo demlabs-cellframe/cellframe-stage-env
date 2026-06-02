@@ -557,7 +557,7 @@ class DockerComposeManager:
                 'NETWORK_NAME': self.network_name,
                 'DAP_DEBUG': '1',
                 'CELLFRAME_DEBUG': '1',
-                'DEBUG_GDB': '1',
+                'DEBUG_GDB': '0',
                 'ASAN_OPTIONS': 'detect_leaks=0:halt_on_error=0:print_stacktrace=1:log_path=/opt/cellframe-node/var/log/asan'
             }
             if network_settings:

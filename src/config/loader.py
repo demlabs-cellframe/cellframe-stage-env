@@ -410,6 +410,7 @@ class ConfigLoader:
             'artifacts_dir': 'artifacts',
             'cellframe_sdk_path': 'cellframe-sdk',
             'dap_sdk_path': 'dap-sdk',
+            'dap_tpl_path': 'tools/dap_tpl',
             'tools_base_url': 'https://pub.cellframe.net',
             'node_var_subdirs': 'log, lib/ca, lib/global_db, lib/wallet, lib/network',
             'cellframe_sdk_git': 'https://gitlab.demlabs.net/cellframe/cellframe-sdk.git',

@@ -42,10 +42,11 @@ class CertGenerator:
     """Generate certificates for test network."""
     
     def __init__(self, base_path: Path, certs_dir: Optional[Path] = None,
-                 dap_sdk_branch: Optional[str] = None):
+                 dap_sdk_branch: Optional[str] = None,
+                 paths_config: Optional[dict] = None):
         """
         Initialize certificate generator.
-        
+
         Args:
             base_path: Base path to stage-env directory
             certs_dir: Optional path to certificates directory (defaults to base_path/cache/certs)
@@ -53,19 +54,80 @@ class CertGenerator:
                            (e.g. "release-5.8", "release-6.0", "current").
                            Used only for the image label and rebuild detection;
                            the Dockerfile auto-selects the correct tool sources.
+            paths_config: [paths] section from stage-env.cfg.
+                          Used to derive Dockerfile.tools COPY sources for non-monorepo
+                          layouts (project_root, dap_sdk_path, cellframe_sdk_path).
         """
         self.base_path = base_path
         self.certs_dir = certs_dir if certs_dir is not None else (base_path / "cache" / "certs")
         self.dockerfile = base_path / "Dockerfile.tools"
-        self.project_root = base_path.parent.parent
+        paths_config = paths_config or {}
+        project_root_rel = (paths_config.get("project_root") or "../..").strip()
+        self.project_root = (base_path / project_root_rel).resolve()
         self.dap_sdk_branch = dap_sdk_branch or "unknown"
-        
+        # Defer Docker build-arg resolution until build_docker_image() so that
+        # non-build operations (clean, list) work without a fully populated
+        # [paths] section in stage-env.cfg.
+        self._paths_config = paths_config
+        self._docker_build_args: Optional[dict] = None
+
         self.certs_dir.mkdir(parents=True, exist_ok=True)
-        
+
         logger.info("cert_generator_initialized",
                    certs_dir=str(self.certs_dir),
                    dap_sdk_branch=self.dap_sdk_branch,
+                   project_root=str(self.project_root),
                    docker_mode=True)
+
+    def _resolve_docker_build_args(self, paths_config: dict) -> dict:
+        """Map [paths] options to Dockerfile.tools build-args (fail-fast, no defaults).
+
+        Resolves every COPY source path from stage-env.cfg:
+          DAP_SDK_PATH     ← [paths] dap_sdk_path
+          CF_SDK_PATH      ← [paths] cellframe_sdk_path
+          STAGE_ENV_PATH   ← base_path relative to project_root
+          DAP_TPL_PATH     ← [paths] dap_tpl_path
+
+        Raises FileNotFoundError for any missing or non-existent path.
+        """
+        resolved: dict[str, str] = {}
+        spec = (
+            ("DAP_SDK_PATH", "dap_sdk_path"),
+            ("CF_SDK_PATH", "cellframe_sdk_path"),
+            ("DAP_TPL_PATH", "dap_tpl_path"),
+        )
+        missing_keys: list[str] = []
+        bad_paths: list[str] = []
+        for arg, cfg_key in spec:
+            value = (paths_config.get(cfg_key) or "").strip()
+            if not value:
+                missing_keys.append(cfg_key)
+                continue
+            if not (self.project_root / value).is_dir():
+                bad_paths.append(f"{cfg_key}={value}")
+                continue
+            resolved[arg] = value
+
+        try:
+            resolved["STAGE_ENV_PATH"] = (
+                self.base_path.resolve().relative_to(self.project_root).as_posix()
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"stage-env directory {self.base_path} is not under project_root "
+                f"{self.project_root}; set [paths] project_root in stage-env.cfg"
+            ) from exc
+
+        if missing_keys or bad_paths:
+            details = []
+            if missing_keys:
+                details.append(f"missing [paths] keys: {missing_keys}")
+            if bad_paths:
+                details.append(f"paths do not exist under {self.project_root}: {bad_paths}")
+            raise FileNotFoundError(
+                "cf-tools Docker build args incomplete — " + "; ".join(details)
+            )
+        return resolved
     
     @staticmethod
     def _tools_variant_from_branch(branch: str) -> str:
@@ -106,10 +168,28 @@ class CertGenerator:
                 src_dir = self.base_path / subdir
                 if src_dir.exists():
                     mtimes.extend(
-                        f.stat().st_mtime for f in src_dir.rglob("*") if f.is_file()
+                        f.stat().st_mtime
+                        for f in src_dir.rglob("*")
+                        if f.is_file() and f.name != "__pycache__"
                     )
             if self.dockerfile.exists():
                 mtimes.append(self.dockerfile.stat().st_mtime)
+            # Rebuild when the SDK trees that feed Dockerfile.tools change.
+            # Without this, a fresh cellframe-node.deb built from today's
+            # dap-sdk can still pair with a week-old cf-tools image and
+            # genesis fails with "0 valid signatures out of 2" on TCELL.
+            for cfg_key in ("dap_sdk_path", "cellframe_sdk_path", "dap_tpl_path"):
+                rel = (self._paths_config.get(cfg_key) or "").strip()
+                if not rel:
+                    continue
+                sdk_dir = (self.project_root / rel).resolve()
+                if not sdk_dir.is_dir():
+                    continue
+                mtimes.extend(
+                    f.stat().st_mtime
+                    for f in sdk_dir.rglob("*")
+                    if f.is_file() and "__pycache__" not in f.parts
+                )
             if not mtimes:
                 return False
             max_mtime = max(mtimes)
@@ -157,17 +237,20 @@ class CertGenerator:
 
         try:
             tools_variant = self._tools_variant_from_branch(self.dap_sdk_branch)
-            result = subprocess.run(
-                [
-                    "docker", "build",
-                    "-f", str(self.dockerfile),
-                    "--build-arg", f"DAP_SDK_BRANCH={self.dap_sdk_branch}",
-                    "--build-arg", f"DAP_TOOLS_VARIANT={tools_variant}",
-                    "-t", CERT_BUILDER_IMAGE,
-                    str(self.project_root),
-                ],
-                capture_output=True, text=True,
-            )
+            build_cmd = [
+                "docker", "build",
+                "-f", str(self.dockerfile),
+                "--build-arg", f"DAP_SDK_BRANCH={self.dap_sdk_branch}",
+                "--build-arg", f"DAP_TOOLS_VARIANT={tools_variant}",
+            ]
+            if self._docker_build_args is None:
+                self._docker_build_args = self._resolve_docker_build_args(
+                    self._paths_config or {}
+                )
+            for arg_name, arg_value in self._docker_build_args.items():
+                build_cmd.extend(["--build-arg", f"{arg_name}={arg_value}"])
+            build_cmd.extend(["-t", CERT_BUILDER_IMAGE, str(self.project_root)])
+            result = subprocess.run(build_cmd, capture_output=True, text=True)
 
             if result.returncode != 0:
                 logger.error("builder_image_build_failed",

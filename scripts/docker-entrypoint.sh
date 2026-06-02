@@ -52,22 +52,32 @@ echo "Starting cellframe-node..."
 if [ "${DEBUG_GDB:-0}" = "1" ] && command -v gdb >/dev/null 2>&1; then
     echo "Running under gdb (DEBUG_GDB=1) — core dumps enabled for crash analysis"
     GDB_INIT="/tmp/gdb-init-${NODE_ID}"
-    cat > "$GDB_INIT" << 'GDBEOF'
+    # Persist gdb's backtrace log to the bind-mounted log dir so it survives
+    # container exit (we use SIGINT-triggered dumps for hang diagnosis, which
+    # cause gdb to quit the inferior after dumping per the script below).
+    GDB_BT_LOG="/opt/cellframe-node/var/log/gdb-bt.log"
+    cat > "$GDB_INIT" << GDBEOF
 set pagination off
 set confirm off
 handle SIGPIPE nostop noprint pass
 handle SIGTERM nostop noprint pass
+set logging file ${GDB_BT_LOG}
+set logging overwrite on
+set logging redirect on
 run -D 5
 printf "\n=== GDB: inferior stopped/exited ===\n"
 info inferiors
+set logging on
 printf "\n=== CRASH BACKTRACE ===\n"
+info threads
 thread apply all bt full
 printf "\n=== END BACKTRACE ===\n"
+set logging off
 python
 import gdb
 try:
-    sig = int(gdb.parse_and_eval("$_exitsignal"))
-    ec = int(gdb.parse_and_eval("$_exitcode"))
+    sig = int(gdb.parse_and_eval("\$_exitsignal"))
+    ec = int(gdb.parse_and_eval("\$_exitcode"))
     code = (128 + sig) if sig else ec
     gdb.execute("quit %d" % code)
 except Exception:
