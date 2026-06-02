@@ -336,12 +336,6 @@ test:
     set:
       seed_mode: "true"
   
-  # Enable is_add_directly for genesis event creation on seed nodes
-  - config: "{{network_name}}/zerochain"
-    nodes: "{{seed_nodes}}"
-    set:
-      is_add_directly: "true"
-  
   # Use stop + start instead of restart to ensure config files are re-read
   # (docker compose restart doesn't properly reload node configs)
   - docker_op: stop
@@ -394,7 +388,6 @@ test:
     set:
       static_genesis_event: "{{genesis_event_hash}}"
       is_static_genesis_event: "true"
-      is_add_directly: "true"
       auth_certs_number_verify: "1"
   
   # Disable seed_mode
@@ -469,10 +462,7 @@ test:
       - cli: "dag event last -net {{network_name}}"
         save_hash: last_event_before_emission
       
-      # Process emission to DAG
-      # NOTE: With is_add_directly=true, emission should be added directly to DAG
-      # Without round consensus. If round consensus is triggered, it means
-      # is_add_directly was not properly set in config.
+      # Process emission to DAG via round consensus
       # mempool proc -datum is deprecated in 6.0, use proc_all instead
       - cli: "mempool proc_all -net {{network_name}} -chain zerochain"
         save: mempool_proc_output

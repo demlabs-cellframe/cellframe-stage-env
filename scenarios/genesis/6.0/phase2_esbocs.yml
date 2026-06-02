@@ -152,7 +152,6 @@ test:
   - config: "{{network_name}}/zerochain"
     nodes: "{{root_nodes}}"
     set:
-      is_add_directly: "true"
       auth_certs_number_verify: "1"
   
   - config: "cellframe-node"

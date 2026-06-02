@@ -232,9 +232,8 @@ test:
         save_to: "_node_list_{{_verify_node_idx}}"
       - print: "Node list on {{_verify_node}} verified"
 
-  # For genesis events with is_add_directly=true, only 1 signature is available
-  # Set auth_certs_number_verify=1 on ALL nodes so they can verify/accept single-signed events
-  # This must be set on all nodes to allow chain sync to work properly
+  # Set auth_certs_number_verify=1 on all nodes so single-signer genesis events
+  # (created by seed node during DAG-PoA phase) pass verification on sync targets.
   - config: "{{network_name}}/zerochain"
     nodes: "{{_active_nodes}}"
     set:
@@ -469,9 +468,7 @@ test:
           - cli: "chain seed -net {{network_name}} -chain main off"
             node: "{{_seed_node}}"
   
-  # Note: Keep auth_certs_number_verify=1 for genesis events
-  # All events created with is_add_directly=true have only 1 signature
-  # This is expected behavior for genesis chain initialization
+  # Keep auth_certs_number_verify=1 — genesis seed events carry a single cert signature.
   
   - group: Create stake orders for validators
     steps:

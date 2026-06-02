@@ -307,12 +307,8 @@ test:
     set:
       seed_mode: "true"
 
-  # With is_add_directly=true on zerochain, every event (genesis token_decl,
-  # emission, etc.) is added to chain with only the local PoA cert sig (1).
-  # Default auth_certs_number_verify=2 would reject every such event with
-  # "Wrong signatures number 1".  Lower the verify threshold to 1 on every
-  # active node so single-signed direct events pass verification on ALL
-  # nodes (creator + sync targets).
+  # Genesis seed events carry a single cert signature — lower the verify
+  # threshold to 1 so they pass on all nodes (creator + sync targets).
   - config: "{{network_name}}/zerochain"
     nodes: "{{_active_nodes}}"
     set:
