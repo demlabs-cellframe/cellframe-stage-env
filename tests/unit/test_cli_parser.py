@@ -132,22 +132,32 @@ class TestCLICommandParser:
         assert parser._parsed is False
     
     def test_load_from_valid_cache_returns_true(self, tmp_path):
-        """Test that valid cache is loaded."""
+        """Test that valid cache is loaded.
+
+        Cache must pass sanity checks: at least 8 commands and at least one
+        sentinel command (help/token/wallet/mempool/net/node/version).
+        """
         import json
-        
+
         cache_file = tmp_path / "valid_cache.json"
         cache_data = {
             "token_decl": ["net", "token", "total_supply"],
-            "wallet": ["net", "name"]
+            "token_emit": ["net", "token", "emission_value", "addr"],
+            "wallet": ["net", "name", "sign_type"],
+            "mempool": ["net", "chain"],
+            "net": ["net"],
+            "node": [],
+            "version": [],
+            "help": [],
         }
         cache_file.write_text(json.dumps(cache_data))
-        
+
         parser = CLICommandParser(cache_file=cache_file)
         result = parser.load_from_cache()
-        
+
         assert result is True, "Valid cache should be loaded"
         assert parser._parsed is True
-        assert len(parser.commands) == 2
+        assert len(parser.commands) == 8
         assert "token_decl" in parser.commands
         assert "net" in parser.commands["token_decl"]
     
