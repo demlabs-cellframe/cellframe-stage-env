@@ -160,6 +160,9 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     faketime \
     iperf3 \
+    # ConfCall / AVReStream plugins (GStreamer, incl. libgstapp-1.0)
+    libgstreamer1.0-0 \
+    gstreamer1.0-plugins-base \
     && \
     # Install version-specific packages with fallbacks
     (apt-get -y install libjson-c5 || apt-get -y install libjson-c6 || apt-get -y install libjson-c-dev || true) && \
@@ -398,31 +401,9 @@ RUN set -x && \
         echo "ERROR: Package files not found after installation"; \
         exit 1; \
     fi && \
-    rm /tmp/cellframe-node.deb && \
-    \
-    # Install extra packages (plugins, tools, etc.) from packages/ directory
-    EXTRA_INSTALLED=0 && \
-    for pkg in /tmp/packages/*.deb; do \
-        [ ! -f "$pkg" ] && continue; \
-        BASENAME="$(basename "$pkg")"; \
-        [ "$BASENAME" = "$LOCAL_PACKAGE_NAME" ] && continue; \
-        echo "Installing extra package: $BASENAME" && \
-        set +e && \
-        DEBIAN_FRONTEND=noninteractive dpkg -i --force-depends --force-confold "$pkg" 2>&1; \
-        PKG_EXIT=$?; \
-        set -e && \
-        if [ "$PKG_EXIT" -ne 0 ]; then \
-            echo "Extra package $BASENAME had install errors (exit $PKG_EXIT), will fix later"; \
-        fi && \
-        EXTRA_INSTALLED=$((EXTRA_INSTALLED + 1)); \
-    done && \
-    if [ "$EXTRA_INSTALLED" -gt 0 ]; then \
-        echo "Installed $EXTRA_INSTALLED extra package(s), fixing dependencies..." && \
-        apt-get update -qq 2>&1 || true && \
-        DEBIAN_FRONTEND=noninteractive apt-get install -f -y -qq 2>&1 || true && \
-        DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>&1 || true && \
-        ldconfig; \
-    fi
+    rm /tmp/cellframe-node.deb
+    # Extra plugin .deb files stay in /tmp/packages/ for a later RUN after
+    # cellframe-node dpkg state is repaired (early install gets purged by apt-get -f).
 
 # Copy modular configs to disable production networks
 # Using cellframe-node.cfg.d/ approach - proper modular configuration
@@ -469,6 +450,24 @@ RUN set +e && \
     # Update package lists and fix broken dependencies
     apt-get update -qq 2>&1 || true && \
     DEBIAN_FRONTEND=noninteractive apt-get install -f -y -qq 2>&1 || true && \
+    true
+
+# Install extra packages (confcall/avrestream plugins) after cellframe-node is configured.
+# Installing them before apt-get -f above causes apt to remove them as broken deps.
+RUN set +e && \
+    EXTRA_INSTALLED=0 && \
+    for pkg in /tmp/packages/*.deb; do \
+        [ ! -f "$pkg" ] && continue; \
+        BASENAME="$(basename "$pkg")"; \
+        [ "$BASENAME" = "cellframe-node.deb" ] && continue; \
+        echo "Installing extra package: $BASENAME" && \
+        DEBIAN_FRONTEND=noninteractive dpkg -i --force-depends --force-confold "$pkg" 2>&1; \
+        EXTRA_INSTALLED=$((EXTRA_INSTALLED + 1)); \
+    done && \
+    if [ "$EXTRA_INSTALLED" -gt 0 ]; then \
+        DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-depends 2>&1 || true && \
+        ldconfig; \
+    fi && \
     true
 
 # Install Python dependencies for testing (CF20 compatible)

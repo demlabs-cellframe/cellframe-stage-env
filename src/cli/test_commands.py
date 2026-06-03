@@ -599,8 +599,28 @@ def regenerate_node_certs(cache_dir: Path, nodes: dict, base_path: Path,
         Dict mapping service_name → node address string.
     """
     from ..certs.generator import CertGenerator
+    from ..config.manager import get_config_loader
 
-    cert_gen = CertGenerator(base_path)
+    config_loader = get_config_loader()
+    paths_config = config_loader.get_paths_config()
+    cache_dir_relative = paths_config.get('cache_dir', 'cache')
+    certs_dir = (base_path / cache_dir_relative).resolve() / "certs"
+    raw_branch = (paths_config.get("sdk_git_branch") or "").strip()
+    if raw_branch and raw_branch.lower() != "auto":
+        sdk_branch = raw_branch
+    else:
+        stage_config = config_loader.load_stage_config()
+        build_cfg = stage_config.get("build") or {}
+        version_dir = build_cfg.get("genesis_version") or build_cfg.get("cellframe_version") or "v6.0"
+        version_str = str(version_dir)
+        sdk_branch = version_str if version_str.startswith("release-") else f"release-{version_str.lstrip('v')}"
+
+    cert_gen = CertGenerator(
+        base_path,
+        certs_dir=certs_dir,
+        dap_sdk_branch=sdk_branch,
+        paths_config=paths_config,
+    )
     addr_map: dict = {}
 
     for node_id, svc_name in nodes.items():
