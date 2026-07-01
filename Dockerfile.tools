@@ -86,9 +86,8 @@ RUN mkdir -p /tmp/sdk-build && cd /tmp/sdk-build && \
           -DCELLFRAME_MODULES="core chains network" \
           /src/dap-sdk && \
     cmake --build . -j$(nproc) && \
-    if [ ! -f libdap-sdk.a ]; then \
-        find . -name "*.o" -print0 | xargs -0 ar rcs libdap-sdk.a; \
-    fi && \
+    rm -f libdap-sdk.a && \
+    find . -name "*.o" -print0 | xargs -0 ar rcs libdap-sdk.a && \
     find . -name "*.S.o" -not -path "*/CMakeFiles/CMakeTmp/*" -print0 \
         | xargs -0 ar rs libdap-sdk.a 2>/dev/null || true && \
     if [ -f static/libdap-sdk.a ]; then \
