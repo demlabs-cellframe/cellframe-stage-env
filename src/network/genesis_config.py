@@ -400,15 +400,34 @@ class GenesisConfigManager(BaseGenesisManager):
         template_content = template_path.read_text()
         template = Template(template_content)
         
-        # Render with updated context
+        # Render with updated context.
+        # Pass consensus_section so the Jinja2 template renders the correct
+        # INI section (e.g. [chipchain] or [esbocs]) for collecting_level/fee_addr.
+        consensus_section = 'chipchain'  # safe default; override below if detectable
+        try:
+            # Attempt to read consensus from a chain config that already exists
+            from ..config.manager import get_config_loader
+            config_loader = get_config_loader()
+            paths_config = config_loader.get_paths_config()
+            if 'cache_dir' in paths_config:
+                cache_dir = (self.base_path / paths_config['cache_dir']).resolve()
+                main_cfg = cache_dir / "configs" / f"node{node_id}" / "network" / self.network_name / "main.cfg"
+                if main_cfg.exists():
+                    cfg = config_loader.load_config_file(main_cfg)
+                    consensus_section = self._get_consensus_section(cfg)
+        except Exception as exc:
+            logger.debug("consensus_section_detection_fell_back_to_default",
+                        error=str(exc))
+
         context = {
             'node_ip': node_ip,
-            'seed_mode': seed_mode
+            'seed_mode': seed_mode,
+            'consensus_section': consensus_section,
         }
         new_config_content = template.render(**context)
         node_config_file.write_text(new_config_content)
         
-        logger.debug("base_config_regenerated", node_id=node_id, seed_mode=seed_mode)
+        logger.debug("base_config_regenerated", node_id=node_id, seed_mode=seed_mode, consensus_section=consensus_section)
     
     def enable_seed_mode_in_configs(self, node_ids: List[int]) -> None:
         """
