@@ -281,6 +281,9 @@ class ConfigStepExecutor(StepExecutor):
             cache_dir = (self.base_path / cache_dir_relative).resolve()
         
         generator = ConfigGenerator(self.base_path, config_loader.config_path)
+        # Propagate custom templates dir from config step to generator
+        if self.custom_templates_dirs:
+            generator.custom_templates_dir = self.custom_templates_dirs[0]
 
         # Route 1: explicit template — render into target path per node
         if template_override:
@@ -419,8 +422,9 @@ class ConfigStepExecutor(StepExecutor):
                 f"in {generator.versioned_templates_dir} and {generator.templates_dir}"
             )
         
-        env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(generator.templates_dir)))
-        template = env.get_template(str(template_path.relative_to(generator.templates_dir)))
+        # Use template_path.parent as loader base so custom templates work
+        env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(template_path.parent)))
+        template = env.get_template(template_path.name)
 
         for node_id in node_ids:
             node_dir = cache_dir / "configs" / f"node{node_id}"

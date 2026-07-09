@@ -7,7 +7,7 @@
 # IMPORTANT: If you change 'name', also update 'auth_certs_prefix' in [consensus]
 name = stagenet
 network_id = 0x1234
-consensus_type = esbocs
+consensus_type = chipchain
 # Native token ticker for the network
 native_ticker = TCELL
 

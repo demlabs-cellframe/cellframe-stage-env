@@ -20,7 +20,7 @@ from .sync_waiters import (
 from .validator_waiters import (
     ValidatorModeActiveWaiter,
     StakeServiceReadyWaiter,
-    ESBocsConsensusActiveWaiter,
+    ChipchainConsensusActiveWaiter,
 )
 
 from .registration_waiters import (
@@ -53,8 +53,8 @@ from .dag_waiters import (
     DAGEventWaiter,
 )
 
-from .esbocs_waiters import (
-    ESBocsActiveWaiter,
+from .chipchain_waiters import (
+    ChipchainActiveWaiter,
 )
 
 __all__ = [
@@ -70,7 +70,7 @@ __all__ = [
     # Validator waiters
     "ValidatorModeActiveWaiter",
     "StakeServiceReadyWaiter",
-    "ESBocsConsensusActiveWaiter",
+    "ChipchainConsensusActiveWaiter",
     # Registration waiters
     "NodeListPropagationWaiter",
     # GDB waiters
@@ -88,5 +88,5 @@ __all__ = [
     # DAG waiters
     "DAGEventWaiter",
     # ESBocs waiters
-    "ESBocsActiveWaiter",
+    "ChipchainActiveWaiter",
 ]

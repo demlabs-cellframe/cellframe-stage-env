@@ -10,9 +10,10 @@ node-role={{ node_role | default('full', true) }}
 # Both aliases and hosts are required for node discovery
 seed_nodes_aliases={{ seed_nodes_aliases | default('[]', true) }}
 seed_nodes_hosts={{ seed_nodes_hosts | default('[]', true) }}
-# Permanent links: required for v5.7+ binaries so root nodes connect to each
-# other directly on first boot (the GDB nodelist is empty until 'node add').
-# permanent_nodes_addrs holds the hex node addresses of all root nodes;
+# Permanent links: required for v5.7+ binaries so validator nodes (root + master)
+# connect to each other directly on first boot. Chipchain consensus requires direct
+# stream connections between all validators for START_SYNC message exchange.
+# permanent_nodes_addrs holds the hex node addresses of all validator nodes;
 # permanent_nodes_hosts maps those addresses to <ip>:<port> when GDB is empty.
 permanent_nodes_addrs={{ permanent_nodes_addrs | default('[]', true) }}
 permanent_nodes_hosts={{ permanent_nodes_hosts | default('[]', true) }}
@@ -26,9 +27,9 @@ permanent_nodes_hosts={{ permanent_nodes_hosts | default('[]', true) }}
 events-sign-cert={{ events_sign_cert }}
 {% endif %}
 
-# ESBocs blocks signing certificate (for MASTER nodes only)
+# Consensus blocks signing certificate (for MASTER nodes only)
 # This enables master nodes to sign blocks in the main chain
-[esbocs]
+[{{ consensus_section | default('chipchain') }}]
 consensus_debug={{ consensus_debug | default('true', true) }}
 {% if blocks_sign_cert %}
 blocks-sign-cert={{ blocks_sign_cert }}
@@ -37,4 +38,3 @@ blocks-sign-cert={{ blocks_sign_cert }}
 fee_addr={{ fee_addr }}
 {% endif %}
 collecting_level={{ collecting_level | default(10.0) }}
-

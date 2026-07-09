@@ -36,7 +36,7 @@ from .network_consensus import (
     NodeMetrics,
     MempoolMetrics,
     ConsensusMetrics,
-    ESBocsRoundState
+    ChipchainRoundState
 )
 from .base import BaseMonitor, BaseWaiter, MonitorConfig
 from .validator import ValidatorMonitor
@@ -61,7 +61,7 @@ __all__ = [
     "NodeMetrics",
     "MempoolMetrics",
     "ConsensusMetrics",
-    "ESBocsRoundState",
+    "ChipchainRoundState",
     "BaseMonitor",
     "BaseWaiter",
     "MonitorConfig",

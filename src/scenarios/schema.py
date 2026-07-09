@@ -744,6 +744,16 @@ class SuiteDescriptor(BaseModel):
     # ``environment`` from node_compose/node_compose_gen takes priority.
     env_file: Optional[str] = Field(None, description="Path to .env file (relative to suite dir) applied to all nodes")
 
+    # Custom templates directory (overrides default ESBOCS templates)
+    custom_templates_dir: Optional[str] = Field(None, description="Path to custom Jinja2 templates directory (relative to suite dir)")
+    
+    # Custom topology directory
+    custom_topology_dir: Optional[str] = Field(None, description="Path to custom topology templates (relative to suite dir)")
+    
+    # Custom genesis scenarios
+    custom_genesis_scenario: Optional[str] = Field(None, description="Custom phase2 genesis scenario filename")
+    custom_phase1_scenario: Optional[str] = Field(None, description="Custom phase1 genesis scenario filename")
+
     # Ordered list of includes — file paths (str) or inline data blocks (dict).
     # Inline blocks may contain ``variables``, ``node_compose``, ``node_compose_gen``
     # and are processed in order, allowing variable overrides between file includes:

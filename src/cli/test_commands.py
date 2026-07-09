@@ -457,7 +457,7 @@ def _provision_node_compose(network_mgr, node_compose, base_path, config_loader,
                             import configparser
                             _p = configparser.ConfigParser()
                             _p.read(str(main_cfg_path))
-                            for _sect in ('esbocs', 'dag', 'general'):
+                            for _sect in ('chipchain', 'dag', 'general'):
                                 fee_addr = _p.get(_sect, 'fee_addr', fallback=None)
                                 if fee_addr:
                                     break
@@ -1210,12 +1210,62 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         print_info(_("📁 Created run directory: run_{}/").format(run_id))
         
+        # Pre-discover suites to extract custom templates/genesis before network start
+        _pre_suites = _discover_suites(test_dirs, filter)
+        _first_suite_custom_templates = None
+        _first_suite_custom_genesis = None
+        _first_suite_custom_phase1 = None
+        _first_suite_custom_topology = None
+        _first_suite_custom_scenarios_dir = None
+        if _pre_suites:
+            _suite_info = _pre_suites[0]
+            _suite_desc = _suite_info.get("descriptor")
+            if _suite_desc:
+                try:
+                    _pre_parser = ScenarioParser(
+                        scenarios_root=_suite_desc.parent,
+                        common_root=base_path / "tests",
+                    )
+                    _pre_spec = _pre_parser.load_scenario(str(_suite_desc.relative_to(_suite_desc.parent)))
+                    if hasattr(_pre_spec, 'custom_templates_dir') and _pre_spec.custom_templates_dir:
+                        _tpl_path = _suite_desc.parent / _pre_spec.custom_templates_dir
+                        if _tpl_path.is_dir():
+                            _first_suite_custom_templates = _tpl_path.resolve()
+                    if hasattr(_pre_spec, 'custom_topology_dir') and _pre_spec.custom_topology_dir:
+                        _topo_path = _suite_desc.parent / _pre_spec.custom_topology_dir
+                        if _topo_path.is_dir():
+                            _first_suite_custom_topology = _topo_path.resolve()
+                    if hasattr(_pre_spec, 'custom_genesis_scenario') and _pre_spec.custom_genesis_scenario:
+                        _first_suite_custom_genesis = _pre_spec.custom_genesis_scenario
+                    if hasattr(_pre_spec, 'custom_phase1_scenario') and _pre_spec.custom_phase1_scenario:
+                        _first_suite_custom_phase1 = _pre_spec.custom_phase1_scenario
+                    # Custom scenarios directory
+                    _scenarios_path = _suite_desc.parent / "scenarios"
+                    if _scenarios_path.is_dir():
+                        _first_suite_custom_scenarios_dir = _scenarios_path.resolve()
+                    if _first_suite_custom_templates:
+                        print_info(_("   Custom templates: {}").format(_first_suite_custom_templates))
+                    if _first_suite_custom_genesis:
+                        print_info(_("   Custom genesis: {}").format(_first_suite_custom_genesis))
+                    if _first_suite_custom_scenarios_dir:
+                        print_info(_("   Custom scenarios: {}").format(_first_suite_custom_scenarios_dir))
+                except Exception as e:
+                    print_warning(_("Failed to pre-parse suite descriptor: {}").format(e))
+        
         # Start network if requested
         network_mgr = None
         if start_network:
             print_info(_("\n🚀 Starting test network..."))
             config_path = get_config_path()
-            network_mgr = NetworkManager(base_path, topology_name="default", config_path=config_path)
+            # Apply custom topology BEFORE NetworkManager creation (topology loads in constructor)
+            if _first_suite_custom_topology:
+                config_loader._custom_topologies_dir = _first_suite_custom_topology
+                print_info(_("   Custom topology: {}").format(_first_suite_custom_topology))
+            network_mgr = NetworkManager(base_path, topology_name="default", config_path=config_path,
+                                         suite_custom_templates_dir=_first_suite_custom_templates,
+                                         suite_custom_genesis_scenario=_first_suite_custom_genesis,
+                                         suite_custom_phase1_scenario=_first_suite_custom_phase1,
+                                         suite_custom_scenarios_dir=_first_suite_custom_scenarios_dir)
             # Pass keep_running flag to prevent network shutdown on errors
             network_mgr.keep_running = not stop_after
             

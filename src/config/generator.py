@@ -79,6 +79,9 @@ class ConfigGenerator:
         # Template directories: versioned first, then common fallback
         self.templates_dir = base_path / "config" / "templates"
         self.versioned_templates_dir = self.templates_dir / version_dir
+        # Custom templates directory (set by NetworkManager from suite)
+        self.custom_templates_dir = None
+        self.custom_topology_dir = None
         
         logger.debug("config_generator_initialized", base_path=str(base_path), version_dir=version_dir)
     
@@ -94,10 +97,28 @@ class ConfigGenerator:
         return "current"
 
     def _resolve_template(self, relative_path: str) -> Optional[Path]:
-        """Find template file/dir: versioned directory first, then common fallback."""
+        """Find template file/dir: custom > versioned > common."""
+        # 1. Custom templates (versioned)
+        if self.custom_templates_dir:
+            logger.info("resolve_template_custom", relative=relative_path, custom_dir=str(self.custom_templates_dir))
+            custom_versioned = self.custom_templates_dir / self.versioned_templates_dir.name / relative_path
+            if custom_versioned.exists():
+                logger.info("resolve_template_found_custom_versioned", path=str(custom_versioned))
+                return custom_versioned
+            # 2. Custom templates (common)
+            custom_common = self.custom_templates_dir / relative_path
+            if custom_common.exists():
+                logger.info("resolve_template_found_custom_common", path=str(custom_common))
+                return custom_common
+            logger.info("resolve_template_custom_not_found", relative=relative_path)
+        else:
+            logger.info("resolve_template_no_custom_dir", relative=relative_path)
+        # 3. Default versioned
         versioned = self.versioned_templates_dir / relative_path
         if versioned.exists():
+            logger.info("resolve_template_found_default_versioned", path=str(versioned))
             return versioned
+        # 4. Default common
         common = self.templates_dir / relative_path
         if common.exists():
             return common
@@ -177,9 +198,14 @@ class ConfigGenerator:
             logger.info("using_base_template", path=str(base_cfg_template), version=self.version_dir)
             
             for node in nodes:
+                # Derive consensus_section for base template rendering
+                # (same logic as in chain config section below)
+                _ct_raw = getattr(topology.consensus, 'type', 'chipchain')
+                _cs = {'chipchain': 'chipchain', 'esbocs': 'esbocs', 'pos': 'esbocs'}.get(_ct_raw, _ct_raw)
                 context = {
                     'node_ip': node.ip_address,
                     'seed_mode': 'true' if node.is_seed_node else 'false',
+                    'consensus_section': _cs,
                 }
                 logger.info("generating_cellframe_node_cfg", 
                            node_id=node.node_id, 
@@ -256,9 +282,15 @@ class ConfigGenerator:
             seed_nodes_hosts = "[]"
             seed_nodes_aliases = "[]"
         
-        # Permanent nodes hosts - only root nodes (network infrastructure)
-        if root_nodes:
-            hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in root_nodes])
+        # Permanent nodes hosts - ALL validator nodes (root + master)
+        # Chipchain consensus requires direct stream connections between validators
+        # for START_SYNC message exchange. Without permanent links, master nodes
+        # cannot establish direct streams to each other (they only connect upstream to roots).
+        # Root nodes serve as seed/entry points AND permanent links.
+        # Master nodes are added as permanent links for inter-validator communication.
+        all_permanent_nodes = root_nodes + master_nodes
+        if all_permanent_nodes:
+            hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in all_permanent_nodes])
             permanent_nodes_hosts = f"[{hosts_list}]"
         else:
             permanent_nodes_hosts = "[]"
@@ -278,9 +310,10 @@ class ConfigGenerator:
             # Collect validator addresses (only for zerochain - mainchain uses PoS without explicit validators list)
             validator_addrs = self._collect_validator_addresses(nodes, network_name)
             root_nodes_addrs = self._collect_root_node_addresses(nodes, network_name)
+            permanent_nodes_addrs = self._collect_permanent_node_addresses(nodes, network_name)
             
-            # Collect MASTER node addresses for mainchain ESBocs validators
-            # CRITICAL: Mainchain ESBocs requires validators_addrs for initialization
+            # Collect MASTER node addresses for mainchain Chipchain validators
+            # CRITICAL: Mainchain Chipchain requires validators_addrs for initialization
             # Even though we use PoS, SDK still checks validators_addrs if min_validators_count > 0
             # We collect MASTER nodes (consensus_participation but not seed_node) as validators
             master_validator_nodes = [n for n in nodes if n.consensus_participation and not n.is_seed_node]
@@ -321,14 +354,31 @@ class ConfigGenerator:
             stage_config = self.config_loader.load_stage_config()
             minimum_fee = stage_config.get('minimum_fee', '0.1')
             
+            # Derive consensus section name from consensus.type
+            # Maps consensus type to the INI section name expected by the SDK
+            # SDK reads config sections by name: consensus=chipchain -> [chipchain], consensus=esbocs -> [esbocs]
+            # 'pos' is an alias for the old ESBocs consensus (backward compatibility)
+            consensus_type_raw = getattr(topology.consensus, 'type', 'chipchain')
+            consensus_section = {
+                'chipchain': 'chipchain',
+                'esbocs': 'esbocs',
+                'pos': 'esbocs',  # backward compat: pos maps to esbocs section name
+            }.get(consensus_type_raw, consensus_type_raw)
+            logger.info("consensus_section_derived",
+                       consensus_type=consensus_type_raw,
+                       consensus_section=consensus_section)
+            
             # Prepare base chain context (shared for all nodes)
             # CRITICAL: genesis_mode, static_genesis_event, fee_addr will be set per-node
             # All parameters are configurable via topology.consensus section
             base_chain_context = {
+                # Consensus section name (determines [chipchain] or [esbocs] in chain configs)
+                'consensus_section': consensus_section,
                 # Validator addresses
                 'validators_addrs': validator_addrs,  # Used for zerochain (all validators: root + master)
                 'mainchain_validators_addrs': master_validator_addrs,  # Used for mainchain (master node addresses)
                 'root_nodes_addrs': root_nodes_addrs,
+                'permanent_nodes_addrs': permanent_nodes_addrs,  # ALL validator nodes (root+master) for direct streams
                 # DAG-PoA parameters (zerochain)
                 'auth_certs_number': auth_certs_number,
                 'auth_certs_number_verify': auth_certs_number_verify,
@@ -338,9 +388,9 @@ class ConfigGenerator:
                 'static_genesis_block': '',  # Will be set per-node after genesis block creation
                 'is_static_genesis_block': 'false',  # Will be set per-node after genesis block creation
                 'fee_addr': '',  # Will be set per-node after fee wallet creation
-                # ESBocs consensus parameters (from topology.consensus)
+                # Chipchain consensus parameters (from topology.consensus)
                 'min_validators_count': mainchain_min_validators_count,  # Calculated from master_nodes_count
-                'poa_mode': 'false',  # PoS mode: validators auto-delegated as stake keys (poa_mode=true is bugged in SDK)
+                'poa_mode': 'true',  # PoA mode: use pre-configured validator list from certs (no stake service required)
                 # Auto-generate auth_certs_prefix from network_name if not specified
                 'auth_certs_prefix': topology.consensus.auth_certs_prefix or f"{network_name}.master",
                 'new_round_delay': topology.consensus.new_round_delay,
@@ -399,15 +449,16 @@ class ConfigGenerator:
             
             # Render template with node-specific context.
             # permanent_nodes_addrs / permanent_nodes_hosts are required for
-            # the v5.7+ node binary to form direct links between root nodes
-            # without relying on the GDB nodelist (which is empty at first
-            # boot in a freshly bootstrapped local network).
-            permanent_nodes_addrs = base_chain_context['root_nodes_addrs'] if base_chain_context else "[]"
+            # the v5.7+ node binary to form direct links between ALL validator nodes
+            # (root + master) for chipchain START_SYNC message exchange.
+            # Without permanent links, master nodes cannot establish direct streams.
+            permanent_nodes_addrs = base_chain_context['permanent_nodes_addrs'] if base_chain_context else "[]"
             network_context = {
                 'network_name': network_name,
                 'network_id': base_chain_context['network_id'] if base_chain_context else '0x0000000000001234',
                 'native_ticker': base_chain_context['native_ticker'] if base_chain_context else 'TCELL',
                 'collecting_level': base_chain_context['collecting_level'] if base_chain_context else 10.0,
+                'consensus_section': base_chain_context['consensus_section'] if base_chain_context else 'chipchain',
                 'node_role': node_role,
                 'seed_nodes_aliases': seed_nodes_aliases,
                 'seed_nodes_hosts': seed_nodes_hosts,
@@ -524,7 +575,7 @@ class ConfigGenerator:
             'validators_addrs': custom_validators_addrs,  # For zerochain compatibility
             'mainchain_validators_addrs': custom_validators_addrs,  # CRITICAL: For main.cfg.j2 template
             'min_validators_count': calculated_min_validators,  # CRITICAL: must match validators count
-            'poa_mode': 'false',  # PoS mode: validators auto-delegated as stake keys (poa_mode=true is bugged in SDK)
+            'poa_mode': 'true',  # PoA mode: use pre-configured validator list from certs (no stake service required)
             'root_nodes_addrs': root_nodes_addrs,
             'auth_certs_number': auth_certs_number,
             'auth_certs_number_verify': auth_certs_number_verify,
@@ -690,22 +741,22 @@ class ConfigGenerator:
         """
         Collect validator addresses from generated certificates.
         
-        ESBocs validators are nodes with consensus_participation=true (master nodes).
+        Chipchain validators are nodes with consensus_participation=true (master nodes).
         
         Args:
             nodes: List of node configurations
             network_name: Network name
             
         Returns:
-            Comma-separated list of validator addresses (for ESBocs consensus)
+            Comma-separated list of validator addresses (for Chipchain consensus)
         """
         validator_addrs = []
         
-        # Collect addresses for nodes participating in ESBocs consensus (master nodes)
+        # Collect addresses for nodes participating in Chipchain consensus (master nodes)
         validator_nodes = [n for n in nodes if n.consensus_participation]
         
         for node in validator_nodes:
-            # Validator nodes use validator_addr.txt for ESBocs consensus
+            # Validator nodes use validator_addr.txt for Chipchain consensus
             addr_file = self.certs_cache / f"node{node.node_id}" / "validator_addr.txt"
             
             if addr_file.exists():
@@ -782,7 +833,56 @@ class ConfigGenerator:
                    addresses=result[:50] + "..." if len(result) > 50 else result)
         
         return result
-    
+
+    def _collect_permanent_node_addresses(
+        self,
+        nodes: List[NodeConfig],
+        network_name: str
+    ) -> str:
+        """
+        Collect ALL permanent node addresses (root + master) for direct stream links.
+
+        Chipchain consensus requires direct stream connections between ALL validators
+        (both root and master nodes) for START_SYNC message exchange. Root nodes are
+        seed/entry points; master nodes need direct links to each other for consensus.
+
+        Args:
+            nodes: List of node configurations
+            network_name: Network name
+
+        Returns:
+            Comma-separated list of all validator node addresses in config format
+        """
+        permanent_addrs = []
+
+        # Collect addresses for all validator nodes (root + master)
+        validator_nodes = [n for n in nodes if n.is_seed_node or n.consensus_participation]
+
+        for node in validator_nodes:
+            addr_file = self.certs_cache / f"node{node.node_id}" / "node_addr.txt"
+
+            if not addr_file.exists():
+                fallback_file = self.base_path / "cache" / "certs" / f"node{node.node_id}" / "node_addr.txt"
+                if fallback_file.exists():
+                    addr_file = fallback_file
+
+            if addr_file.exists():
+                try:
+                    addr = addr_file.read_text().strip()
+                    if addr:
+                        permanent_addrs.append(addr)
+                except Exception as e:
+                    logger.warning("failed_to_read_permanent_node_addr",
+                                 node_id=node.node_id,
+                                 error=str(e))
+
+        result = f"[{','.join(permanent_addrs)}]"
+        logger.info("permanent_node_addresses_collected",
+                   count=len(permanent_addrs),
+                   addresses=result[:80] + "..." if len(result) > 80 else result)
+
+        return result
+
     def _generate_node_config(
         self,
         node: NodeConfig,
@@ -906,16 +1006,23 @@ events_sign_cert=node-{node.node_id}-cert
 
 """
         
-        # Add ESBocs blocks-sign-cert for MASTER nodes ONLY (not ROOT nodes)
-        # CRITICAL: Only MASTER nodes participate in ESBocs consensus
-        # ROOT nodes use DAG-PoA for zerochain, not ESBocs
+        # Add consensus blocks-sign-cert for MASTER nodes ONLY (not ROOT nodes)
+        # CRITICAL: Only MASTER nodes participate in mainchain consensus (Chipchain/ESBOCS)
+        # ROOT nodes use DAG-PoA for zerochain, not mainchain consensus
         if node.consensus_participation and not node.is_seed_node and network_name:
+            # Derive consensus section name from topology (same logic as _generate_network_configs)
+            consensus_type_raw = getattr(topology.consensus, 'type', 'chipchain')
+            consensus_section = {
+                'chipchain': 'chipchain',
+                'esbocs': 'esbocs',
+                'pos': 'esbocs',
+            }.get(consensus_type_raw, consensus_type_raw)
             # Calculate master_idx based on actual root_nodes_count from topology dict
             root_node_cfg = topology.topology.get('root', None)
             root_nodes_count = root_node_cfg.count if root_node_cfg else 0
             master_idx = node.node_id - root_nodes_count - 1
             # Format: stagenet.master.pvt.0 (matches certificate file names)
-            config_content += f"""[esbocs]
+            config_content += f"""[{consensus_section}]
 # Blocks signing certificate (validator-specific)
 # Certificate format: {network_name}.master.pvt.N
 blocks-sign-cert={network_name}.master.pvt.{master_idx}

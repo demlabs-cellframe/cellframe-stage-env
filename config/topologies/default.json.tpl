@@ -2,7 +2,7 @@
   "network": {
     "name": "{{ network_name | default('stagenet') }}",
     "network_id": "{{ network_id | default('0x1234') }}",
-    "consensus": "{{ consensus_type | default('esbocs') }}",
+    "consensus": "{{ consensus_type | default('chipchain') }}",
     "native_ticker": "{{ native_ticker | default('TCELL') }}"
   },
   "topology": {
@@ -12,14 +12,14 @@
        "consensus_participation": false,
       "is_seed_node": true,
       "balancer_enabled": {{ balancer_enabled | default('true') | lower }},
-      "description": "Root seed nodes - DAG-PoA validators for zerochain only (NOT ESBocs validators)"
+      "description": "Root seed nodes - DAG-PoA validators for zerochain only"
     },
     "master_nodes": {
       "count": {{ master_nodes_count | default(3) }},
       "role": "master",
       "consensus_participation": true,
       "is_seed_node": false,
-      "description": "Master validator nodes - ESBocs consensus participants"
+      "description": "Master validator nodes - consensus participants"
     },
     "full_nodes": {
       "count": {{ full_nodes_count | default(1) }},
@@ -43,7 +43,7 @@
     "subnet": "{{ subnet | default('172.20.0.0/16') }}"
   },
   "consensus": {
-    "type": "{{ consensus_type | default('esbocs') }}",
+    "type": "{{ consensus_type | default('chipchain') }}",
     "min_validators": {{ min_validators | default(2) }},
     "new_round_delay": {{ new_round_delay | default(30) }},
     "collecting_level": {{ collecting_level | default(10.0) }},

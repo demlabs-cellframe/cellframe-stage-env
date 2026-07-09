@@ -133,41 +133,29 @@ class ConfigLoader:
     def load_stage_config(self) -> Dict[str, Any]:
         """
         Load stage-env configuration file.
-        
-        If the config file does not exist, it is created automatically from
-        ``config/stage-env.cfg.default``.
-        
+
         Returns:
             Configuration dictionary with all default values
-            
+
         Raises:
-            FileNotFoundError: If config file doesn't exist and no default template is available
+            FileNotFoundError: If config file doesn't exist
         """
         if self.custom_config_path:
             config_file = self.custom_config_path
         else:
             config_file = self.config_dir / "stage-env.cfg"
-        
+
         if not config_file.exists():
-            default_template = self.config_dir / "stage-env.cfg.default"
-            if default_template.exists():
-                import shutil
-                config_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(default_template, config_file)
-                logger.info("config_created_from_default",
-                            source=str(default_template),
-                            dest=str(config_file))
-            else:
-                error_msg = f"Configuration file not found: {config_file}"
-                error_msg += f"\nDefault template also missing: {default_template}"
-                logger.error("config_not_found", path=str(config_file))
-                raise FileNotFoundError(error_msg)
-        
+            error_msg = f"Configuration file not found: {config_file}"
+            error_msg += f"\nPlease create stage-env.cfg or specify custom_config_path in constructor"
+            logger.error("config_not_found", path=str(config_file))
+            raise FileNotFoundError(error_msg)
+
         config = configparser.ConfigParser()
         config.read(config_file)
-        
+
         logger.info("loaded_config", path=str(config_file))
-        
+
         # Convert to flat dictionary for Jinja2
         result = {}
         for section in config.sections():
@@ -179,12 +167,12 @@ class ConfigLoader:
                     result[key] = float(value) if '.' in value else int(value)
                 else:
                     result[key] = value
-        
+
         # Add aliases for config keys used in topology templates
         # Template uses 'network_name' but config has 'name' in [network] section
         if 'name' in result and 'network_name' not in result:
             result['network_name'] = result['name']
-        
+
         logger.debug("config_loaded", keys=len(result))
         return result
     
@@ -203,7 +191,16 @@ class ConfigLoader:
             FileNotFoundError: If topology template doesn't exist
             ValueError: If topology is invalid
         """
-        template_file = self.topologies_dir / f"{name}.json.tpl"
+        # Check custom topology dir first
+        template_file = None
+        if hasattr(self, '_custom_topologies_dir') and self._custom_topologies_dir:
+            custom_file = self._custom_topologies_dir / f"{name}.json.tpl"
+            if custom_file.exists():
+                template_file = custom_file
+                logger.info("using_custom_topology", topology=name, path=str(template_file))
+        
+        if not template_file:
+            template_file = self.topologies_dir / f"{name}.json.tpl"
         
         if not template_file.exists():
             logger.error("topology_template_not_found", topology=name, 

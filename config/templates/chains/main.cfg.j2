@@ -1,5 +1,5 @@
 # Main chain configuration for Cellframe Stagenet
-# ESBocs consensus chain for block production
+# Consensus chain for block production (ChipChain or ESBOCS)
 # All parameters are configurable via topology and scenario configs
 
 [chain]
@@ -10,7 +10,7 @@ load_priority=1
 datum_types=[transaction,anchor]
 default_datum_types=[transaction,anchor]
 mempool_auto_types=[transaction,anchor]
-consensus=esbocs
+consensus={{ consensus_section | default('chipchain') }}
 {% if mainchain_validators_addrs and mainchain_validators_addrs != '[]' -%}
 authorized_nodes_addrs={{ mainchain_validators_addrs }}
 {% elif validators_addrs and validators_addrs != '[]' -%}
@@ -26,7 +26,7 @@ is_celled=false
 is_static_genesis_block={{ is_static_genesis_block | default('false', true) }}
 static_genesis_block={{ static_genesis_block | default('', true) }}
 
-[esbocs]
+[{{ consensus_section | default('chipchain') }}]
 consensus_debug={{ consensus_debug | default('true', true) }}
 # Minimum number of validators for consensus
 # CRITICAL: Must match actual validators count, otherwise SDK returns -2
@@ -39,14 +39,12 @@ validators_addrs={{ mainchain_validators_addrs }}
 {% elif validators_addrs and validators_addrs != '[]' -%}
 validators_addrs={{ validators_addrs }}
 {% endif -%}
-# PoA mode: when true, uses validators_addrs as authorized validators
-# CRITICAL: Set to false to enable PoS (Proof of Stake) via srv_stake
-poa_mode={{ poa_mode | default('false', true) }}
+# PoA mode: when true, uses pre-configured validator list from auth certs (no stake service needed)
+# Set to false for PoS (Proof of Stake) mode which requires srv_stake delegation
+poa_mode={{ poa_mode | default('true', true) }}
 # Authentication certificates prefix
 # Uses stagenet.master prefix for master node certificates (validators)
-# Authentication certificates prefix
-# Uses stagenet.master prefix for master node certificates (validators)
-auth_certs_prefix={{ network_name | default('stagenet') }}.master
+auth_certs_prefix={{ auth_certs_prefix | default(network_name | default('stagenet') ~ '.master') }}
 # Network fee collection address (required for arbitrage transactions)
 # This address receives network fees from arbitrage operations
 # Set during genesis from the first root wallet address

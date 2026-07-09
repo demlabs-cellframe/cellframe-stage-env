@@ -37,7 +37,8 @@ class GenesisInitializer(BaseGenesisManager):
     - _read_node_addr_with_retry(): Node address retrieval
     """
     
-    def __init__(self, base_path: Path, network_name: str = "stagenet", config_path: Path = None):
+    def __init__(self, base_path: Path, network_name: str = "stagenet", config_path: Path = None,
+                 custom_templates_dir: Path = None):
         """
         Initialize genesis initializer.
         
@@ -45,8 +46,9 @@ class GenesisInitializer(BaseGenesisManager):
             base_path: Base path to stage-env directory
             network_name: Network name (default: stagenet)
             config_path: Optional path to config file
+            custom_templates_dir: Optional path to custom templates directory
         """
-        super().__init__(base_path, network_name, config_path)
+        super().__init__(base_path, network_name, config_path, custom_templates_dir)
         
         # Load cache dir from config
         from ..config.manager import get_config_loader
@@ -59,7 +61,7 @@ class GenesisInitializer(BaseGenesisManager):
         self.cli_config_path = "/opt/cellframe-node/etc/cellframe-node.cfg"
         
         # Initialize specialized managers for modular architecture (pass config_path!)
-        self.config_mgr = GenesisConfigManager(base_path, network_name, config_path)
+        self.config_mgr = GenesisConfigManager(base_path, network_name, config_path, custom_templates_dir)
         self.token_mgr = TokenGenesisManager(base_path, network_name, config_path)
         self.sync_mgr = ChainSyncManager(base_path, network_name, config_path)
         self.registration_mgr = NodeRegistrationManager(base_path, network_name, config_path, self.certs_cache)

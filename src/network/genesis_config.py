@@ -22,18 +22,42 @@ logger = get_logger(__name__)
 class GenesisConfigManager(BaseGenesisManager):
     """
     Manages genesis-related configuration updates.
-    
+
     Responsibilities:
     - Retrieve genesis hashes from running nodes
     - Update static_genesis_* parameters in chain configs
     - Update fee_addr in mainchain config
     - Manage seed_mode configuration
-    
+
     Inherits from BaseGenesisManager:
     - _exec_cli(): CLI command execution
     - _read_node_addr_from_cli(): Node address retrieval
     """
-    
+
+    @staticmethod
+    def _get_consensus_section(config) -> str:
+        """
+        Derive consensus section name from a parsed config (dict or ConfigParser).
+
+        The SDK reads the 'consensus' key in the [chain] section to determine
+        which consensus module to load, and then that module reads its own
+        INI section by name (e.g. consensus=chipchain -> [chipchain]).
+
+        This helper reads config['chain']['consensus'] and returns it as the
+        section name.  Falls back to 'chipchain' when the key is missing.
+        """
+        if isinstance(config, dict):
+            chain_section = config.get('chain', {})
+            consensus_type = chain_section.get('consensus', 'chipchain') if isinstance(chain_section, dict) else 'chipchain'
+        else:
+            # ConfigParser — use safe fallback (no dict default to avoid
+            # Python 3.13 optionxform bug on dict fallback objects)
+            consensus_type = config.get('chain', 'consensus', fallback='chipchain') if config.has_section('chain') else 'chipchain'
+        # 'pos' is a legacy alias for the old ESBocs consensus
+        if consensus_type == 'pos':
+            consensus_type = 'esbocs'
+        return consensus_type
+
     async def get_genesis_event_hash(self, chain_name: str) -> Optional[str]:
         """
         Get genesis event hash from DAG chain.
@@ -365,15 +389,13 @@ class GenesisConfigManager(BaseGenesisManager):
         
         # Regenerate config from Jinja2 template with updated context
         from jinja2 import Template
-        templates_dir = self.base_path / "config" / "templates"
-        template_path = None
-        for vdir in sorted(templates_dir.iterdir(), reverse=True):
-            candidate = vdir / "cellframe-node.cfg.j2"
-            if vdir.is_dir() and vdir.name.startswith("v") and candidate.exists():
-                template_path = candidate
-                break
+        from ..config.generator import ConfigGenerator
+        cg = ConfigGenerator(self.base_path, self.config_path)
+        if hasattr(self, 'custom_templates_dir') and self.custom_templates_dir:
+            cg.custom_templates_dir = self.custom_templates_dir
+        template_path = cg._resolve_template("cellframe-node.cfg.j2")
         if not template_path or not template_path.exists():
-            logger.error("cellframe_node_cfg_template_not_found", templates_dir=str(templates_dir))
+            logger.error("cellframe_node_cfg_template_not_found")
             return
         template_content = template_path.read_text()
         template = Template(template_content)
@@ -520,17 +542,18 @@ class GenesisConfigManager(BaseGenesisManager):
                         logger.info("preserving_main_genesis_hash_for_regeneration",
                                   hash=main_genesis_hash[:16])
                 # Fee address must be present
-                if 'esbocs' not in config:
+                consensus_section = self._get_consensus_section(config)
+                if consensus_section not in config:
                     raise RuntimeError(
-                        f"CRITICAL: [esbocs] section not found in main.cfg at {main_config_path}! "
-                        f"Cannot preserve fee_addr without [esbocs] section."
+                        f"CRITICAL: [{consensus_section}] section not found in main.cfg at {main_config_path}! "
+                        f"Cannot preserve fee_addr without [{consensus_section}] section."
                     )
-                if 'fee_addr' not in config['esbocs']:
+                if 'fee_addr' not in config[consensus_section]:
                     raise RuntimeError(
-                        f"CRITICAL: fee_addr not found in [esbocs] section at {main_config_path}! "
+                        f"CRITICAL: fee_addr not found in [{consensus_section}] section at {main_config_path}! "
                         f"Cannot preserve fee_addr without fee_addr parameter."
                     )
-                fee_addr = config['esbocs']['fee_addr'].strip()
+                fee_addr = config[consensus_section]['fee_addr'].strip()
                 if not fee_addr:
                     raise RuntimeError(
                         f"CRITICAL: fee_addr is empty in config at {main_config_path}! "
@@ -581,6 +604,9 @@ class GenesisConfigManager(BaseGenesisManager):
         
         # Initialize ConfigGenerator to access templates and paths
         config_generator = ConfigGenerator(self.base_path, self.config_path)
+        # Propagate custom templates dir if set
+        if hasattr(self, 'custom_templates_dir') and self.custom_templates_dir:
+            config_generator.custom_templates_dir = self.custom_templates_dir
         
         # CRITICAL: Read existing chain config parameters BEFORE regeneration
         # This ensures we preserve all parameters (auth_certs_number, root_nodes_addrs, etc.)
@@ -641,29 +667,30 @@ class GenesisConfigManager(BaseGenesisManager):
                 existing_config = config_loader.load_config_file(main_config_path)
                 
                 # Read main chain parameters
-                if 'esbocs' not in existing_config:
+                cs = self._get_consensus_section(existing_config)
+                if cs not in existing_config:
                     raise RuntimeError(
-                        f"CRITICAL: [esbocs] section not found in main config! "
-                        f"Cannot regenerate config without esbocs parameters."
+                        f"CRITICAL: [{cs}] section not found in main config! "
+                        f"Cannot regenerate config without {cs} parameters."
                     )
-                
-                if 'validators_addrs' not in existing_config['esbocs']:
+
+                if 'validators_addrs' not in existing_config[cs]:
                     raise RuntimeError(
-                        f"CRITICAL: validators_addrs not found in [esbocs] section! "
+                        f"CRITICAL: validators_addrs not found in [{cs}] section! "
                         f"Cannot regenerate config without validators_addrs parameter."
                     )
-                if 'auth_certs_prefix' not in existing_config['esbocs']:
+                if 'auth_certs_prefix' not in existing_config[cs]:
                     raise RuntimeError(
-                        f"CRITICAL: auth_certs_prefix not found in [esbocs] section! "
+                        f"CRITICAL: auth_certs_prefix not found in [{cs}] section! "
                         f"Cannot regenerate config without auth_certs_prefix parameter."
                     )
-                
-                validators_addrs_from_config = existing_config['esbocs']['validators_addrs'].strip()
+
+                validators_addrs_from_config = existing_config[cs]['validators_addrs'].strip()
                 existing_main_params['validators_addrs'] = validators_addrs_from_config
-                existing_main_params['auth_certs_prefix'] = existing_config['esbocs']['auth_certs_prefix'].strip()
+                existing_main_params['auth_certs_prefix'] = existing_config[cs]['auth_certs_prefix'].strip()
                 # PoS (default): must match ConfigGenerator initial main.cfg (poa_mode=false).
                 # Do not flip to PoA on regeneration — that breaks srv_stake / delegated validators.
-                _raw_poa = existing_config['esbocs'].get('poa_mode', 'false')
+                _raw_poa = existing_config[cs].get('poa_mode', 'false')
                 existing_main_params['poa_mode'] = (
                     str(_raw_poa).strip().lower() if _raw_poa is not None else 'false'
                 )
@@ -692,12 +719,12 @@ class GenesisConfigManager(BaseGenesisManager):
                 
                 # CRITICAL: Preserve fee_addr from existing config if not provided
                 if not fee_addr:
-                    if 'fee_addr' not in existing_config['esbocs']:
+                    if 'fee_addr' not in existing_config[cs]:
                         raise RuntimeError(
-                            f"CRITICAL: fee_addr not found in [esbocs] section and not provided as parameter! "
+                            f"CRITICAL: fee_addr not found in [{cs}] section and not provided as parameter! "
                             f"Cannot regenerate config without fee_addr."
                         )
-                    existing_fee_addr = existing_config['esbocs']['fee_addr'].strip()
+                    existing_fee_addr = existing_config[cs]['fee_addr'].strip()
                     if not existing_fee_addr:
                         raise RuntimeError(
                             f"CRITICAL: fee_addr is empty in existing config and not provided as parameter! "
@@ -709,7 +736,7 @@ class GenesisConfigManager(BaseGenesisManager):
                               note="fee_addr not provided, reading from existing config")
         
         # CRITICAL: Keep existing validators_addrs and determine min_validators_count
-        # IMPORTANT: SDK check in dap_chain_cs_esbocs.c line 298:
+        # IMPORTANT: SDK check in dap_chain_cs_chipchain.c line 298:
         #   if (!l_validators_count || l_node_addrs_count < l_validators_count) return -2;
         # SDK REQUIRES: validators_addrs must contain AT LEAST min_validators_count addresses
         #
@@ -774,8 +801,8 @@ class GenesisConfigManager(BaseGenesisManager):
         
         # Render all chain templates ONCE with the preserved genesis hashes
         rendered_chain_configs = {}
-        chains_template_dir = config_generator.templates_dir / "chains"
-        if not chains_template_dir.exists():
+        chains_template_dir = config_generator._resolve_template("chains")
+        if not chains_template_dir or not chains_template_dir.exists():
             logger.error("chain_templates_directory_missing", path=str(chains_template_dir))
             return
         
@@ -927,13 +954,14 @@ class GenesisConfigManager(BaseGenesisManager):
         
         config = config_loader.load_config_file(config_file)
         
-        if 'esbocs' not in config:
-            raise RuntimeError(f"[esbocs] section not found in {config_file}")
+        cs = self._get_consensus_section(config)
+        if cs not in config:
+            raise RuntimeError(f"[{cs}] section not found in {config_file}")
         
-        if 'fee_addr' not in config['esbocs']:
-            raise RuntimeError(f"fee_addr not found in [esbocs] section at {config_file}")
+        if 'fee_addr' not in config[cs]:
+            raise RuntimeError(f"fee_addr not found in [{cs}] section at {config_file}")
         
-        fee_addr = config['esbocs']['fee_addr'].strip()
+        fee_addr = config[cs]['fee_addr'].strip()
         if not fee_addr:
             raise RuntimeError(f"fee_addr is empty in {config_file}")
         

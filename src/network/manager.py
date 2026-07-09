@@ -35,7 +35,11 @@ logger = get_logger(__name__)
 class NetworkManager:
     """Manage cellframe test network lifecycle."""
     
-    def __init__(self, base_path: Path, topology_name: str = "default", config_path: Optional[Path] = None):
+    def __init__(self, base_path: Path, topology_name: str = "default", config_path: Optional[Path] = None,
+                 suite_custom_templates_dir: Optional[Path] = None,
+                 suite_custom_genesis_scenario: Optional[str] = None,
+                 suite_custom_phase1_scenario: Optional[str] = None,
+                 suite_custom_scenarios_dir: Optional[Path] = None):
         """
         Initialize network manager.
         
@@ -43,10 +47,18 @@ class NetworkManager:
             base_path: Base path to stage-env directory
             topology_name: Name of topology to use
             config_path: Optional path to stage-env.cfg
+            suite_custom_templates_dir: Optional path to custom templates dir from suite
+            suite_custom_genesis_scenario: Optional custom phase2 genesis scenario name
+            suite_custom_phase1_scenario: Optional custom phase1 genesis scenario name
+            suite_custom_scenarios_dir: Optional path to custom scenarios dir from suite
         """
         self.base_path = base_path
         self.topology_name = topology_name
         self.config_path = config_path
+        self._suite_custom_templates_dir = suite_custom_templates_dir
+        self._suite_custom_genesis_scenario = suite_custom_genesis_scenario
+        self._suite_custom_phase1_scenario = suite_custom_phase1_scenario
+        self._suite_custom_scenarios_dir = suite_custom_scenarios_dir
         
         # Keep containers running after tests (for debugging)
         self.keep_running = False
@@ -69,6 +81,13 @@ class NetworkManager:
         
         # Config generator
         self.config_generator = ConfigGenerator(base_path, config_path)
+        # If suite specifies custom_templates_dir, set it on the generator
+        if hasattr(self, '_suite_custom_templates_dir') and self._suite_custom_templates_dir:
+            self.config_generator.custom_templates_dir = self._suite_custom_templates_dir
+            self.config_generator.custom_topology_dir = self._suite_custom_templates_dir / "topologies" if (self._suite_custom_templates_dir / "topologies").exists() else None
+            # Also set on config loader for topology loading
+            if self.config_generator.custom_topology_dir:
+                self.config_loader._custom_topologies_dir = self.config_generator.custom_topology_dir
         
         # Docker compose manager
         self.compose = DockerComposeManager(
@@ -84,7 +103,8 @@ class NetworkManager:
         self.genesis = GenesisInitializer(
             base_path,
             network_name=self.topology.network.name,
-            config_path=config_path
+            config_path=config_path,
+            custom_templates_dir=suite_custom_templates_dir
         )
         
         # Node lifecycle manager for graceful restarts
@@ -915,7 +935,27 @@ class NetworkManager:
                 from ..scenarios.parser import ScenarioParser
                 
                 scenario_parser = ScenarioParser(self.base_path / "scenarios")
-                phase1_scenario = scenario_parser.load_scenario(f"genesis/{self._genesis_version_dir}/phase1_zerochain.yml")
+                
+                # Check for custom phase1 scenario from suite
+                phase1_name = "phase1_zerochain.yml"
+                if hasattr(self, '_suite_custom_phase1_scenario') and self._suite_custom_phase1_scenario:
+                    phase1_name = self._suite_custom_phase1_scenario
+                
+                # Try custom scenarios dir first, then default
+                phase1_loaded = False
+                if hasattr(self, '_suite_custom_scenarios_dir') and self._suite_custom_scenarios_dir:
+                    # Search for phase1 in custom scenarios: genesis/{version}/, genesis/v6.x/, genesis/
+                    for search_subdir in [f"genesis/{self._genesis_version_dir}", "genesis/v6.x", "genesis"]:
+                        custom_phase1_path = self._suite_custom_scenarios_dir / search_subdir / phase1_name
+                        if custom_phase1_path.exists():
+                            custom_parser = ScenarioParser(self._suite_custom_scenarios_dir)
+                            phase1_scenario = custom_parser.load_scenario(f"{search_subdir}/{phase1_name}")
+                            logger.info("using_custom_phase1_scenario", scenario=phase1_name, path=str(custom_phase1_path))
+                            phase1_loaded = True
+                            break
+                
+                if not phase1_loaded:
+                    phase1_scenario = scenario_parser.load_scenario(f"genesis/{self._genesis_version_dir}/{phase1_name}")
                 
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
@@ -928,6 +968,10 @@ class NetworkManager:
                     resolved = (project_root / custom_tpl_raw).resolve()
                     if resolved.is_dir():
                         custom_templates_dirs.append(resolved)
+                # Also add suite's custom templates dir
+                if hasattr(self, '_suite_custom_templates_dir') and self._suite_custom_templates_dir:
+                    if self._suite_custom_templates_dir not in custom_templates_dirs:
+                        custom_templates_dirs.insert(0, self._suite_custom_templates_dir)
                 
                 executor = ScenarioExecutor(
                     node_cli_path=self.node_cli_path,
@@ -1258,7 +1302,7 @@ class NetworkManager:
                 logger.info("fee_addr_not_in_phase1_snapshot",
                            config_path=str(main_config_path),
                            note="fee_addr not found in restored configs - this is expected for phase1 snapshot. "
-                                "Phase 2 will create fee_addr during ESBocs genesis.")
+                                "Phase 2 will create fee_addr during Chipchain genesis.")
             
             logger.info("genesis_event_read_from_configs",
                        static_genesis_hash=static_genesis_hash[:16],
@@ -1279,7 +1323,7 @@ class NetworkManager:
                                    zerochain_sections=list(zerochain_config.sections()),
                                    main_sections=list(main_config.sections()),
                                    zerochain_dag_section_exists='dag' in zerochain_config,
-                                   main_esbocs_section_exists='esbocs' in main_config,
+                                   main_chipchain_section_exists='chipchain' in main_config,
                                    note="Config contents after snapshot restore")
                 except Exception as diag_err:
                     logger.warning("config_contents_diagnostic_failed",
@@ -1594,7 +1638,7 @@ class NetworkManager:
                 self.compose.up(services=all_services, detach=True, wait=False, no_build=False)
                 await self.state_manager.wait_for_nodes_online(node_configs, timeout=self.timeouts.get('startup', 600))
         else:
-            logger.info("=== PHASE 2: Start MASTER (ESBocs Genesis with Single Validator) ===")
+            logger.info("=== PHASE 2: Start MASTER (Chipchain Genesis with Single Validator) ===")
             master_services = [f"node-{n.node_id}" for n in master_nodes]
             if not self.compose.are_services_running(master_services):
                 logger.info("starting_master_nodes_for_phase2", services=master_services)
@@ -1628,7 +1672,7 @@ class NetworkManager:
                         f"This should not happen - emission_hash must be set either: "
                         f"1. After phase1 YAML scenario execution, or "
                         f"2. After snapshot restore (via restore_emission_hash_from_snapshot). "
-                        f"Cannot proceed to ESBocs genesis without emission_hash."
+                        f"Cannot proceed to Chipchain genesis without emission_hash."
                     )
                 
                 # Use YAML scenario for phase2 genesis
@@ -1637,7 +1681,26 @@ class NetworkManager:
                 from ..scenarios.parser import ScenarioParser
                 
                 scenario_parser = ScenarioParser(self.base_path / "scenarios")
-                phase2_scenario = scenario_parser.load_scenario(f"genesis/{self._genesis_version_dir}/phase2_esbocs.yml")
+                
+                # Check for custom genesis scenario from suite
+                phase2_name = "phase2_chipchain.yml"
+                if hasattr(self, '_suite_custom_genesis_scenario') and self._suite_custom_genesis_scenario:
+                    phase2_name = self._suite_custom_genesis_scenario
+                
+                # Try custom scenarios dir first, then default
+                phase2_loaded = False
+                if hasattr(self, '_suite_custom_scenarios_dir') and self._suite_custom_scenarios_dir:
+                    for search_subdir in [f"genesis/{self._genesis_version_dir}", "genesis/v6.x", "genesis"]:
+                        custom_phase2_path = self._suite_custom_scenarios_dir / search_subdir / phase2_name
+                        if custom_phase2_path.exists():
+                            custom_parser = ScenarioParser(self._suite_custom_scenarios_dir)
+                            phase2_scenario = custom_parser.load_scenario(f"{search_subdir}/{phase2_name}")
+                            logger.info("using_custom_genesis_scenario", scenario=phase2_name, path=str(custom_phase2_path))
+                            phase2_loaded = True
+                            break
+                
+                if not phase2_loaded:
+                    phase2_scenario = scenario_parser.load_scenario(f"genesis/{self._genesis_version_dir}/{phase2_name}")
                 
                 # Get scenario debug setting from config
                 scenarios_config = self.config_loader.get_scenarios_config()
@@ -1650,6 +1713,10 @@ class NetworkManager:
                     resolved = (project_root / custom_tpl_raw).resolve()
                     if resolved.is_dir():
                         custom_templates_dirs.append(resolved)
+                # Also add suite's custom templates dir
+                if hasattr(self, '_suite_custom_templates_dir') and self._suite_custom_templates_dir:
+                    if self._suite_custom_templates_dir not in custom_templates_dirs:
+                        custom_templates_dirs.insert(0, self._suite_custom_templates_dir)
                 
                 executor = ScenarioExecutor(
                     node_cli_path=self.node_cli_path,
@@ -1703,7 +1770,7 @@ class NetworkManager:
                     node_configs=node_configs
                 )
                 
-                logger.info("esbocs_genesis_complete_with_pos_master_nodes",
+                logger.info("chipchain_genesis_complete_with_pos_master_nodes",
                            note="Phase2 genesis completed via YAML scenario")
             
         except Exception as e:

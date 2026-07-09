@@ -15,7 +15,7 @@ import docker
 from .genesis_base import BaseGenesisManager
 from .models import NodeConfig
 from src.utils.logger import get_logger
-from ..monitoring.waiter.esbocs_waiters import ESBocsActiveWaiter
+from ..monitoring.waiter.chipchain_waiters import ChipchainActiveWaiter
 
 
 logger = get_logger(__name__)
@@ -349,7 +349,7 @@ class TokenGenesisManager(BaseGenesisManager):
                        exit_code=exit_code_mp,
                        output_preview=stdout_mp[:300] if stdout_mp else "empty")
             
-            # CRITICAL: Check ESBocs consensus state (if available)
+            # CRITICAL: Check Chipchain consensus state (if available)
             logger.info("diagnostic_checking_consensus_state_before_tx")
             try:
                 exit_code_consensus, stdout_consensus, _ = self._exec_cli(
@@ -363,42 +363,42 @@ class TokenGenesisManager(BaseGenesisManager):
             except Exception as e:
                 logger.debug("consensus_check_exception", error=str(e)[:100])
             
-            # CRITICAL: Check ESBocs status - validator mode must be active!
-            logger.info("diagnostic_checking_esbocs_status_before_tx")
-            esbocs_active = False
-            esbocs_round_id = None
+            # CRITICAL: Check Chipchain status - validator mode must be active!
+            logger.info("diagnostic_checking_chipchain_status_before_tx")
+            chipchain_active = False
+            chipchain_round_id = None
             try:
-                exit_code_esbocs, stdout_esbocs, stderr_esbocs = self._exec_cli(
+                exit_code_chipchain, stdout_chipchain, stderr_chipchain = self._exec_cli(
                     first_master.node_id,
-                    f"esbocs status -net {self.network_name} -chain main",
+                    f"chipchain status -net {self.network_name} -chain main",
                     check_output=False
                 )
-                if exit_code_esbocs == 0 and stdout_esbocs:
-                    logger.info("esbocs_status_check",
-                               exit_code=exit_code_esbocs,
-                               output_preview=stdout_esbocs[:500] if stdout_esbocs else "empty")
-                    # Check if ESBocs is active (round_id > 0 means it's running)
-                    round_match = re.search(r'round_id:\s*(\d+)', stdout_esbocs, re.IGNORECASE)
+                if exit_code_chipchain == 0 and stdout_chipchain:
+                    logger.info("chipchain_status_check",
+                               exit_code=exit_code_chipchain,
+                               output_preview=stdout_chipchain[:500] if stdout_chipchain else "empty")
+                    # Check if Chipchain is active (round_id > 0 means it's running)
+                    round_match = re.search(r'round_id:\s*(\d+)', stdout_chipchain, re.IGNORECASE)
                     if round_match:
-                        esbocs_round_id = int(round_match.group(1))
-                        esbocs_active = esbocs_round_id > 0
-                        logger.info("esbocs_round_id_check",
-                                   round_id=esbocs_round_id,
-                                   active=esbocs_active)
+                        chipchain_round_id = int(round_match.group(1))
+                        chipchain_active = chipchain_round_id > 0
+                        logger.info("chipchain_round_id_check",
+                                   round_id=chipchain_round_id,
+                                   active=chipchain_active)
                     else:
                         # Check if output contains "validator mode" or similar
-                        if "validator" in stdout_esbocs.lower() or "active" in stdout_esbocs.lower():
-                            esbocs_active = True
-                            logger.info("esbocs_active_by_keyword")
+                        if "validator" in stdout_chipchain.lower() or "active" in stdout_chipchain.lower():
+                            chipchain_active = True
+                            logger.info("chipchain_active_by_keyword")
                         else:
-                            logger.warning("esbocs_round_id_not_found",
-                                         output_preview=stdout_esbocs[:300])
+                            logger.warning("chipchain_round_id_not_found",
+                                         output_preview=stdout_chipchain[:300])
                 else:
-                    logger.error("esbocs_status_check_failed",
-                               exit_code=exit_code_esbocs,
-                               stderr=stderr_esbocs[:200] if stderr_esbocs else "empty")
+                    logger.error("chipchain_status_check_failed",
+                               exit_code=exit_code_chipchain,
+                               stderr=stderr_chipchain[:200] if stderr_chipchain else "empty")
             except Exception as e:
-                logger.error("esbocs_status_check_exception", error=str(e)[:100])
+                logger.error("chipchain_status_check_exception", error=str(e)[:100])
             
             # CRITICAL: Check validator orders - validator mode requires orders!
             logger.info("diagnostic_checking_validator_orders_before_tx")
@@ -427,16 +427,16 @@ class TokenGenesisManager(BaseGenesisManager):
                 logger.error("validator_orders_check_exception", error=str(e)[:100])
             
             # CRITICAL: If round_id is 0, wait for validator synchronization
-            # ESBocs requires validators to exchange START_SYNC messages before round_id is set
+            # Chipchain requires validators to exchange START_SYNC messages before round_id is set
             # This can take time (up to round_start_sync_timeout seconds, default 15)
-            if not esbocs_active or esbocs_round_id == 0:
-                logger.info("esbocs_not_active_waiting_for_synchronization",
-                           round_id=esbocs_round_id,
+            if not chipchain_active or chipchain_round_id == 0:
+                logger.info("chipchain_not_active_waiting_for_synchronization",
+                           round_id=chipchain_round_id,
                            node_id=first_master.node_id,
                            note="Waiting for validators to synchronize via START_SYNC messages")
                 
                 # Wait up to 60 seconds for consensus to become active
-                waiter_esbocs_active = ESBocsActiveWaiter(
+                waiter_chipchain_active = ChipchainActiveWaiter(
                     exec_cli=self._exec_cli,
                     node_id=first_master.node_id,
                     network_name=self.network_name,
@@ -444,33 +444,33 @@ class TokenGenesisManager(BaseGenesisManager):
                     poll_interval=3.0
                 )
                 try:
-                    await waiter_esbocs_active.wait(timeout=60.0)
-                    esbocs_active = True
+                    await waiter_chipchain_active.wait(timeout=60.0)
+                    chipchain_active = True
                     # Re-check round_id after wait
-                    exit_code_esbocs, stdout_esbocs, stderr_esbocs = self._exec_cli(
+                    exit_code_chipchain, stdout_chipchain, stderr_chipchain = self._exec_cli(
                         first_master.node_id,
-                        f"esbocs status -net {self.network_name} -chain main",
+                        f"chipchain status -net {self.network_name} -chain main",
                         check_output=False
                     )
-                    if exit_code_esbocs == 0 and stdout_esbocs:
-                        round_match = re.search(r'round_id:\s*(\d+)', stdout_esbocs, re.IGNORECASE)
+                    if exit_code_chipchain == 0 and stdout_chipchain:
+                        round_match = re.search(r'round_id:\s*(\d+)', stdout_chipchain, re.IGNORECASE)
                         if round_match:
-                            esbocs_round_id = int(round_match.group(1))
+                            chipchain_round_id = int(round_match.group(1))
                 except TimeoutError:
-                    logger.error("esbocs_not_active_after_wait",
+                    logger.error("chipchain_not_active_after_wait",
                                node_id=first_master.node_id,
-                               round_id=esbocs_round_id,
+                               round_id=chipchain_round_id,
                                note="Validators may not have synchronized - check network links and START_SYNC messages")
-                    esbocs_active = False
+                    chipchain_active = False
             
-            # CRITICAL: Fail if ESBocs is not active or validator orders are missing
-            if not esbocs_active:
-                logger.error("esbocs_not_active_before_tx",
+            # CRITICAL: Fail if Chipchain is not active or validator orders are missing
+            if not chipchain_active:
+                logger.error("chipchain_not_active_before_tx",
                            node_id=first_master.node_id,
-                           round_id=esbocs_round_id,
-                           note="ESBocs consensus must be active to process transactions")
-                raise RuntimeError(f"ESBocs consensus is not active on node {first_master.node_id}. "
-                                 f"Round ID: {esbocs_round_id}, "
+                           round_id=chipchain_round_id,
+                           note="Chipchain consensus must be active to process transactions")
+                raise RuntimeError(f"Chipchain consensus is not active on node {first_master.node_id}. "
+                                 f"Round ID: {chipchain_round_id}, "
                                  f"Cannot create transactions without active consensus.")
             
             if not has_validator_orders:

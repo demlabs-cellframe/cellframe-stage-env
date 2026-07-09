@@ -34,7 +34,7 @@ class WaiterConfig:
         "master_containers_running": 1.0,
         "delegations_synced": 2.0,
         "stake_service_ready": 2.0,
-        "esbocs_consensus_active": 3.0,
+        "chipchain_consensus_active": 3.0,
         "first_block": 3.0,
         "wallet_balance": 2.0,
         "datum_in_chain": 2.0,
@@ -369,7 +369,7 @@ class WaiterDispatcher:
         
         # Handle waiters that need node configs
         if waiter_type in ["delegations_synced", "stake_service_ready", "cli_ready", 
-                          "gdb_sync_complete", "global_db_sync", "first_block", "esbocs_consensus_active",
+                          "gdb_sync_complete", "global_db_sync", "first_block", "chipchain_consensus_active",
                           "block_created", "network_sync", "chain_data_propagation"]:
             node_configs = self._get_node_configs(nodes)
             
@@ -426,7 +426,7 @@ class WaiterDispatcher:
                     master_nodes=node_configs,
                     poll_interval=poll_interval
                 )
-            elif waiter_type == "esbocs_consensus_active":
+            elif waiter_type == "chipchain_consensus_active":
                 # Create factory for stake_service_waiter
                 def create_stake_waiter():
                     from .waiter.validator_waiters import StakeServiceReadyWaiter

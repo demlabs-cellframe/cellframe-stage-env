@@ -24,7 +24,7 @@ class ValidatorOrdersChecker(BaseChecker):
     Creates ValidatorMonitor on-demand for this specific verification.
     Monitor is SILENT after this call completes - no background tasks!
     
-    This is critical for ESBocs consensus - if nodes don't see orders,
+    This is critical for Chipchain consensus - if nodes don't see orders,
     they will switch off validator mode and refuse to create blocks.
     
     Usage:
@@ -124,7 +124,7 @@ class CertificateOrderMatchChecker(BaseChecker):
     """
     Verify that each node's blocks-sign-cert matches the order signature.
     
-    CRITICAL: ESBocs will only find orders signed by the same certificate
+    CRITICAL: Chipchain will only find orders signed by the same certificate
     used for block signing. This checker verifies the match.
     
     Usage:
@@ -203,8 +203,8 @@ class CertificateOrderMatchChecker(BaseChecker):
                     # Use centralized config manager
                     config_loader = get_config_loader()
                     config = config_loader.load_config_file(chain_config_path)
-                    if config.has_section('esbocs') and config.has_option('esbocs', 'blocks-sign-cert'):
-                        config_cert = config.get('esbocs', 'blocks-sign-cert').strip()
+                    if config.has_section('chipchain') and config.has_option('chipchain', 'blocks-sign-cert'):
+                        config_cert = config.get('chipchain', 'blocks-sign-cert').strip()
                         config_found = True
                         if config_cert != expected_cert:
                             mismatches.append({
@@ -218,7 +218,7 @@ class CertificateOrderMatchChecker(BaseChecker):
                                        expected=expected_cert,
                                        found=config_cert,
                                        config_path=str(chain_config_path),
-                                       note="Certificate mismatch - ESBocs won't find orders")
+                                       note="Certificate mismatch - Chipchain won't find orders")
                         else:
                             logger.debug("blocks_sign_cert_match",
                                        node_id=node.node_id,
@@ -238,9 +238,9 @@ class CertificateOrderMatchChecker(BaseChecker):
                         # Use centralized config manager
                         config_loader = get_config_loader()
                         config = config_loader.load_config_file(network_config_path)
-                        # Check if there's an [esbocs] section
-                        if config.has_section('esbocs') and config.has_option('esbocs', 'blocks-sign-cert'):
-                            config_cert = config.get('esbocs', 'blocks-sign-cert').strip()
+                        # Check if there's an [chipchain] section
+                        if config.has_section('chipchain') and config.has_option('chipchain', 'blocks-sign-cert'):
+                            config_cert = config.get('chipchain', 'blocks-sign-cert').strip()
                             config_found = True
                             if config_cert != expected_cert:
                                 mismatches.append({
@@ -254,7 +254,7 @@ class CertificateOrderMatchChecker(BaseChecker):
                                            expected=expected_cert,
                                            found=config_cert,
                                            config_path=str(network_config_path),
-                                           note="Certificate mismatch - ESBocs won't find orders")
+                                           note="Certificate mismatch - Chipchain won't find orders")
                             else:
                                 logger.debug("blocks_sign_cert_match",
                                            node_id=node.node_id,
@@ -274,8 +274,8 @@ class CertificateOrderMatchChecker(BaseChecker):
                         # Use centralized config manager
                         config_loader = get_config_loader()
                         config = config_loader.load_config_file(network_file_path)
-                        if config.has_section('esbocs') and config.has_option('esbocs', 'blocks-sign-cert'):
-                            config_cert = config.get('esbocs', 'blocks-sign-cert').strip()
+                        if config.has_section('chipchain') and config.has_option('chipchain', 'blocks-sign-cert'):
+                            config_cert = config.get('chipchain', 'blocks-sign-cert').strip()
                             config_found = True
                             if config_cert != expected_cert:
                                 mismatches.append({
@@ -289,7 +289,7 @@ class CertificateOrderMatchChecker(BaseChecker):
                                            expected=expected_cert,
                                            found=config_cert,
                                            config_path=str(network_file_path),
-                                           note="Certificate mismatch - ESBocs won't find orders")
+                                           note="Certificate mismatch - Chipchain won't find orders")
                             else:
                                 logger.debug("blocks_sign_cert_match",
                                            node_id=node.node_id,
@@ -305,11 +305,11 @@ class CertificateOrderMatchChecker(BaseChecker):
                 logger.warning("cannot_find_blocks_sign_cert_in_config",
                              node_id=node.node_id,
                              expected=expected_cert,
-                             note="Config file not found or esbocs section missing")
+                             note="Config file not found or chipchain section missing")
         
         # FAIL-FAST: Raise exception if any mismatches found
         if mismatches:
-            error_msg = "Certificate mismatch detected! ESBocs won't find orders.\n"
+            error_msg = "Certificate mismatch detected! Chipchain won't find orders.\n"
             error_msg += "Expected certificates:\n"
             for node in self.nodes:
                 validator_idx = node.node_id - self.root_nodes_count - 1

@@ -9,7 +9,10 @@ network:
   name: "{{network_name}}"
 
 setup:
-  # Start all nodes dynamically based on topology
+  # Start ALL nodes simultaneously.
+  # dap_chain_net_load_all() is called before dap_chain_net_try_online_all()
+  # in cellframe-node.c, so nodes_cluster is always initialized before
+  # any node attempts the online transition — no more segfault.
   - docker_op: start
     services: "{{all_nodes}}"
     detach: true

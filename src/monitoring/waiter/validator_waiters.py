@@ -18,9 +18,9 @@ logger = get_logger(__name__)
 
 class ValidatorModeActiveWaiter(BaseWaiter):
     """
-    Wait until ESBocs consensus loads validator orders and activates validator mode.
+    Wait until Chipchain consensus loads validator orders and activates validator mode.
     
-    After hard restart, ESBocs needs time to:
+    After hard restart, Chipchain needs time to:
     1. Initialize consensus
     2. Load validator orders from GDB
     3. Activate validator mode
@@ -78,31 +78,31 @@ class ValidatorModeActiveWaiter(BaseWaiter):
                     # Count orders (order: prefix)
                     order_count = stdout_lower.count("order:")
                 
-                # CRITICAL: Also check ESBocs status to verify validator mode is actually active
-                # ESBocs will show round_id > 0 if validator mode is active and orders are loaded
-                esbocs_active = False
+                # CRITICAL: Also check Chipchain status to verify validator mode is actually active
+                # Chipchain will show round_id > 0 if validator mode is active and orders are loaded
+                chipchain_active = False
                 try:
-                    exit_code_esbocs, stdout_esbocs, _ = self.exec_cli(
+                    exit_code_chipchain, stdout_chipchain, _ = self.exec_cli(
                         node.node_id,
-                        f"esbocs status -net {self.network_name} -chain main",
+                        f"chipchain status -net {self.network_name} -chain main",
                         check_output=False
                     )
-                    if exit_code_esbocs == 0 and stdout_esbocs:
-                        # Check if ESBocs is initialized (not showing round_id: 0 means it's active)
-                        # If round_id is 0 or sync_attempt is 0, ESBocs may still be initializing
-                        # But if we see any ESBocs output and orders are visible, validator mode should be active
-                        esbocs_active = True
+                    if exit_code_chipchain == 0 and stdout_chipchain:
+                        # Check if Chipchain is initialized (not showing round_id: 0 means it's active)
+                        # If round_id is 0 or sync_attempt is 0, Chipchain may still be initializing
+                        # But if we see any Chipchain output and orders are visible, validator mode should be active
+                        chipchain_active = True
                 except Exception:
-                    pass  # ESBocs check failed, rely on order count only
+                    pass  # Chipchain check failed, rely on order count only
                 
-                if order_count >= len(self.nodes) and esbocs_active:
+                if order_count >= len(self.nodes) and chipchain_active:
                     self._nodes_with_validator_mode += 1
-                    logger.debug("validator_orders_loaded_and_esbocs_active",
+                    logger.debug("validator_orders_loaded_and_chipchain_active",
                                node_id=node.node_id,
                                order_count=order_count,
-                               esbocs_active=esbocs_active)
+                               chipchain_active=chipchain_active)
                 elif order_count >= len(self.nodes):
-                    logger.debug("validator_orders_loaded_but_esbocs_checking",
+                    logger.debug("validator_orders_loaded_but_chipchain_checking",
                                node_id=node.node_id,
                                order_count=order_count)
             
@@ -148,12 +148,12 @@ class StakeServiceReadyWaiter(BaseWaiter):
     
     After restart, stake service needs time to:
     1. Load validators from GDB
-    2. Mark validators as active (via ESBocs s_db_calc_sync_hash)
-    3. Make validators available for ESBocs consensus
+    2. Mark validators as active (via Chipchain s_db_calc_sync_hash)
+    3. Make validators available for Chipchain consensus
     
     This function checks that:
     - Validators are visible in stake service
-    - ESBocs is initialized (which triggers validator activation)
+    - Chipchain is initialized (which triggers validator activation)
     - Validators can be found by s_get_validators_list
     
     Usage:
@@ -203,7 +203,7 @@ class StakeServiceReadyWaiter(BaseWaiter):
                 # CRITICAL: Check if validators are in stake service itemlist directly
                 # This is the most reliable way to check if stake service is ready
                 # BUT: In PoA mode, validators come from poa_validators, not stake service!
-                # So we check ESBocs status which shows if validators were loaded
+                # So we check Chipchain status which shows if validators were loaded
                 exit_code_keys, stdout_keys, stderr_keys = self.exec_cli(
                     node.node_id,
                     f"srv_stake list keys -net {self.network_name}",
@@ -212,10 +212,10 @@ class StakeServiceReadyWaiter(BaseWaiter):
                 
                 # In PoA mode (poa_mode=true in config), validators come from poa_validators list
                 # loaded from validators_addrs in config, NOT from stake service.
-                # So we skip stake service check and only verify ESBocs is initialized.
+                # So we skip stake service check and only verify Chipchain is initialized.
                 # 
                 # Note: We can't reliably check poa_mode via CLI (config get doesn't work),
-                # so we assume if stake service has no validators but ESBocs is initialized,
+                # so we assume if stake service has no validators but Chipchain is initialized,
                 # then it's PoA mode.
                 validators_in_stake = False
                 if exit_code_keys == 0 and stdout_keys:
@@ -228,23 +228,23 @@ class StakeServiceReadyWaiter(BaseWaiter):
                                        output_preview=stdout_keys[:200])
                 
                 # If no validators in stake service, assume PoA mode
-                # In PoA, we only need ESBocs to be initialized
+                # In PoA, we only need Chipchain to be initialized
                 if not validators_in_stake:
                     logger.debug("assuming_poa_mode_no_stake_validators",
                                node_id=node.node_id,
                                note="No validators in stake service, assuming PoA mode")
                 
-                # Also check ESBocs status to verify it's initialized
+                # Also check Chipchain status to verify it's initialized
                 exit_code, stdout, stderr = self.exec_cli(
                     node.node_id,
-                    f"esbocs status -net {self.network_name} -chain main",
+                    f"chipchain status -net {self.network_name} -chain main",
                     check_output=False
                 )
                 
-                esbocs_initialized = False
+                chipchain_initialized = False
                 if exit_code == 0 and stdout:
-                    esbocs_initialized = True
-                    # ESBocs is initialized - check if it has round_id or sync_attempt
+                    chipchain_initialized = True
+                    # Chipchain is initialized - check if it has round_id or sync_attempt
                     round_match = re.search(r'round_id:\s*(\d+)', stdout, re.IGNORECASE)
                     sync_attempt_match = re.search(r'sync_attempt:\s*(\d+)', stdout, re.IGNORECASE)
                     
@@ -255,39 +255,39 @@ class StakeServiceReadyWaiter(BaseWaiter):
                         # CRITICAL: round_id=0 and sync_attempt=0 means s_get_validators_list returned NULL
                         # This happens when validators are not synchronized in stake service
                         if round_id == 0 and sync_attempt == 0:
-                            logger.debug("stake_service_validators_not_found_in_esbocs",
+                            logger.debug("stake_service_validators_not_found_in_chipchain",
                                        node_id=node.node_id,
                                        note="round_id=0 and sync_attempt=0 - s_get_validators_list returned NULL")
                         else:
-                            # Validators found by ESBocs - stake service is ready
+                            # Validators found by Chipchain - stake service is ready
                             validators_in_stake = True
                             logger.debug("stake_service_ready_for_node",
                                        node_id=node.node_id,
                                        round_id=round_id,
                                        sync_attempt=sync_attempt)
                     else:
-                        # ESBocs output exists but no round data - might still be initializing
+                        # Chipchain output exists but no round data - might still be initializing
                         logger.debug("stake_service_initializing_for_node",
                                    node_id=node.node_id,
                                    output_preview=stdout[:200])
                 else:
-                    # ESBocs not initialized yet - stake service might not be ready
-                    logger.debug("stake_service_waiting_for_esbocs_init",
+                    # Chipchain not initialized yet - stake service might not be ready
+                    logger.debug("stake_service_waiting_for_chipchain_init",
                                node_id=node.node_id,
                                exit_code=exit_code)
                 
-                # Stake service is ready if validators are in itemlist OR ESBocs found them
-                if validators_in_stake and esbocs_initialized:
+                # Stake service is ready if validators are in itemlist OR Chipchain found them
+                if validators_in_stake and chipchain_initialized:
                     self._nodes_with_stake_ready += 1
                     logger.debug("stake_service_ready_confirmed",
                                node_id=node.node_id,
                                validators_in_stake=validators_in_stake,
-                               esbocs_initialized=esbocs_initialized)
-                elif not validators_in_stake and esbocs_initialized:
-                    # ESBocs initialized but no validators in stake - this is the problem!
+                               chipchain_initialized=chipchain_initialized)
+                elif not validators_in_stake and chipchain_initialized:
+                    # Chipchain initialized but no validators in stake - this is the problem!
                     logger.debug("stake_service_validators_missing",
                                node_id=node.node_id,
-                               note="ESBocs initialized but validators not in stake service itemlist - s_get_validators_list will return NULL")
+                               note="Chipchain initialized but validators not in stake service itemlist - s_get_validators_list will return NULL")
                     
             except Exception as e:
                 logger.debug("stake_service_check_exception",
@@ -320,29 +320,29 @@ class StakeServiceReadyWaiter(BaseWaiter):
             raise TimeoutError(
                 f"Stake service failed to become ready after {timeout}s. "
                 f"Only {self._nodes_with_stake_ready}/{len(self.nodes)} nodes have stake service ready. "
-                f"Validators may not be synchronized in stake service, preventing ESBocs from finding active validators."
+                f"Validators may not be synchronized in stake service, preventing Chipchain from finding active validators."
             )
 
 
-class ESBocsConsensusActiveWaiter(BaseWaiter):
+class ChipchainConsensusActiveWaiter(BaseWaiter):
     """
-    Wait for ESBocs consensus to become active (round_id > 0).
+    Wait for Chipchain consensus to become active (round_id > 0).
     
     This ensures validators have synchronized via START_SYNC messages
     and round_id is set before attempting to create transactions.
     
-    ESBocs requires validators to exchange START_SYNC messages and synchronize
+    Chipchain requires validators to exchange START_SYNC messages and synchronize
     before round_id is set. This process takes time (up to round_start_sync_timeout
     seconds, default 15 seconds) and requires active network links between validators.
     
     CRITICAL: Before waiting, verifies that:
     1. Validator orders are present in GDB
-    2. ESBocs is initialized (not disabled due to missing orders)
+    2. Chipchain is initialized (not disabled due to missing orders)
     3. Network links are established between validators
     4. Stake service is ready (validators are synchronized and active)
     
     Usage:
-        waiter = ESBocsConsensusActiveWaiter(
+        waiter = ChipchainConsensusActiveWaiter(
             exec_cli_func, nodes, network_name, 
             stake_service_waiter_factory  # Optional factory for creating StakeServiceReadyWaiter
         )
@@ -358,7 +358,7 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
         stake_service_waiter_factory: Optional[Callable] = None
     ):
         """
-        Initialize ESBocs consensus active waiter.
+        Initialize Chipchain consensus active waiter.
         
         Args:
             exec_cli: CLI execution function (node_id, command, check_output) -> (exit_code, stdout, stderr)
@@ -375,24 +375,24 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
         self._start_time = None
         self._last_log_time = None
         self._nodes_with_active_consensus = 0
-        self._nodes_with_esbocs_initialized = 0
+        self._nodes_with_chipchain_initialized = 0
         self._nodes_with_orders = 0
         self._node_round_ids = {}
         self._stake_service_waited = False
     
     async def check(self) -> bool:
-        """Check if ESBocs consensus is active on all nodes."""
+        """Check if Chipchain consensus is active on all nodes."""
         if self._start_time is None:
             self._start_time = time.time()
             self._last_log_time = self._start_time
-            logger.info("waiting_for_esbocs_consensus_active",
+            logger.info("waiting_for_chipchain_consensus_active",
                        nodes=len(self.nodes),
                        timeout=None,
                        poll_interval=self.poll_interval)
             
             # CRITICAL: Wait for stake service to be ready FIRST
             # This ensures validators are synchronized and marked as active in stake service
-            # before ESBocs tries to find them via s_get_validators_list
+            # before Chipchain tries to find them via s_get_validators_list
             if self.stake_service_waiter_factory:
                 logger.info("waiting_for_stake_service_before_consensus_wait")
                 try:
@@ -406,7 +406,7 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
                                  note="Proceeding anyway, but consensus may fail if validators are not synchronized")
             
             # CRITICAL: Verify validator orders BEFORE waiting
-            # ESBocs won't initialize if orders are missing
+            # Chipchain won't initialize if orders are missing
             logger.info("verifying_validator_orders_before_consensus_wait")
             for node in self.nodes:
                 try:
@@ -422,7 +422,7 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
                                          node_id=node.node_id,
                                          order_count=order_count,
                                          expected=len(self.nodes),
-                                         note="ESBocs may not initialize without orders")
+                                         note="Chipchain may not initialize without orders")
                     else:
                         logger.warning("cannot_check_orders_before_consensus",
                                      node_id=node.node_id,
@@ -434,22 +434,22 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
         
         elapsed = time.time() - self._start_time
         self._nodes_with_active_consensus = 0
-        self._nodes_with_esbocs_initialized = 0
+        self._nodes_with_chipchain_initialized = 0
         self._nodes_with_orders = 0
         self._node_round_ids = {}
         node_diagnostics = {}
         
         for node in self.nodes:
             try:
-                # Check ESBocs status
+                # Check Chipchain status
                 exit_code, stdout, stderr = self.exec_cli(
                     node.node_id,
-                    f"esbocs status -net {self.network_name} -chain main",
+                    f"chipchain status -net {self.network_name} -chain main",
                     check_output=False
                 )
                 
                 if exit_code == 0 and stdout:
-                    self._nodes_with_esbocs_initialized += 1
+                    self._nodes_with_chipchain_initialized += 1
                     # Parse round_id from output
                     round_match = re.search(r'round_id:\s*(\d+)', stdout, re.IGNORECASE)
                     sync_attempt_match = re.search(r'sync_attempt:\s*(\d+)', stdout, re.IGNORECASE)
@@ -468,7 +468,7 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
                         # or START_SYNC messages are not being sent/received
                         # This can happen if s_get_validators_list returned NULL (validators not synchronized in stake service)
                         if round_id == 0 and sync_attempt == 0:
-                            logger.warning("esbocs_round_not_started",
+                            logger.warning("chipchain_round_not_started",
                                         node_id=node.node_id,
                                         note="round_id=0 and sync_attempt=0 - s_session_round_new may not have been called or START_SYNC not sent. "
                                              "Possible causes: validators not synchronized in stake service (s_get_validators_list returned NULL)")
@@ -491,34 +491,34 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
                         
                         if round_id > 0:
                             self._nodes_with_active_consensus += 1
-                            logger.debug("node_esbocs_consensus_active",
+                            logger.debug("node_chipchain_consensus_active",
                                        node_id=node.node_id,
                                        round_id=round_id,
                                        sync_attempt=sync_attempt)
                         else:
-                            logger.debug("node_esbocs_consensus_waiting",
+                            logger.debug("node_chipchain_consensus_waiting",
                                        node_id=node.node_id,
                                        round_id=round_id,
                                        sync_attempt=sync_attempt,
                                        note="Waiting for START_SYNC messages from other validators")
                     else:
-                        # ESBocs output exists but no round_id - might be disabled
+                        # Chipchain output exists but no round_id - might be disabled
                         node_diagnostics[node.node_id] = {
                             'round_id': None,
                             'has_output': True,
                             'output_preview': stdout[:200]
                         }
-                        logger.debug("node_esbocs_status_no_round_id",
+                        logger.debug("node_chipchain_status_no_round_id",
                                    node_id=node.node_id,
                                    output_preview=stdout[:200])
                 else:
-                    # ESBocs command failed - might not be initialized
+                    # Chipchain command failed - might not be initialized
                     node_diagnostics[node.node_id] = {
                         'exit_code': exit_code,
                         'stderr': stderr[:200] if stderr else "",
                         'has_output': False
                     }
-                    logger.debug("node_esbocs_status_check_failed",
+                    logger.debug("node_chipchain_status_check_failed",
                                node_id=node.node_id,
                                exit_code=exit_code,
                                stderr=stderr[:200] if stderr else "")
@@ -565,7 +565,7 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
                     pass
                         
             except Exception as e:
-                logger.debug("esbocs_status_check_exception",
+                logger.debug("chipchain_status_check_exception",
                            node_id=node.node_id,
                            error=str(e)[:100])
                 if node.node_id not in node_diagnostics:
@@ -574,7 +574,7 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
         
         if self._nodes_with_active_consensus >= len(self.nodes):
             elapsed_total = time.time() - self._start_time
-            logger.info("esbocs_consensus_active_all_validators_synced",
+            logger.info("chipchain_consensus_active_all_validators_synced",
                       nodes=self._nodes_with_active_consensus,
                       total=len(self.nodes),
                       elapsed=f"{elapsed_total:.1f}s",
@@ -583,9 +583,9 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
         
         # Log progress periodically (every 5 seconds)
         if time.time() - self._last_log_time >= 5.0:
-            logger.info("esbocs_consensus_synchronization_progress",
+            logger.info("chipchain_consensus_synchronization_progress",
                       active=self._nodes_with_active_consensus,
-                      initialized=self._nodes_with_esbocs_initialized,
+                      initialized=self._nodes_with_chipchain_initialized,
                       with_orders=self._nodes_with_orders,
                       total=len(self.nodes),
                       elapsed=f"{elapsed:.1f}s",
@@ -594,17 +594,17 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
         
         return False
     
-    async def wait(self, timeout: float, name: str = "esbocs_consensus_active") -> None:
-        """Wait until ESBocs consensus is active."""
+    async def wait(self, timeout: float, name: str = "chipchain_consensus_active") -> None:
+        """Wait until Chipchain consensus is active."""
         try:
             await super().wait(timeout, name)
         except TimeoutError:
             elapsed_total = time.time() - self._start_time
-            logger.error("esbocs_consensus_timeout",
+            logger.error("chipchain_consensus_timeout",
                         elapsed=f"{elapsed_total:.1f}s",
                         timeout=timeout,
                         active=self._nodes_with_active_consensus,
-                        initialized=self._nodes_with_esbocs_initialized,
+                        initialized=self._nodes_with_chipchain_initialized,
                         with_orders=self._nodes_with_orders,
                         total=len(self.nodes),
                         round_ids=self._node_round_ids)
@@ -612,13 +612,13 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
             # Collect detailed diagnostic info
             for node in self.nodes:
                 try:
-                    # ESBocs status
+                    # Chipchain status
                     exit_code, stdout, stderr = self.exec_cli(
                         node.node_id,
-                        f"esbocs status -net {self.network_name} -chain main",
+                        f"chipchain status -net {self.network_name} -chain main",
                         check_output=False
                     )
-                    logger.error("esbocs_status_at_timeout",
+                    logger.error("chipchain_status_at_timeout",
                                node_id=node.node_id,
                                exit_code=exit_code,
                                output_preview=stdout[:500] if stdout else "EMPTY",
@@ -651,27 +651,27 @@ class ESBocsConsensusActiveWaiter(BaseWaiter):
                         pass
                         
                 except Exception as e:
-                    logger.error("esbocs_status_check_exception_at_timeout",
+                    logger.error("chipchain_status_check_exception_at_timeout",
                                node_id=node.node_id,
                                error=str(e)[:100])
             
             # Determine failure reason
-            if self._nodes_with_esbocs_initialized < len(self.nodes):
+            if self._nodes_with_chipchain_initialized < len(self.nodes):
                 raise RuntimeError(
-                    f"ESBocs is not initialized on {len(self.nodes) - self._nodes_with_esbocs_initialized}/{len(self.nodes)} nodes. "
-                    f"This usually means validator orders are missing from GDB or ESBocs initialization failed. "
+                    f"Chipchain is not initialized on {len(self.nodes) - self._nodes_with_chipchain_initialized}/{len(self.nodes)} nodes. "
+                    f"This usually means validator orders are missing from GDB or Chipchain initialization failed. "
                     f"Check logs for 'No valid order found' or 'Switch off validator mode' errors."
                 )
             elif self._nodes_with_active_consensus == 0:
                 raise TimeoutError(
-                    f"ESBocs consensus did not become active after {timeout}s. "
+                    f"Chipchain consensus did not become active after {timeout}s. "
                     f"All {len(self.nodes)} nodes have round_id = 0. "
                     f"Validators need to exchange START_SYNC messages and synchronize. "
                     f"Check network links between validators."
                 )
             else:
                 raise TimeoutError(
-                    f"ESBocs consensus did not become active after {timeout}s. "
+                    f"Chipchain consensus did not become active after {timeout}s. "
                     f"Only {self._nodes_with_active_consensus}/{len(self.nodes)} nodes have round_id > 0. "
                     f"Validators need to exchange START_SYNC messages and synchronize."
                 )

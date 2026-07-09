@@ -36,6 +36,28 @@ class ScenarioSuite(BaseModel):
         "default",
         description="Topology name or path to topology JSON"
     )
+
+    # Custom templates directory (overrides default ESBOCS templates)
+    # Путь к кастомным шаблонам конфигов (переопределяет дефолтные ESBOCS)
+    # Используется когда нужен другой консенсус (ChipChain, PoA, etc.)
+    custom_templates_dir: Optional[str] = Field(
+        None,
+        description="Path to custom Jinja2 templates directory (relative to suite dir)"
+    )
+
+    # Custom genesis scenario (overrides default genesis)
+    # Кастомный сценарий генезиса (переопределяет дефолтный)
+    custom_genesis_scenario: Optional[str] = Field(
+        None,
+        description="Path to custom genesis scenario YAML (relative to suite dir)"
+    )
+
+    # Custom phase1 scenario (overrides default zerochain genesis)
+    # Кастомный сценарий phase1 (переопределяет дефолтный zerochain genesis)
+    custom_phase1_scenario: Optional[str] = Field(
+        None,
+        description="Path to custom phase1 genesis scenario YAML (relative to suite dir)"
+    )
     
     # Scenarios to run in this suite
     # Список сценариев для выполнения

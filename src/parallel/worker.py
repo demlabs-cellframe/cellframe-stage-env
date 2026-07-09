@@ -196,6 +196,30 @@ def _run_suite_sync(
     suite_spec = parser.load_scenario(str(suite_desc_rel))
     suite_name = suite_spec.name if hasattr(suite_spec, "name") else task.suite_dir.name
 
+    # Check suite descriptor for custom_templates_dir (overrides paths config)
+    if hasattr(suite_spec, 'custom_templates_dir') and suite_spec.custom_templates_dir:
+        suite_relative = task.descriptor_path.parent / suite_spec.custom_templates_dir
+        if suite_relative.is_dir():
+            custom_templates_dirs.insert(0, suite_relative.resolve())
+            # Also set on NetworkManager for config generation
+            network_mgr._suite_custom_templates_dir = suite_relative.resolve()
+            network_mgr.config_generator.custom_templates_dir = suite_relative.resolve()
+            logger.info("suite_custom_templates_dir", path=str(suite_relative))
+
+    # Check suite descriptor for custom genesis scenarios
+    if hasattr(suite_spec, 'custom_genesis_scenario') and suite_spec.custom_genesis_scenario:
+        network_mgr._suite_custom_genesis_scenario = suite_spec.custom_genesis_scenario
+        logger.info("suite_custom_genesis_scenario", scenario=suite_spec.custom_genesis_scenario)
+    if hasattr(suite_spec, 'custom_phase1_scenario') and suite_spec.custom_phase1_scenario:
+        network_mgr._suite_custom_phase1_scenario = suite_spec.custom_phase1_scenario
+        logger.info("suite_custom_phase1_scenario", scenario=suite_spec.custom_phase1_scenario)
+    
+    # Set custom scenarios directory (suite dir / scenarios)
+    suite_scenarios_dir = task.descriptor_path.parent / "scenarios"
+    if suite_scenarios_dir.is_dir():
+        network_mgr._suite_custom_scenarios_dir = suite_scenarios_dir.resolve()
+        logger.info("suite_custom_scenarios_dir", path=str(suite_scenarios_dir.resolve()))
+
     async def _start():
         await network_mgr.start(rebuild=False, wait_ready=True)
 

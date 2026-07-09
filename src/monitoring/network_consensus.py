@@ -6,7 +6,7 @@ Monitors and validates:
 - Chain state synchronization (block hashes, counts)
 - Network topology integrity
 - Consensus readiness
-- ESBocs consensus phases and round states
+- Chipchain consensus phases and round states
 - Mempool contents and transaction propagation
 - Block propagation across validators
 
@@ -30,8 +30,8 @@ from ..utils.project import make_container_name
 logger = get_logger(__name__)
 
 
-class ESBocsRoundState(Enum):
-    """ESBocs consensus round states."""
+class ChipchainRoundState(Enum):
+    """Chipchain consensus round states."""
     WAIT_START = "WAIT_START"
     WAIT_PROC = "WAIT_PROC"
     WAIT_SIGNS = "WAIT_SIGNS"
@@ -55,10 +55,10 @@ class MempoolMetrics:
 
 @dataclass
 class ConsensusMetrics:
-    """ESBocs consensus-specific metrics for a node."""
+    """Chipchain consensus-specific metrics for a node."""
     
     round_id: Optional[int] = None
-    round_state: ESBocsRoundState = ESBocsRoundState.UNKNOWN
+    round_state: ChipchainRoundState = ChipchainRoundState.UNKNOWN
     
     # Validator state
     is_validator: bool = False
@@ -751,7 +751,7 @@ class NetworkConsensusMonitor:
     
     async def _collect_consensus_metrics(self, node_id: str, metrics: NodeMetrics) -> None:
         """
-        Collect ESBocs consensus metrics from a node.
+        Collect Chipchain consensus metrics from a node.
         
         Args:
             node_id: Node identifier
@@ -759,7 +759,7 @@ class NetworkConsensusMonitor:
         """
         try:
             # Get consensus debug info (if available)
-            # Try: esbocs get status or similar command
+            # Try: chipchain get status or similar command
             try:
                 consensus_out = await self._exec_cli(
                     node_id,

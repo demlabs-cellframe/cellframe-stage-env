@@ -67,7 +67,7 @@ def _initialize_registry():
     
     # Consensus waiters
     from ..waiter.dag_waiters import DAGEventWaiter
-    from ..waiter.esbocs_waiters import ESBocsActiveWaiter
+    from ..waiter.chipchain_waiters import ChipchainActiveWaiter
     from ..waiter.sync_waiters import FirstBlockWaiter
     
     # Ledger waiters
@@ -105,7 +105,7 @@ def _initialize_registry():
     from ..waiter.validator_waiters import (
         ValidatorModeActiveWaiter,
         StakeServiceReadyWaiter,
-        ESBocsConsensusActiveWaiter,
+        ChipchainConsensusActiveWaiter,
     )
     
     # Registration waiters
@@ -123,7 +123,7 @@ def _initialize_registry():
     WaitRegistry.register("network_online", NetworkOnlineWaiter)
     WaitRegistry.register("sync_complete", NetworkSyncCompletionWaiter)
     WaitRegistry.register("dag_event", DAGEventWaiter)
-    WaitRegistry.register("esbocs_active", ESBocsActiveWaiter)
+    WaitRegistry.register("chipchain_active", ChipchainActiveWaiter)
     WaitRegistry.register("first_block", FirstBlockWaiter)
     WaitRegistry.register("ledger_tx", LedgerTransactionWaiter)
     WaitRegistry.register("utxo_indexed", UTXOIndexationWaiter)
@@ -144,7 +144,7 @@ def _initialize_registry():
     WaitRegistry.register("block_created", BlockCreatedWaiter)
     WaitRegistry.register("validator_mode_active", ValidatorModeActiveWaiter)
     WaitRegistry.register("stake_service_ready", StakeServiceReadyWaiter)
-    WaitRegistry.register("esbocs_consensus_active", ESBocsConsensusActiveWaiter)
+    WaitRegistry.register("chipchain_consensus_active", ChipchainConsensusActiveWaiter)
     WaitRegistry.register("node_list_propagation", NodeListPropagationWaiter)
     WaitRegistry.register("gdb_clusters_ready", GDBClustersReadyWaiter)
     

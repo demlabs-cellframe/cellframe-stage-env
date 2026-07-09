@@ -200,11 +200,11 @@ class TopologyBuilder:
             'network': {
                 'name': network_name,
                 'network_id': network_id,
-                'consensus': 'esbocs'
+                'consensus': 'chipchain'
             },
             'topology': topology_nodes,
             'consensus': {
-                'type': 'esbocs',
+                'type': 'chipchain',
                 'min_validators': max(2, role_counts['root'] + role_counts['master'] - 1),
                 'new_round_delay': 45,
                 'collecting_level': 10.0,
