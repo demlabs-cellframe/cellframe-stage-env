@@ -897,6 +897,7 @@ def _discover_suites(test_dirs, filter_pattern=None):
     Returns a list of dicts with keys:
       suite_key, suite_path, descriptor, scenarios, test_type
     """
+    import yaml
     from ..scenarios.schema import SuiteDescriptor
 
     all_suites = []
@@ -957,6 +958,23 @@ def _discover_suites(test_dirs, filter_pattern=None):
 
         for suite_key, info in suites.items():
             scenarios = info["scenarios"]
+
+            # If the suite descriptor declares an explicit `scenarios:` list,
+            # restrict discovery to exactly those files. This prevents helper
+            # files placed in subdirectories (e.g. scenarios/common/*.yml for
+            # shared includes, scenarios/genesis/**/*.yml for custom
+            # phase1/phase2 genesis scenarios referenced by name) from being
+            # picked up by the recursive glob and misidentified as standalone
+            # test scenarios.
+            try:
+                descriptor_data = yaml.safe_load(info["descriptor"].read_text()) or {}
+            except Exception:
+                descriptor_data = {}
+            explicit_names = descriptor_data.get("scenarios")
+            if explicit_names:
+                allowed = {name for name in explicit_names} | {Path(name).stem for name in explicit_names}
+                scenarios = [f for f in scenarios if f.name in allowed or f.stem in allowed]
+
             if filter_pattern:
                 scenarios = [f for f in scenarios if filter_pattern.lower() in f.name.lower()]
                 if not scenarios:
@@ -1515,7 +1533,20 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         suite_name = suite_path.name
                         suite_description = None
                         print_warning(_("Failed to parse suite descriptor {}: {}").format(suite_descriptor.name, e))
-                    
+
+                    # If the suite descriptor declares an explicit `scenarios:`
+                    # list, restrict to exactly those files. This prevents
+                    # helper files placed in subdirectories (e.g.
+                    # scenarios/common/*.yml for shared includes,
+                    # scenarios/genesis/**/*.yml for custom phase1/phase2
+                    # genesis scenarios referenced by name) from being picked
+                    # up by the recursive glob and misidentified as
+                    # standalone test scenarios.
+                    if isinstance(suite_spec, SuiteDescriptor) and suite_spec.scenarios:
+                        allowed = {name for name in suite_spec.scenarios} | \
+                                  {Path(name).stem for name in suite_spec.scenarios}
+                        suite_scenarios = [f for f in suite_scenarios if f.name in allowed or f.stem in allowed]
+
                     # Create suite-specific directory
                     test_type = test_path.name
                     suite_relative_path = Path(test_type) / suite_path.name
