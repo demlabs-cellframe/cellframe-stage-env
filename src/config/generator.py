@@ -282,15 +282,13 @@ class ConfigGenerator:
             seed_nodes_hosts = "[]"
             seed_nodes_aliases = "[]"
         
-        # Permanent nodes hosts - ALL validator nodes (root + master)
-        # Chipchain consensus requires direct stream connections between validators
-        # for START_SYNC message exchange. Without permanent links, master nodes
-        # cannot establish direct streams to each other (they only connect upstream to roots).
-        # Root nodes serve as seed/entry points AND permanent links.
-        # Master nodes are added as permanent links for inter-validator communication.
-        all_permanent_nodes = root_nodes + master_nodes
-        if all_permanent_nodes:
-            hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in all_permanent_nodes])
+        # Permanent nodes hosts - ROOT nodes only
+        # Root nodes serve as seed/entry points and permanent links for initial discovery.
+        # Master nodes are added dynamically to the nodelist by the standard protocol
+        # (they register themselves via the root nodes' nodelist service).
+        permanent_nodes = root_nodes
+        if permanent_nodes:
+            hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in permanent_nodes])
             permanent_nodes_hosts = f"[{hosts_list}]"
         else:
             permanent_nodes_hosts = "[]"
@@ -840,25 +838,26 @@ class ConfigGenerator:
         network_name: str
     ) -> str:
         """
-        Collect ALL permanent node addresses (root + master) for direct stream links.
+        Collect ROOT node addresses for permanent links.
 
-        Chipchain consensus requires direct stream connections between ALL validators
-        (both root and master nodes) for START_SYNC message exchange. Root nodes are
-        seed/entry points; master nodes need direct links to each other for consensus.
+        Only root nodes are placed in permanent_nodes — they serve as seed/entry
+        points for initial discovery. Master nodes are added dynamically to the
+        nodelist by the standard protocol (they register themselves via root nodes'
+        nodelist service).
 
         Args:
             nodes: List of node configurations
             network_name: Network name
 
         Returns:
-            Comma-separated list of all validator node addresses in config format
+            Comma-separated list of root node addresses in config format
         """
         permanent_addrs = []
 
-        # Collect addresses for all validator nodes (root + master)
-        validator_nodes = [n for n in nodes if n.is_seed_node or n.consensus_participation]
+        # Collect addresses for root (seed) nodes only
+        root_nodes = [n for n in nodes if n.is_seed_node]
 
-        for node in validator_nodes:
+        for node in root_nodes:
             addr_file = self.certs_cache / f"node{node.node_id}" / "node_addr.txt"
 
             if not addr_file.exists():

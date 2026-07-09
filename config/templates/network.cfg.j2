@@ -10,10 +10,10 @@ node-role={{ node_role | default('full', true) }}
 # Both aliases and hosts are required for node discovery
 seed_nodes_aliases={{ seed_nodes_aliases | default('[]', true) }}
 seed_nodes_hosts={{ seed_nodes_hosts | default('[]', true) }}
-# Permanent links: required for v5.7+ binaries so validator nodes (root + master)
-# connect to each other directly on first boot. Chipchain consensus requires direct
-# stream connections between all validators for START_SYNC message exchange.
-# permanent_nodes_addrs holds the hex node addresses of all validator nodes;
+# Permanent links: ROOT nodes only, used as seed/entry points for initial discovery.
+# Master nodes are added dynamically to the nodelist by the standard protocol
+# (they register themselves via root nodes' nodelist service).
+# permanent_nodes_addrs holds the hex node addresses of root nodes;
 # permanent_nodes_hosts maps those addresses to <ip>:<port> when GDB is empty.
 permanent_nodes_addrs={{ permanent_nodes_addrs | default('[]', true) }}
 permanent_nodes_hosts={{ permanent_nodes_hosts | default('[]', true) }}
@@ -25,6 +25,15 @@ permanent_nodes_hosts={{ permanent_nodes_hosts | default('[]', true) }}
 [dag-poa]
 {% if events_sign_cert %}
 events-sign-cert={{ events_sign_cert }}
+{% endif %}
+
+# Ledger configuration
+# type: "open" for public ledger, "anon" for anonymous ledger (chipchain zk-SNARK)
+# anon_type: "chipmunk_snark" (default), "mrng", "lrs"
+[ledger]
+type={{ ledger_type | default('anon', true) }}
+{% if ledger_type == 'anon' -%}
+anon_type={{ anon_type | default('chipmunk_snark', true) }}
 {% endif %}
 
 # Consensus blocks signing certificate (for MASTER nodes only)
