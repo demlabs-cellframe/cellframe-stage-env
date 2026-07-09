@@ -277,8 +277,8 @@ class NetworkSyncWaiter(BaseWaiter):
                     check_output=False
                 )
                 
-                # Check for "synced" status
-                synced = bool(re.search(r'status:\s*synced', stdout_str, re.IGNORECASE))
+                # Check for ONLINE state — nodes are "synced" when they reach NET_STATE_ONLINE
+                synced = bool(re.search(r'NET_STATE_ONLINE', stdout_str))
                 sync_status[f"node{node.node_id}"] = "synced" if synced else "syncing"
                 
                 if not synced:
