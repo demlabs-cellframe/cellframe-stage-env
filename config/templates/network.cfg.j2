@@ -30,10 +30,12 @@ events-sign-cert={{ events_sign_cert }}
 # Ledger configuration
 # type: "open" for public ledger, "anon" for anonymous ledger (chipchain zk-SNARK)
 # anon_type: "chipmunk_snark" (default), "mrng", "lrs"
+# anon_algo: "chipmunk_ring" (default), "lrs" — used by dap_chain_tx_anon_transfer_auto_ring()
 [ledger]
 type={{ ledger_type | default('anon', true) }}
 {% if ledger_type == 'anon' -%}
 anon_type={{ anon_type | default('chipmunk_snark', true) }}
+anon_algo={{ anon_algo | default('chipmunk_ring', true) }}
 {% endif %}
 
 # Consensus blocks signing certificate (for MASTER nodes only)

@@ -10,7 +10,7 @@ default_datum_types=[token,emission,ca,decree]
 # mempool_auto_types specifies which datum types can be processed by proc_all
 # Required for genesis event creation when is_add_directly=true
 mempool_auto_types=[token,emission,ca,decree]
-consensus=dag_poa
+consensus={{ consensus_section | default('dag_poa') }}
 # Authorized nodes have special permissions (can write to nodelist, mempool)
 # This MUST be in zerochain [chain] section for node add command to work
 # Read by dap_chain.c for zerochain only (id=0)
@@ -35,6 +35,7 @@ debug_more=true
 static_genesis_event={{ static_genesis_event | default('', true) }}
 is_static_genesis_event={{ is_static_genesis_event | default('false', true) }}
 
+{% if consensus_section == 'dag_poa' or consensus_section is not defined %}
 [dag-poa]
 # Use {network}.root prefix for ROOT node consensus certificates
 # Root nodes participate ONLY in DAG-PoA (zerochain), NOT in ESBocs
@@ -53,4 +54,23 @@ confirmations_timeout=15
 wait_sync_before_complete=30
 auto_confirmation=true
 auto_round_complete=true
-
+{% elif consensus_section == 'chipchain' %}
+[chipchain]
+consensus_debug={{ consensus_debug | default('true', true) }}
+min_validators_count={{ min_validators_count | default(2, true) }}
+{% if validators_addrs and validators_addrs != '[]' -%}
+validators_addrs={{ validators_addrs }}
+{% endif -%}
+poa_mode={{ poa_mode | default('true', true) }}
+auth_certs_prefix={{ auth_certs_prefix | default(network_name | default('stagenet') ~ '.root') }}
+{% if events_sign_cert %}
+blocks-sign-cert={{ events_sign_cert }}
+{% endif %}
+{% if fee_addr -%}
+fee_addr={{ fee_addr }}
+{% endif -%}
+new_round_delay={{ new_round_delay | default(30, true) }}
+round_start_sync_timeout={{ round_start_sync_timeout | default(5, true) }}
+round_attempts_max={{ round_attempts_max | default(2, true) }}
+round_attempt_timeout={{ round_attempt_timeout | default(5, true) }}
+{% endif %}

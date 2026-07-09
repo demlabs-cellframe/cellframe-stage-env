@@ -644,27 +644,43 @@ class GenesisConfigManager(BaseGenesisManager):
                 config_loader = get_config_loader()
                 existing_config = config_loader.load_config_file(zerochain_config_path)
                 
-                # Read zerochain parameters
-                if 'dag-poa' in existing_config:
-                    if 'auth_certs_number' not in existing_config['dag-poa']:
+                # Read zerochain parameters — dynamically detect consensus section
+                cs = self._get_consensus_section(existing_config)
+                if cs not in existing_config:
+                    raise RuntimeError(
+                        f"CRITICAL: [{cs}] section not found in zerochain config! "
+                        f"Cannot regenerate config without consensus parameters."
+                    )
+
+                if cs == 'dag_poa':
+                    # DAG-PoA specific parameters
+                    if 'auth_certs_number' not in existing_config[cs]:
                         raise RuntimeError(
-                            f"CRITICAL: auth_certs_number not found in [dag-poa] section! "
+                            f"CRITICAL: auth_certs_number not found in [{cs}] section! "
                             f"Cannot regenerate config without auth_certs_number parameter."
                         )
-                    if 'auth_certs_number_verify' not in existing_config['dag-poa']:
+                    if 'auth_certs_number_verify' not in existing_config[cs]:
                         raise RuntimeError(
-                            f"CRITICAL: auth_certs_number_verify not found in [dag-poa] section! "
+                            f"CRITICAL: auth_certs_number_verify not found in [{cs}] section! "
                             f"Cannot regenerate config without auth_certs_number_verify parameter."
                         )
-                    existing_zerochain_params['auth_certs_number'] = existing_config['dag-poa']['auth_certs_number'].strip()
-                    existing_zerochain_params['auth_certs_number_verify'] = existing_config['dag-poa']['auth_certs_number_verify'].strip()
+                    existing_zerochain_params['auth_certs_number'] = existing_config[cs]['auth_certs_number'].strip()
+                    existing_zerochain_params['auth_certs_number_verify'] = existing_config[cs]['auth_certs_number_verify'].strip()
+                elif cs == 'chipchain':
+                    # Chipchain specific parameters
+                    for key in ('min_validators_count', 'validators_addrs'):
+                        if key in existing_config[cs]:
+                            existing_zerochain_params[key] = existing_config[cs][key].strip()
                 else:
                     raise RuntimeError(
-                        f"CRITICAL: [dag-poa] section not found in zerochain config! "
-                        f"Cannot regenerate config without dag-poa parameters."
+                        f"CRITICAL: Unsupported consensus type '{cs}' for zerochain. "
+                        f"Only 'dag_poa' and 'chipchain' are supported."
                     )
                 
                 if 'chain' in existing_config:
+                    # Read consensus type for template rendering
+                    if 'consensus' in existing_config['chain']:
+                        existing_zerochain_params['consensus'] = existing_config['chain']['consensus'].strip()
                     if 'authorized_nodes_addrs' not in existing_config['chain']:
                         raise RuntimeError(
                             f"CRITICAL: authorized_nodes_addrs not found in [chain] section! "
@@ -791,15 +807,17 @@ class GenesisConfigManager(BaseGenesisManager):
             'static_genesis_block': main_genesis_hash if main_genesis_hash else '',
             'is_static_genesis_block': 'true' if main_genesis_hash else 'false',
             # Preserve existing parameters from config files
-            'auth_certs_number': existing_zerochain_params['auth_certs_number'],
-            'auth_certs_number_verify': existing_zerochain_params['auth_certs_number_verify'],
-            'root_nodes_addrs': existing_zerochain_params['authorized_nodes_addrs'],
+            'auth_certs_number': existing_zerochain_params.get('auth_certs_number', ''),
+            'auth_certs_number_verify': existing_zerochain_params.get('auth_certs_number_verify', ''),
+            'root_nodes_addrs': existing_zerochain_params.get('authorized_nodes_addrs', ''),
             'validators_addrs': validators_addrs_value,  # Keep for zerochain compatibility
             'mainchain_validators_addrs': validators_addrs_value,  # CRITICAL: Master validators for mainchain
-            'min_validators_count': min_validators_count,  # CRITICAL: Set based on validators_addrs
+            'min_validators_count': existing_zerochain_params.get('min_validators_count', min_validators_count),
             'poa_mode': existing_main_params.get('poa_mode', 'false'),
             'fee_addr': fee_addr if fee_addr else '',  # Use preserved fee_addr or empty string
             'genesis_mode': 'false',  # Disable genesis mode after genesis
+            # Pass consensus section for zerochain template rendering
+            'consensus_section': self._get_consensus_section({'chain': {'consensus': existing_zerochain_params.get('consensus', 'dag_poa')}}) if existing_zerochain_params.get('consensus') else 'dag_poa',
         }
         
         # Log fee_addr preservation
@@ -848,11 +866,18 @@ class GenesisConfigManager(BaseGenesisManager):
                     f"Cannot proceed - this would overwrite config with empty static_genesis_event."
                 )
             
-            if not chain_context['auth_certs_number'] or not chain_context['root_nodes_addrs']:
+            # Validate consensus-specific required parameters
+            if chain_context['consensus_section'] == 'dag_poa':
+                if not chain_context['auth_certs_number'] or not chain_context['root_nodes_addrs']:
+                    raise RuntimeError(
+                        f"CRITICAL: auth_certs_number or root_nodes_addrs is empty when trying to regenerate zerochain.cfg! "
+                        f"auth_certs_number={chain_context['auth_certs_number']}, "
+                        f"root_nodes_addrs={chain_context['root_nodes_addrs'][:50] if chain_context['root_nodes_addrs'] else 'empty'}. "
+                        f"Cannot proceed - this would overwrite config with empty parameters."
+                    )
+            elif not chain_context['root_nodes_addrs']:
                 raise RuntimeError(
-                    f"CRITICAL: auth_certs_number or root_nodes_addrs is empty when trying to regenerate zerochain.cfg! "
-                    f"auth_certs_number={chain_context['auth_certs_number']}, "
-                    f"root_nodes_addrs={chain_context['root_nodes_addrs'][:50]}. "
+                    f"CRITICAL: root_nodes_addrs is empty when trying to regenerate zerochain.cfg! "
                     f"Cannot proceed - this would overwrite config with empty parameters."
                 )
         

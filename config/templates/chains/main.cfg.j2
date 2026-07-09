@@ -28,6 +28,10 @@ static_genesis_block={{ static_genesis_block | default('', true) }}
 
 [{{ consensus_section | default('chipchain') }}]
 consensus_debug={{ consensus_debug | default('true', true) }}
+# Chipmunk aggregated multi-sig for block signing (chipchain consensus only)
+{% if consensus_section == 'chipchain' or consensus_section is not defined -%}
+use_chipmunk_aggregated={{ use_chipmunk_aggregated | default('true', true) }}
+{% endif -%}
 # Minimum number of validators for consensus
 # CRITICAL: Must match actual validators count, otherwise SDK returns -2
 # Calculated automatically from topology: max(1, master_nodes_count // 2 + 1)
