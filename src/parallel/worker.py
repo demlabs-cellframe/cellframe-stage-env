@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.utils.project import set_project_name, find_common_root
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
