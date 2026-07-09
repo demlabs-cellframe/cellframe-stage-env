@@ -917,6 +917,18 @@ def _discover_suites(test_dirs, filter_pattern=None):
         if test_path.is_dir() and external_suite.exists():
             suites["."] = {"descriptor": external_suite, "scenarios": [], "path": test_path}
 
+        # Pre-register every suite.yml descriptor found anywhere under
+        # test_path *before* grouping scenario files. Directory-walk order
+        # from glob() is not guaranteed, so if a numbered scenario file
+        # (e.g. 001_foo.yml) happened to be processed before its sibling
+        # suite.yml in the loop below, it would be misclassified as
+        # "standalone" simply because the suite wasn't registered yet.
+        for yml_file in yml_files:
+            if yml_file.stem == "suite":
+                suite_key = str(yml_file.parent.relative_to(test_path))
+                if suite_key not in suites:
+                    suites[suite_key] = {"descriptor": yml_file, "scenarios": [], "path": yml_file.parent}
+
         for yml_file in yml_files:
             parent_dir = yml_file.parent
             file_stem = yml_file.stem
@@ -929,9 +941,6 @@ def _discover_suites(test_dirs, filter_pattern=None):
                 continue
 
             if file_stem == "suite":
-                suite_key = str(parent_dir.relative_to(test_path))
-                if suite_key not in suites:
-                    suites[suite_key] = {"descriptor": yml_file, "scenarios": [], "path": parent_dir}
                 continue
 
             suite_found = False
@@ -1428,6 +1437,23 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                         'path': test_path,
                     }
 
+                # Pre-register every suite.yml descriptor found anywhere under
+                # test_path *before* grouping scenario files. Directory-walk
+                # order from glob() is not guaranteed, so if a numbered
+                # scenario file (e.g. 001_foo.yml) happened to be processed
+                # before its sibling suite.yml in the loop below, it would be
+                # misclassified as "standalone" simply because the suite
+                # wasn't registered yet.
+                for yml_file in yml_files:
+                    if yml_file.stem == 'suite':
+                        suite_key = str(yml_file.parent.relative_to(test_path))
+                        if suite_key not in suites:
+                            suites[suite_key] = {
+                                'descriptor': yml_file,
+                                'scenarios': [],
+                                'path': yml_file.parent
+                            }
+
                 for yml_file in yml_files:
                     parent_dir = yml_file.parent
                     file_stem = yml_file.stem
@@ -1444,15 +1470,9 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
                             }
                         continue
                     
-                    # Pattern B: Internal descriptor (dir/suite.yml)
+                    # Pattern B: Internal descriptor (dir/suite.yml) — already
+                    # pre-registered above; just skip it here.
                     if file_stem == 'suite':
-                        suite_key = str(parent_dir.relative_to(test_path))
-                        if suite_key not in suites:
-                            suites[suite_key] = {
-                                'descriptor': yml_file,
-                                'scenarios': [],
-                                'path': parent_dir
-                            }
                         continue
                     
                     # Check if this scenario belongs to a suite
