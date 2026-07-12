@@ -286,14 +286,44 @@ def _run_suite_sync(
         setup_ctx = asyncio.run(_run_setup())
         suite_setup_variables = dict(setup_ctx.variables)
 
-    # Run scenarios
+    # Run scenarios (respect suite.yml ordering)
     scenario_parser = ScenarioParser(
         scenarios_root=task.suite_dir,
         common_root=common_root,
         fallback_common_root=fallback_common,
     )
 
-    for scenario_file in task.scenario_files:
+    scenario_files = list(task.scenario_files)
+    if isinstance(suite_spec, SuiteDescriptor) and suite_spec.scenarios:
+        from pathlib import Path as _Path
+        order_map = {}
+        for idx, name in enumerate(suite_spec.scenarios):
+            order_map[name] = idx
+            order_map[_Path(name).stem] = idx
+
+        def _scenario_order_key(path: _Path) -> int:
+            if path.name in order_map:
+                return order_map[path.name]
+            if path.stem in order_map:
+                return order_map[path.stem]
+            return len(suite_spec.scenarios)
+
+        scenario_files = sorted(scenario_files, key=_scenario_order_key)
+
+    restore_snapshot_name = "clean_state"
+    if isinstance(suite_spec, SuiteDescriptor) and suite_spec.restore_snapshot:
+        restore_snapshot_name = suite_spec.restore_snapshot.replace("{{topology_name}}", topology_name)
+
+    for scenario_idx, scenario_file in enumerate(scenario_files):
+        if scenario_idx > 0:
+            network_mgr.nodes.clear()
+            network_mgr.generate_node_configs()
+
+            async def _restore_between_scenarios():
+                await network_mgr.restore_clean_state(name=restore_snapshot_name)
+
+            asyncio.run(_restore_between_scenarios())
+            suite_setup_variables = {}
         result.total += 1
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         scenario_log = suite_dir / "scenario-logs" / f"scenario_{scenario_file.stem}_{timestamp}.log"

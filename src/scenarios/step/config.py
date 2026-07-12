@@ -445,6 +445,21 @@ class ConfigStepExecutor(StepExecutor):
             full_context['network_name'] = network_name
             if is_network and 'id' in full_context and 'network_id' not in full_context:
                 full_context['network_id'] = full_context['id']
+
+            # Fail loud if dag_poa regen would write empty auth_certs_number —
+            # that produces a dead zerochain and empty CLI replies on node add.
+            if is_chain and parts and parts[1] == 'zerochain':
+                cs = str(full_context.get('consensus_section',
+                                          full_context.get('consensus', 'dag_poa')))
+                if cs == 'dag_poa':
+                    missing = [k for k in ('auth_certs_number', 'auth_certs_number_verify')
+                               if not full_context.get(k) and full_context.get(k) != 0]
+                    if missing:
+                        raise RuntimeError(
+                            f"Refusing to regenerate zerochain.cfg for node {node_id}: "
+                            f"dag_poa requires {missing} but they are empty/missing. "
+                            f"Context keys: {sorted(full_context.keys())}"
+                        )
             
             try:
                 rendered = template.render(full_context)
@@ -500,8 +515,15 @@ class ConfigStepExecutor(StepExecutor):
                 if underscore_key not in context:
                     context[underscore_key] = context[key]
         
+        # Template variables that differ from INI key names / need aliases.
+        # Without consensus→consensus_section, regenerating zerochain.cfg with the
+        # default template silently switches chipchain→dag_poa and writes empty
+        # auth_certs_number (genesis then dies with empty CLI replies).
         special_mappings = {
             'ext_address': 'node_ip',
+            'consensus': 'consensus_section',
+            'events_sign_cert': 'blocks_sign_cert',
+            'blocks_sign_cert': 'events_sign_cert',
         }
         for config_key, template_key in special_mappings.items():
             if config_key in context and template_key not in context:

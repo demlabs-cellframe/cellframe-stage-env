@@ -282,11 +282,16 @@ class ConfigGenerator:
             seed_nodes_hosts = "[]"
             seed_nodes_aliases = "[]"
         
-        # Permanent nodes hosts - ROOT nodes only
-        # Root nodes serve as seed/entry points and permanent links for initial discovery.
-        # Master nodes are added dynamically to the nodelist by the standard protocol
-        # (they register themselves via the root nodes' nodelist service).
-        permanent_nodes = root_nodes
+        # Permanent links: for ChipChain include ROOT+MASTER so validators can
+        # exchange START_SYNC/SUBMIT over direct streams. Without master permanent
+        # links, masters often stay in NET_STATE_LINKS with active:0.
+        # Keep ROOT+MASTER for all consensuses — extra permanent links are harmless.
+        permanent_nodes = [
+            n for n in nodes
+            if n.is_seed_node or (getattr(n, 'consensus_participation', False) and not n.is_seed_node)
+        ]
+        if not permanent_nodes:
+            permanent_nodes = list(root_nodes)
         if permanent_nodes:
             hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in permanent_nodes])
             permanent_nodes_hosts = f"[{hosts_list}]"
@@ -309,6 +314,16 @@ class ConfigGenerator:
             validator_addrs = self._collect_validator_addresses(nodes, network_name)
             root_nodes_addrs = self._collect_root_node_addresses(nodes, network_name)
             permanent_nodes_addrs = self._collect_permanent_node_addresses(nodes, network_name)
+            # Ensure hosts/addrs stay aligned: rebuild hosts from the same node set
+            # used for permanent addrs (seed + consensus masters, topology order).
+            _perm_nodes = [
+                n for n in nodes
+                if n.is_seed_node or (n.consensus_participation and not n.is_seed_node)
+            ] or [n for n in nodes if n.is_seed_node]
+            if _perm_nodes:
+                permanent_nodes_hosts = "[" + ",".join(
+                    f"{n.ip_address}:{n.node_port}" for n in _perm_nodes
+                ) + "]"
             
             # Collect MASTER node addresses for mainchain Chipchain validators
             # CRITICAL: Mainchain Chipchain requires validators_addrs for initialization
@@ -347,11 +362,7 @@ class ConfigGenerator:
             root_nodes_count = len([n for n in nodes if n.is_seed_node])
             auth_certs_number = root_nodes_count
             auth_certs_number_verify = max(1, root_nodes_count // 2 + 1)
-            
-            # Get minimum_fee from config (default 0.1 for production, can be overridden in config)
-            stage_config = self.config_loader.load_stage_config()
-            minimum_fee = stage_config.get('minimum_fee', '0.1')
-            
+
             # Derive consensus section name from consensus.type
             # Maps consensus type to the INI section name expected by the SDK
             # SDK reads config sections by name: consensus=chipchain -> [chipchain], consensus=esbocs -> [esbocs]
@@ -365,6 +376,28 @@ class ConfigGenerator:
             logger.info("consensus_section_derived",
                        consensus_type=consensus_type_raw,
                        consensus_section=consensus_section)
+
+            # ChipChain zerochain uses auth_certs_prefix=<net>.root and loads
+            # stagenet.root.0 .. root.(N-1) for each validators_addrs entry.
+            # Putting master addresses there makes init look for stagenet.root.5+
+            # and fail with "Can't init consensus, error -3" → no networks at all.
+            if consensus_section == 'chipchain':
+                zerochain_validators_addrs = root_nodes_addrs
+                # Full quorum from genesis (topology consensus.min_validators, default 3/5).
+                topo_min = getattr(topology.consensus, 'min_validators', None) or 3
+                zerochain_min_validators_count = int(topo_min)
+                logger.info(
+                    "zerochain_validators_chipchain_roots_only",
+                    root_count=root_nodes_count,
+                    min_validators_count=zerochain_min_validators_count,
+                )
+            else:
+                zerochain_validators_addrs = validator_addrs
+                zerochain_min_validators_count = mainchain_min_validators_count
+            
+            # Get minimum_fee from config (default 0.1 for production, can be overridden in config)
+            stage_config = self.config_loader.load_stage_config()
+            minimum_fee = stage_config.get('minimum_fee', '0.1')
             
             # Prepare base chain context (shared for all nodes)
             # CRITICAL: genesis_mode, static_genesis_event, fee_addr will be set per-node
@@ -373,13 +406,14 @@ class ConfigGenerator:
                 # Consensus section name (determines [chipchain] or [esbocs] in chain configs)
                 'consensus_section': consensus_section,
                 # Validator addresses
-                'validators_addrs': validator_addrs,  # Used for zerochain (all validators: root + master)
+                'validators_addrs': zerochain_validators_addrs,
                 'mainchain_validators_addrs': master_validator_addrs,  # Used for mainchain (master node addresses)
                 'root_nodes_addrs': root_nodes_addrs,
                 'permanent_nodes_addrs': permanent_nodes_addrs,  # ALL validator nodes (root+master) for direct streams
                 # DAG-PoA parameters (zerochain)
                 'auth_certs_number': auth_certs_number,
                 'auth_certs_number_verify': auth_certs_number_verify,
+                'auth_certs_count': root_nodes_count if consensus_section == 'chipchain' else None,
                 # Genesis hashes (filled dynamically)
                 'static_genesis_event': '',  # Will be set per-node after genesis event creation
                 'is_static_genesis_event': 'false',  # Will be set per-node after genesis event creation
@@ -387,7 +421,11 @@ class ConfigGenerator:
                 'is_static_genesis_block': 'false',  # Will be set per-node after genesis block creation
                 'fee_addr': '',  # Will be set per-node after fee wallet creation
                 # Chipchain consensus parameters (from topology.consensus)
-                'min_validators_count': mainchain_min_validators_count,  # Calculated from master_nodes_count
+                'min_validators_count': zerochain_min_validators_count,
+                'bootstrap_min_validators_count': zerochain_min_validators_count,
+                'mainchain_min_validators_count': mainchain_min_validators_count,
+                'master_count': master_validators_count,
+                'root_count': root_nodes_count,
                 'poa_mode': 'true',  # PoA mode: use pre-configured validator list from certs (no stake service required)
                 # Auto-generate auth_certs_prefix from network_name if not specified
                 'auth_certs_prefix': topology.consensus.auth_certs_prefix or f"{network_name}.master",
@@ -398,6 +436,8 @@ class ConfigGenerator:
                 'round_attempts_max': getattr(topology.consensus, 'round_attempts_max', 2),
                 'round_attempt_timeout': getattr(topology.consensus, 'round_attempt_timeout', 5),
                 'consensus_debug': 'true' if getattr(topology.consensus, 'consensus_debug', True) else 'false',
+                'use_chipmunk_aggregated': 'true' if getattr(topology.consensus, 'use_chipmunk_aggregated', False) else 'false',
+                'cell_size_threshold': getattr(topology.consensus, 'cell_size_threshold', 0),
                 # Fee parameters
                 'minimum_fee': str(minimum_fee),  # Default from config (0.1), can be changed by scenario
                 # Network identity
@@ -435,6 +475,10 @@ class ConfigGenerator:
                 # Certificate format: stagenet.root.pvt.0 (not pvt.stagenet.root.0!)
                 root_idx = node.node_id - 1  # node1→0, node2→1
                 events_sign_cert = f"{network_name}.root.pvt.{root_idx}"
+                # When zerochain runs ChipChain (not DAG-PoA), roots also need
+                # blocks-sign-cert — chipchain reads it from network [chipchain].
+                if base_chain_context and base_chain_context.get('consensus_section') == 'chipchain':
+                    blocks_sign_cert = events_sign_cert
                 logger.debug("events_sign_cert_prepared", node_id=node.node_id, cert=events_sign_cert)
             
             if node.consensus_participation and not node.is_seed_node:  # MASTER nodes
@@ -463,7 +507,9 @@ class ConfigGenerator:
                 'permanent_nodes_addrs': permanent_nodes_addrs,
                 'permanent_nodes_hosts': permanent_nodes_hosts,
                 'events_sign_cert': events_sign_cert,
-                'blocks_sign_cert': blocks_sign_cert
+                'blocks_sign_cert': blocks_sign_cert,
+                'use_chipmunk_aggregated': base_chain_context.get('use_chipmunk_aggregated', 'false') if base_chain_context else 'false',
+                'cell_size_threshold': base_chain_context.get('cell_size_threshold', 0) if base_chain_context else 0,
             }
             config_content = network_template.render(**network_context)
             
@@ -838,26 +884,25 @@ class ConfigGenerator:
         network_name: str
     ) -> str:
         """
-        Collect ROOT node addresses for permanent links.
+        Collect addresses for permanent links.
 
-        Only root nodes are placed in permanent_nodes — they serve as seed/entry
-        points for initial discovery. Master nodes are added dynamically to the
-        nodelist by the standard protocol (they register themselves via root nodes'
-        nodelist service).
-
-        Args:
-            nodes: List of node configurations
-            network_name: Network name
-
-        Returns:
-            Comma-separated list of root node addresses in config format
+        ChipChain: ROOT + MASTER (direct streams for consensus packets).
+        Other consensuses: ROOT only (masters discover via nodelist).
         """
         permanent_addrs = []
 
-        # Collect addresses for root (seed) nodes only
-        root_nodes = [n for n in nodes if n.is_seed_node]
+        # Prefer chipchain-aware selection when topology is available via nodes' roles
+        # Include any consensus participant (root seed + master validators).
+        # Full nodes are excluded.
+        permanent_nodes = [
+            n for n in nodes
+            if n.is_seed_node or (n.consensus_participation and not n.is_seed_node)
+        ]
+        # If somehow empty, fall back to seeds only
+        if not permanent_nodes:
+            permanent_nodes = [n for n in nodes if n.is_seed_node]
 
-        for node in root_nodes:
+        for node in permanent_nodes:
             addr_file = self.certs_cache / f"node{node.node_id}" / "node_addr.txt"
 
             if not addr_file.exists():
@@ -1084,7 +1129,8 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
                 network_name=network_name,
                 node_count=node_count,
                 root_count=root_count,
-                network_id=topology.network.network_id
+                network_id=topology.network.network_id,
+                validator_sig_type=getattr(topology.consensus, 'validator_cert_type', 'sig_dil'),
             )
             
             # Validate generated certificates

@@ -460,10 +460,14 @@ class WaitForDatumStep(BaseModel):
     network: str = Field("{{network_name}}", description="Network name (Jinja2 template, resolved from context)")
     chain: str = Field("main", description="Chain name")
     check_master_nodes: bool = Field(True, description="Check master nodes for verification and blocks")
-    timeout_total: int = Field(300, description="Total timeout in seconds")
-    timeout_mempool: int = Field(60, description="Timeout for mempool stage")
-    timeout_verification: int = Field(120, description="Timeout after verification")
-    timeout_in_blocks: int = Field(180, description="Timeout after appearing in blocks")
+    timeout_total: int = Field(
+        300,
+        description="Total timeout in seconds",
+        validation_alias=AliasChoices("timeout_total", "timeout"),
+    )
+    timeout_mempool: int = Field(240, description="Timeout for mempool stage (seconds)")
+    timeout_verification: int = Field(180, description="Timeout after verification (seconds)")
+    timeout_in_blocks: int = Field(180, description="Timeout after appearing in blocks (seconds)")
     check_interval: int = Field(2, description="Check interval in seconds")
     save_status: Optional[str] = Field(None, description="Variable name to save final status")
 

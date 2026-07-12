@@ -200,8 +200,10 @@ class GenesisConfigManager(BaseGenesisManager):
             genesis_hash: Genesis block/event hash (0x...)
             node_configs: List of all node configurations
         """
-        # Detect chain type
-        is_dag = chain_name.lower() in ["zerochain", "zero", "0"]
+        # Detect chain type from consensus= in chain config (chipchain zerochain → blocks)
+        from ..utils.chain_type import chain_uses_dag, read_chain_consensus_from_host
+        consensus = read_chain_consensus_from_host(chain_name, network=self.network_name)
+        is_dag = chain_uses_dag(chain_name, consensus)
         # SDK reads: [dag] static_genesis_event (NOT static_genesis_event_hash!)
         # SDK reads: [blocks] static_genesis_block
         param_name = "static_genesis_event" if is_dag else "static_genesis_block"
@@ -901,14 +903,18 @@ class GenesisConfigManager(BaseGenesisManager):
     
     def read_static_genesis_event_from_config(self, chain_name: str, node_id: int) -> Optional[str]:
         """
-        Read static_genesis_event from chain config file on HOST filesystem.
-        
+        Read static genesis hash from chain config on HOST filesystem.
+
+        Supports both:
+        - DAG: [dag] static_genesis_event
+        - Blocks (chipchain/esbocs): [blocks] static_genesis_block
+
         Args:
             chain_name: Chain name (e.g., "zerochain")
             node_id: Node ID
-            
+
         Returns:
-            Genesis event hash or None if not found
+            Genesis event/block hash or None if not found
         """
         try:
             from ..config.manager import get_config_loader
@@ -921,46 +927,60 @@ class GenesisConfigManager(BaseGenesisManager):
                 )
             cache_dir_relative = paths_config['cache_dir']
             cache_dir = (self.base_path / cache_dir_relative).resolve()
-            
+
             config_file = cache_dir / "configs" / f"node{node_id}" / "network" / self.network_name / f"{chain_name}.cfg"
-            
+
             if not config_file.exists():
                 logger.warning("config_file_not_found_for_reading_genesis",
                              node_id=node_id,
                              chain=chain_name,
                              path=str(config_file))
                 return None
-            
-            # Use centralized config manager
+
             config_loader = get_config_loader()
             config = config_loader.load_config_file(config_file)
-            
-            if 'dag' not in config:
+
+            # Prefer chain-type detection; fall back to whichever section exists.
+            from ..utils.chain_type import chain_uses_dag, read_chain_consensus_from_host
+            consensus = None
+            try:
+                consensus = read_chain_consensus_from_host(chain_name, network=self.network_name)
+            except Exception:
+                consensus = config.get('chain', 'consensus', fallback=None) if 'chain' in config else None
+            is_dag = chain_uses_dag(chain_name, consensus)
+
+            static_genesis = None
+            source = None
+            if is_dag and 'dag' in config and config.get('dag', 'static_genesis_event', fallback='').strip():
+                static_genesis = config.get('dag', 'static_genesis_event', fallback='').strip()
+                source = 'dag.static_genesis_event'
+            elif (not is_dag) and 'blocks' in config and config.get('blocks', 'static_genesis_block', fallback='').strip():
+                static_genesis = config.get('blocks', 'static_genesis_block', fallback='').strip()
+                source = 'blocks.static_genesis_block'
+            else:
+                # Last-resort: accept either section if present (mixed/legacy configs).
+                if 'blocks' in config and config.get('blocks', 'static_genesis_block', fallback='').strip():
+                    static_genesis = config.get('blocks', 'static_genesis_block', fallback='').strip()
+                    source = 'blocks.static_genesis_block'
+                elif 'dag' in config and config.get('dag', 'static_genesis_event', fallback='').strip():
+                    static_genesis = config.get('dag', 'static_genesis_event', fallback='').strip()
+                    source = 'dag.static_genesis_event'
+
+            if not static_genesis:
                 raise RuntimeError(
-                    f"CRITICAL: [dag] section not found in config at {config_file}! "
-                    f"Cannot read static_genesis_event without [dag] section."
+                    f"CRITICAL: no static genesis hash in {config_file} "
+                    f"(looked for [dag] static_genesis_event and [blocks] static_genesis_block; "
+                    f"consensus={consensus!r}, sections={list(config.sections())})"
                 )
-            
-            if 'static_genesis_event' not in config['dag']:
-                raise RuntimeError(
-                    f"CRITICAL: static_genesis_event not found in [dag] section at {config_file}! "
-                    f"Cannot read genesis event hash without static_genesis_event parameter."
-                )
-            
-            static_genesis_event = config['dag']['static_genesis_event'].strip()
-            if not static_genesis_event:
-                raise RuntimeError(
-                    f"CRITICAL: static_genesis_event is empty in config at {config_file}! "
-                    f"Cannot use empty genesis event hash."
-                )
-            
-            logger.info("static_genesis_event_read_from_config",
+
+            logger.info("static_genesis_read_from_config",
                       node_id=node_id,
                       chain=chain_name,
-                      hash=static_genesis_event[:16],
+                      source=source,
+                      hash=static_genesis[:16],
                       path=str(config_file))
-            return static_genesis_event
-            
+            return static_genesis
+
         except Exception as e:
             logger.error("failed_to_read_static_genesis_event_from_config",
                         node_id=node_id,

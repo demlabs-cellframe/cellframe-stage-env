@@ -84,6 +84,7 @@ static void s_sdk_deinit(void)
 
 /* Debug flag for verbose logging */
 static bool s_debug_more = false;
+static dap_enc_key_type_t s_validator_key_type = DAP_ENC_KEY_TYPE_SIG_DILITHIUM;
 
 /* Buffer sizes following DAP SDK conventions */
 #define DAP_CERT_GEN_MAX_NODE_NAME_LEN       32
@@ -429,7 +430,7 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
     snprintf(l_validator_cert_name, sizeof(l_validator_cert_name), 
              "%s.%s.pvt.%d", network_name, cert_type, cert_idx);
     
-    dap_cert_t *l_validator_cert = dap_cert_generate_mem(l_validator_cert_name, DAP_ENC_KEY_TYPE_SIG_DILITHIUM);
+    dap_cert_t *l_validator_cert = dap_cert_generate_mem(l_validator_cert_name, s_validator_key_type);
     if (!l_validator_cert) {
         log_it(L_ERROR, "Failed to generate validator certificate");
         return DAP_CERT_GEN_RET_ERROR;
@@ -635,6 +636,8 @@ static dap_enc_key_type_t s_resolve_sig_type(const char *a_name)
         return DAP_ENC_KEY_TYPE_SIG_SHIPOVNIK;
     if (strcmp(a_name, "sig_picnic") == 0 || strcmp(a_name, "picnic") == 0)
         return DAP_ENC_KEY_TYPE_SIG_PICNIC;
+    if (strcmp(a_name, "sig_chipmunk") == 0 || strcmp(a_name, "chipmunk") == 0)
+        return DAP_ENC_KEY_TYPE_SIG_CHIPMUNK;
 
     /* Canonical SDK lookup as last resort */
     dap_enc_key_type_t l_type = dap_enc_key_type_find_by_name(a_name);
@@ -812,7 +815,7 @@ int main(int argc, char *argv[]) {
 
     /* Parse command line arguments */
     if (argc < 4) {
-        log_it(L_ERROR, "Usage: %s <output_dir> <node_count> <network_name> [network_id] [root_count]", argv[0]);
+        log_it(L_ERROR, "Usage: %s <output_dir> <node_count> <network_name> [network_id] [root_count] [validator_sig_type]", argv[0]);
         log_it(L_ERROR, "       %s --single <output_dir> [cert_name] [--type sig_dil|sig_falcon|...]", argv[0]);
         log_it(L_ERROR, "       %s --dump <cert_path>                # print certificate info", argv[0]);
         log_it(L_ERROR, "       %s --read-addr <cert_path>           # read node address from .dcert", argv[0]);
@@ -858,6 +861,16 @@ int main(int argc, char *argv[]) {
         root_count = atoi(argv[5]);
         if (root_count < 0 || root_count > node_count) {
             log_it(L_ERROR, "Invalid root_count: %d (must be 0-%d)", root_count, node_count);
+            dap_enc_key_deinit();
+            return DAP_CERT_GEN_RET_ERROR;
+        }
+    }
+
+    /* Optional validator certificate signature type (default: sig_dil) */
+    if (argc >= 7) {
+        s_validator_key_type = s_resolve_sig_type(argv[6]);
+        if (s_validator_key_type == DAP_ENC_KEY_TYPE_NULL) {
+            log_it(L_ERROR, "Invalid validator signature type: %s", argv[6]);
             dap_enc_key_deinit();
             return DAP_CERT_GEN_RET_ERROR;
         }

@@ -394,7 +394,7 @@ class DatumMonitor:
                 block_info = await self._check_in_blocks(node, network, chain, datum_hash)
                 if block_info:
                     block_number, block_hash = block_info
-                    is_dag = self._is_dag_chain(chain)
+                    is_dag = self._is_dag_chain(chain, network=network, node=node)
                     item_type = "event" if is_dag else "block"
                     self._log(f"  ✅ Datum {datum_hash[:16]}... already in {item_type} #{block_number} (still listed in mempool)")
                     return DatumMonitorResult(
@@ -420,7 +420,7 @@ class DatumMonitor:
                     block_info = await self._check_in_blocks(node, network, chain, datum_hash)
                     if block_info:
                         block_number, block_hash = block_info
-                        is_dag = self._is_dag_chain(chain)
+                        is_dag = self._is_dag_chain(chain, network=network, node=node)
                         item_type = "event" if is_dag else "block"
                         self._log(
                             f"  ✅ Datum {datum_hash[:16]}... found in {item_type} #{block_number} "
@@ -492,7 +492,7 @@ class DatumMonitor:
                 block_number, block_hash = block_info
                 
                 # Determine chain type for logging
-                is_dag = self._is_dag_chain(chain)
+                is_dag = self._is_dag_chain(chain, network=network, node=node)
                 item_type = "event" if is_dag else "block"
                 
                 if not was_in_blocks:
@@ -519,7 +519,7 @@ class DatumMonitor:
             if was_in_mempool:
                 time_since_mempool = current_time - mempool_start
                 if time_since_mempool > timeout_in_blocks:
-                    is_dag = self._is_dag_chain(chain)
+                    is_dag = self._is_dag_chain(chain, network=network, node=node)
                     item_type = "events" if is_dag else "blocks"
                     item_singular = item_type[:-1]  # event / block
                     details = {"time_since_mempool": time_since_mempool}
@@ -643,32 +643,30 @@ class DatumMonitor:
         # Full implementation would check master node logs or verification status
         return True
     
-    def _is_dag_chain(self, chain: str) -> bool:
+    def _is_dag_chain(self, chain: str, network: str = "stagenet", node: str = "node-1") -> bool:
         """
-        Determine if chain uses DAG-PoA (events) or blockchain (blocks).
-        
-        Args:
-            chain: Chain name (e.g., "zerochain", "main", "kelvin")
-            
-        Returns:
-            True if chain uses DAG (events), False if blockchain (blocks)
+        Determine if chain uses DAG (events) or blockchain (blocks).
+
+        Uses chain config ``consensus=`` (chipchain/esbocs → blocks; dag_poa → DAG).
+        Legacy name-only heuristic is only a last resort when config is missing.
         """
-        # DAG-PoA chains use events instead of blocks
-        dag_chains = ["zerochain", "zero", "0"]
-        return chain.lower() in dag_chains
+        from ..utils.chain_type import chain_uses_dag
+
+        node_id = self._extract_node_id(node) if node else 1
+        return chain_uses_dag(chain, network=network, node_id=node_id)
     
     async def _check_in_blocks(self, node: str, network: str, chain: str, datum_hash: str) -> Optional[Tuple[int, str]]:
         """
         Check if datum is in a block or DAG event (auto-detects based on chain).
         
-        For DAG chains (zerochain): checks events
-        For blockchain chains (main, kelvin): checks blocks
+        For DAG chains (dag_poa zerochain): checks events
+        For blockchain chains (chipchain/esbocs zerochain, main): checks blocks
         
         Returns:
             Tuple of (block/event_number, hash) if found, None otherwise
         """
-        # Auto-detect DAG vs blockchain
-        if self._is_dag_chain(chain):
+        # Auto-detect DAG vs blockchain from consensus config
+        if self._is_dag_chain(chain, network=network, node=node):
             # First check final events; then round.new (datum accepted into consensus round)
             block_info = await self._check_in_dag_events(node, network, chain, datum_hash)
             if block_info:

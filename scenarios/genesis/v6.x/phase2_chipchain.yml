@@ -149,7 +149,8 @@ test:
       - print: "Master blocks status: {{_master_blocks_status}}"
       
   
-  - cli: "block list -chain main"
+  # Newest-first by default — pin the oldest (genesis) block for static_genesis_block.
+  - cli: "block list -chain main -head -limit 1"
     node: "{{first_master}}"
     save_hash: genesis_block_hash
   

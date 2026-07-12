@@ -360,6 +360,7 @@ class CertGenerator:
         node_count: int,
         root_count: int = 2,
         network_id: str = "0x0000000000001234",
+        validator_sig_type: str = "sig_dil",
     ) -> dict:
         """
         Generate all certificates for network using Docker-based cf-cert-generator.
@@ -393,7 +394,7 @@ class CertGenerator:
             "-v", f"{self.certs_dir.absolute()}:/output",
             CERT_BUILDER_IMAGE,
             "-c",
-            f"/usr/local/bin/cf-cert-generator /output {node_count} {network_name} {network_id} {root_count} && "
+            f"/usr/local/bin/cf-cert-generator /output {node_count} {network_name} {network_id} {root_count} {validator_sig_type} && "
             f"chown -R {uid}:{gid} /output",
         ]
 

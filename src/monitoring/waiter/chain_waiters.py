@@ -84,7 +84,12 @@ class ChainDataPropagationWaiter(BaseWaiter):
         for node in self.nodes:
             try:
                 # Check if node has any data in the chain
-                is_dag_chain = self.chain_name.lower() in ["zerochain", "zero", "0"]
+                from ...utils.chain_type import chain_uses_dag
+                is_dag_chain = chain_uses_dag(
+                    self.chain_name,
+                    network=self.network_name,
+                    node_id=node.node_id,
+                )
                 
                 if is_dag_chain:
                     # For DAG: check total_events > 0 (CLI v1: "total events", v2: "total_events")
@@ -179,7 +184,12 @@ class ChainDataPropagationWaiter(BaseWaiter):
             # Re-check to get current synced_count
             for node in self.nodes:
                 try:
-                    is_dag_chain = self.chain_name.lower() in ["zerochain", "zero", "0"]
+                    from ...utils.chain_type import chain_uses_dag
+                    is_dag_chain = chain_uses_dag(
+                        self.chain_name,
+                        network=self.network_name,
+                        node_id=node.node_id,
+                    )
                     if is_dag_chain:
                         exit_code_check, stdout_check, _ = self.exec_cli(
                             node.node_id,

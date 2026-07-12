@@ -16,6 +16,24 @@ logger = get_logger(__name__)
 
 class CLIStepExecutor(StepExecutor):
     """Executor for CLI command steps."""
+
+    @staticmethod
+    def _is_hollow_cli_output(output: str) -> bool:
+        """True when CLI produced empty JSON objects (broken net), not bare empty success."""
+        if output is None:
+            return False
+        text = output.strip()
+        if not text:
+            # Many commands (mempool proc_all, net go sync, …) return empty on success.
+            return False
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        items = data if isinstance(data, list) else [data]
+        if not items:
+            return True
+        return all(isinstance(item, dict) and not item for item in items)
     
     @staticmethod
     def _detect_cli_error(output: str) -> bool:
@@ -207,6 +225,28 @@ class CLIStepExecutor(StepExecutor):
         output = result["stdout"]
         exit_code = result["returncode"]
         has_output_error = False
+
+        # Hollow JSON replies (e.g. [{},{}] from node add when net is dead) are failures.
+        # Bare empty stdout with exit 0 is normal for many CLI commands.
+        hollow = self._is_hollow_cli_output(output)
+        expects_payload = bool(
+            step.contains or step.not_contains or step.save_node
+            or step.save_hash or step.save_wallet or step.save_token
+        )
+        if hollow and step.expect != "error":
+            raise ScenarioExecutionError(
+                f"CLI command returned hollow JSON output (exit {exit_code}). "
+                f"Node likely failed to initialize the requested net/chain.",
+                step=cmd[:100],
+                context={"output": repr(output[:200]), "stderr": result.get("stderr", "")[:300]}
+            )
+        if (not output or not str(output).strip()) and expects_payload and step.expect != "error" and exit_code == 0:
+            raise ScenarioExecutionError(
+                f"CLI command returned empty output but step expects payload "
+                f"(contains/save_*). Node/net may be uninitialized.",
+                step=cmd[:100],
+                context={"output": repr(output[:200]) if output else "''", "stderr": result.get("stderr", "")[:300]}
+            )
         
         # Check expectation FIRST - if command failed, don't try to extract data
         if step.expect == "success" and exit_code != 0:

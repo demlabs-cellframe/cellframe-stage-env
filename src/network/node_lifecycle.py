@@ -80,10 +80,10 @@ class NodeLifecycleManager:
                     logger.debug("container_already_stopped_skip_flush", container=container_name)
                     continue
                 
-                # Sync filesystem to ensure all buffered writes are flushed
+                # Sync filesystem + GDB. docker SDK exec_run has no timeout= kwarg.
                 logger.debug("syncing_filesystem_before_shutdown", container=container_name)
-                cmd_sync = ["sh", "-c", "sync"]
-                container.exec_run(cmd_sync, demux=True, timeout=10)
+                cmd_sync = ["sh", "-c", "cellframe-node-cli global_db flush; sync"]
+                container.exec_run(cmd_sync, demux=True)
                 logger.debug("filesystem_synced_before_shutdown", container=container_name)
                 
             except Exception as e:
@@ -107,9 +107,10 @@ class NodeLifecycleManager:
                     continue
                 
                 # Send 'exit' command via cellframe-node-cli
+                # docker SDK Container.exec_run() has no timeout= kwarg.
                 logger.debug("sending_exit_command", container=container_name)
                 cmd = ["sh", "-c", "cellframe-node-cli exit"]
-                result = container.exec_run(cmd, demux=True, timeout=30)
+                result = container.exec_run(cmd, demux=True)
                 
                 # Exit codes: 0=clean, 137=SIGKILL, 252=graceful shutdown - all are OK
                 if result.exit_code in (0, 137, 252):

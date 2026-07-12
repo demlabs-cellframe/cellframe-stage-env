@@ -1084,16 +1084,21 @@ class NetworkManager:
                                         from ..config.manager import get_config_loader
                                         config_loader = get_config_loader()
                                         config = config_loader.load_config_file(zerochain_config_path)
-                                        static_genesis = config.get('dag', 'static_genesis_event', fallback='').strip() if 'dag' in config else ''
+                                        static_genesis = ''
+                                        if 'blocks' in config:
+                                            static_genesis = config.get('blocks', 'static_genesis_block', fallback='').strip()
+                                        if not static_genesis and 'dag' in config:
+                                            static_genesis = config.get('dag', 'static_genesis_event', fallback='').strip()
                                         if static_genesis:
                                             logger.info("zerochain_config_verified_before_snapshot",
                                                        node_id=node_id,
                                                        static_genesis_hash=static_genesis[:16],
                                                        path=str(zerochain_config_path))
                                         else:
-                                            logger.error("static_genesis_event_not_set_in_config",
+                                            logger.error("static_genesis_not_set_in_config",
                                                        node_id=node_id,
-                                                       path=str(zerochain_config_path))
+                                                       path=str(zerochain_config_path),
+                                                       sections=list(config.sections()))
                                     else:
                                         logger.error("zerochain_config_missing_before_snapshot",
                                                    node_id=node_id,
@@ -1269,31 +1274,32 @@ class NetworkManager:
             # CRITICAL: Verify values were read from configs BEFORE starting containers
             # If these values are missing, nodes will fail to load network
             if not static_genesis_hash:
-                logger.error("static_genesis_event_not_read_from_config_after_snapshot_restore",
+                logger.error("static_genesis_not_read_from_config_after_snapshot_restore",
                            config_path=str(zerochain_config_path),
-                           note="CRITICAL: static_genesis_event could not be read from restored configs! "
-                                "This means configs were not properly restored or are missing genesis event hash. "
-                                "Nodes will fail to load network without this value. "
-                                "Check snapshot restoration process.")
-                # Diagnostic: Try to read config file directly to see what's in it using centralized config manager
+                           note="CRITICAL: static genesis hash could not be read from restored configs! "
+                                "Expected [dag] static_genesis_event (DAG-PoA) or "
+                                "[blocks] static_genesis_block (chipchain/esbocs). "
+                                "Nodes will fail to load network without this value.")
                 try:
                     config_loader = get_config_loader()
                     config = config_loader.load_config_file(zerochain_config_path)
                     logger.error("zerochain_config_diagnostic",
                                sections=list(config.sections()),
                                dag_section_exists='dag' in config,
-                               static_genesis_event_in_config=config.get('dag', 'static_genesis_event', fallback='EMPTY') if 'dag' in config else 'NO_DAG_SECTION',
-                               note="Config file exists but static_genesis_event is missing or empty")
+                               blocks_section_exists='blocks' in config,
+                               static_genesis_event=config.get('dag', 'static_genesis_event', fallback='EMPTY') if 'dag' in config else 'NO_DAG_SECTION',
+                               static_genesis_block=config.get('blocks', 'static_genesis_block', fallback='EMPTY') if 'blocks' in config else 'NO_BLOCKS_SECTION',
+                               note="Config file exists but static genesis hash is missing or empty")
                 except Exception as diag_err:
                     logger.error("zerochain_config_diagnostic_failed",
                                error=str(diag_err),
                                note="Could not read config file for diagnostic")
                 
                 raise RuntimeError(
-                    f"CRITICAL: static_genesis_event not found in restored configs! "
+                    f"CRITICAL: static genesis hash not found in restored configs! "
                     f"Config path: {zerochain_config_path}. "
-                    f"Snapshot may be corrupted or configs were not restored correctly. "
-                    f"Cannot start nodes without static_genesis_event - they will fail to load network."
+                    f"Expected [dag] static_genesis_event or [blocks] static_genesis_block. "
+                    f"Snapshot may be corrupted or configs were not restored correctly."
                 )
             
             if not fee_addr:

@@ -125,6 +125,24 @@ class DockerOpStepExecutor(StepExecutor):
             elif operation == "stop":
                 compose_manager.stop(services=services)
             elif operation == "restart":
+                # Flush chain/GDB to disk before hard restart — otherwise ChipChain
+                # atoms that exist only in memory are lost (docker restart ≠ graceful exit).
+                for svc in (services or []):
+                    try:
+                        container_name = f"{compose_manager.project_name}-{svc}"
+                        container = compose_manager.client.containers.get(container_name)
+                        container.reload()
+                        if container.status == "running":
+                            container.exec_run(
+                                ["sh", "-c", "cellframe-node-cli global_db flush; sync"],
+                                demux=True,
+                            )
+                    except Exception as flush_err:
+                        logger.warning(
+                            "pre_restart_flush_failed",
+                            service=svc,
+                            error=str(flush_err),
+                        )
                 compose_manager.restart(services=services)
             elif operation == "pause":
                 compose_manager.pause(services=services)

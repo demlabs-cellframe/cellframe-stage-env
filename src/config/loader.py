@@ -53,6 +53,8 @@ class NetworkTopology(BaseModel):
         round_attempts_max: int = Field(ge=1, default=2)
         round_attempt_timeout: int = Field(ge=1, default=5)
         consensus_debug: bool = Field(default=True)
+        use_chipmunk_aggregated: bool = Field(default=False)
+        validator_cert_type: str = Field(default="sig_dil")
     
     class Balancer(BaseModel):
         enabled: bool = False

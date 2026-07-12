@@ -23,6 +23,7 @@ import asyncio
 import re
 
 from ...utils.logger import get_logger
+from ...utils.chain_type import chain_uses_dag
 from .base import StepExecutor
 from ..schema import WaitForTxStep
 from ..executor import ScenarioExecutionError, RuntimeContext
@@ -102,7 +103,7 @@ class WaitForTxStepExecutor(StepExecutor):
             error_code="timeout_chain_verification",
             step=step,
         )
-        if chain == "zerochain":
+        if chain_uses_dag(chain, network=network):
             await self._wait_stage(
                 name="dag event",
                 tx_hash=tx_hash,
@@ -145,7 +146,7 @@ class WaitForTxStepExecutor(StepExecutor):
             error_code="timeout_mempool_failure_verification",
             step=step,
         )
-        if chain == "zerochain":
+        if chain_uses_dag(chain, network=network):
             await self._wait_stage(
                 name="dag event (total: 0)",
                 tx_hash=tx_hash,

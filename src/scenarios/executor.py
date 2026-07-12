@@ -518,9 +518,10 @@ class ScenarioExecutor:
         # Universal approach: apply all defaults to all steps that have these attributes
         # No type checking - just check if attribute exists and has default value
         
-        # node
+        # node — apply only when the step did not explicitly set it in YAML
         if defaults.node and hasattr(step, 'node'):
-            if step.node == "node1":  # Default value
+            fields_set = getattr(step, 'model_fields_set', set())
+            if 'node' not in fields_set and not step.node:
                 step.node = defaults.node
         
         # wait
@@ -542,18 +543,14 @@ class ScenarioExecutor:
                 step.timeout = defaults.timeout
         
         # Special handling for WaitForDatumStep timeouts:
-        # Only apply the global timeout default when the step uses Pydantic
-        # schema defaults, meaning the user did NOT explicitly set them in YAML.
+        # Only apply the global timeout default to timeout_total when the user
+        # did NOT explicitly set it in YAML. Never downgrade per-stage timeouts
+        # (mempool/verification/in_blocks) to the generic CLI default — that
+        # breaks long-running consensus waits (e.g. chipchain main chain).
         if isinstance(step, WaitForDatumStep) and defaults.timeout:
             fields_info = step.model_fields_set if hasattr(step, 'model_fields_set') else set()
             if 'timeout_total' not in fields_info and step.timeout_total == 300:
                 step.timeout_total = defaults.timeout
-            if 'timeout_mempool' not in fields_info and step.timeout_mempool == 60:
-                step.timeout_mempool = defaults.timeout
-            if 'timeout_verification' not in fields_info and step.timeout_verification == 120:
-                step.timeout_verification = defaults.timeout
-            if 'timeout_in_blocks' not in fields_info and step.timeout_in_blocks == 180:
-                step.timeout_in_blocks = defaults.timeout
         
         return step
     
