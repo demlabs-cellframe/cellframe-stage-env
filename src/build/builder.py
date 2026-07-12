@@ -448,8 +448,8 @@ class BuildManager:
         package_path = Path(local_path)
         if not package_path.is_absolute():
             package_path = self.base_path / local_path
-        
-        package_path = package_path.resolve()
+
+        package_path = self._resolve_local_deb_path(package_path)
         
         # If package doesn't exist and we're in cellframe-node repo, try to build it
         if not package_path.exists():
@@ -476,6 +476,34 @@ class BuildManager:
         logger.info("using_local_package", path=str(package_path))
         
         return package_path
+    
+    @staticmethod
+    def _resolve_local_deb_path(package_path: Path) -> Path:
+        """Resolve local .deb path; support globs (e.g. ../../build/cellframe-node*.deb)."""
+        import glob as _glob
+
+        resolved = package_path.resolve()
+        if resolved.exists():
+            return resolved
+
+        pattern = str(package_path)
+        candidates = sorted(_glob.glob(pattern), key=lambda f: Path(f).stat().st_mtime, reverse=True)
+        if not candidates and "*" not in pattern:
+            parent = resolved.parent
+            if parent.exists():
+                candidates = sorted(
+                    parent.glob(f"{resolved.stem}*.deb"),
+                    key=lambda f: f.stat().st_mtime,
+                    reverse=True,
+                )
+                candidates = [str(p) for p in candidates]
+
+        if candidates:
+            found = Path(candidates[0]).resolve()
+            logger.info("local_deb_glob_resolved", pattern=pattern, resolved=str(found))
+            return found
+
+        return resolved
     
     def _is_cellframe_node_repo(self) -> bool:
         """Check if we're running in cellframe-node repository."""
