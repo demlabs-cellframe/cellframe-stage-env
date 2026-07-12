@@ -36,9 +36,8 @@ echo "=== Stage Environment CI ==="
 echo "Package:  $DEB_PATH"
 echo "Tests:    $TEST_DIR"
 
-# Prepare work config with all paths pointing to CI work dir
+# Prepare ephemeral CI work config (never overwrite tracked tests/stage-env.cfg)
 mkdir -p "$WORK_DIR"
-mkdir -p "$(dirname "$PROJECT_ROOT/tests/stage-env.cfg")"
 sed \
   -e "s|^type = .*|type = local|" \
   -e "s|^local_path = .*|local_path = $DEB_PATH|" \
@@ -48,9 +47,7 @@ sed \
   -e "s|^snapshots_dir = .*|snapshots_dir = $CACHE_DIR/snapshots|" \
   "$STAGE_ENV_DIR/config/stage-env.cfg.default" > "$CFG"
 
-# Copy to tests/stage-env.cfg
-cp "$CFG" "$PROJECT_ROOT/tests/stage-env.cfg"
-echo "Copied config to $PROJECT_ROOT/tests/stage-env.cfg"
+echo "Using ephemeral CI config: $CFG"
 
 cd "$STAGE_ENV_DIR"
 
