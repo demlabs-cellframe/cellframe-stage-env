@@ -455,6 +455,7 @@ class NetworkManager:
 
         cache_dir = self.paths_config.get('cache_dir', 'cache')
         configs_cache = (self.base_path / cache_dir / 'configs').resolve()
+        certs_cache = (self.base_path / cache_dir / 'certs').resolve()
         network_name = self.topology.network.name
 
         cfg_d_template_dir = (
@@ -476,6 +477,74 @@ class NetworkManager:
                     (node_cfg_d / cfg_snippet.name).write_text(rendered)
 
             self.config_generator._generate_plugins_config(node_cfg_d, node)
+
+        # Fix stale authorized_nodes_addrs in main.cfg after snapshot restore.
+        # The snapshot may have addresses from a previous topology. Re-collect
+        # from cert files (source of truth) and update main.cfg if mismatched.
+        self._fix_stale_validator_addrs(configs_cache, certs_cache, network_name, node_configs)
+
+    def _fix_stale_validator_addrs(self, configs_cache, certs_cache, network_name, node_configs):
+        """Fix stale validator addresses in main.cfg after snapshot restore."""
+        from jinja2 import Template as J2Template
+        import re
+
+        # Collect master node IDs (consensus_participation, not seed)
+        master_node_ids = [n.node_id for n in node_configs
+                          if getattr(n, 'consensus_participation', False) and not n.is_seed_node]
+        if not master_node_ids:
+            return
+
+        # Read fresh addresses from cert files
+        fresh_addrs = []
+        for nid in master_node_ids:
+            addr_file = certs_cache / f"node{nid}" / "validator_addr.txt"
+            if addr_file.exists():
+                try:
+                    addr = addr_file.read_text().strip()
+                    if addr:
+                        fresh_addrs.append(addr)
+                except Exception:
+                    pass
+
+        if not fresh_addrs:
+            return
+
+        fresh_addrs_str = f"[{','.join(fresh_addrs)}]"
+
+        # Check and fix each node's main.cfg
+        for node in node_configs:
+            main_cfg = configs_cache / f"node{node.node_id}" / "network" / network_name / "main.cfg"
+            if not main_cfg.exists():
+                continue
+
+            try:
+                content = main_cfg.read_text()
+                # Find current authorized_nodes_addrs
+                match = re.search(r'authorized_nodes_addrs=\[([^\]]*)\]', content)
+                if match:
+                    current = match.group(1).strip()
+                    current_addrs = [a.strip() for a in current.split(',') if a.strip()]
+                    if set(current_addrs) != set(fresh_addrs):
+                        new_content = content.replace(
+                            f'authorized_nodes_addrs=[{current}]',
+                            f'authorized_nodes_addrs={fresh_addrs_str}'
+                        )
+                        # Also fix validators_addrs if present
+                        match2 = re.search(r'validators_addrs=\[([^\]]*)\]', new_content)
+                        if match2:
+                            current2 = match2.group(1).strip()
+                            new_content = new_content.replace(
+                                f'validators_addrs=[{current2}]',
+                                f'validators_addrs={fresh_addrs_str}'
+                            )
+                        main_cfg.write_text(new_content)
+                        logger.info("fixed_stale_validator_addrs",
+                                   node_id=node.node_id,
+                                   old=current[:50],
+                                   new=fresh_addrs_str[:50])
+            except Exception as e:
+                logger.warning("failed_to_fix_stale_addrs",
+                             node_id=node.node_id, error=str(e))
 
     async def _purge_nodes_list_before_snapshot(self, node_configs) -> None:
         """Delete all entries from ``<net>.nodes.list`` via CLI before snapshot.

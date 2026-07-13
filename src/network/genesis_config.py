@@ -779,12 +779,36 @@ class GenesisConfigManager(BaseGenesisManager):
         #
         # poa_mode is independent: false => PoS (validators from stake/delegation);
         # true => PoA (validators_addrs list is authoritative).
-        if 'validators_addrs' not in existing_main_params:
-            raise RuntimeError(
-                f"CRITICAL: validators_addrs not found in existing_main_params! "
-                f"Cannot regenerate config without validators_addrs."
-            )
-        validators_addrs_value = existing_main_params['validators_addrs']
+        # Always re-collect validator addresses from certificates.
+        # The existing config may have stale addresses from a previous topology.
+        # Certificates are the source of truth — they're regenerated on each clean run.
+        certs_cache = config_generator.certs_cache
+        fresh_addrs = []
+        for nid in node_ids:
+            addr_file = certs_cache / f"node{nid}" / "validator_addr.txt"
+            if addr_file.exists():
+                try:
+                    addr = addr_file.read_text().strip()
+                    if addr:
+                        fresh_addrs.append(addr)
+                except Exception:
+                    pass
+        if fresh_addrs:
+            validators_addrs_value = f"[{','.join(fresh_addrs)}]"
+            logger.info("validators_addrs_recollected_from_certificates",
+                       validators=validators_addrs_value[:50],
+                       count=len(fresh_addrs),
+                       note="Always re-collect from certs to avoid stale addresses")
+        else:
+            # Fallback: use existing config if certs not available
+            if 'validators_addrs' not in existing_main_params:
+                raise RuntimeError(
+                    f"CRITICAL: validators_addrs not found in existing_main_params and certs empty! "
+                    f"Cannot regenerate config without validators_addrs."
+                )
+            validators_addrs_value = existing_main_params['validators_addrs']
+            logger.warning("validators_addrs_fallback_to_existing_config",
+                         note="Certs empty, falling back to existing config")
         
         # Extract validator count from validators_addrs to calculate min_validators_count
         import re

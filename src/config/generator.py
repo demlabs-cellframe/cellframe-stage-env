@@ -1111,6 +1111,23 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
                    count=node_count,
                    root_count=root_count)
         
+        # ALWAYS clean stale cert directories before checking/generating.
+        # The cert-generator (cf-cert-generator) may create more directories
+        # than node_count based on its internal logic. Stale directories from
+        # previous topologies cause _collect_validator_addresses to read
+        # wrong addresses for mainchain authorized_nodes_addrs.
+        if self.certs_cache.exists():
+            for stale_dir in sorted(self.certs_cache.iterdir()):
+                if stale_dir.is_dir() and stale_dir.name.startswith("node"):
+                    try:
+                        stale_id = int(stale_dir.name.replace("node", ""))
+                        if stale_id > node_count:
+                            logger.info("removing_stale_cert_dir",
+                                       dir=stale_dir.name, node_count=node_count)
+                            shutil.rmtree(stale_dir)
+                    except ValueError:
+                        pass
+        
         # Check if ALL required certificates exist (not just any cert)
         certs_complete = self.cert_generator.certs_exist(
             node_count=node_count,
@@ -1132,6 +1149,20 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
                 network_id=topology.network.network_id,
                 validator_sig_type=getattr(topology.consensus, 'validator_cert_type', 'sig_dil'),
             )
+            
+            # Remove stale cert directories created by cert-generator.
+            # cf-cert-generator may create more dirs than node_count.
+            if self.certs_cache.exists():
+                for stale_dir in self.certs_cache.iterdir():
+                    if stale_dir.is_dir() and stale_dir.name.startswith("node"):
+                        try:
+                            stale_id = int(stale_dir.name.replace("node", ""))
+                            if stale_id > node_count:
+                                logger.info("removing_post_gen_stale_cert_dir",
+                                           dir=stale_dir.name, node_count=node_count)
+                                shutil.rmtree(stale_dir)
+                        except ValueError:
+                            pass
             
             # Validate generated certificates
             missing = self.cert_generator._get_missing_certs(node_count, root_count, network_name)
