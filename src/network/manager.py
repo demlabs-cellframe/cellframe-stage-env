@@ -422,18 +422,79 @@ class NetworkManager:
                        patched_ext_address=ext_patched)
 
     def _regenerate_configs_after_restore(self, node_configs) -> None:
-        """Re-render ``cellframe-node.cfg.d`` snippets from current templates.
+        """Re-render configs from current templates after snapshot restore.
 
         Snapshots may have been created with older template versions.  Re-
         rendering ensures that any template changes (e.g. new role-specific
-        settings like ``mempool_autoproc``) take effect without requiring a
-        full snapshot rebuild.
+        settings like ``mempool_autoproc`` or ``links_required``) take effect
+        without requiring a full snapshot rebuild.
+
+        IMPORTANT: We only regenerate the network config (stagenet.cfg) and
+        cellframe-node.cfg.d snippets here.  Chain configs (main.cfg,
+        zerochain.cfg) are NOT regenerated because they contain dynamically-set
+        values (fee_addr, static_genesis_event, static_genesis_block) that
+        were written during genesis and must be preserved from the snapshot.
         """
         from jinja2 import Template as J2Template
 
         cache_dir = self.paths_config.get('cache_dir', 'cache')
         configs_cache = (self.base_path / cache_dir / 'configs').resolve()
         network_name = self.topology.network.name
+
+        # Only regenerate stagenet.cfg (network config) — NOT chain configs.
+        # Chain configs contain fee_addr / static_genesis_* that must be kept.
+        src_network_cfg = (
+            self.config_generator._resolve_template(f"{network_name}.cfg")
+            or self.config_generator._resolve_template(f"{network_name}.cfg.j2")
+            or self.config_generator._resolve_template("network.cfg.j2")
+        )
+        if src_network_cfg:
+            network_template = J2Template(src_network_cfg.read_text())
+            root_nodes = [n for n in node_configs if n.role == 'root']
+            master_nodes = [n for n in node_configs if n.role == 'master']
+            if root_nodes:
+                hosts_list = ','.join([f"{n.ip_address}:{n.node_port}" for n in root_nodes])
+                seed_nodes_hosts = f"[{hosts_list}]"
+                aliases_list = ','.join([f"{network_name}.root.{idx}" for idx in range(len(root_nodes))])
+                seed_nodes_aliases = f"[{aliases_list}]"
+                permanent_nodes_hosts = f"[{hosts_list}]"
+            else:
+                seed_nodes_hosts = "[]"
+                seed_nodes_aliases = "[]"
+                permanent_nodes_hosts = "[]"
+            permanent_nodes_addrs = self.config_generator._collect_root_node_addresses(node_configs, network_name)
+            root_nodes_count = len(root_nodes)
+            links_required = max(0, root_nodes_count - 1) if root_nodes_count > 0 else 1
+            links_required = min(links_required, 3)
+
+            for node in node_configs:
+                node_role = node.role
+                events_sign_cert = None
+                blocks_sign_cert = None
+                if node.is_seed_node:
+                    events_sign_cert = f"{network_name}.root.pvt.{node.node_id - 1}"
+                if node.consensus_participation and not node.is_seed_node:
+                    blocks_sign_cert = f"{network_name}.master.pvt.{node.node_id - root_nodes_count - 1}"
+
+                network_context = {
+                    'network_name': network_name,
+                    'network_id': getattr(self.topology.network, 'network_id', '0x0000000000001234'),
+                    'native_ticker': getattr(self.topology.network, 'native_ticker', 'TCELL'),
+                    'collecting_level': getattr(self.topology.consensus, 'collecting_level', 10.0),
+                    'node_role': node_role,
+                    'seed_nodes_aliases': seed_nodes_aliases,
+                    'seed_nodes_hosts': seed_nodes_hosts,
+                    'permanent_nodes_addrs': permanent_nodes_addrs,
+                    'permanent_nodes_hosts': permanent_nodes_hosts,
+                    'links_required': links_required,
+                    'events_sign_cert': events_sign_cert,
+                    'blocks_sign_cert': blocks_sign_cert,
+                }
+                dst_file = configs_cache / f"node{node.node_id}" / "network" / f"{network_name}.cfg"
+                dst_file.write_text(network_template.render(**network_context))
+                logger.debug("network_config_regenerated_after_restore",
+                           node_id=node.node_id,
+                           path=str(dst_file))
 
         cfg_d_template_dir = (
             self.config_generator._resolve_template("cellframe-node.cfg.d")

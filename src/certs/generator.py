@@ -273,9 +273,10 @@ class CertGenerator:
     
     def generate_all(
         self,
-        network_name: str,
-        node_count: int,
+        network_name: str = "stagenet",
+        node_count: int = 4,
         root_count: int = 2,
+        master_count: Optional[int] = None,
         network_id: str = "0x0000000000001234",
     ) -> dict:
         """
@@ -284,16 +285,21 @@ class CertGenerator:
         Args:
             network_name: Network name (e.g., "stagenet")
             node_count: Total number of nodes
-            root_count: Number of ROOT nodes (rest will be MASTER)
+            root_count: Number of ROOT nodes
+            master_count: Number of MASTER nodes (default: node_count - root_count)
             network_id: Network ID hex string
             
         Returns:
             Dict with generated certificate paths
         """
+        if master_count is None:
+            master_count = node_count - root_count
+        
         logger.info("generating_all_certificates",
                    network=network_name,
                    nodes=node_count,
                    root_count=root_count,
+                   master_count=master_count,
                    method="docker_self_contained")
 
         print_info(_("Generating {} node certificates (self-contained Docker)...").format(node_count))
@@ -310,7 +316,7 @@ class CertGenerator:
             "-v", f"{self.certs_dir.absolute()}:/output",
             CERT_BUILDER_IMAGE,
             "-c",
-            f"/usr/local/bin/cf-cert-generator /output {node_count} {network_name} {network_id} {root_count} && "
+            f"/usr/local/bin/cf-cert-generator /output {node_count} {network_name} {network_id} {root_count} {master_count} && "
             f"chown -R {uid}:{gid} /output",
         ]
 
@@ -361,6 +367,7 @@ class CertGenerator:
             "network_id": network_id,
             "node_count": node_count,
             "root_count": root_count,
+            "master_count": master_count,
             "generated_at": self._get_timestamp(),
             "crypto": "Dilithium (post-quantum)",
         }
@@ -535,13 +542,14 @@ class CertGenerator:
         from datetime import datetime
         return datetime.utcnow().isoformat() + "Z"
     
-    def certs_exist(self, node_count: int = 0, root_count: int = 0, network_name: str = "stagenet") -> bool:
+    def certs_exist(self, node_count: int = 0, root_count: int = 0, master_count: Optional[int] = None, network_name: str = "stagenet") -> bool:
         """
         Check if all required certificates exist.
         
         Args:
             node_count: Expected number of nodes (0 = basic check only)
             root_count: Expected number of ROOT nodes (0 = basic check only)
+            master_count: Expected number of MASTER nodes (None = node_count - root_count)
             network_name: Network name for certificate naming
             
         Returns:
@@ -562,7 +570,7 @@ class CertGenerator:
         
         # If node_count specified, validate all required certs exist
         if node_count > 0:
-            missing_certs = self._get_missing_certs(node_count, root_count, network_name)
+            missing_certs = self._get_missing_certs(node_count, root_count, master_count, network_name)
             if missing_certs:
                 logger.warning("incomplete_certificates_detected",
                              missing=missing_certs[:5],  # Log first 5
@@ -575,7 +583,8 @@ class CertGenerator:
         self, 
         node_count: int, 
         root_count: int, 
-        network_name: str
+        master_count: Optional[int] = None,
+        network_name: str = "stagenet"
     ) -> list:
         """
         Get list of missing required certificates.
@@ -583,11 +592,15 @@ class CertGenerator:
         Args:
             node_count: Total number of nodes
             root_count: Number of ROOT nodes
+            master_count: Number of MASTER nodes (None = node_count - root_count)
             network_name: Network name
             
         Returns:
             List of missing certificate paths
         """
+        if master_count is None:
+            master_count = node_count - root_count
+        
         missing = []
         
         for node_id in range(1, node_count + 1):
@@ -602,10 +615,13 @@ class CertGenerator:
                 # ROOT node
                 cert_idx = node_id - 1
                 cert_name = f"{network_name}.root.pvt.{cert_idx}.dcert"
-            else:
+            elif node_id <= root_count + master_count:
                 # MASTER node
                 cert_idx = node_id - root_count - 1
                 cert_name = f"{network_name}.master.pvt.{cert_idx}.dcert"
+            else:
+                # FULL node - no validator cert needed
+                continue
             
             if not (node_dir / cert_name).exists():
                 missing.append(f"node{node_id}/{cert_name}")

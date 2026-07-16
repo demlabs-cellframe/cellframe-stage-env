@@ -131,7 +131,7 @@ static int s_create_directory(const char *a_path);
 static int s_validator_address_generate(dap_cert_t *a_cert, char *a_addr_out, size_t a_addr_size, uint64_t a_network_id);
 static int s_copy_file(const char *a_src_path, const char *a_dst_path);
 static int s_save_to_file(const char *a_file_path, const char *a_content);
-static int s_node_certificate_generate(dap_cert_generator_node_t *a_node, const char *a_output_dir, const char *a_network_name, uint64_t a_network_id, bool a_is_root_node, int a_cert_idx);
+static int s_node_certificate_generate(dap_cert_generator_node_t *a_node, const char *a_output_dir, const char *a_network_name, uint64_t a_network_id, bool a_is_root_node, int a_cert_idx, bool a_is_full_node);
 static int s_pki_config_generate(const dap_cert_generator_node_t *a_nodes, int a_node_count, const char *a_output_dir);
 
 /* === Helper Functions === */
@@ -323,7 +323,7 @@ static int s_save_to_file(const char *file_path, const char *content) {
  * @param is_root_node true for ROOT nodes (DAG-PoA), false for MASTER nodes (ESBocs)
  * @param cert_idx Local certificate index (0,1,2 for each type)
  */
-static int s_node_certificate_generate(dap_cert_generator_node_t *node, const char *output_dir, const char *network_name, uint64_t network_id, bool is_root_node, int cert_idx) {
+static int s_node_certificate_generate(dap_cert_generator_node_t *node, const char *output_dir, const char *network_name, uint64_t network_id, bool is_root_node, int cert_idx, bool is_full_node) {
     if (!node || !output_dir) {
         log_it(L_ERROR, "Invalid parameters for certificate generation");
         return DAP_CERT_GEN_RET_ERROR;
@@ -405,6 +405,15 @@ static int s_node_certificate_generate(dap_cert_generator_node_t *node, const ch
         s_save_to_file(addr_file, node_addr_str);
         log_it(L_INFO, "Node address saved: %s", node_addr_str);
     }
+    
+    /* Full nodes don't need validator certificates */
+    if (is_full_node) {
+        dap_cert_delete(node->cert);
+        node->cert = NULL;
+        log_it(L_INFO, "Full node %s: skipping validator certificate generation", node->node_name);
+        return DAP_CERT_GEN_RET_SUCCESS;
+    }
+    
     /* Delete node->cert to ensure it does not interfere with validator cert */
     dap_cert_delete(node->cert);
     node->cert = NULL;
@@ -811,11 +820,11 @@ int main(int argc, char *argv[]) {
 
     /* Parse command line arguments */
     if (argc < 4) {
-        log_it(L_ERROR, "Usage: %s <output_dir> <node_count> <network_name> [network_id] [root_count]", argv[0]);
+        log_it(L_ERROR, "Usage: %s <output_dir> <node_count> <network_name> [network_id] [root_count] [master_count]", argv[0]);
         log_it(L_ERROR, "       %s --single <output_dir> [cert_name] [--type sig_dil|sig_falcon|...]", argv[0]);
         log_it(L_ERROR, "       %s --dump <cert_path>                # print certificate info", argv[0]);
         log_it(L_ERROR, "       %s --read-addr <cert_path>           # read node address from .dcert", argv[0]);
-        log_it(L_ERROR, "Example: %s /certs 6 stagenet 0x1234 2  # 6 nodes, 2 ROOT, 4 MASTER", argv[0]);
+        log_it(L_ERROR, "Example: %s /certs 6 stagenet 0x1234 2 4  # 6 nodes, 2 ROOT, 4 MASTER", argv[0]);
         log_it(L_ERROR, "Example: %s --single /tmp/out test_cert --type sig_dil", argv[0]);
         log_it(L_ERROR, "Example: %s --dump /path/to/cert.dcert", argv[0]);
         log_it(L_ERROR, "Example: %s --read-addr /path/to/node-addr.dcert  # → 80C4::5AC6::1583::B52C", argv[0]);
@@ -862,8 +871,20 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    log_it(L_INFO, "Configuration: %d nodes total, %d ROOT, %d MASTER", 
-           node_count, root_count, node_count - root_count);
+    /* Parse optional master_count argument */
+    int master_count = node_count - root_count;  /* Default: all non-root are master */
+    if (argc >= 7) {
+        master_count = atoi(argv[6]);
+        if (master_count < 0 || master_count > node_count - root_count) {
+            log_it(L_ERROR, "Invalid master_count: %d (must be 0-%d)", master_count, node_count - root_count);
+            dap_enc_key_deinit();
+            return DAP_CERT_GEN_RET_ERROR;
+        }
+    }
+    
+    int full_count = node_count - root_count - master_count;
+    log_it(L_INFO, "Configuration: %d nodes total, %d ROOT, %d MASTER, %d FULL", 
+           node_count, root_count, master_count, full_count);
     
     /* Allocate nodes array dynamically */
     nodes = DAP_NEW_Z_COUNT(dap_cert_generator_node_t, node_count);
@@ -910,15 +931,17 @@ int main(int argc, char *argv[]) {
         
         nodes[i].node_id = i + 1;
         
-        /* Determine node type: first 3 nodes are ROOT (DAG-PoA), rest are MASTER (ESBocs) */
+        /* Determine node type: ROOT, MASTER, or FULL */
         bool is_root_node = (i < root_count);
-        const char *node_type = is_root_node ? "ROOT" : "MASTER";
+        bool is_master_node = (!is_root_node && i < root_count + master_count);
+        bool is_full_node = (!is_root_node && !is_master_node);
+        const char *node_type = is_root_node ? "ROOT" : (is_master_node ? "MASTER" : "FULL");
         
         /* Calculate LOCAL certificate index (0,1,2 for each type separately) */
-        int cert_idx = is_root_node ? i : (i - root_count);  /* ROOT: 0,1,...  MASTER: 0,1,... */
+        int cert_idx = is_root_node ? i : (is_master_node ? (i - root_count) : 0);  /* ROOT: 0,1,...  MASTER: 0,1,... */
         
         log_it(L_INFO, "Generating %s node certificate for %s (cert_idx=%d)...", node_type, nodes[i].node_name, cert_idx);
-        if (s_node_certificate_generate(&nodes[i], output_dir, network_name, network_id, is_root_node, cert_idx) != DAP_CERT_GEN_RET_SUCCESS) {
+        if (s_node_certificate_generate(&nodes[i], output_dir, network_name, network_id, is_root_node, cert_idx, is_full_node) != DAP_CERT_GEN_RET_SUCCESS) {
             log_it(L_ERROR, "Failed to generate certificate for %s", nodes[i].node_name);
             ret = DAP_CERT_GEN_RET_ERROR;
             goto cleanup;

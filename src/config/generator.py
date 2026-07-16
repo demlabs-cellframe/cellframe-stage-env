@@ -394,6 +394,13 @@ class ConfigGenerator:
             # without relying on the GDB nodelist (which is empty at first
             # boot in a freshly bootstrapped local network).
             permanent_nodes_addrs = base_chain_context['root_nodes_addrs'] if base_chain_context else "[]"
+            # links_required must not exceed the number of reachable peers in the
+            # smallest startup phase (root-only). With N root nodes, each can only
+            # form uplinks to N-1 others (self is filtered out). Cap at 3 to avoid
+            # requiring too many links in larger topologies.
+            root_nodes_count = len(root_nodes)
+            links_required = max(0, root_nodes_count - 1) if root_nodes_count > 0 else 1
+            links_required = min(links_required, 3)
             network_context = {
                 'network_name': network_name,
                 'network_id': base_chain_context['network_id'] if base_chain_context else '0x0000000000001234',
@@ -404,6 +411,7 @@ class ConfigGenerator:
                 'seed_nodes_hosts': seed_nodes_hosts,
                 'permanent_nodes_addrs': permanent_nodes_addrs,
                 'permanent_nodes_hosts': permanent_nodes_hosts,
+                'links_required': links_required,
                 'events_sign_cert': events_sign_cert,
                 'blocks_sign_cert': blocks_sign_cert
             }
@@ -945,16 +953,20 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
         
         # ROOT nodes are seed nodes (DAG-PoA on zerochain)
         root_count = len([n for n in nodes if n.is_seed_node])
+        # MASTER nodes participate in consensus (ESBocs on main)
+        master_count = len([n for n in nodes if n.consensus_participation])
         
         logger.info("generating_certificates_with_docker",
                    network=network_name,
                    count=node_count,
-                   root_count=root_count)
+                   root_count=root_count,
+                   master_count=master_count)
         
         # Check if ALL required certificates exist (not just any cert)
         certs_complete = self.cert_generator.certs_exist(
             node_count=node_count,
             root_count=root_count,
+            master_count=master_count,
             network_name=network_name
         )
         
@@ -969,11 +981,12 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
                 network_name=network_name,
                 node_count=node_count,
                 root_count=root_count,
+                master_count=master_count,
                 network_id=topology.network.network_id
             )
             
             # Validate generated certificates
-            missing = self.cert_generator._get_missing_certs(node_count, root_count, network_name)
+            missing = self.cert_generator._get_missing_certs(node_count, root_count, master_count, network_name)
             if missing:
                 logger.error("certificate_generation_incomplete", missing=missing)
                 raise RuntimeError(f"Certificate generation incomplete. Missing: {missing[:5]}")
@@ -990,7 +1003,7 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
         )
         
         # Validate certificates were copied to data directories
-        self._validate_certs_in_data_dirs(node_count, root_count, network_name)
+        self._validate_certs_in_data_dirs(node_count, root_count, master_count, network_name)
         
         logger.info("certificates_generated_and_distributed",
                    network=network_name,
@@ -1000,7 +1013,8 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
         self, 
         node_count: int, 
         root_count: int, 
-        network_name: str
+        master_count: Optional[int] = None,
+        network_name: str = "stagenet"
     ) -> None:
         """
         Validate that required certificates exist in node data directories.
@@ -1008,11 +1022,15 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
         Args:
             node_count: Total number of nodes
             root_count: Number of ROOT nodes
+            master_count: Number of MASTER nodes (None = node_count - root_count)
             network_name: Network name
             
         Raises:
             RuntimeError: If required certificates are missing
         """
+        if master_count is None:
+            master_count = node_count - root_count
+        
         missing = []
         
         for node_id in range(1, node_count + 1):
@@ -1022,9 +1040,12 @@ blocks-sign-cert={network_name}.master.pvt.{master_idx}
             if node_id <= root_count:
                 cert_idx = node_id - 1
                 cert_name = f"{network_name}.root.pvt.{cert_idx}.dcert"
-            else:
+            elif node_id <= root_count + master_count:
                 cert_idx = node_id - root_count - 1
                 cert_name = f"{network_name}.master.pvt.{cert_idx}.dcert"
+            else:
+                # FULL node - no validator cert needed
+                continue
             
             cert_path = node_ca_dir / cert_name
             if not cert_path.exists():

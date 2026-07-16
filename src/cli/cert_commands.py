@@ -42,10 +42,12 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         
         print_info(_("Generating certificates for {} nodes + {} validators...").format(nodes, validators))
         
+        root_count = max(1, nodes - validators)
         result = cert_gen.generate_all(
             network_name=network,
             node_count=nodes,
-            validator_count=validators,
+            root_count=root_count,
+            master_count=validators,
         )
         
         print_success(_("Generated {} node certificates").format(len(result['nodes'])))
