@@ -1184,6 +1184,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         start_network: bool = typer.Option(True, "--start-network/--no-start-network", help="Start network before tests"),
         stop_after: bool = typer.Option(True, "--stop-after/--keep-running", help="Stop network after tests"),
         params: Optional[List[str]] = typer.Option(None, "--param", "-P", help="Pass KEY=VALUE params to scenarios (repeatable)"),
+        debug_build: bool = typer.Option(False, "--debug-build", help="Build debug node (no strip, with ASAN symbols, core dumps enabled)"),
     ):
         """🧪 Run YAML test scenarios from specified directories."""
         
@@ -1297,7 +1298,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
             network_mgr.keep_running = not stop_after
             
             async def _start_network():
-                await network_mgr.start(rebuild=False, wait_ready=True)
+                await network_mgr.start(rebuild=False, wait_ready=True, debug_build=debug_build)
             
             try:
                 asyncio.run(_start_network())

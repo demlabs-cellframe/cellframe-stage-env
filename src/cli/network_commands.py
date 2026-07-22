@@ -54,6 +54,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompts"),
         wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for nodes"),
         keep_running: bool = typer.Option(False, "--keep-running", help="Keep containers running on failure (for debugging)"),
+        debug_build: bool = typer.Option(False, "--debug-build", help="Build debug node (no strip, with ASAN symbols, core dumps enabled)"),
     ):
         """▶️  Start the test network."""
         from ..network.manager import NetworkManager
@@ -129,7 +130,7 @@ def register_commands(app: typer.Typer, base_path: Path, get_config_path: Callab
         network_mgr.keep_running = keep_running
         
         async def _start():
-            await network_mgr.start(rebuild=rebuild, wait_ready=wait)
+            await network_mgr.start(rebuild=rebuild, wait_ready=wait, debug_build=debug_build)
         
         try:
             asyncio.run(_start())

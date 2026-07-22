@@ -239,7 +239,8 @@ class DockerComposeManager:
         cache_dir_relative: str = "cache",
         node_source_config: Optional[Dict[str, Any]] = None,
         network_settings: Optional[Dict[str, str]] = None,
-        extra_services: Optional[Dict[str, Any]] = None
+        extra_services: Optional[Dict[str, Any]] = None,
+        debug_build: bool = False,
     ) -> None:
         """
         Generate docker-compose.yml dynamically for given nodes.
@@ -558,8 +559,14 @@ class DockerComposeManager:
                 'DAP_DEBUG': '1',
                 'CELLFRAME_DEBUG': '1',
                 'DEBUG_GDB': '0',
-                'ASAN_OPTIONS': 'detect_leaks=0:halt_on_error=0:print_stacktrace=1:log_path=/opt/cellframe-node/var/log/asan'
             }
+            if debug_build:
+                env['ASAN_OPTIONS'] = 'detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1:log_path=/opt/cellframe-node/var/log/asan'
+                env['DAP_ASAN'] = '1'
+                # LD_PRELOAD libasan so docker exec (cli) also has ASAN runtime
+                env['LD_PRELOAD'] = '/usr/lib/x86_64-linux-gnu/libasan.so.8'
+            else:
+                env['ASAN_OPTIONS'] = 'detect_leaks=0:halt_on_error=0:print_stacktrace=1:log_path=/opt/cellframe-node/var/log/asan'
             if network_settings:
                 env['DOCKER_SUBNET'] = network_settings.get('subnet', '172.20.0.0/16')
                 env['DOCKER_GATEWAY'] = network_settings.get('gateway', '172.20.0.1')

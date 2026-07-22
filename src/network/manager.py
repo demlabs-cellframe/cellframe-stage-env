@@ -855,6 +855,7 @@ class NetworkManager:
         self,
         rebuild: bool = False,
         wait_ready: bool = True,
+        debug_build: bool = False,
     ) -> None:
         """
         Start the test network.
@@ -862,6 +863,7 @@ class NetworkManager:
         Args:
             rebuild: Rebuild Docker images before starting
             wait_ready: Wait for all nodes to be ready
+            debug_build: Build with debug symbols (no strip), ASAN, core dumps
         """
         logger.info("starting_network",
                    topology=self.topology_name,
@@ -906,6 +908,7 @@ class NetworkManager:
                     'base_ip': settings.base_ip,
                 },
                 extra_services=self.docker_compose or None,
+                debug_build=debug_build,
             )
             if rebuild:
                 self.compose.build(no_cache=rebuild)

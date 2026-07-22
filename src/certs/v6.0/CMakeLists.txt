@@ -24,6 +24,13 @@ message(STATUS "DAP SDK Build: ${DAP_SDK_BUILD}")
 # Definitions
 add_definitions(-DDAP_OS_UNIX -DDAP_OS_LINUX)
 
+# Override harmful flags inherited from dap-sdk build system
+# --gc-sections removes functions only referenced through dispatch pointers
+# --strip-all removes symbols needed for static linking
+string(REPLACE "-Wl,--gc-sections" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+string(REPLACE "-Wl,--strip-all" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+string(REPLACE "-ffunction-sections" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+
 # Auto-discover all include directories from dap-sdk modules
 file(GLOB_RECURSE DAP_SDK_INCLUDE_DIRS LIST_DIRECTORIES true "${DAP_SDK_SRC}/module/*/include")
 
@@ -57,6 +64,10 @@ link_directories(
     ${DAP_SDK_BUILD}
 )
 
+# Use static libdap-sdk.a to avoid PLT/GOT symbol resolution issues in .so
+# (--gc-sections + --strip-all can drop internal symbols from .dynsym)
+find_library(DAP_SDK_STATIC_LIB libdap-sdk.a PATHS ${DAP_SDK_BUILD} NO_DEFAULT_PATH)
+
 # Compile cellframe-sdk common module sources when available (needed for
 # dap_chain_addr_fill_from_key, dap_chain_addr_to_str, etc.)
 set(CF_COMMON_SOURCES "")
@@ -68,23 +79,23 @@ endif()
 # === cf-cert-generator ===
 add_executable(cf-cert-generator cert-generator.c ${CF_COMMON_SOURCES})
 
-target_link_libraries(cf-cert-generator
-    dap-sdk
-    dap-sdk
-    pthread
-    m
-    ssl
-    crypto
-)
+if(DAP_SDK_STATIC_LIB)
+    target_link_libraries(cf-cert-generator
+        ${DAP_SDK_STATIC_LIB}
+        ${DAP_SDK_BUILD}/module/crypto/mlkem_build/libdap_mlkem_512.a
+        ${DAP_SDK_BUILD}/module/crypto/mlkem_build/libdap_mlkem_768.a
+        ${DAP_SDK_BUILD}/module/crypto/mlkem_build/libdap_mlkem_1024.a
+        ${DAP_SDK_BUILD}/module/core/src/unix/libdap_core_unix.a
+        pthread m ssl crypto dl rt)
+else()
+    target_link_libraries(cf-cert-generator dap-sdk pthread m ssl crypto)
+endif()
 
 # === dap-cert (simple utility) ===
 add_executable(dap-cert dap-cert.c ${CF_COMMON_SOURCES})
 
-target_link_libraries(dap-cert
-    dap-sdk
-    dap-sdk
-    pthread
-    m
-    ssl
-    crypto
-)
+if(DAP_SDK_STATIC_LIB)
+    target_link_libraries(dap-cert ${DAP_SDK_STATIC_LIB} pthread m ssl crypto dl)
+else()
+    target_link_libraries(dap-cert dap-sdk pthread m ssl crypto)
+endif()

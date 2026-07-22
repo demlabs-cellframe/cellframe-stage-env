@@ -22,7 +22,11 @@ mkdir -p "$CRASH_DIR"
 cd "$CRASH_DIR"
 
 if ldd /opt/cellframe-node/bin/cellframe-node 2>/dev/null | grep -q libasan; then
-    export ASAN_OPTIONS="detect_leaks=0:halt_on_error=0:abort_on_error=0:print_stacktrace=1:detect_odr_violation=0"
+    # Respect ASAN_OPTIONS from environment (set by compose with debug_build)
+    # otherwise use sensible defaults that catch errors but don't stop on leaks
+    if [ -z "$ASAN_OPTIONS" ]; then
+        export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1:detect_odr_violation=0"
+    fi
     echo "ASAN enabled: $ASAN_OPTIONS"
 fi
 

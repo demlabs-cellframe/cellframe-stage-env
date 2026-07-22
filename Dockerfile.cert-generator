@@ -21,45 +21,39 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /project
 
-# Copy cellframe-sdk source and root dap-sdk (cellframe-sdk's dap-sdk submodule may be outdated)
-COPY cellframe-sdk /project/cellframe-sdk
+# Copy dap-sdk source (the actual crypto library)
 COPY dap-sdk /project/dap-sdk
+COPY tools/dap_tpl /project/dap-sdk/module/test/dap_tpl
 
-# Replace cellframe-sdk's dap-sdk submodule with the root dap-sdk
-RUN rm -rf /project/cellframe-sdk/dap-sdk && \
-    cp -a /project/dap-sdk /project/cellframe-sdk/dap-sdk
+# Copy cellframe-sdk headers and common source (needed for dap_chain_common.c)
+COPY cellframe-sdk/modules/common /project/cellframe-sdk/modules/common
 
 # Clean any host CMake artifacts
-RUN find /project/cellframe-sdk -name "CMakeCache.txt" -delete && \
-    find /project/cellframe-sdk -name "CMakeFiles" -type d -exec rm -rf {} + 2>/dev/null || true
+RUN find /project/dap-sdk -name "CMakeCache.txt" -delete && \
+    find /project/dap-sdk -name "CMakeFiles" -type d -exec rm -rf {} + 2>/dev/null || true
 
-# Build cellframe_sdk shared library (bump REBUILD_SDK to force rebuild when crypto/keccak changes)
-ARG REBUILD_SDK=2
-WORKDIR /project/cellframe-sdk/build
-RUN cmake -DCMAKE_BUILD_TYPE=Release .. && \
-    make -j$(nproc) cellframe_sdk
+# Build dap-sdk as STATIC library
+ARG REBUILD_SDK=11
+WORKDIR /project/dap-sdk/build
+RUN cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED=OFF .. && \
+    make -j$(nproc)
 
-# Copy and build cert-generator
-COPY tools/stage-env/src/certs /project/cert-generator
+# Copy and build cert-generator (links statically against libdap-sdk.a)
+COPY tools/stage-env/src/certs/v6.0 /project/cert-generator
 WORKDIR /project/cert-generator/build
-RUN cmake -DCELLFRAME_SDK_BUILD=/project/cellframe-sdk/build \
+RUN cmake -DDAP_SDK_SRC=/project/dap-sdk \
+          -DDAP_SDK_BUILD=/project/dap-sdk/build \
           -DCELLFRAME_SDK_SRC=/project/cellframe-sdk \
-          -DDAP_SDK_SRC=/project/dap-sdk \
+          -DCMAKE_BUILD_TYPE=Debug \
           .. && \
-    make -j$(nproc) cf-cert-generator && \
-    strip cf-cert-generator
+    make -j$(nproc) cf-cert-generator
 
-# Runtime image - minimal
+# Runtime image - minimal (no shared libs needed, binary is statically linked)
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
-
-# Copy the cellframe_sdk and dap-sdk shared libraries
-COPY --from=builder /project/cellframe-sdk/build/libcellframe_sdk.so* /usr/local/lib/
-COPY --from=builder /project/cellframe-sdk/build/dap-sdk/libdap-sdk.so /usr/local/lib/
-RUN ldconfig
 
 COPY --from=builder /project/cert-generator/build/cf-cert-generator /usr/local/bin/
 
@@ -68,4 +62,4 @@ ENTRYPOINT ["/usr/local/bin/cf-cert-generator"]
 CMD ["--help"]
 
 LABEL maintainer="Cellframe Team"
-LABEL description="Certificate generator with post-quantum crypto (minimal build)"
+LABEL description="Certificate generator with post-quantum crypto (static build)"

@@ -66,6 +66,8 @@ static int s_sdk_init(void)
         return -1;
     if (dap_enc_key_init() != 0)
         return -1;
+    if (dap_enc_init() != 0)   // initializes dilithium_dispatch_init() and other SIMD dispatch
+        return -1;
     if (dap_cert_init() != 0)
         return -1;
     if (dap_sign_init(DAP_HASH_TYPE_SHA3_256) != 0)
