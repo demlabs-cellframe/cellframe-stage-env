@@ -25,9 +25,16 @@ x-cf-node-template:
   - ./cache/cellframe-packages:/var/cache/cellframe-packages
   ulimits: &id005
     core: -1
-  privileged: true
+  # STAGE-CRIT-1: no full privileged mode. Curated capabilities only:
+  # SYS_PTRACE (debugger attach for crash artifacts), NET_ADMIN/NET_RAW
+  # (p2p sockets + genesis network config), SYS_RESOURCE (core dumps via
+  # ulimit). If a node needs something else, add the specific cap instead
+  # of restoring privileged.
   cap_add: &id006
   - SYS_PTRACE
+  - NET_ADMIN
+  - NET_RAW
+  - SYS_RESOURCE
   environment: &id007
     NODE_ID: ${NODE_ID:-1}
     NODE_ROLE: ${NODE_ROLE:-root}
@@ -58,7 +65,6 @@ services:
     ports: *id003
     volumes: *id004
     ulimits: *id005
-    privileged: true
     cap_add: *id006
     environment: *id007
     restart: 'no'
@@ -92,7 +98,12 @@ services:
     - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
     - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
     environment:
-    - GF_SECURITY_ADMIN_PASSWORD=admin
+    # H-STAGE-1: no committed default password. Set in .env:
+    #   GF_SECURITY_ADMIN_PASSWORD=<strong-password>
+    # If unset, Grafana gets an empty value and admin login fails closed —
+    # monitoring is opt-in (--profile monitoring) so this only affects
+    # operators who enable it without configuring a password.
+    - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-}
     - GF_USERS_ALLOW_SIGN_UP=false
     networks:
     - stagenet
@@ -106,7 +117,11 @@ services:
     volumes:
     - ./tests:/tests:ro
     - ./results:/results
-    - /var/run/docker.sock:/var/run/docker.sock:ro
+    # STAGE-CRIT-2: docker.sock mount removed — the referenced entrypoint
+    # scripts (discover_nodes.py / run_all.py) do not exist in this repo,
+    # so the service was non-functional while exposing a host-compromise
+    # path. Node discovery now runs inside the stage-env orchestrator
+    # (src/cli/test_commands.py), not from inside this container.
     environment:
     - NETWORK_NAME=${NETWORK_NAME:-stagenet}
     - NODE_DISCOVERY=docker
@@ -118,7 +133,7 @@ services:
     command:
     - sh
     - -c
-    - python3 /tests/discover_nodes.py && python3 /tests/run_all.py
+    - echo "test-runner is legacy — run tests via stage_env.py instead"
 networks:
   stagenet:
     driver: bridge
