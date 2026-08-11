@@ -398,6 +398,31 @@ class DockerComposeManager:
                         raise FileNotFoundError(f"Local package not found: {resolved} (pattern: {local_path})")
                 
                 logger.info("using_local_package", path=str(local_package_path))
+
+                # L-STAGE-5: verify the package integrity when a checksum is
+                # configured (stage-env.cfg: node_source.checksum =
+                # "sha256:<hex>"). The config was parsed but never enforced.
+                expected_checksum = node_source_config.get('checksum')
+                if expected_checksum and local_package_path:
+                    import hashlib as _hashlib
+                    l_algo, l_expected = 'sha256', expected_checksum
+                    if ':' in expected_checksum:
+                        l_algo, l_expected = expected_checksum.split(':', 1)
+                    l_algo = l_algo.lower()
+                    if l_algo not in ('sha256', 'sha1', 'md5'):
+                        logger.error("unsupported_checksum_algo", algo=l_algo)
+                        raise ValueError(f"Unsupported checksum algorithm: {l_algo}")
+                    l_hash = _hashlib.new(l_algo)
+                    with open(local_package_path, 'rb') as l_f:
+                        for l_chunk in iter(lambda: l_f.read(65536), b''):
+                            l_hash.update(l_chunk)
+                    l_actual = l_hash.hexdigest()
+                    if l_actual.lower() != l_expected.lower():
+                        logger.error("checksum_mismatch", path=str(local_package_path),
+                                     expected=l_expected, actual=l_actual)
+                        raise ValueError(f"Checksum mismatch for {local_package_path}: "
+                                         f"expected {l_expected}, got {l_actual}")
+                    logger.info("local_package_checksum_ok", path=str(local_package_path), algo=l_algo)
         
         # Resolve paths config (once, before node loop)
         from src.config.manager import get_config_loader
