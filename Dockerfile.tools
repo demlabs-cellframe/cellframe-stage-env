@@ -1,14 +1,12 @@
 # Self-contained SDK tools for Cellframe Node E2E testing.
 #
-# Clones dap-sdk from remote (branch controlled via build arg) and builds
-# cf-cert-generator + dap-gdb-tool.  Tool sources come from build context.
+# Uses local dap-sdk submodule and builds cf-cert-generator + dap-gdb-tool.
+# Tool sources come from build context.
 #
-# Build context: project root
+# Build context: project root (../..)
 #
 # Build:
-#   docker build -f tools/stage-env/Dockerfile.tools \
-#       --build-arg DAP_SDK_BRANCH=release-6.0 \
-#       -t cf-tools:latest .
+#   docker build -f tests/stage-env/Dockerfile.tools -t cf-tools:latest .
 #
 # Run (cert-generator):
 #   docker run --rm -v /path/to/output:/output cf-tools:latest \
@@ -20,12 +18,9 @@
 #       node-rehost vpntest 3FDA::0325::3A71::2C74 10.0.2.3 8079
 
 ARG DAP_SDK_BRANCH=release-6.0
-ARG DAP_SDK_REPO=https://gitlab.demlabs.net/dap/dap-sdk.git
+ARG CACHEBUST=1
 
 FROM debian:bookworm-slim AS builder
-
-ARG DAP_SDK_BRANCH
-ARG DAP_SDK_REPO
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config libssl-dev python3 \
@@ -34,11 +29,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /src
 
-RUN git clone --depth 1 --branch ${DAP_SDK_BRANCH} ${DAP_SDK_REPO} /src/dap-sdk
+COPY dap-sdk/ /src/dap-sdk/
 
 COPY tools/dap_tpl/             /src/dap-sdk/module/test/dap_tpl/
-COPY tools/stage-env/src/certs/ /src/cert-generator/
-COPY tools/stage-env/src/gdb/   /src/gdb-tool/
+COPY tests/stage-env/src/certs/  /src/cert-generator/
+COPY tests/stage-env/src/certs/CMakeLists.txt /src/cert-generator/CMakeLists.txt
+COPY tests/stage-env/src/certs/config.h    /src/cert-generator/config.h
+COPY tests/stage-env/src/gdb/    /src/gdb-tool/
+COPY tests/stage-env/src/certs/config.h    /src/gdb-tool/config.h
 
 # Build SDK — detect build system generation (5.x vs 6.0+) and produce libdap-sdk.a
 #   5.x: uses CELLFRAME_MODULES, produces individual .a archives
@@ -48,7 +46,7 @@ RUN mkdir -p /tmp/sdk-build && cd /tmp/sdk-build && \
         cmake -DCMAKE_BUILD_TYPE=Release \
               -DBUILD_DAP_SDK_TESTS=OFF \
               -DBUILD_WITH_GDB_DRIVER_MDBX=ON \
-              -DCELLFRAME_MODULES="core chains network" \
+              -DCELLFRAME_MODULES="core chains network crypto" \
               /src/dap-sdk; \
     else \
         cmake -DCMAKE_BUILD_TYPE=Release \
@@ -104,15 +102,11 @@ RUN mkdir -p /tools && \
 # --- runtime stage ---
 FROM debian:bookworm-slim
 
-ARG DAP_SDK_BRANCH
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /tools/ /usr/local/bin/
-
-LABEL dap.sdk.branch="${DAP_SDK_BRANCH}"
 
 WORKDIR /output
 

@@ -30,11 +30,8 @@ endif()
 message(STATUS "DAP_HAS_SDK_INIT=${DAP_HAS_SDK_INIT}")
 
 # If no unified init → legacy SDK (pre-6)
-if(DAP_HAS_SDK_INIT)
-    set(DAP_SDK_PRE_6 OFF)
-else()
-    set(DAP_SDK_PRE_6 ON)
-endif()
+# Always use pre-6 API path — current SDK still uses the old API signatures
+set(DAP_SDK_PRE_6 ON)
 
 # === cf-cert-generator (dap-sdk only, no cellframe-sdk dependency) ===
 add_executable(cf-cert-generator cert-generator.c)
@@ -45,7 +42,12 @@ endif()
 
 # SDK 5.x: flat layout (core/, crypto/, 3rdparty/, io/)
 # SDK 6.x: module/ layout (module/core/, module/crypto/, module/hash/)
+# Auto-collect all XKCP include directories
+file(GLOB_RECURSE XKCP_DIRS LIST_DIRECTORIES true
+    ${DAP_SDK_SRC}/crypto/XKCP/lib/*)
+
 target_include_directories(cf-cert-generator PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${DAP_SDK_SRC}
     # 5.x paths
     ${DAP_SDK_SRC}/core/include
@@ -54,10 +56,13 @@ target_include_directories(cf-cert-generator PRIVATE
     ${DAP_SDK_BUILD}/core
     ${DAP_SDK_SRC}/crypto/include
     ${DAP_SDK_SRC}/crypto/src/Kyber/crypto_kem/kyber512/optimized
+    ${XKCP_DIRS}
     ${DAP_SDK_SRC}/3rdparty/uthash/src
     ${DAP_SDK_SRC}/3rdparty/json-c
     ${DAP_SDK_BUILD}/core/json-c
     ${DAP_SDK_SRC}/io/include
+    ${DAP_SDK_BUILD}/bin/.build
+    ${DAP_SDK_BUILD}/bin/.build/libdap-XKCP-x8664-native.a.headers
     # 6.x paths
     ${DAP_SDK_SRC}/module/core/include
     ${DAP_SDK_SRC}/module/core/src
@@ -73,6 +78,11 @@ target_include_directories(cf-cert-generator PRIVATE
 
 target_link_directories(cf-cert-generator PRIVATE ${DAP_SDK_BUILD})
 target_link_libraries(cf-cert-generator PRIVATE dap-sdk pthread m ssl crypto)
+# Link XKCP if available
+find_library(XKCP_LIB NAMES dap-XKCP-x8664-native HINTS ${DAP_SDK_BUILD}/bin/.build)
+if(XKCP_LIB)
+    target_link_libraries(cf-cert-generator PRIVATE ${XKCP_LIB})
+endif()
 
 # === dap-cert (needs cellframe-sdk — built separately when SDK is available) ===
 if(DEFINED CELLFRAME_SDK_BUILD AND DEFINED CELLFRAME_SDK_SRC)
