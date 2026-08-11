@@ -204,6 +204,13 @@ RUN DPKG_ARCH=$(dpkg --print-architecture) \
     && echo "Building for architecture: ${DPKG_ARCH} -> ${ARCH_SUFFIX}" \
     && (curl --connect-timeout 10 -O https://internal-pub.cellframe.net/linux/cellframe-tool-sign/feature/20325/cellframe-tool-sign-${ARCH_SUFFIX} \
     && curl --connect-timeout 10 -O https://internal-pub.cellframe.net/linux/cellframe-tool-compose/feature/20325/cellframe-tool-compose-${ARCH_SUFFIX} \
+    && echo "cellframe-tool-sign-${ARCH_SUFFIX}" > /tmp/cf-tools-list \
+    && echo "cellframe-tool-compose-${ARCH_SUFFIX}" >> /tmp/cf-tools-list \
+    && while read -r f; do \
+         test -s "/$f" || { echo "M-STAGE-3: $f empty/truncated download"; exit 1; }; \
+         test "$(head -c 4 "/$f" | od -An -tx1 | tr -d ' \n')" = "7f454c46" || { \
+           echo "M-STAGE-3: $f is not an ELF binary (HTML error page?)"; exit 1; }; \
+       done < /tmp/cf-tools-list \
     && chmod +x /cellframe-tool-compose-${ARCH_SUFFIX} \
     && chmod +x /cellframe-tool-sign-${ARCH_SUFFIX} \
     && ln -sf /cellframe-tool-sign-${ARCH_SUFFIX} /cellframe-tool-sign \

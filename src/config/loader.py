@@ -11,6 +11,7 @@ Direct instantiation of ConfigLoader is deprecated - use global manager instead.
 """
 
 import json
+import os
 import configparser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -174,6 +175,13 @@ class ConfigLoader:
         # Template uses 'network_name' but config has 'name' in [network] section
         if 'name' in result and 'network_name' not in result:
             result['network_name'] = result['name']
+
+        # L-STAGE-4: the balancer URI is an internal-network token — allow
+        # overriding it via CF_BALANCER_URI so it never has to be committed.
+        balancer_uri_override = os.environ.get('CF_BALANCER_URI')
+        if balancer_uri_override:
+            result['uri'] = balancer_uri_override
+            logger.info("balancer_uri_overridden_by_env")
 
         logger.debug("config_loaded", keys=len(result))
         return result
