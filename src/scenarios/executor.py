@@ -518,10 +518,12 @@ class ScenarioExecutor:
         # Universal approach: apply all defaults to all steps that have these attributes
         # No type checking - just check if attribute exists and has default value
         
-        # node — apply only when the step did not explicitly set it in YAML
+        # node — apply only when the step did not explicitly set it in YAML.
+        # The schema default ("node1") is truthy, so only fields_set can tell
+        # an omitted node from an explicit one.
         if defaults.node and hasattr(step, 'node'):
             fields_set = getattr(step, 'model_fields_set', set())
-            if 'node' not in fields_set and not step.node:
+            if 'node' not in fields_set:
                 step.node = defaults.node
         
         # wait

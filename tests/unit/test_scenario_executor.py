@@ -134,15 +134,25 @@ class TestCLIDefaultsApplication:
         """Test applying defaults to a step."""
         executor = ScenarioExecutor()
         defaults = StepDefaults(node="node2", timeout=60)
-        
-        # Step with default values
-        step = CLIStep(cli="version", node="node1", timeout=30)
-        
+
+        # Step that omits node — the schema default must yield to the defaults
+        step = CLIStep(cli="version", timeout=30)
+
         updated_step = executor._apply_defaults(step, defaults)
-        
-        # Should be updated because they match default values
+
         assert updated_step.node == "node2"
         assert updated_step.timeout == 60
+
+    def test_apply_defaults_keeps_explicit_node_matching_schema_default(self):
+        """A node explicitly set in YAML is kept even when it equals the schema default."""
+        executor = ScenarioExecutor()
+        defaults = StepDefaults(node="node2", timeout=60)
+
+        step = CLIStep(cli="version", node="node1", timeout=30)
+
+        updated_step = executor._apply_defaults(step, defaults)
+
+        assert updated_step.node == "node1"
         
     def test_apply_defaults_does_not_override_custom(self):
         """Test that explicit values are not overridden by defaults."""
